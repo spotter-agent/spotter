@@ -1,0 +1,7 @@
+observation_only = true
+
+[main_agent]
+adapter = "codex"
+
+[reviewer]
+model = "gpt-5.3-spark"

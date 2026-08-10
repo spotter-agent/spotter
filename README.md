@@ -132,9 +132,48 @@ Spotter is intended as a reference implementation for exploring that layer.
 - [Research](docs/research.md) — related work and ideas Spotter borrows
 - [Roadmap](docs/roadmap.md) — staged implementation and evaluation plan
 
+## Development
+
+Spotter's initial implementation uses Python 3.11 or newer and has no runtime
+dependencies. Create an isolated environment, install the project with its development
+tools, and run every local check with:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e '.[dev]'
+ruff format --check .
+ruff check .
+mypy src tests
+pytest
+spotter --config spotter.example.toml
+```
+
+The example configuration selects the main-agent adapter and reviewer model and defaults
+to safe, passive observation:
+
+```toml
+observation_only = true
+
+[main_agent]
+adapter = "codex"
+
+[reviewer]
+model = "gpt-5.3-spark"
+```
+
+`gpt-5.3-spark` is the default Spotter reviewer model, so the `[reviewer]` table may be
+omitted unless a different reviewer model is required.
+
+The package deliberately keeps normalized trace events and orchestration separate from
+the Codex adapter. The current command is a runnable scaffold: it validates configuration,
+starts an in-memory adapter, and records a session-start event. Event streaming and
+model-backed review are the next implementation milestone.
+
 ## Status
 
-**Research / design stage.** The repository currently documents the concept and planned architecture before implementation begins.
+**Prototype scaffold.** The repository now includes the runnable observation-only foundation;
+Codex event ingestion and reviewer decisions are not implemented yet.
 
 The first milestone is deliberately small: observe a Codex trajectory with a separate reviewer model, identify high-confidence misbehavior, and measure whether intervention helps more than it harms.
 
