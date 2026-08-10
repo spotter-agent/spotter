@@ -165,15 +165,23 @@ model = "gpt-5.3-spark"
 `gpt-5.3-spark` is the default Spotter reviewer model, so the `[reviewer]` table may be
 omitted unless a different reviewer model is required.
 
-The package deliberately keeps normalized trace events and orchestration separate from
-the Codex adapter. The current command is a runnable scaffold: it validates configuration,
-starts an in-memory adapter, and records a session-start event. Event streaming and
-model-backed review are the next implementation milestone.
+The package keeps normalized trace events and orchestration separate from the Codex
+adapter. The passive runtime maintains independent audit state, records reviewer telemetry,
+and can replay normalized JSONL traces through a separately configured reviewer:
+
+```bash
+spotter --config spotter.example.toml --replay trace.jsonl --findings findings.jsonl
+```
+
+`VERIFY` and `NUDGE` findings are logged alongside the triggering step. They never block,
+rewrite, steer, or otherwise modify the observed session. The included deterministic
+reviewer makes the prototype and tests runnable offline; the `Reviewer` protocol is the
+boundary for a model-backed implementation.
 
 ## Status
 
-**Prototype scaffold.** The repository now includes the runnable observation-only foundation;
-Codex event ingestion and reviewer decisions are not implemented yet.
+**First passive prototype.** Codex-shaped events can be normalized, observed, reviewed,
+and replayed. Active control remains deliberately out of scope.
 
 The first milestone is deliberately small: observe a Codex trajectory with a separate reviewer model, identify high-confidence misbehavior, and measure whether intervention helps more than it harms.
 
