@@ -11,7 +11,9 @@ from spotter.codex import CodexAdapter
 from spotter.config import ConfigurationError, MainAgentConfig, ReviewerConfig, SpotterConfig
 from spotter.core import SpotterRuntime
 from spotter.gates import Gate
-from spotter.hook import run_hook
+from spotter.hook import journal_path, run_hook
+from spotter.replay import ReplayError, fork, plan_to_json
+from spotter.snapshot import SnapshotError, StepJournal
 from spotter.trace import TraceEvent
 
 
@@ -20,11 +22,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "command",
         nargs="?",
-        choices=["observe", "hook"],
+        choices=["observe", "hook", "analyze", "fork"],
         default="observe",
-        help="observe: validate config and start; hook: Codex hook bridge (JSON on stdin)",
+        help=(
+            "observe: validate config and start; hook: Codex hook bridge (JSON on stdin); "
+            "analyze: summarize journaled sessions; fork: branch a session at a step"
+        ),
     )
     parser.add_argument("--config", type=Path, help="path to Spotter TOML config")
+    parser.add_argument("--session", help="session id (fork; analyze filters to it)")
+    parser.add_argument("--step", type=int, help="journal step to branch at (fork)")
+    parser.add_argument("--repo", type=Path, help="repo override when the journal lacks cwd (fork)")
+    parser.add_argument("--guidance", help="course-correction text for the forked run (fork)")
     return parser
 
 
@@ -44,6 +53,18 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "hook":
         return _hook_main(config)
+    if args.command == "analyze":
+        return _analyze_main(args.session)
+    if args.command == "fork":
+        if not args.session or args.step is None:
+            parser.error("fork requires --session and --step")
+        try:
+            plan = fork(args.session, args.step, repo=args.repo, guidance=args.guidance)
+        except (ReplayError, SnapshotError) as error:
+            print(f"fork failed: {error}", file=sys.stderr)
+            return 1
+        print(plan_to_json(plan))
+        return 0
 
     if config is None:
         parser.error("observe requires --config")
@@ -60,6 +81,45 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"Spotter ready: adapter={config.main_agent.adapter}, "
         f"reviewer={config.reviewer.model}, mode={mode}"
     )
+    return 0
+
+
+def _analyze_main(session: str | None) -> int:
+    """Summarize journaled sessions: the aggregation step of the FP-review loop.
+
+    This prints samples for a human to label; it deliberately does not label
+    anything itself — FP/TP judgment is exactly what must not be automated
+    away before the reviewer stage earns that trust.
+    """
+    sessions_dir = journal_path({"session_id": "probe"}).parent
+    journals = sorted(sessions_dir.glob("*.jsonl"))
+    if session:
+        wanted = journal_path({"session_id": session})
+        journals = [j for j in journals if j == wanted]
+    if not journals:
+        print(f"no journals found under {sessions_dir}", file=sys.stderr)
+        return 1
+    for journal in journals:
+        try:
+            records = StepJournal.load(journal)
+        except SnapshotError as error:
+            print(f"{journal.stem}: unreadable journal ({error})", file=sys.stderr)
+            continue
+        proposals = [r for r in records if r.event.kind == "tool_proposal"]
+        snapshots = sum(1 for r in records if r.snapshot)
+        flagged = [r for r in records if r.event.kind in ("gate_shadow_block", "gate_fail_open")]
+        print(
+            f"{journal.stem}: steps={len(records)} proposals={len(proposals)} "
+            f"snapshots={snapshots} flagged={len(flagged)}"
+        )
+        for record in flagged:
+            trigger = records[record.step - 1].event.payload if record.step > 0 else {}
+            summary = str(trigger.get("command") or trigger.get("patch") or trigger)
+            summary = " ".join(summary.split())[:120]
+            print(
+                f"  step {record.step:4d} {record.event.kind:17s} "
+                f"{record.event.payload.get('rule')}: {summary}"
+            )
     return 0
 
 

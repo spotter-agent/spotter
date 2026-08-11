@@ -14,7 +14,7 @@ from typing import Any
 from spotter.config import SpotterConfig
 from spotter.core import SpotterRuntime
 from spotter.gates import Gate
-from spotter.snapshot import StepJournal
+from spotter.snapshot import SnapshotError, StepJournal, snapshot_worktree
 from spotter.trace import TraceEvent
 
 _PATCH_PATH = re.compile(r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$", re.MULTILINE)
@@ -23,9 +23,11 @@ _PATCH_PATH = re.compile(r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$
 class JournalAdapter:
     def __init__(self, journal: StepJournal) -> None:
         self.journal = journal
+        self.next_snapshot: str | None = None
 
     def record(self, event: TraceEvent) -> None:
-        self.journal.record(event)
+        self.journal.record(event, snapshot=self.next_snapshot)
+        self.next_snapshot = None  # attaches to the first (proposal) event only
 
 
 def event_from_hook(payload: dict[str, Any]) -> TraceEvent:
@@ -56,6 +58,10 @@ def event_from_hook(payload: dict[str, Any]) -> TraceEvent:
                 "command": command,
                 "patch": patch,
                 "files": files,
+                # Correlation keys for P0 fork: tool_use_id matches the rollout's
+                # call_id; cwd locates the repo to snapshot/restore.
+                "tool_use_id": payload.get("tool_use_id"),
+                "cwd": payload.get("cwd"),
             },
         )
     if name == "PostToolUse":
@@ -87,8 +93,22 @@ def run_hook(payload: dict[str, Any], config: SpotterConfig) -> str | None:
         block_dependency_changes=config.gates.block_dependency_changes,
         root=str(cwd) if isinstance(cwd, str) else None,
     )
-    runtime = SpotterRuntime(config, JournalAdapter(StepJournal(journal_path(payload))), gate)
-    decision = runtime.observe(event_from_hook(payload))
+    adapter = JournalAdapter(StepJournal(journal_path(payload)))
+    runtime = SpotterRuntime(config, adapter, gate)
+    event = event_from_hook(payload)
+    if (
+        config.snapshot_on_patch
+        and event.kind == "tool_proposal"
+        and event.payload.get("tool") == "apply_patch"
+        and isinstance(cwd, str)
+    ):
+        # Snapshot at the commit boundary so P0 fork has a repo state to
+        # restore. Fail open: losing a snapshot must not break the session.
+        try:
+            adapter.next_snapshot = snapshot_worktree(Path(cwd))
+        except SnapshotError:
+            adapter.next_snapshot = None
+    decision = runtime.observe(event)
     if decision.allowed:
         return None  # implicit allow; stay silent on the happy path
     return json.dumps(

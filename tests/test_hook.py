@@ -115,3 +115,41 @@ def test_unknown_events_still_journal(spotter_home: Path) -> None:
     assert run_hook(payload, _config(observation_only=True)) is None
     records = StepJournal.load(journal_path(payload))
     assert records[0].event.kind == "sessionstart"
+
+
+def test_apply_patch_takes_snapshot_for_fork(tmp_path: Path, spotter_home: Path) -> None:
+    import subprocess
+
+    repo = tmp_path / "hookrepo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / "x.txt").write_text("x")
+
+    payload = {
+        "hook_event_name": "PreToolUse",
+        "session_id": "snap1",
+        "cwd": str(repo),
+        "tool_name": "apply_patch",
+        "tool_use_id": "call_1",
+        "tool_input": {"command": "*** Begin Patch\n*** Update File: x.txt\n*** End Patch"},
+    }
+    assert run_hook(payload, _config(observation_only=True)) is None
+    record = StepJournal.load(journal_path(payload))[0]
+    assert record.snapshot  # repo state pinned at the commit boundary
+    assert record.event.payload["tool_use_id"] == "call_1"
+    assert record.event.payload["cwd"] == str(repo)
+
+
+def test_snapshot_failure_fails_open(tmp_path: Path, spotter_home: Path) -> None:
+    payload = {
+        "hook_event_name": "PreToolUse",
+        "session_id": "snap2",
+        "cwd": str(tmp_path / "not-a-git-repo"),
+        "tool_name": "apply_patch",
+        "tool_use_id": "call_1",
+        "tool_input": {"command": "*** Begin Patch\n*** End Patch"},
+    }
+    assert run_hook(payload, _config(observation_only=True)) is None  # session unharmed
+    assert StepJournal.load(journal_path(payload))[0].snapshot is None

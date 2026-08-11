@@ -25,13 +25,16 @@ class SnapshotError(RuntimeError):
 
 
 def _git(repo: Path, *args: str, env: dict[str, str] | None = None) -> str:
-    result = subprocess.run(
-        ["git", *args],
-        cwd=repo,
-        env={**os.environ, **(env or {})},
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=repo,
+            env={**os.environ, **(env or {})},
+            capture_output=True,
+            text=True,
+        )
+    except OSError as error:  # missing cwd, missing git binary — same contract
+        raise SnapshotError(f"git {' '.join(args)} failed to start: {error}") from error
     if result.returncode != 0:
         raise SnapshotError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
     return result.stdout.strip()

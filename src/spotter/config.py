@@ -35,6 +35,7 @@ class SpotterConfig:
     reviewer: ReviewerConfig
     gates: GatesConfig = GatesConfig()
     observation_only: bool = True
+    snapshot_on_patch: bool = True
 
     @classmethod
     def from_toml(cls, path: Path) -> "SpotterConfig":
@@ -60,6 +61,7 @@ class SpotterConfig:
                 block_dependency_changes=_bool(gates, "block_dependency_changes", False),
             ),
             observation_only=observation_only,
+            snapshot_on_patch=_bool(raw, "snapshot_on_patch", True),
         )
 
 
