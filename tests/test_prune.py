@@ -115,3 +115,106 @@ def test_journal_survives_concurrent_processes(tmp_path: Path) -> None:
     assert all(worker.wait() == 0 for worker in workers)
     records = StepJournal.load(journal)
     assert [r.step for r in records] == list(range(40))  # unique, monotonic, no gaps
+
+
+# --- Regression tests for the PR #12 review findings: each one hits the exact
+# --- window the review said the previous tests avoided.
+
+
+def test_race_hook_snapshot_vs_prune_is_serialized(repo: Path, spotter_home: Path) -> None:
+    """P0: a ref pinned but not yet journaled must survive a concurrent prune."""
+    (spotter_home / "sessions").mkdir(parents=True, exist_ok=True)
+    ready = spotter_home / "ready"
+    script = (
+        "import sys, time\n"
+        "from pathlib import Path\n"
+        "from spotter.snapshot import StepJournal, global_lock, snapshot_worktree\n"
+        "from spotter.trace import TraceEvent\n"
+        "repo, home = Path(sys.argv[1]), Path(sys.argv[2])\n"
+        "with global_lock(home):\n"
+        "    sha = snapshot_worktree(repo)  # ref exists, journal not yet written\n"
+        "    (home / 'ready').write_text(sha)\n"
+        "    time.sleep(1.0)  # the window prune must NOT be able to enter\n"
+        "    journal = StepJournal(home / 'sessions' / 's-race.jsonl')\n"
+        "    journal.record(TraceEvent('tool_proposal', {'cwd': str(repo)}), snapshot=sha)\n"
+    )
+    worker = subprocess.Popen(
+        [sys.executable, "-c", script, str(repo), str(spotter_home)],
+        cwd=Path(__file__).parent.parent,
+        env={"PYTHONPATH": "src", "PATH": "/usr/bin:/bin"},
+    )
+    try:
+        deadline = 50
+        while not ready.exists() and deadline:
+            deadline -= 1
+            import time
+
+            time.sleep(0.1)
+        assert ready.exists(), "worker never reached the race window"
+        from spotter.snapshot import global_lock
+
+        with global_lock(spotter_home):  # blocks until the worker journals
+            referenced = referenced_snapshots(spotter_home / "sessions", repo)
+            pruned = prune_snapshots(repo, referenced, apply=True)
+    finally:
+        assert worker.wait(timeout=30) == 0
+    assert pruned == []
+    assert _refs(repo) == {f"refs/spotter/steps/{ready.read_text()}"}
+
+
+def test_torn_tail_with_snapshot_aborts_prune(repo: Path, spotter_home: Path) -> None:
+    """P0: a torn tail may hold the newest sha; strict read refuses to guess."""
+    sha = snapshot_worktree(repo)
+    sessions = spotter_home / "sessions"
+    sessions.mkdir(parents=True, exist_ok=True)
+    torn = f'{{"step": 0, "kind": "tool_proposal", "payload": {{}}, "snapshot": "{sha}"'
+    (sessions / "s-torn.jsonl").write_text(torn)  # no newline: crash mid-write
+    with pytest.raises(SnapshotError, match="torn tail"):
+        referenced_snapshots(sessions, repo)
+
+
+def test_apply_deletes_all_doomed_refs_in_one_transaction(repo: Path) -> None:
+    """P1: multiple deletions go through one update-ref --stdin transaction."""
+    shas = []
+    for n in range(3):
+        (repo / "a.txt").write_text(f"v{n}")
+        shas.append(snapshot_worktree(repo))
+    assert sorted(prune_snapshots(repo, set(), apply=True)) == sorted(shas)
+    assert _refs(repo) == set()
+
+
+def test_trigger_resolution_survives_interleaved_journals() -> None:
+    """P1: gate events resolve their proposal by tool_use_id, not adjacency."""
+    from spotter.cli import _trigger_for
+    from spotter.snapshot import StepRecord
+
+    records = [
+        StepRecord(
+            0, TraceEvent("tool_proposal", {"tool_use_id": "A", "command": "rm -rf /"}), None
+        ),
+        StepRecord(1, TraceEvent("tool_proposal", {"tool_use_id": "B", "command": "pytest"}), None),
+        StepRecord(
+            2, TraceEvent("gate_shadow_block", {"rule": "rm_root", "tool_use_id": "A"}), None
+        ),
+    ]
+    assert _trigger_for(records, records[2])["command"] == "rm -rf /"
+
+
+def test_referenced_snapshots_filters_by_repo(
+    repo: Path, tmp_path: Path, spotter_home: Path
+) -> None:
+    """P2: a sha referenced only by another repo's journal is prunable here;
+    a record with unknown provenance is conservatively kept everywhere."""
+    sha = snapshot_worktree(repo)
+    sessions = spotter_home / "sessions"
+    sessions.mkdir(parents=True, exist_ok=True)
+    other_repo = tmp_path / "elsewhere"
+    other_repo.mkdir()
+    StepJournal(sessions / "s-other.jsonl").record(
+        TraceEvent("tool_proposal", {"cwd": str(other_repo)}), snapshot=sha
+    )
+    assert referenced_snapshots(sessions, repo) == set()  # other repo's claim doesn't count here
+    assert referenced_snapshots(sessions, other_repo) == {sha}
+
+    StepJournal(sessions / "s-nocwd.jsonl").record(TraceEvent("tool_proposal"), snapshot=sha)
+    assert referenced_snapshots(sessions, repo) == {sha}  # unknown provenance → keep

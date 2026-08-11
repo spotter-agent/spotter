@@ -16,6 +16,8 @@ from spotter.replay import ReplayError, fork, plan_to_json
 from spotter.snapshot import (
     SnapshotError,
     StepJournal,
+    StepRecord,
+    global_lock,
     prune_snapshots,
     referenced_snapshots,
 )
@@ -126,7 +128,7 @@ def _analyze_main(session: str | None) -> int:
             f"snapshots={snapshots} flagged={len(flagged)}"
         )
         for record in flagged:
-            trigger = records[record.step - 1].event.payload if record.step > 0 else {}
+            trigger = _trigger_for(records, record)
             summary = str(trigger.get("command") or trigger.get("patch") or trigger)
             summary = " ".join(summary.split())[:120]
             print(
@@ -136,16 +138,39 @@ def _analyze_main(session: str | None) -> int:
     return 0
 
 
+def _trigger_for(records: list[StepRecord], flagged: StepRecord) -> dict[str, object]:
+    """Resolve the proposal that triggered a gate event.
+
+    Match by the tool_use_id the gate event carries; journal adjacency is not
+    trustworthy under concurrent hook processes. Falls back to the previous
+    record only for journals written before the id was recorded.
+    """
+    wanted = flagged.event.payload.get("tool_use_id")
+    if wanted:
+        for record in reversed(records[: flagged.step]):
+            if (
+                record.event.kind == "tool_proposal"
+                and record.event.payload.get("tool_use_id") == wanted
+            ):
+                return record.event.payload
+    if flagged.step > 0:
+        return records[flagged.step - 1].event.payload
+    return {}
+
+
 def _prune_main(repo: Path, *, apply: bool) -> int:
     """Drop refs/spotter/steps/* that no journal references (issue #7).
 
     Dry-run by default: deleting a snapshot is the one spotter operation that
-    can destroy fork-ability, so the human confirms with --apply.
+    can destroy fork-ability, so the human confirms with --apply. The global
+    lock serializes against a hook that has pinned a ref but not yet
+    journaled it.
     """
     sessions_dir = journal_path({"session_id": "probe"}).parent
     try:
-        referenced = referenced_snapshots(sessions_dir)
-        pruned = prune_snapshots(repo, referenced, apply=apply)
+        with global_lock():
+            referenced = referenced_snapshots(sessions_dir, repo)
+            pruned = prune_snapshots(repo, referenced, apply=apply)
     except SnapshotError as error:
         print(f"prune aborted: {error}", file=sys.stderr)
         return 1

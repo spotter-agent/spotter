@@ -24,24 +24,21 @@ class SpotterRuntime:
     def observe(self, event: TraceEvent) -> GateDecision:
         decision = self.gate.check(event)
         self.adapter.record(event)
+        # Concurrent hook processes can interleave records between the proposal
+        # and its gate event, so gate events carry the trigger identity instead
+        # of relying on journal adjacency (PR #12 review, P1).
+        gate_payload = {
+            "rule": decision.rule,
+            "reason": decision.reason,
+            "tool_use_id": event.payload.get("tool_use_id"),
+            "tool": event.payload.get("tool"),
+        }
         if decision.allowed:
             if decision.rule:
-                self.adapter.record(
-                    TraceEvent(
-                        "gate_fail_open",
-                        {"rule": decision.rule, "reason": decision.reason},
-                    )
-                )
+                self.adapter.record(TraceEvent("gate_fail_open", gate_payload))
             return decision
         if self.config.observation_only:
-            self.adapter.record(
-                TraceEvent(
-                    "gate_shadow_block",
-                    {"rule": decision.rule, "reason": decision.reason},
-                )
-            )
+            self.adapter.record(TraceEvent("gate_shadow_block", gate_payload))
             return ALLOW
-        self.adapter.record(
-            TraceEvent("gate_block", {"rule": decision.rule, "reason": decision.reason})
-        )
+        self.adapter.record(TraceEvent("gate_block", gate_payload))
         return decision

@@ -12,6 +12,8 @@ import json
 import os
 import subprocess
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from fcntl import LOCK_EX, LOCK_UN, flock
 from pathlib import Path
@@ -24,7 +26,27 @@ class SnapshotError(RuntimeError):
     """Raised when git snapshot/restore plumbing fails."""
 
 
-def _git(repo: Path, *args: str, env: dict[str, str] | None = None) -> str:
+@contextmanager
+def global_lock(spotter_home: Path | None = None) -> Iterator[None]:
+    """Serialize snapshot-ref creation+journaling against prune.
+
+    The ref exists before the journal references it; without this lock a
+    concurrent prune --apply sees an unreferenced ref in that window and
+    deletes a snapshot the journal is about to claim (PR #12 review, P0).
+    """
+    home = spotter_home or Path(os.environ.get("SPOTTER_HOME", Path.home() / ".spotter"))
+    home.mkdir(parents=True, exist_ok=True)
+    with (home / "lock").open("w") as handle:
+        flock(handle, LOCK_EX)
+        try:
+            yield
+        finally:
+            flock(handle, LOCK_UN)
+
+
+def _git(
+    repo: Path, *args: str, env: dict[str, str] | None = None, input: str | None = None
+) -> str:
     try:
         result = subprocess.run(
             ["git", *args],
@@ -32,6 +54,7 @@ def _git(repo: Path, *args: str, env: dict[str, str] | None = None) -> str:
             env={**os.environ, **(env or {})},
             capture_output=True,
             text=True,
+            input=input,
         )
     except OSError as error:  # missing cwd, missing git binary — same contract
         raise SnapshotError(f"git {' '.join(args)} failed to start: {error}") from error
@@ -119,7 +142,10 @@ class StepJournal:
                 flock(lock, LOCK_UN)
 
     @staticmethod
-    def load(path: Path, *, repair_tail: bool = False) -> list[StepRecord]:
+    def load(path: Path, *, repair_tail: bool = False, strict: bool = False) -> list[StepRecord]:
+        """Load records. strict=True refuses any undecodable content instead of
+        keeping the valid prefix — destructive readers (prune) must not treat a
+        torn tail as proof of absence (PR #12 review, P0)."""
         records: list[StepRecord] = []
         with path.open("r+" if repair_tail else "r", encoding="utf-8") as journal:
             while True:
@@ -132,6 +158,10 @@ class StepJournal:
                 try:
                     raw: dict[str, Any] = json.loads(line)
                 except json.JSONDecodeError:
+                    if strict:
+                        raise SnapshotError(
+                            f"undecodable journal content at byte {line_start} (torn tail?)"
+                        ) from None
                     if line.endswith("\n"):
                         raise SnapshotError(
                             f"invalid journal record at byte {line_start}"
@@ -160,16 +190,23 @@ class StepJournal:
         return [r for r in records if r.step < upto]
 
 
-def referenced_snapshots(sessions_dir: Path) -> set[str]:
-    """Every snapshot sha any journal still points at.
+def referenced_snapshots(sessions_dir: Path, repo: Path | None = None) -> set[str]:
+    """Every snapshot sha the journals still point at, filtered to ``repo``.
 
-    An unreadable journal aborts the scan: pruning with unknown references
-    could delete a snapshot a future fork needs, and that loss is silent.
+    Strict read: an unreadable journal or torn tail aborts the scan — pruning
+    with unknown references could delete a snapshot a future fork needs.
+    A record without a cwd is kept regardless of repo (conservative: unknown
+    provenance must never enable deletion).
     """
+    target = repo.resolve() if repo else None
     shas: set[str] = set()
     for journal in sorted(sessions_dir.glob("*.jsonl")):
-        for record in StepJournal.load(journal):
-            if record.snapshot:
+        for record in StepJournal.load(journal, strict=True):
+            if not record.snapshot:
+                continue
+            cwd = record.event.payload.get("cwd")
+            unknown_provenance = target is None or not isinstance(cwd, str) or not cwd
+            if unknown_provenance or Path(str(cwd)).resolve() == target:
                 shas.add(record.snapshot)
     return shas
 
@@ -181,13 +218,16 @@ def prune_snapshots(repo: Path, referenced: set[str], *, apply: bool = False) ->
     referenced snapshots are structurally out of reach.
     """
     output = _git(repo, "for-each-ref", "--format=%(refname)%00%(objectname)", "refs/spotter/steps")
-    pruned: list[str] = []
+    doomed: list[tuple[str, str]] = []
     for line in output.splitlines():
         refname, _, sha = line.partition("\x00")
         if not refname.startswith("refs/spotter/steps/"):
             continue  # paranoia: never consider anything else deletable
         if sha and sha not in referenced:
-            pruned.append(sha)
-            if apply:
-                _git(repo, "update-ref", "-d", refname)
-    return pruned
+            doomed.append((refname, sha))
+    if apply and doomed:
+        # One update-ref --stdin transaction: all deletions or none — a
+        # mid-loop failure must not leave a half-pruned ref namespace.
+        script = "".join(f"delete {refname} {sha}\n" for refname, sha in doomed)
+        _git(repo, "update-ref", "--stdin", input=script)
+    return [sha for _, sha in doomed]

@@ -14,7 +14,7 @@ from typing import Any
 from spotter.config import SpotterConfig
 from spotter.core import SpotterRuntime
 from spotter.gates import Gate
-from spotter.snapshot import SnapshotError, StepJournal, snapshot_worktree
+from spotter.snapshot import SnapshotError, StepJournal, global_lock, snapshot_worktree
 from spotter.trace import TraceEvent
 
 _PATCH_PATH = re.compile(r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$", re.MULTILINE)
@@ -104,11 +104,16 @@ def run_hook(payload: dict[str, Any], config: SpotterConfig) -> str | None:
     ):
         # PreToolUse captures the state before this patch; PostToolUse captures
         # the state after it, keeping later rollout prefixes aligned with disk.
-        try:
-            adapter.next_snapshot = snapshot_worktree(Path(cwd))
-        except SnapshotError:
-            adapter.next_snapshot = None
-    decision = runtime.observe(event)
+        # The global lock closes the ref-created-but-not-yet-journaled window
+        # a concurrent prune --apply could otherwise exploit.
+        with global_lock():
+            try:
+                adapter.next_snapshot = snapshot_worktree(Path(cwd))
+            except SnapshotError:
+                adapter.next_snapshot = None
+            decision = runtime.observe(event)
+    else:
+        decision = runtime.observe(event)
     if decision.allowed:
         return None  # implicit allow; stay silent on the happy path
     return json.dumps(
