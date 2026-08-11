@@ -31,6 +31,26 @@ def test_trace_reader_rejects_missing_kind(tmp_path: Path) -> None:
         list(read_jsonl(path))
 
 
+@pytest.mark.parametrize(
+    ("record", "message"),
+    [
+        ('{"kind": "tool_result", "payload": null}', "payload must be an object"),
+        ('{"kind": "tool_result", "step": true}', "step must be an integer"),
+        ('{"kind": "tool_result", "operation": 3}', "operation must be a string or null"),
+        ('{"kind": "file_edit", "files": "src/app.py"}', "files must be an array"),
+        ('{"kind": "file_edit", "constraints": ["small", 3]}', "constraints must be an array"),
+    ],
+)
+def test_trace_reader_rejects_invalid_typed_fields(
+    tmp_path: Path, record: str, message: str
+) -> None:
+    path = tmp_path / "trace.jsonl"
+    path.write_text(f'{record}\n', encoding="utf-8")
+
+    with pytest.raises(ValueError, match=f"line 1: {message}"):
+        list(read_jsonl(path))
+
+
 def test_codex_adapter_normalizes_public_event_fields() -> None:
     event = CodexAdapter().normalize(
         {

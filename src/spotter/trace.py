@@ -42,8 +42,30 @@ class TraceEvent:
         kind = data.get("kind")
         if not isinstance(kind, str) or not kind:
             raise ValueError("kind must be a non-empty string")
-        data["files"] = tuple(data.get("files", ()))
-        data["constraints"] = tuple(data.get("constraints", ()))
+
+        payload = data.get("payload", {})
+        if not isinstance(payload, dict):
+            raise ValueError("payload must be an object")
+        data["payload"] = payload
+
+        step = data.get("step", 0)
+        if not isinstance(step, int) or isinstance(step, bool):
+            raise ValueError("step must be an integer")
+        data["step"] = step
+
+        for name in ("intent", "operation", "result", "validation"):
+            field_value = data.get(name)
+            if field_value is not None and not isinstance(field_value, str):
+                raise ValueError(f"{name} must be a string or null")
+
+        for name in ("files", "constraints"):
+            field_value = data.get(name, ())
+            if not isinstance(field_value, (list, tuple)) or not all(
+                isinstance(item, str) for item in field_value
+            ):
+                raise ValueError(f"{name} must be an array of strings")
+            data[name] = tuple(field_value)
+
         return cls(**data)
 
 
