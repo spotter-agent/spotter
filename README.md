@@ -1,3 +1,5 @@
+Maintained by [@bogyie / Bogyoeng Kim](https://github.com/Bogyie) and [@zerone / Youngjin Jung](https://github.com/YoungJinJung)
+
 # Spotter
 
 > **A runtime spotter for coding agents.**
