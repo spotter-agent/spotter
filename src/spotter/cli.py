@@ -264,6 +264,20 @@ def _trigger_for(records: list[StepRecord], flagged: StepRecord) -> dict[str, ob
     return {}
 
 
+def _constraints_of(config: SpotterConfig) -> list[str]:
+    """Configured constraints the reviewer is expected to judge against.
+
+    Asking a reviewer about scope drift while withholding the constraints is
+    how the previous prompt produced confident answers about nothing.
+    """
+    constraints: list[str] = []
+    if config.gates.forbidden_paths:
+        constraints.append(f"must not touch paths matching {list(config.gates.forbidden_paths)}")
+    if config.gates.block_dependency_changes:
+        constraints.append("must not change dependency manifests")
+    return constraints
+
+
 def _review_main(session: str, config: SpotterConfig, *, window: int) -> int:
     """Shadow reviewer: judge the trajectory tail, journal the verdict, inject
     nothing. Injection rights are earned later via labeling + fork pairs."""
@@ -286,8 +300,11 @@ def _review_main(session: str, config: SpotterConfig, *, window: int) -> int:
     if not records:
         print("review failed: empty journal", file=sys.stderr)
         return 1
+    constraints = _constraints_of(config)
     try:
-        decision = review(records, config.reviewer.model, window=window)
+        decision, digest = review(
+            records, config.reviewer.model, window=window, constraints=constraints
+        )
     except Exception as error:  # noqa: BLE001 — reviewer failure must stay observable, not fatal
         print(f"review failed: {error}", file=sys.stderr)
         # Failure evidence belongs in the journal too — "no verdict" must be
@@ -309,12 +326,23 @@ def _review_main(session: str, config: SpotterConfig, *, window: int) -> int:
                 "model": config.reviewer.model,
                 "reviewed_upto": records[-1].step,
                 "shadow": True,
+                # What the reviewer could actually see when it judged: a verdict
+                # made on a truncated view or with no goal must stay identifiable.
+                "inputs": digest.provenance(),
             },
         )
     )
+    notes = []
+    if not digest.goal_present:
+        notes.append("no goal recorded")
+    if digest.truncated:
+        notes.append(f"truncated to {digest.steps_shown} steps")
+    if digest.injection_suspected:
+        notes.append("possible injection in trajectory text")
+    suffix = f"  [{'; '.join(notes)}]" if notes else ""
     print(
         f"[shadow] {decision.decision} ({decision.failure_class}, "
-        f"conf={decision.confidence:.2f}): {decision.reason}"
+        f"conf={decision.confidence:.2f}): {decision.reason}{suffix}"
     )
     return 0
 

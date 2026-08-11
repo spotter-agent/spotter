@@ -132,7 +132,7 @@ def test_reviewer_prompt_carries_invalidated_premises() -> None:
     def runner(model: str, prompt: str) -> str:
         seen["prompt"] = prompt
         return (
-            '{"decision": "nudge", "failure_class": "spec_drift", "reason": "x",'
+            '{"decision": "nudge", "failure_class": "tool_failure_loop", "reason": "x",'
             ' "confidence": 0.7, "hypothesis": "the config is loaded"}'
         )
 
@@ -143,8 +143,8 @@ def test_reviewer_prompt_carries_invalidated_premises() -> None:
             _result("pytest -q", 1),
         ]
     )
-    decision = review(records, "m", runner=runner)
-    assert "Invalidated premises:" in seen["prompt"]
+    decision, _ = review(records, "m", runner=runner)
+    assert "RETRACTED pytest -q -> exit 0" in seen["prompt"]
     assert "STALE hypothesis: the suite is green" in seen["prompt"]
     assert decision.hypothesis == "the config is loaded"
 
@@ -160,7 +160,7 @@ def test_clean_trajectory_adds_no_premise_block() -> None:
         )
 
     review(_records([_result("pytest -q", 0)]), "m", runner=runner)
-    assert "Invalidated premises" not in seen["prompt"]
+    assert "RETRACTED pytest" not in seen["prompt"]
 
 
 def test_codex_text_exit_codes_are_read_too() -> None:

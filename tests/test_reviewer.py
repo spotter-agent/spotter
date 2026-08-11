@@ -4,8 +4,9 @@ from pathlib import Path
 import pytest
 
 from spotter.cli import main
+from spotter.digest import build
 from spotter.hook import journal_path
-from spotter.reviewer import ReviewerDecision, build_digest, parse_decision, review
+from spotter.reviewer import ReviewerDecision, parse_decision, review
 from spotter.snapshot import StepJournal, StepRecord
 from spotter.trace import TraceEvent
 
@@ -27,8 +28,8 @@ def _records() -> list[StepRecord]:
 
 
 def test_digest_is_observation_only() -> None:
-    digest = build_digest(_records())
-    assert "USER GOAL: fix the login timeout" in digest
+    digest = build(_records()).body
+    assert "GOAL (step 0): fix the login timeout" in digest
     assert "pytest -x" in digest and "exit=1" in digest and "git_reset_hard" in digest
     assert "redis" not in digest  # Main's own claims are not observations (plan Q2)
 
@@ -71,7 +72,7 @@ def test_review_uses_injected_runner() -> None:
             '{"decision": "continue", "failure_class": "none", "reason": "ok", "confidence": 0.6}'
         )
 
-    decision = review(_records(), "test-model", runner=fake_runner)
+    decision, _ = review(_records(), "test-model", runner=fake_runner)
     assert decision.decision == "continue"
     assert seen["model"] == "test-model"
     assert "pytest -x" in seen["prompt"]
@@ -86,7 +87,10 @@ def test_review_cli_journals_shadow_decision(
 
     monkeypatch.setattr(
         "spotter.cli.review",
-        lambda records, model, window: ReviewerDecision("nudge", "exploration_loop", "loop", 0.9),
+        lambda records, model, window, constraints: (
+            ReviewerDecision("nudge", "exploration_loop", "loop", 0.9),
+            build(records),
+        ),
     )
     assert main(["review", "--session", "rv1"]) == 0
 
