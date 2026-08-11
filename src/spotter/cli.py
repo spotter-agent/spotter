@@ -7,6 +7,7 @@ import sys
 import tomllib
 from collections.abc import Sequence
 from contextlib import suppress
+from dataclasses import replace
 from fcntl import LOCK_EX, LOCK_NB, flock
 from pathlib import Path
 
@@ -58,6 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--window", type=int, default=40, help="review: trajectory tail size fed to the reviewer"
     )
     parser.add_argument("--pairs", type=int, default=1, help="experiment: counterfactual pairs")
+    parser.add_argument("--model", help="review/experiment: pin the Codex model")
     parser.add_argument(
         "--check", help="experiment: success command run in each fork worktree (exit 0 = pass)"
     )
@@ -65,6 +67,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--run",
         action="store_true",
         help="experiment: actually execute the 2*pairs agent runs (costs real tokens)",
+    )
+    parser.add_argument(
+        "--keep-artifacts",
+        action="store_true",
+        help="experiment: keep forked worktrees (rollouts are always retained)",
     )
     return parser
 
@@ -102,6 +109,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 pairs=args.pairs,
                 check=args.check,
                 run=args.run,
+                model=args.model,
+                keep_artifacts=args.keep_artifacts,
             )
         except (ReplayError, SnapshotError, OSError, subprocess.SubprocessError) as error:
             print(f"experiment failed: {error}", file=sys.stderr)
@@ -114,6 +123,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error("review requires --session")
         if config is None:
             config = SpotterConfig(MainAgentConfig("codex"), ReviewerConfig())
+        if args.model:
+            config = replace(config, reviewer=replace(config.reviewer, model=args.model))
         return _review_main(args.session, config, window=args.window)
     if args.command == "fork":
         if not args.session or args.step is None:

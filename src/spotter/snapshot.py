@@ -119,16 +119,36 @@ class StepJournal:
 
     def record(self, event: TraceEvent, snapshot: str | None = None) -> StepRecord:
         lock_path = self.path.with_suffix(self.path.suffix + ".lock")
+        state_path = self.path.with_suffix(self.path.suffix + ".state")
         with lock_path.open("w") as lock:
             flock(lock, LOCK_EX)
             try:
-                step = len(self.load(self.path, repair_tail=True)) if self.path.exists() else 0
-                record = StepRecord(step, event, snapshot)
+                state: dict[str, int] | None = None
+                if state_path.exists() and self.path.exists():
+                    try:
+                        candidate = json.loads(state_path.read_text())
+                        if candidate.get("size") == self.path.stat().st_size:
+                            state = candidate
+                    except (json.JSONDecodeError, OSError):
+                        pass
+                if state is None:
+                    records = self.load(self.path, repair_tail=True) if self.path.exists() else []
+                    state = {
+                        "steps": len(records),
+                        "proposals": sum(r.event.kind == "tool_proposal" for r in records),
+                    }
+                step = state["steps"]
+                payload = dict(event.payload)
+                if event.kind == "tool_proposal":
+                    state["proposals"] += 1
+                    payload["proposal_number"] = state["proposals"]
+                stored_event = TraceEvent(event.kind, payload)
+                record = StepRecord(step, stored_event, snapshot)
                 line = json.dumps(
                     {
                         "step": record.step,
-                        "kind": event.kind,
-                        "payload": event.payload,
+                        "kind": stored_event.kind,
+                        "payload": stored_event.payload,
                         "snapshot": snapshot,
                     },
                     ensure_ascii=False,
@@ -137,6 +157,11 @@ class StepJournal:
                     journal.write(line + "\n")
                     journal.flush()
                     os.fsync(journal.fileno())
+                state["steps"] += 1
+                state["size"] = self.path.stat().st_size
+                temporary = state_path.with_suffix(state_path.suffix + ".tmp")
+                temporary.write_text(json.dumps(state))
+                os.replace(temporary, state_path)
                 return record
             finally:
                 flock(lock, LOCK_UN)

@@ -1,4 +1,7 @@
 import json
+import subprocess
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -43,6 +46,8 @@ def test_results_carry_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
     assert meta["guidance"] == "look at the trace"
     assert meta["check"] == "pytest -q"
     assert meta["sandbox"] and meta["timeout"] and meta["started_at"]
+    assert meta["pairs"] == 1
+    assert rows[-1]["complete"] is True and rows[-1]["finished_at"]
     # every row is linked to its conditions via the experiment id
     assert all(row["experiment_id"] == meta["experiment_id"] for row in rows[1:])
     assert all(r.experiment_id == meta["experiment_id"] for r in results)
@@ -64,9 +69,12 @@ def test_results_path_is_traversal_safe() -> None:
 def test_arm_order_is_counterbalanced(monkeypatch: pytest.MonkeyPatch) -> None:
     """PR #15 review P1: control-always-first bakes order effects into results."""
     monkeypatch.setattr(experiment, "fork", _fake_fork({}))
+    monkeypatch.setattr("spotter.experiment.uuid.uuid4", lambda: uuid.UUID(int=0))
     prompts: list[str] = []
 
-    def record_prompt(s: str, w: str, prompt: str, *, sandbox: str, timeout: int) -> int:
+    def record_prompt(
+        s: str, w: str, prompt: str, *, sandbox: str, timeout: int, **kwargs: object
+    ) -> int:
         prompts.append(prompt)
         return 0
 
@@ -85,14 +93,15 @@ def test_empty_experiment_is_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_check_runs_in_each_fork_worktree(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(experiment, "fork", _fake_fork({}))
-    monkeypatch.setattr(experiment, "_run_arm", lambda s, w, p, *, sandbox, timeout: 0)
+    monkeypatch.setattr(experiment, "_run_arm", lambda *args, **kwargs: 0)
     checks: list[str] = []
 
     class FakeCompleted:
         returncode = 0
 
     def fake_subprocess_run(cmd: object, **kwargs: object) -> FakeCompleted:
-        checks.append(str(kwargs.get("cwd")))
+        if kwargs.get("cwd"):
+            checks.append(str(kwargs["cwd"]))
         return FakeCompleted()
 
     monkeypatch.setattr("spotter.experiment.subprocess.run", fake_subprocess_run)
@@ -135,17 +144,116 @@ def test_cadence_counts_proposals_not_journal_steps(monkeypatch: pytest.MonkeyPa
     assert all("review" in cmd for cmd in spawned)
 
 
+def test_cadence_is_atomic_under_concurrent_proposals(monkeypatch: pytest.MonkeyPatch) -> None:
+    spawned: list[list[str]] = []
+    monkeypatch.setattr(
+        "spotter.hook.subprocess.Popen", lambda cmd, **kw: spawned.append(list(cmd))
+    )
+    config = SpotterConfig(MainAgentConfig("codex"), ReviewerConfig(every_steps=2), GatesConfig())
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(lambda n: run_hook(_cadence_payload("PreToolUse", n), config), range(2)))
+    assert len(spawned) == 1
+
+
 def test_cadence_forwards_user_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """PR #15 review P0: the child must judge with the user's reviewer config."""
     spawned: list[list[str]] = []
     monkeypatch.setattr(
         "spotter.hook.subprocess.Popen", lambda cmd, **kw: spawned.append(list(cmd))
     )
-    config = SpotterConfig(MainAgentConfig("codex"), ReviewerConfig(every_steps=1), GatesConfig())
+    config = SpotterConfig(
+        MainAgentConfig("codex"), ReviewerConfig("custom-model", every_steps=1), GatesConfig()
+    )
     config_path = tmp_path / "spotter.toml"
     run_hook(_cadence_payload("PreToolUse", 0), config, config_path)
-    assert spawned and "--config" in spawned[0]
-    assert str(config_path) in spawned[0]
+    assert spawned and spawned[0][-2:] == ["--model", "custom-model"]
+
+
+def test_failed_agent_is_not_checked_or_counted_as_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(experiment, "fork", _fake_fork({}))
+    monkeypatch.setattr(experiment, "_run_arm", lambda *args, **kwargs: 1)
+    checks: list[tuple[object, ...]] = []
+
+    def record_check(*args: object, **kwargs: object) -> object:
+        checks.append(args)
+        return type("Completed", (), {"returncode": 0})()
+
+    monkeypatch.setattr("spotter.experiment.subprocess.run", record_check)
+    results = run_experiment("s1", 5, "hint", run=True, check="pytest -q")
+    assert all(result.check_exit is None for result in results)
+    assert "invalid agent run" in summarize(results)
+    assert not any(args and args[0] == "pytest -q" for args in checks)
+
+
+def test_timeout_does_not_abort_experiment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(experiment, "fork", _fake_fork({}))
+    calls = 0
+
+    def run(*args: object, **kwargs: object) -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise subprocess.TimeoutExpired("codex", 1)
+        return 0
+
+    monkeypatch.setattr(experiment, "_run_arm", run)
+    monkeypatch.setattr(experiment, "_cleanup", lambda worktree: None)
+    results = run_experiment("s1", 5, "hint", pairs=3, run=True)
+    assert len(results) == 6
+    assert [result.agent_exit for result in results].count(124) == 1
+
+
+def test_cleanup_is_best_effort_and_preserves_rollout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    rollout = tmp_path / "rollout.jsonl"
+    rollout.write_text("transcript")
+    monkeypatch.setattr(
+        "spotter.experiment.subprocess.run",
+        lambda *args, **kwargs: type("Completed", (), {"returncode": 1})(),
+    )
+    experiment._cleanup(str(worktree))
+    assert rollout.read_text() == "transcript"
+
+
+def test_summary_compares_complete_pairs() -> None:
+    rows = [
+        ArmResult("e", 0, "control", "s", "/wt", 0, 1),
+        ArmResult("e", 0, "guidance", "s", "/wt", 0, 0),
+        ArmResult("e", 1, "control", "s", "/wt", 124, None),
+        ArmResult("e", 1, "guidance", "s", "/wt", 0, 0),
+    ]
+    assert "n=1/2 complete; guidance better=1" in summarize(rows)
+
+
+def test_run_arm_forwards_model_and_codex_home(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    class Completed:
+        returncode = 0
+
+    def record_call(args: list[str], **kwargs: object) -> Completed:
+        calls.append((args, kwargs))
+        return Completed()
+
+    monkeypatch.setattr("spotter.experiment.subprocess.run", record_call)
+    experiment._run_arm(
+        "fork",
+        "/wt",
+        "go",
+        sandbox="workspace-write",
+        timeout=1,
+        model="gpt-test",
+        codex_home=tmp_path,
+    )
+    assert calls[0][0][4:6] == ["--model", "gpt-test"]
+    assert calls[0][1]["env"]["CODEX_HOME"] == str(tmp_path)  # type: ignore[index]
 
 
 def test_cadence_recursion_guard(monkeypatch: pytest.MonkeyPatch) -> None:

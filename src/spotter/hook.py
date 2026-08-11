@@ -26,9 +26,12 @@ class JournalAdapter:
     def __init__(self, journal: StepJournal) -> None:
         self.journal = journal
         self.next_snapshot: str | None = None
+        self.last_proposal_number = 0
 
     def record(self, event: TraceEvent) -> None:
-        self.journal.record(event, snapshot=self.next_snapshot)
+        record = self.journal.record(event, snapshot=self.next_snapshot)
+        if event.kind == "tool_proposal":
+            self.last_proposal_number = int(record.event.payload["proposal_number"])
         self.next_snapshot = None  # attaches to the first (proposal) event only
 
 
@@ -102,7 +105,7 @@ def _maybe_spawn_shadow_review(
     config: SpotterConfig,
     payload: dict[str, Any],
     journal_file: Path,
-    config_path: Path | None,
+    proposal_number: int,
 ) -> None:
     """Fire-and-forget shadow review every N *proposals* (Wink-style cadence).
 
@@ -116,25 +119,36 @@ def _maybe_spawn_shadow_review(
     every = config.reviewer.every_steps
     if not every or os.environ.get("SPOTTER_DISABLE"):
         return
-    proposals = sum(1 for r in StepJournal.load(journal_file) if r.event.kind == "tool_proposal")
-    if proposals == 0 or proposals % every:
+    if proposal_number == 0 or proposal_number % every:
         return
     session = str(payload.get("session_id") or "")
     if not session:
         return
-    args = [sys.executable, "-m", "spotter", "review", "--session", session]
-    if config_path is not None:
-        args += ["--config", str(config_path)]  # child must judge with the user's config
+    args = [
+        sys.executable,
+        "-m",
+        "spotter",
+        "review",
+        "--session",
+        session,
+        "--model",
+        config.reviewer.model,
+    ]
     logs = spotter_home() / "logs"
     logs.mkdir(parents=True, exist_ok=True)
     with (logs / f"review-{sanitize_session(session)}.log").open("ab") as log:
-        subprocess.Popen(
-            args,
-            env={**os.environ, "SPOTTER_DISABLE": "1"},
-            stdout=log,
-            stderr=log,
-            start_new_session=True,
-        )
+        try:
+            subprocess.Popen(
+                args,
+                env={**os.environ, "SPOTTER_DISABLE": "1"},
+                stdout=log,
+                stderr=log,
+                start_new_session=True,
+            )
+        except OSError as error:
+            StepJournal(journal_file).record(
+                TraceEvent("reviewer_error", {"error": f"review process failed: {error}"[:300]})
+            )
 
 
 def run_hook(
@@ -170,7 +184,7 @@ def run_hook(
     else:
         decision = runtime.observe(event)
     if event.kind == "tool_proposal":
-        _maybe_spawn_shadow_review(config, payload, journal_file, config_path)
+        _maybe_spawn_shadow_review(config, payload, journal_file, adapter.last_proposal_number)
     if decision.allowed:
         return None  # implicit allow; stay silent on the happy path
     return json.dumps(
