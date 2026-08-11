@@ -5,7 +5,7 @@ import pytest
 from spotter.cli import main
 from spotter.hook import journal_path
 from spotter.labels import LabelError, add_label, labels_path, load_labels, matches
-from spotter.metrics import MIN_SAMPLES, Tally, tally_session
+from spotter.metrics import MIN_SAMPLES, Tally, merge, tally_session
 from spotter.snapshot import StepJournal, StepRecord
 from spotter.trace import TraceEvent
 
@@ -34,37 +34,97 @@ def _flagged(n: int) -> list[TraceEvent]:
 def test_labels_never_enter_the_journal() -> None:
     """The reviewer reads the journal; labels there would feed it its own
     report card, and would shift step numbers forks point at."""
-    records = _journal("s1", [TraceEvent("tool_proposal", {"command": "x"})])
-    add_label("s1", 0, "fp", "quoted text", records)
+    records = _journal("s1", _flagged(1))
+    add_label("s1", 1, "fp", "quoted text", records)
     after = StepJournal.load(journal_path({"session_id": "s1"}))
-    assert [r.event.kind for r in after] == ["tool_proposal"]
+    assert [r.event.kind for r in after] == ["tool_proposal", "gate_shadow_block"]
     assert labels_path("s1").exists()
 
 
 def test_latest_label_wins() -> None:
-    records = _journal("s1", [TraceEvent("tool_proposal", {"command": "x"})])
-    add_label("s1", 0, "tp", "first call", records)
-    add_label("s1", 0, "fp", "on reflection", records)
-    assert load_labels("s1")[0].verdict == "fp"
+    records = _journal("s1", _flagged(1))
+    add_label("s1", 1, "tp", "first call", records)
+    add_label("s1", 1, "fp", "on reflection", records)
+    assert load_labels("s1")[1].verdict == "fp"
 
 
 def test_verdict_vocabulary_is_enforced_per_target() -> None:
-    records = _journal("s1", [TraceEvent("tool_proposal", {})])
+    records = _journal("s1", _flagged(1))
     with pytest.raises(LabelError, match="verdict must be one of"):
-        add_label("s1", 0, "visible", "", records)  # session verdict on a step
+        add_label("s1", 1, "visible", "", records)  # session verdict on a step
     with pytest.raises(LabelError, match="verdict must be one of"):
         add_label("s1", None, "tp", "", records)  # step verdict on a session
     with pytest.raises(LabelError, match="out of range"):
         add_label("s1", 99, "tp", "", records)
 
 
+def test_only_scored_records_accept_labels() -> None:
+    """PR #17 review P1: a label metrics will never read must not report success."""
+    records = _journal(
+        "s1",
+        [
+            TraceEvent("tool_proposal", {"command": "x"}),
+            TraceEvent("gate_shadow_block", {"rule": "r"}),
+            TraceEvent("reviewer_decision", {"decision": "continue"}),
+        ],
+    )
+    with pytest.raises(LabelError, match="only .* are scored"):
+        add_label("s1", 0, "fp", "", records)  # tool_proposal is not scored
+    with pytest.raises(LabelError, match="silence is not scored"):
+        add_label("s1", 2, "tp", "", records)  # CONTINUE is never counted
+    add_label("s1", 1, "fp", "", records)  # the gate flag is fine
+
+
 def test_label_goes_stale_when_its_target_changes() -> None:
-    records = _journal("s1", [TraceEvent("tool_proposal", {"command": "original"})])
-    add_label("s1", 0, "fp", "", records)
-    label = load_labels("s1")[0]
+    records = _journal("s1", _flagged(1))
+    add_label("s1", 1, "fp", "", records)
+    label = load_labels("s1")[1]
     assert matches(label, records)
-    drifted = _journal("s2", [TraceEvent("tool_proposal", {"command": "different"})])
+    drifted = _journal("s2", [TraceEvent("tool_proposal", {}), TraceEvent("gate_shadow_block", {})])
     assert not matches(label, drifted)
+
+
+def test_session_label_goes_stale_when_the_trajectory_grows() -> None:
+    """PR #17 review P1: a ceiling verdict judges the whole trajectory, so it
+    cannot stay current while that trajectory keeps growing."""
+    records = _journal("s1", _flagged(1))
+    add_label("s1", None, "visible", "", records)
+    label = load_labels("s1")[None]
+    assert matches(label, records)
+    grown = _journal("s1", [TraceEvent("tool_proposal", {"command": "later"})])
+    assert not matches(label, grown)
+
+
+def test_corrupt_label_line_raises_instead_of_reviving_the_old_verdict() -> None:
+    """PR #17 review P1: silently skipping a torn correction reinstates the
+    verdict the labeler had just rejected."""
+    records = _journal("s1", _flagged(1))
+    add_label("s1", 1, "tp", "first", records)
+    with labels_path("s1").open("a", encoding="utf-8") as sink:
+        sink.write('{"session": "s1", "step": 1, "verdict": "fp"')  # torn correction
+    with pytest.raises(LabelError, match="unreadable"):
+        load_labels("s1")
+
+
+def test_ceiling_denominator_counts_every_examined_session() -> None:
+    """PR #17 review P0: counting only labeled sessions reports 1/1 coverage
+    after judging one session out of many."""
+    labeled = _journal("s1", _flagged(1))
+    add_label("s1", None, "visible", "", labeled)
+    unlabeled = _journal("s2", _flagged(1))
+    _, _, judged = tally_session("s1", labeled)
+    _, _, unjudged = tally_session("s2", unlabeled)
+    combined = merge(judged, unjudged)
+    assert combined.total == 2 and combined.labeled == 1
+
+
+def test_na_disposes_of_sessions_without_a_failure() -> None:
+    records = _journal("s1", _flagged(1))
+    add_label("s1", None, "na", "no failure in this session", records)
+    _, _, ceiling = tally_session("s1", records)
+    assert ceiling.labeled == 1 and ceiling.not_applicable == 1
+    assert ceiling.positive == 0 and ceiling.negative == 0
+    assert "n/a" in ceiling.rate_line("sessions", "visible")
 
 
 def test_stale_labels_are_not_counted_as_evidence() -> None:
@@ -94,7 +154,9 @@ def test_rate_is_withheld_below_minimum_samples() -> None:
     for step in (1, 3):
         add_label("s1", step, "fp", "", records)
     gates, _, _ = tally_session("s1", records)
-    line = gates["git_reset_hard"].rate_line("git_reset_hard", "true-positive")
+    line = gates["git_reset_hard"].rate_line(
+        "git_reset_hard", "false-positive", count_negative=True
+    )
     assert "too few decided labels" in line
     assert "%" not in line  # no headline number from two samples
 
@@ -105,14 +167,20 @@ def test_rate_is_marked_provisional_until_coverage_is_complete() -> None:
     for step in flag_steps[:MIN_SAMPLES]:
         add_label("s1", step, "fp", "", records)
     gates, _, _ = tally_session("s1", records)
-    line = gates["git_reset_hard"].rate_line("git_reset_hard", "true-positive")
+    line = gates["git_reset_hard"].rate_line(
+        "git_reset_hard", "false-positive", count_negative=True
+    )
     assert "provisional" in line and f"{MIN_SAMPLES}/{MIN_SAMPLES + 2} labeled" in line
 
     for step in flag_steps[MIN_SAMPLES:]:
         add_label("s1", step, "fp", "", records)
     gates, _, _ = tally_session("s1", records)
-    complete = gates["git_reset_hard"].rate_line("git_reset_hard", "true-positive")
-    assert "provisional" not in complete and "true-positive 0%" in complete
+    complete = gates["git_reset_hard"].rate_line(
+        "git_reset_hard", "false-positive", count_negative=True
+    )
+    # all seven labels were fp: the gate report must show 100% false positives,
+    # not the 0% true-positive share the old wording printed (PR #17 review P2)
+    assert "provisional" not in complete and "false-positive 100%" in complete
 
 
 def test_unclear_labels_count_as_coverage_but_not_as_a_verdict() -> None:
@@ -134,6 +202,22 @@ def test_cli_label_and_metrics_roundtrip(capsys: pytest.CaptureFixture[str]) -> 
 
 
 def test_cli_label_rejects_bad_verdict(capsys: pytest.CaptureFixture[str]) -> None:
-    _journal("s1", [TraceEvent("tool_proposal", {})])
-    assert main(["label", "--session", "s1", "--step", "0", "--verdict", "nope"]) == 1
+    _journal("s1", _flagged(1))
+    assert main(["label", "--session", "s1", "--step", "1", "--verdict", "nope"]) == 1
     assert "verdict must be one of" in capsys.readouterr().err
+
+
+def test_cli_rejects_session_ids_that_collide_after_sanitizing() -> None:
+    """PR #17 review P1: 'a/b' and 'a_b' must not share one label file."""
+    for bad in ("a/b", "../../outside", "with space"):
+        with pytest.raises(SystemExit):
+            main(["label", "--session", bad, "--step", "1", "--verdict", "fp"])
+
+
+def test_cli_metrics_aborts_on_unreadable_labels(capsys: pytest.CaptureFixture[str]) -> None:
+    records = _journal("s1", _flagged(1))
+    add_label("s1", 1, "fp", "", records)
+    with labels_path("s1").open("a", encoding="utf-8") as sink:
+        sink.write("{torn")
+    assert main(["metrics", "--session", "s1"]) == 1
+    assert "metrics aborted" in capsys.readouterr().err

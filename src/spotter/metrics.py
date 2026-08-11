@@ -22,28 +22,36 @@ class Tally:
     positive: int = 0  # tp for gates/reviewer, "visible" for ceiling
     negative: int = 0
     unclear: int = 0
+    not_applicable: int = 0  # session had no failure to see
     stale: int = 0
 
     def plus(self, verdict: str | None, *, stale: bool = False) -> "Tally":
+        counted = verdict is not None and not stale
         return Tally(
-            labeled=self.labeled + (verdict is not None and not stale),
+            labeled=self.labeled + counted,
             total=self.total + 1,
-            positive=self.positive + (verdict in ("tp", "visible") and not stale),
-            negative=self.negative + (verdict in ("fp", "invisible") and not stale),
-            unclear=self.unclear + (verdict == "unclear" and not stale),
+            positive=self.positive + (counted and verdict in ("tp", "visible")),
+            negative=self.negative + (counted and verdict in ("fp", "invisible")),
+            unclear=self.unclear + (counted and verdict == "unclear"),
+            not_applicable=self.not_applicable + (counted and verdict == "na"),
             stale=self.stale + stale,
         )
 
-    def rate_line(self, name: str, positive_name: str) -> str:
+    def rate_line(self, name: str, measure: str, *, count_negative: bool = False) -> str:
+        """One reported rate. `measure` must name what is counted — a header
+        that says false positives while printing the true-positive share
+        points the reader's decision the wrong way."""
         decided = self.positive + self.negative
         coverage = f"{self.labeled}/{self.total} labeled"
+        if self.not_applicable:
+            coverage += f", {self.not_applicable} n/a"
         if self.stale:
             coverage += f", {self.stale} stale"
         if decided < MIN_SAMPLES:
             return f"{name}: {coverage} — too few decided labels ({decided}) to state a rate"
-        rate = self.positive / decided
+        rate = (self.negative if count_negative else self.positive) / decided
         qualifier = "" if self.labeled == self.total else " (provisional: coverage incomplete)"
-        return f"{name}: {positive_name} {rate:.0%} of {decided} decided; {coverage}{qualifier}"
+        return f"{name}: {measure} {rate:.0%} of {decided} decided; {coverage}{qualifier}"
 
 
 def _verdict(
@@ -76,9 +84,11 @@ def tally_session(session: str, records: list[StepRecord]) -> tuple[dict[str, Ta
                 continue
             verdict, stale = _verdict(labels, records, record.step)
             reviewer = reviewer.plus(verdict, stale=stale)
-    if None in labels:
-        verdict, _ = _verdict(labels, records, None)
-        ceiling = ceiling.plus(verdict)
+    # Every examined session is in the ceiling denominator, labeled or not.
+    # Counting only labeled sessions would report 1/1 coverage after judging
+    # one session out of a hundred.
+    verdict, stale = _verdict(labels, records, None)
+    ceiling = ceiling.plus(verdict, stale=stale)
     return gates, reviewer, ceiling
 
 
@@ -89,5 +99,6 @@ def merge(left: Tally, right: Tally) -> Tally:
         positive=left.positive + right.positive,
         negative=left.negative + right.negative,
         unclear=left.unclear + right.unclear,
+        not_applicable=left.not_applicable + right.not_applicable,
         stale=left.stale + right.stale,
     )

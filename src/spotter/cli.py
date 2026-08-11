@@ -17,7 +17,7 @@ from spotter.core import SpotterRuntime
 from spotter.experiment import results_path, run_experiment, summarize
 from spotter.gates import Gate
 from spotter.hook import journal_path, run_hook
-from spotter.labels import LabelError, add_label
+from spotter.labels import LabelError, add_label, valid_session
 from spotter.metrics import Tally, merge, tally_session
 from spotter.replay import ReplayError, fork, plan_to_json
 from spotter.reviewer import review
@@ -108,6 +108,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     config = _load_config(parser, args.config)
+    # One boundary check for every command that names a session: sanitizing
+    # instead of rejecting maps distinct ids onto one file ("a/b" -> "a_b").
+    if args.session is not None and not valid_session(args.session):
+        parser.error(f"--session {args.session!r} is not a valid session id")
 
     if args.command == "hook":
         return _hook_main(config, args.config)
@@ -337,7 +341,11 @@ def _metrics_main(session: str | None) -> int:
         except SnapshotError as error:
             print(f"{journal.stem}: unreadable journal ({error})", file=sys.stderr)
             continue
-        session_gates, session_reviewer, session_ceiling = tally_session(journal.stem, records)
+        try:
+            session_gates, session_reviewer, session_ceiling = tally_session(journal.stem, records)
+        except LabelError as error:
+            print(f"metrics aborted: {error}", file=sys.stderr)
+            return 1
         for rule, tally in session_gates.items():
             gates[rule] = merge(gates.get(rule, Tally()), tally)
         reviewer = merge(reviewer, session_reviewer)
@@ -347,7 +355,7 @@ def _metrics_main(session: str | None) -> int:
     if not gates:
         print("  no gate flags recorded")
     for rule, tally in sorted(gates.items()):
-        print("  " + tally.rate_line(rule, "true-positive"))
+        print("  " + tally.rate_line(rule, "false-positive", count_negative=True))
     print("P4 reviewer precision (label each verify/nudge tp|fp):")
     print("  " + reviewer.rate_line("interventions", "correct"))
     print("P1 observability ceiling (label failed sessions visible|invisible):")

@@ -27,7 +27,14 @@ from spotter.hook import sanitize_session, spotter_home
 from spotter.snapshot import StepRecord
 
 STEP_VERDICTS = ("tp", "fp", "unclear")
-SESSION_VERDICTS = ("visible", "invisible", "unclear")
+# "na" disposes of a session that had no failure to see — without it the
+# ceiling denominator can never reach full coverage, and a metric whose
+# coverage cannot be completed is a metric nobody will ever trust.
+SESSION_VERDICTS = ("visible", "invisible", "unclear", "na")
+
+# Only records metrics actually scores may be labeled. Accepting a label on
+# anything else prints success and then silently discards the judgment.
+LABELABLE_KINDS = ("gate_shadow_block", "gate_block", "reviewer_decision")
 
 
 class LabelError(ValueError):
@@ -57,6 +64,17 @@ def fingerprint(record: StepRecord) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
+def session_fingerprint(records: list[StepRecord]) -> str:
+    """Identity of a whole trajectory.
+
+    A ceiling verdict is a judgment about the trajectory as a whole, so it
+    must go stale when the trajectory grows — label sessions once they are
+    finished, not while they are still running.
+    """
+    tail = fingerprint(records[-1]) if records else "empty"
+    return f"session:{len(records)}:{tail}"
+
+
 def add_label(
     session: str, step: int | None, verdict: str, note: str, records: list[StepRecord]
 ) -> Label:
@@ -64,11 +82,18 @@ def add_label(
     if verdict not in allowed:
         raise LabelError(f"verdict must be one of {allowed} for this target")
     if step is None:
-        mark = "session"
+        mark = session_fingerprint(records)
     else:
         if not 0 <= step < len(records):
             raise LabelError(f"step {step} out of range (journal has {len(records)} steps)")
-        mark = fingerprint(records[step])
+        target = records[step]
+        if target.event.kind not in LABELABLE_KINDS:
+            raise LabelError(
+                f"step {step} is {target.event.kind}; only {LABELABLE_KINDS} are scored"
+            )
+        if target.event.payload.get("decision") == "continue":
+            raise LabelError(f"step {step} is a CONTINUE verdict; silence is not scored")
+        mark = fingerprint(target)
     label = Label(session, step, verdict, mark, note, datetime.now(UTC).isoformat())
     with labels_path(session).open("a", encoding="utf-8") as sink:
         sink.write(json.dumps(asdict(label), ensure_ascii=False) + "\n")
@@ -76,13 +101,17 @@ def add_label(
 
 
 def load_labels(session: str) -> dict[int | None, Label]:
-    """Latest label wins per target; corrupt lines are skipped loudly enough
-    to be visible in coverage counts rather than silently dropped."""
+    """Latest label wins per target.
+
+    A corrupt line raises. Skipping it would resurrect the verdict it was
+    meant to overwrite: a torn write on a correction silently reinstates the
+    judgment the labeler had just rejected, which is worse than no data.
+    """
     path = labels_path(session)
     labels: dict[int | None, Label] = {}
     if not path.exists():
         return labels
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         if not line.strip():
             continue
         try:
@@ -95,8 +124,11 @@ def load_labels(session: str) -> dict[int | None, Label]:
                 note=str(raw.get("note") or ""),
                 labeled_at=str(raw.get("labeled_at") or ""),
             )
-        except (json.JSONDecodeError, KeyError, TypeError):
-            continue
+        except (json.JSONDecodeError, KeyError, TypeError) as error:
+            raise LabelError(
+                f"{path.name} line {number} is unreadable ({error}); "
+                "a dropped correction would revive the verdict it replaced"
+            ) from error
         labels[label.step] = label
     return labels
 
@@ -109,9 +141,9 @@ def sessions_with_labels() -> list[str]:
 
 
 def matches(label: Label, records: list[StepRecord]) -> bool:
-    """False when the label has drifted off the record it was applied to."""
+    """False when the label has drifted off what it was applied to."""
     if label.step is None:
-        return True
+        return session_fingerprint(records) == label.fingerprint
     if not 0 <= label.step < len(records):
         return False
     return fingerprint(records[label.step]) == label.fingerprint
