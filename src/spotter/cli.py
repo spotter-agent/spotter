@@ -13,6 +13,7 @@ from spotter.core import SpotterRuntime
 from spotter.gates import Gate
 from spotter.hook import journal_path, run_hook
 from spotter.replay import ReplayError, fork, plan_to_json
+from spotter.reviewer import review
 from spotter.snapshot import (
     SnapshotError,
     StepJournal,
@@ -29,12 +30,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "command",
         nargs="?",
-        choices=["observe", "hook", "analyze", "fork", "prune"],
+        choices=["observe", "hook", "analyze", "fork", "prune", "review"],
         default="observe",
         help=(
             "observe: validate config and start; hook: Codex hook bridge (JSON on stdin); "
             "analyze: summarize journaled sessions; fork: branch a session at a step; "
-            "prune: drop unreferenced refs/spotter snapshots (dry-run without --apply)"
+            "prune: drop unreferenced refs/spotter snapshots (dry-run without --apply); "
+            "review: run the shadow reviewer on a session (records only, injects nothing)"
         ),
     )
     parser.add_argument("--config", type=Path, help="path to Spotter TOML config")
@@ -46,6 +48,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--guidance", help="course-correction text for the forked run (fork)")
     parser.add_argument(
         "--apply", action="store_true", help="prune: actually delete (default is dry-run)"
+    )
+    parser.add_argument(
+        "--window", type=int, default=40, help="review: trajectory tail size fed to the reviewer"
     )
     return parser
 
@@ -70,6 +75,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _analyze_main(args.session)
     if args.command == "prune":
         return _prune_main(args.repo or Path.cwd(), apply=args.apply)
+    if args.command == "review":
+        if not args.session:
+            parser.error("review requires --session")
+        if config is None:
+            config = SpotterConfig(MainAgentConfig("codex"), ReviewerConfig())
+        return _review_main(args.session, config, window=args.window)
     if args.command == "fork":
         if not args.session or args.step is None:
             parser.error("fork requires --session and --step")
@@ -156,6 +167,44 @@ def _trigger_for(records: list[StepRecord], flagged: StepRecord) -> dict[str, ob
     if flagged.step > 0:
         return records[flagged.step - 1].event.payload
     return {}
+
+
+def _review_main(session: str, config: SpotterConfig, *, window: int) -> int:
+    """Shadow reviewer: judge the trajectory tail, journal the verdict, inject
+    nothing. Injection rights are earned later via labeling + fork pairs."""
+    journal_file = journal_path({"session_id": session})
+    try:
+        records = StepJournal.load(journal_file)
+    except (OSError, SnapshotError) as error:
+        print(f"review failed: {error}", file=sys.stderr)
+        return 1
+    if not records:
+        print("review failed: empty journal", file=sys.stderr)
+        return 1
+    try:
+        decision = review(records, config.reviewer.model, window=window)
+    except Exception as error:  # noqa: BLE001 — reviewer failure must stay observable, not fatal
+        print(f"review failed: {error}", file=sys.stderr)
+        return 1
+    StepJournal(journal_file).record(
+        TraceEvent(
+            "reviewer_decision",
+            {
+                "decision": decision.decision,
+                "failure_class": decision.failure_class,
+                "reason": decision.reason,
+                "confidence": decision.confidence,
+                "model": config.reviewer.model,
+                "reviewed_upto": records[-1].step,
+                "shadow": True,
+            },
+        )
+    )
+    print(
+        f"[shadow] {decision.decision} ({decision.failure_class}, "
+        f"conf={decision.confidence:.2f}): {decision.reason}"
+    )
+    return 0
 
 
 def _prune_main(repo: Path, *, apply: bool) -> int:

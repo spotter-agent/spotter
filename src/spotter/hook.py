@@ -74,6 +74,10 @@ def event_from_hook(payload: dict[str, Any]) -> TraceEvent:
                 "tool_response": payload.get("tool_response"),
             },
         )
+    if name == "UserPromptSubmit":
+        # The goal is the reviewer's anchor for spec-drift judgment; without it
+        # the digest has actions but no intent.
+        return TraceEvent("user_prompt", {"prompt": payload.get("prompt")})
     return TraceEvent(str(name or "unknown").lower())
 
 
