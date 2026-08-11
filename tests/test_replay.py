@@ -182,3 +182,25 @@ def test_fork_rejects_non_proposal_steps(codex_home: Path) -> None:
     _journal(OLD_ID, [(TraceEvent("tool_result"), None)])
     with pytest.raises(ReplayError, match="fork at a tool_proposal"):
         fork(OLD_ID, 0, codex_home=codex_home)
+
+
+def test_fork_rollout_matches_event_msg_item_ids(codex_home: Path) -> None:
+    """Real hooks journal harness ids (exec-…) that appear as event_msg
+    payload.item.id, not response_item call_id — both must match."""
+    rollout = next((codex_home / "sessions").rglob("*.jsonl"))
+    lines = rollout.read_text().splitlines()
+    lines.append(
+        json.dumps(
+            {
+                "ordinal": 4,
+                "type": "event_msg",
+                "payload": {
+                    "type": "item_completed",
+                    "item": {"id": "exec-1234", "type": "FileChange"},
+                },
+            }
+        )
+    )
+    rollout.write_text("\n".join(lines) + "\n")
+    forked = fork_rollout(rollout, "exec-1234", "new-id")
+    assert len(forked.read_text().splitlines()) == 4  # cut before the event_msg

@@ -11,8 +11,11 @@ Mechanism (approximate replay, the plan's fallback path):
    the pair is a same-prefix counterfactual (plan Q3).
 
 Honest limits, stated rather than papered over:
-- Whether `codex exec resume` accepts a truncated rollout is UNVERIFIED until
-  the first real run; that experiment IS the P0 exit criterion.
+- Resume compatibility VERIFIED 2026-08-11: `codex exec resume` accepted a
+  truncated rollout (fork of a real 104-step session at step 98). The agent
+  located its context at the branch point and reported the cut call as "my
+  last action was interrupted" — the exact branch semantics wanted. The cut
+  leaves one dangling call; Codex logs a warning and proceeds.
 - Sessions journaled before snapshots/tool_use_id existed cannot be forked;
   the errors below say exactly which ingredient is missing.
 - This does not execute anything itself: launching costs money and runs an
@@ -72,7 +75,7 @@ def fork_rollout(rollout: Path, call_id: str, new_id: str) -> Path:
         raise ReplayError("rollout has no session_meta session_id on line 1")
     cut = None
     for index, line in enumerate(lines[1:], 1):
-        if _call_id(_rollout_record(line, index + 1)) == call_id:
+        if call_id in _record_ids(_rollout_record(line, index + 1)):
             cut = index
             break
     if cut is None:
@@ -156,9 +159,27 @@ def _rollout_record(line: str, number: int) -> dict[str, object]:
     return record
 
 
-def _call_id(record: dict[str, object]) -> object:
+def _record_ids(record: dict[str, object]) -> set[object]:
+    """Ids under which a tool call appears in a rollout record.
+
+    The hook's tool_use_id surfaces as event_msg payload.item.id (harness id),
+    while response_item records carry the model-level payload.call_id — the
+    branch cut happens at whichever mentions the id first.
+
+    ponytail: cutting at the first *mention* can leave the proposal of the
+    branch call in history when only a completion event carries the id.
+    Good enough for the resume-compat experiment; tighten to turn boundaries
+    if resumed agents visibly double-apply the branch step.
+    """
     payload = record.get("payload")
-    return payload.get("call_id") if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+        return set()
+    ids: set[object] = {payload.get("call_id")}
+    item = payload.get("item")
+    if isinstance(item, dict):
+        ids.add(item.get("id"))
+    ids.discard(None)
+    return ids
 
 
 def _nearest_snapshot(records: list[StepRecord], step: int) -> str | None:
