@@ -1,4 +1,5 @@
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -90,8 +91,27 @@ def test_journal_tolerates_torn_tail_but_rejects_reordering(tmp_path: Path) -> N
     with path.open("a") as f:
         f.write('{"step": 1, "kind": "torn"')  # crash mid-write
     assert len(StepJournal.load(path)) == 1  # valid prefix survives
+    resumed = StepJournal(path)
+    resumed.record(TraceEvent("after_resume"))
+    assert [r.event.kind for r in StepJournal.load(path)] == ["session_start", "after_resume"]
 
     bad = tmp_path / "bad.jsonl"
     bad.write_text('{"step": 5, "kind": "x", "payload": {}, "snapshot": null}\n')
     with pytest.raises(SnapshotError, match="mismatch"):
         StepJournal.load(bad)
+
+    corrupt = tmp_path / "corrupt.jsonl"
+    corrupt.write_text('{"step": 0, bad}\n')
+    with pytest.raises(SnapshotError, match="invalid journal record"):
+        StepJournal(corrupt).record(TraceEvent("later"))
+
+
+def test_concurrent_journal_writes_keep_unique_steps(tmp_path: Path) -> None:
+    path = tmp_path / "journal.jsonl"
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(
+            pool.map(
+                lambda i: StepJournal(path).record(TraceEvent("event", {"i": i})), range(20)
+            )
+        )
+    assert [r.step for r in StepJournal.load(path)] == list(range(20))

@@ -69,6 +69,48 @@ def test_file_paths_extracted_from_tool_input() -> None:
     assert event.payload["files"] == ["src/a.py", "src/b.py"]
 
 
+def test_apply_patch_paths_are_gated() -> None:
+    payload = {
+        **_payload("*** Begin Patch\n*** Update File: pyproject.toml\n*** End Patch"),
+        "tool_name": "apply_patch",
+    }
+    config = SpotterConfig(
+        MainAgentConfig("codex"),
+        ReviewerConfig(),
+        GatesConfig(block_dependency_changes=True),
+        observation_only=False,
+    )
+    assert "dependency_change" in (run_hook(payload, config) or "")
+
+    payload["tool_input"] = {
+        "command": (
+            "*** Begin Patch\n*** Update File: src/key\n"
+            "*** Move to: secrets/key\n*** End Patch"
+        )
+    }
+    forbidden = SpotterConfig(
+        MainAgentConfig("codex"),
+        ReviewerConfig(),
+        GatesConfig(forbidden_paths=("secrets/*",)),
+        observation_only=False,
+    )
+    assert "forbidden_path" in (run_hook(payload, forbidden) or "")
+
+
+def test_post_tool_use_preserves_evidence() -> None:
+    event = event_from_hook(
+        {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "tool_use_id": "call-1",
+            "tool_input": {"command": "pytest"},
+            "tool_response": {"exit_code": 1, "output": "failed"},
+        }
+    )
+    assert event.payload["tool_use_id"] == "call-1"
+    assert event.payload["tool_response"] == {"exit_code": 1, "output": "failed"}
+
+
 def test_unknown_events_still_journal(spotter_home: Path) -> None:
     payload = {"hook_event_name": "SessionStart", "session_id": "s2"}
     assert run_hook(payload, _config(observation_only=True)) is None

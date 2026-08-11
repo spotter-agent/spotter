@@ -13,6 +13,7 @@ import os
 import subprocess
 import tempfile
 from dataclasses import dataclass
+from fcntl import LOCK_EX, LOCK_UN, flock
 from pathlib import Path
 from typing import Any
 
@@ -89,36 +90,52 @@ class StepJournal:
 
     def __init__(self, path: Path) -> None:
         self.path = path
-        # Resuming onto an existing journal must not restart step numbering —
-        # duplicate step ids would poison every later prefix computation.
-        self._steps = len(self.load(path)) if path.exists() else 0
 
     def record(self, event: TraceEvent, snapshot: str | None = None) -> StepRecord:
-        record = StepRecord(self._steps, event, snapshot)
-        line = json.dumps(
-            {
-                "step": record.step,
-                "kind": event.kind,
-                "payload": event.payload,
-                "snapshot": snapshot,
-            },
-            ensure_ascii=False,
-        )
-        with self.path.open("a", encoding="utf-8") as journal:
-            journal.write(line + "\n")
-        self._steps += 1
-        return record
+        lock_path = self.path.with_suffix(self.path.suffix + ".lock")
+        with lock_path.open("w") as lock:
+            flock(lock, LOCK_EX)
+            try:
+                step = len(self.load(self.path, repair_tail=True)) if self.path.exists() else 0
+                record = StepRecord(step, event, snapshot)
+                line = json.dumps(
+                    {
+                        "step": record.step,
+                        "kind": event.kind,
+                        "payload": event.payload,
+                        "snapshot": snapshot,
+                    },
+                    ensure_ascii=False,
+                )
+                with self.path.open("a", encoding="utf-8") as journal:
+                    journal.write(line + "\n")
+                    journal.flush()
+                    os.fsync(journal.fileno())
+                return record
+            finally:
+                flock(lock, LOCK_UN)
 
     @staticmethod
-    def load(path: Path) -> list[StepRecord]:
+    def load(path: Path, *, repair_tail: bool = False) -> list[StepRecord]:
         records: list[StepRecord] = []
-        with path.open(encoding="utf-8") as journal:
-            for line in journal:
+        with path.open("r+" if repair_tail else "r", encoding="utf-8") as journal:
+            while True:
+                line_start = journal.tell()
+                line = journal.readline()
+                if not line:
+                    break
                 if not line.strip():
                     continue  # tolerate a torn trailing write; keep the prefix
                 try:
                     raw: dict[str, Any] = json.loads(line)
                 except json.JSONDecodeError:
+                    if line.endswith("\n"):
+                        raise SnapshotError(
+                            f"invalid journal record at byte {line_start}"
+                        ) from None
+                    if repair_tail:
+                        journal.seek(line_start)
+                        journal.truncate()
                     break  # crash mid-write leaves a bad tail; the prefix is still valid
                 step = len(records)
                 if raw.get("step") != step:

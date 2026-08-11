@@ -25,6 +25,13 @@ class SpotterRuntime:
         decision = self.gate.check(event)
         self.adapter.record(event)
         if decision.allowed:
+            if decision.rule:
+                self.adapter.record(
+                    TraceEvent(
+                        "gate_fail_open",
+                        {"rule": decision.rule, "reason": decision.reason},
+                    )
+                )
             return decision
         if self.config.observation_only:
             self.adapter.record(

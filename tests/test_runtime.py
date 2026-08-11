@@ -42,3 +42,10 @@ def test_active_mode_enforces_gate_block() -> None:
 
     assert not decision.allowed
     assert [e.kind for e in adapter.events] == ["tool_proposal", "gate_block"]
+
+
+def test_fail_open_blind_spot_is_recorded() -> None:
+    runtime, adapter = _runtime(observation_only=True)
+    runtime.observe(TraceEvent("tool_proposal", {"command": "echo 'unterminated"}))
+    assert [e.kind for e in adapter.events] == ["tool_proposal", "gate_fail_open"]
+    assert adapter.events[-1].payload["rule"] == "unparseable_command"

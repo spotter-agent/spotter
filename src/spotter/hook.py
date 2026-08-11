@@ -17,6 +17,8 @@ from spotter.gates import Gate
 from spotter.snapshot import StepJournal
 from spotter.trace import TraceEvent
 
+_PATCH_PATH = re.compile(r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$", re.MULTILINE)
+
 
 class JournalAdapter:
     def __init__(self, journal: StepJournal) -> None:
@@ -40,16 +42,27 @@ def event_from_hook(payload: dict[str, Any]) -> TraceEvent:
         listed = tool_input.get("files")
         if isinstance(listed, list):
             files.extend(str(item) for item in listed)
+        command = tool_input.get("command")
+        if payload.get("tool_name") == "apply_patch" and isinstance(command, str):
+            files.extend(_PATCH_PATH.findall(command))
         return TraceEvent(
             "tool_proposal",
             {
                 "tool": payload.get("tool_name"),
-                "command": tool_input.get("command"),
+                "command": command,
                 "files": files,
             },
         )
     if name == "PostToolUse":
-        return TraceEvent("tool_result", {"tool": payload.get("tool_name")})
+        return TraceEvent(
+            "tool_result",
+            {
+                "tool": payload.get("tool_name"),
+                "tool_use_id": payload.get("tool_use_id"),
+                "tool_input": payload.get("tool_input"),
+                "tool_response": payload.get("tool_response"),
+            },
+        )
     return TraceEvent(str(name or "unknown").lower())
 
 

@@ -68,29 +68,48 @@ class Gate:
         """Gate a pending action event. Non-action events always pass."""
         if event.kind != "tool_proposal":
             return ALLOW
+        uncertain: GateDecision | None = None
         command = event.payload.get("command")
         if isinstance(command, str):
             decision = self.check_command(command)
             if not decision.allowed:
                 return decision
+            if decision.rule:
+                uncertain = decision
         files = event.payload.get("files")
         if isinstance(files, list):
-            return self.check_paths(str(f) for f in files)
-        return ALLOW
+            decision = self.check_paths(str(f) for f in files)
+            if not decision.allowed or decision.rule:
+                return decision
+        return uncertain or ALLOW
 
     def check_command(self, command: str) -> GateDecision:
         for rule, pattern in _DESTRUCTIVE_PATTERNS:
             if pattern.search(command):
                 return GateDecision(False, rule, f"destructive command matched {rule}")
         try:
-            shlex.split(command)
+            tokens = shlex.split(command)
         except ValueError:
             # Unparseable — cannot reason about it. Fail open, but say so:
             # this pass is a measured blind spot, not a clean bill of health.
             return GateDecision(True, "unparseable_command", "fail-open: could not parse")
+        if "rm" in tokens and any(
+            (token and not token.strip("/"))
+            or token.rstrip("/") in {"~", "$HOME", "${HOME}", ".."}
+            for token in tokens[tokens.index("rm") + 1 :]
+            if not token.startswith("-")
+        ):
+            return GateDecision(False, "rm_root", "destructive command matched rm_root")
+        if "git" in tokens:
+            git_args = tokens[tokens.index("git") + 1 :]
+            if "reset" in git_args and "--hard" in git_args[git_args.index("reset") + 1 :]:
+                return GateDecision(
+                    False, "git_reset_hard", "destructive command matched git_reset_hard"
+                )
         return ALLOW
 
     def check_paths(self, paths: Iterable[str]) -> GateDecision:
+        uncertain: GateDecision | None = None
         for raw in paths:
             path = posixpath.normpath(raw.replace("\\", "/"))
             if posixpath.isabs(path):
@@ -98,6 +117,9 @@ class Gate:
                 if root is None:
                     # Can't judge an absolute path without knowing the workspace.
                     # Blocking here would be FP-prone; pass, annotated.
+                    uncertain = GateDecision(
+                        True, "unknown_workspace", f"fail-open: cannot judge absolute path: {raw}"
+                    )
                     continue
                 if path == root or path.startswith(root + "/"):
                     path = posixpath.relpath(path, root)
@@ -110,4 +132,4 @@ class Gate:
             for pattern in self.forbidden_paths:
                 if fnmatch(path, pattern):
                     return GateDecision(False, "forbidden_path", f"{path} matches {pattern}")
-        return ALLOW
+        return uncertain or ALLOW

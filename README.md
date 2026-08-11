@@ -165,15 +165,29 @@ model = "gpt-5.3-spark"
 `gpt-5.3-spark` is the default Spotter reviewer model, so the `[reviewer]` table may be
 omitted unless a different reviewer model is required.
 
+To record Codex tool calls, add the bridge to `.codex/hooks.json` and review it with
+`/hooks` in Codex:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [{"hooks": [{"type": "command", "command": "spotter hook --config /absolute/path/to/spotter.toml"}]}],
+    "PostToolUse": [{"hooks": [{"type": "command", "command": "spotter hook --config /absolute/path/to/spotter.toml"}]}]
+  }
+}
+```
+
+Without `--config`, the hook only records observations. Set `observation_only = false`
+explicitly to enforce configured gates.
+
 The package deliberately keeps normalized trace events and orchestration separate from
-the Codex adapter. The current command is a runnable scaffold: it validates configuration,
-starts an in-memory adapter, and records a session-start event. Event streaming and
-model-backed review are the next implementation milestone.
+the Codex adapter. The hook bridge records tool events and applies deterministic gates;
+model-backed review is the next implementation milestone.
 
 ## Status
 
-**Prototype scaffold.** The repository now includes the runnable observation-only foundation;
-Codex event ingestion and reviewer decisions are not implemented yet.
+**Prototype.** Codex hook ingestion and deterministic gates are implemented. Reviewer
+decisions and replay are not.
 
 The first milestone is deliberately small: observe a Codex trajectory with a separate reviewer model, identify high-confidence misbehavior, and measure whether intervention helps more than it harms.
 
