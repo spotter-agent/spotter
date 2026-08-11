@@ -94,8 +94,7 @@ class Gate:
             # this pass is a measured blind spot, not a clean bill of health.
             return GateDecision(True, "unparseable_command", "fail-open: could not parse")
         if "rm" in tokens and any(
-            (token and not token.strip("/"))
-            or token.rstrip("/") in {"~", "$HOME", "${HOME}", ".."}
+            (token and not token.strip("/")) or token.rstrip("/") in {"~", "$HOME", "${HOME}", ".."}
             for token in tokens[tokens.index("rm") + 1 :]
             if not token.startswith("-")
         ):

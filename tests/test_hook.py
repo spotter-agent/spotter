@@ -84,8 +84,7 @@ def test_apply_patch_paths_are_gated() -> None:
 
     payload["tool_input"] = {
         "command": (
-            "*** Begin Patch\n*** Update File: src/key\n"
-            "*** Move to: secrets/key\n*** End Patch"
+            "*** Begin Patch\n*** Update File: src/key\n*** Move to: secrets/key\n*** End Patch"
         )
     }
     forbidden = SpotterConfig(

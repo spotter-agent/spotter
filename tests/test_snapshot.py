@@ -109,9 +109,5 @@ def test_journal_tolerates_torn_tail_but_rejects_reordering(tmp_path: Path) -> N
 def test_concurrent_journal_writes_keep_unique_steps(tmp_path: Path) -> None:
     path = tmp_path / "journal.jsonl"
     with ThreadPoolExecutor(max_workers=8) as pool:
-        list(
-            pool.map(
-                lambda i: StepJournal(path).record(TraceEvent("event", {"i": i})), range(20)
-            )
-        )
+        list(pool.map(lambda i: StepJournal(path).record(TraceEvent("event", {"i": i})), range(20)))
     assert [r.step for r in StepJournal.load(path)] == list(range(20))
