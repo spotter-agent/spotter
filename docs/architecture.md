@@ -348,12 +348,19 @@ many hook processes the runtime spawns.
 - **Pinning.** Each snapshot is a commit pinned under `refs/spotter/steps/`, so
   `gc` cannot remove a state a later fork depends on. The user's index, HEAD,
   and worktree are never touched; restores go to a detached worktree.
+- **Reuse re-pins.** A deduped snapshot is re-pinned on every reuse. A pruned
+  commit stays resolvable until `gc` runs, so reusing one without restoring its
+  ref would hand the journal a sha that `gc` later destroys.
 - **Retention.** `spotter prune` deletes snapshots no journal references, in a
   single `update-ref --stdin` transaction, dry-run by default. Referenced
   snapshots are kept indefinitely, because deleting one destroys the ability to
   fork that step. `--max-age-days N` opts into expiring referenced snapshots
-  too; that is a deliberate trade — bounded disk for lost fork-ability — so it
-  is never the default and expired refs are reported separately.
+  too. Age is measured from a snapshot's **creation**, and dedup reuses an
+  unchanged snapshot without refreshing it, so expiry drops old *states* rather
+  than old *steps*: a step recorded today that references a month-old unchanged
+  state loses its fork with it. Because that cost is easy to miss, `prune`
+  prints the exact `session`/`step` pairs each expired snapshot takes down, and
+  the flag is never the default.
 
 ### Gate ambiguity policy
 
@@ -368,7 +375,11 @@ a decision, the gate **fails open** and says so, rather than guessing:
 
 Every fail-open decision is journaled as a `gate_fail_open` record carrying the
 rule that abstained, so blindness is countable rather than invisible. Those
-records surface in `spotter analyze` and can be labeled like any other flag.
+records surface in `spotter analyze` and are counted by `spotter metrics` as
+**blind spots, reported separately from the false-positive rate**. They are
+deliberately not labelable: a fail-open is an abstention, not a judgment, so
+scoring it `tp`/`fp` would mix "the gate was wrong" with "the gate could not
+tell" in one number.
 
 ## Codex integration points
 

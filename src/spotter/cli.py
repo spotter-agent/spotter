@@ -27,7 +27,7 @@ from spotter.snapshot import (
     StepRecord,
     global_lock,
     prune_snapshots,
-    referenced_snapshots,
+    snapshot_references,
 )
 from spotter.trace import TraceEvent
 
@@ -346,6 +346,7 @@ def _metrics_main(session: str | None) -> int:
         print("no journals found", file=sys.stderr)
         return 1
     gates: dict[str, Tally] = {}
+    blind_spots: dict[str, int] = {}
     reviewer = ceiling = Tally()
     for journal in journals:
         try:
@@ -360,6 +361,10 @@ def _metrics_main(session: str | None) -> int:
             return 1
         for rule, tally in session_gates.items():
             gates[rule] = merge(gates.get(rule, Tally()), tally)
+        for record in records:
+            if record.event.kind == "gate_fail_open":
+                rule = str(record.event.payload.get("rule") or "unknown")
+                blind_spots[rule] = blind_spots.get(rule, 0) + 1
         reviewer = merge(reviewer, session_reviewer)
         ceiling = merge(ceiling, session_ceiling)
 
@@ -368,6 +373,11 @@ def _metrics_main(session: str | None) -> int:
         print("  no gate flags recorded")
     for rule, tally in sorted(gates.items()):
         print("  " + tally.rate_line(rule, "false-positive", count_negative=True))
+    if blind_spots:
+        rules = ", ".join(f"{rule}={count}" for rule, count in sorted(blind_spots.items()))
+        print(
+            f"  blind spots (not part of the rate): {sum(blind_spots.values())} fail-open ({rules})"
+        )
     print("P4 reviewer precision (label each verify/nudge tp|fp):")
     print("  " + reviewer.rate_line("interventions", "correct"))
     print("P1 observability ceiling (label failed sessions visible|invisible):")
@@ -386,18 +396,19 @@ def _prune_main(repo: Path, *, apply: bool, max_age_days: int | None = None) -> 
     sessions_dir = journal_path({"session_id": "probe"}).parent
     try:
         with global_lock():
-            referenced = referenced_snapshots(sessions_dir, repo)
-            pruned = prune_snapshots(repo, referenced, apply=apply, max_age_days=max_age_days)
+            references = snapshot_references(sessions_dir, repo)
+            pruned = prune_snapshots(repo, set(references), apply=apply, max_age_days=max_age_days)
     except SnapshotError as error:
         print(f"prune aborted: {error}", file=sys.stderr)
         return 1
     verb = "deleted" if apply else "would delete (pass --apply)"
-    expired = sum(p.reason == "expired" for p in pruned)
-    print(f"{len(referenced)} snapshots referenced by journals; {verb} {len(pruned)} refs")
-    if expired:
-        print(f"  {expired} of them still referenced but past --max-age-days: forks lost")
+    print(f"{len(references)} snapshots referenced by journals; {verb} {len(pruned)} refs")
     for pruned_ref in pruned:
         print(f"  {pruned_ref.sha} ({pruned_ref.reason})")
+        # An expired snapshot is still referenced: name the steps that lose
+        # fork-ability instead of reporting a bare count (PR #19 review, P1).
+        for session, step in references.get(pruned_ref.sha, []):
+            print(f"    fork lost: session {session} step {step}")
     return 0
 
 

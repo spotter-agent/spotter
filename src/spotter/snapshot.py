@@ -99,6 +99,11 @@ def snapshot_worktree(repo: Path, previous: str | None = None) -> str:
                 text=True,
             )
             if unchanged.returncode == 0 and unchanged.stdout.strip() == tree:
+                # Re-pin unconditionally. A pruned snapshot stays resolvable
+                # until gc runs, so reusing it without restoring the ref hands
+                # the journal a sha that gc will later destroy — the exact
+                # guarantee pinning exists to make (PR #19 review, P0).
+                _git(repo, "update-ref", f"refs/spotter/steps/{previous}", previous)
                 return previous
         sha = _git(repo, "commit-tree", tree, *parent_args, "-m", "spotter step snapshot")
         _git(repo, "update-ref", f"refs/spotter/steps/{sha}", sha)
@@ -254,6 +259,27 @@ class StepJournal:
         return [r for r in records if r.step < upto]
 
 
+def snapshot_references(
+    sessions_dir: Path, repo: Path | None = None
+) -> dict[str, list[tuple[str, int]]]:
+    """Map each referenced snapshot to the (session, step) pairs holding it.
+
+    Retention needs more than a set: deleting a snapshot destroys the ability
+    to fork specific steps, and the operator is owed their names.
+    """
+    target = repo.resolve() if repo else None
+    references: dict[str, list[tuple[str, int]]] = {}
+    for journal in sorted(sessions_dir.glob("*.jsonl")):
+        for record in StepJournal.load(journal, strict=True):
+            if not record.snapshot:
+                continue
+            cwd = record.event.payload.get("cwd")
+            unknown_provenance = target is None or not isinstance(cwd, str) or not cwd
+            if unknown_provenance or Path(str(cwd)).resolve() == target:
+                references.setdefault(record.snapshot, []).append((journal.stem, record.step))
+    return references
+
+
 def referenced_snapshots(sessions_dir: Path, repo: Path | None = None) -> set[str]:
     """Every snapshot sha the journals still point at, filtered to ``repo``.
 
@@ -262,17 +288,7 @@ def referenced_snapshots(sessions_dir: Path, repo: Path | None = None) -> set[st
     A record without a cwd is kept regardless of repo (conservative: unknown
     provenance must never enable deletion).
     """
-    target = repo.resolve() if repo else None
-    shas: set[str] = set()
-    for journal in sorted(sessions_dir.glob("*.jsonl")):
-        for record in StepJournal.load(journal, strict=True):
-            if not record.snapshot:
-                continue
-            cwd = record.event.payload.get("cwd")
-            unknown_provenance = target is None or not isinstance(cwd, str) or not cwd
-            if unknown_provenance or Path(str(cwd)).resolve() == target:
-                shas.add(record.snapshot)
-    return shas
+    return set(snapshot_references(sessions_dir, repo))
 
 
 @dataclass(frozen=True)
@@ -295,10 +311,15 @@ def prune_snapshots(
     - unreferenced snapshots are always prunable — nothing can fork from them;
     - referenced snapshots are kept indefinitely by default, because deleting
       one destroys the ability to fork that step;
-    - ``max_age_days`` opts into expiring referenced snapshots too. That is a
-      real trade, not a cleanup: bounded disk in exchange for losing
-      fork-ability of steps older than the window, so it is never the default
-      and the caller is told which refs went that way.
+    - ``max_age_days`` opts into expiring referenced snapshots too. The age is
+      the snapshot's *creation* time, and dedup reuses an unchanged snapshot
+      without refreshing it, so a step recorded today can reference a state
+      created weeks ago and be expired with it. That is a real trade, not a
+      cleanup — bounded disk in exchange for losing fork-ability of old
+      *states*, not old steps — so it is never the default and the caller is
+      told exactly which refs went that way.
+      ponytail: dating reuse would need per-record journal timestamps; add
+      them if expiry ever becomes a routine operation rather than a valve.
 
     Touches nothing outside refs/spotter/steps — user refs and worktrees are
     structurally out of reach.

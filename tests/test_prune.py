@@ -1,6 +1,7 @@
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from spotter.snapshot import (
     StepJournal,
     prune_snapshots,
     referenced_snapshots,
+    snapshot_references,
     snapshot_worktree,
 )
 from spotter.trace import TraceEvent
@@ -273,26 +275,65 @@ def test_expiry_window_keeps_recent_referenced_snapshots(repo: Path) -> None:
 # --- issue #6: a real crash mid-append, not a simulated one ---
 
 
-def test_sigkill_during_append_leaves_a_recoverable_journal(tmp_path: Path) -> None:
-    journal = tmp_path / "j.jsonl"
-    StepJournal(journal).record(TraceEvent("before_crash"))
+def _crash_child(journal: Path, patch: str) -> int:
+    """Run a real record() in a child that SIGKILLs itself inside the append.
+
+    `patch` names where to die, so the crash lands in the production path
+    rather than in a hand-written partial line (PR #19 review, P2).
+    """
     script = (
         "import os, signal, sys\n"
         "from pathlib import Path\n"
-        "path = Path(sys.argv[1])\n"
-        "handle = path.open('a')\n"
-        'handle.write(\'{"step": 1, "kind": "torn", "payl\')\n'  # half a record
-        "handle.flush()\n"
-        "os.kill(os.getpid(), signal.SIGKILL)\n"  # real crash, no cleanup runs
+        "from spotter.snapshot import StepJournal\n"
+        "from spotter.trace import TraceEvent\n"
+        "def die(*args, **kwargs):\n"
+        "    os.kill(os.getpid(), signal.SIGKILL)\n"
+        f"{patch}\n"
+        "StepJournal(Path(sys.argv[1])).record(TraceEvent('crashing'))\n"
     )
     worker = subprocess.Popen(
         [sys.executable, "-c", script, str(journal)],
         cwd=Path(__file__).parent.parent,
         env={"PYTHONPATH": "src", "PATH": "/usr/bin:/bin"},
     )
-    assert worker.wait() == -signal.SIGKILL
+    return worker.wait()
 
-    # the valid prefix survives, and the journal keeps working afterwards
+
+def test_sigkill_between_write_and_fsync_keeps_the_journal_usable() -> None:
+    """The record is on disk but the sidecar was never updated: the next
+    append must notice the stale sidecar and keep numbering correct."""
+    with tempfile.TemporaryDirectory() as scratch:
+        journal = Path(scratch) / "j.jsonl"
+        StepJournal(journal).record(TraceEvent("before_crash"))
+        assert _crash_child(journal, "os.fsync = die") == -signal.SIGKILL
+
+        StepJournal(journal).record(TraceEvent("after_crash"))
+        recovered = StepJournal.load(journal)
+        assert [r.step for r in recovered] == [0, 1, 2]
+        assert [r.event.kind for r in recovered] == ["before_crash", "crashing", "after_crash"]
+
+
+def test_sigkill_between_fsync_and_sidecar_update_keeps_numbering() -> None:
+    """Durable record, stale sidecar — the size check must catch it."""
+    with tempfile.TemporaryDirectory() as scratch:
+        journal = Path(scratch) / "j.jsonl"
+        StepJournal(journal).record(TraceEvent("before_crash"))
+        assert (
+            _crash_child(journal, "from pathlib import Path as _P\n_P.write_text = die")
+            == -signal.SIGKILL
+        )
+
+        state = journal.with_suffix(journal.suffix + ".state")
+        StepJournal(journal).record(TraceEvent("after_crash"))
+        assert [r.step for r in StepJournal.load(journal)] == [0, 1, 2]
+        assert state.exists()  # rebuilt from the full load
+
+
+def test_torn_tail_from_a_partial_write_is_repaired(tmp_path: Path) -> None:
+    journal = tmp_path / "j.jsonl"
+    StepJournal(journal).record(TraceEvent("before_crash"))
+    with journal.open("a") as handle:
+        handle.write('{"step": 1, "kind": "torn", "payl')  # half a record
     assert [r.event.kind for r in StepJournal.load(journal)] == ["before_crash"]
     StepJournal(journal).record(TraceEvent("after_crash"))
     recovered = StepJournal.load(journal)
@@ -300,7 +341,7 @@ def test_sigkill_during_append_leaves_a_recoverable_journal(tmp_path: Path) -> N
     assert [r.event.kind for r in recovered] == ["before_crash", "after_crash"]
 
 
-def test_sigkill_before_flush_leaves_the_journal_untouched(tmp_path: Path) -> None:
+def test_sigkill_before_any_write_leaves_the_journal_untouched(tmp_path: Path) -> None:
     """A record is complete or absent — never half-applied to step numbering."""
     journal = tmp_path / "j.jsonl"
     StepJournal(journal).record(TraceEvent("before_crash"))
@@ -322,3 +363,33 @@ def test_sigkill_before_flush_leaves_the_journal_untouched(tmp_path: Path) -> No
     assert journal.stat().st_size == size
     StepJournal(journal).record(TraceEvent("after"))
     assert [r.step for r in StepJournal.load(journal)] == [0, 1]
+
+
+def test_reused_snapshot_is_repinned_after_retention_prune(repo: Path) -> None:
+    """PR #19 review P0: a pruned commit stays resolvable until gc, so dedup
+    could hand the journal a sha that gc then destroys."""
+    sha = snapshot_worktree(repo)
+    prune_snapshots(repo, {sha}, apply=True, max_age_days=30, now=2**31)
+    assert _refs(repo) == set()  # ref gone, object still resolvable
+
+    again = snapshot_worktree(repo, sha)  # unchanged tree -> dedup path
+    assert again == sha
+    assert _refs(repo) == {f"refs/spotter/steps/{sha}"}  # re-pinned, not dangling
+
+    subprocess.run(["git", "gc", "--prune=now", "-q"], cwd=repo, check=True)
+    assert subprocess.run(["git", "cat-file", "-e", again], cwd=repo).returncode == 0
+
+
+def test_expiry_names_the_steps_that_lose_forkability(
+    repo: Path, spotter_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """PR #19 review P1: a bare count hides which recent steps are affected."""
+    sha = snapshot_worktree(repo)
+    StepJournal(journal_path({"session_id": "s1"})).record(
+        TraceEvent("tool_proposal", {"cwd": str(repo)}), snapshot=sha
+    )
+    references = snapshot_references(journal_path({"session_id": "s1"}).parent, repo)
+    assert references[sha] == [("s1", 0)]
+
+    pruned = prune_snapshots(repo, set(references), max_age_days=30, now=2**31)
+    assert [(p.sha, p.reason) for p in pruned] == [(sha, "expired")]
