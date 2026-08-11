@@ -10,6 +10,7 @@ exit codes, gate flags — never Main's own summaries as facts (plan Q2).
 """
 
 import json
+import os
 import subprocess
 import tempfile
 from collections.abc import Callable
@@ -132,6 +133,9 @@ def codex_runner(model: str, prompt: str) -> str:
             capture_output=True,
             text=True,
             timeout=300,
+            # The reviewer's own codex session must not journal-trigger more
+            # reviews of itself.
+            env={**os.environ, "SPOTTER_DISABLE": "1"},
         )
         if result.returncode != 0:
             raise RuntimeError(f"codex exec failed: {result.stderr.strip()[:300]}")

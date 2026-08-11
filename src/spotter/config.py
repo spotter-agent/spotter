@@ -25,6 +25,10 @@ class MainAgentConfig:
 @dataclass(frozen=True)
 class ReviewerConfig:
     model: str = DEFAULT_REVIEWER_MODEL
+    # Auto-run the SHADOW reviewer every N tool proposals (0 = off). Off by
+    # default: even shadow judgments spend the user's model tokens, and silent
+    # spending is not "safe" just because nothing is injected.
+    every_steps: int = 0
 
 
 @dataclass(frozen=True)
@@ -58,7 +62,8 @@ class SpotterConfig:
         return cls(
             main_agent=MainAgentConfig(adapter=_string(main_agent, "adapter")),
             reviewer=ReviewerConfig(
-                model=_optional_string(reviewer, "model", DEFAULT_REVIEWER_MODEL)
+                model=_optional_string(reviewer, "model", DEFAULT_REVIEWER_MODEL),
+                every_steps=_int(reviewer, "every_steps", 0),
             ),
             gates=GatesConfig(
                 forbidden_paths=_string_tuple(gates, "forbidden_paths"),
@@ -101,6 +106,13 @@ def _string_tuple(raw: dict[str, Any], key: str) -> tuple[str, ...]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise ConfigurationError(f"{key} must be a list of strings")
     return tuple(value)
+
+
+def _int(raw: dict[str, Any], key: str, default: int) -> int:
+    value = raw.get(key, default)
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ConfigurationError(f"{key} must be a non-negative integer")
+    return value
 
 
 def _bool(raw: dict[str, Any], key: str, default: bool) -> bool:

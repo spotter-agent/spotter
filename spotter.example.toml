@@ -7,3 +7,4 @@ adapter = "codex"
 # "default" uses your codex account's model. Pin an id (e.g. "gpt-5.3-spark")
 # only if your auth supports it — rejected ids fail slowly, not fast.
 model = "default"
+# every_steps = 25  # auto shadow review cadence (0 = off; spends model tokens)

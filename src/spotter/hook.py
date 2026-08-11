@@ -8,6 +8,8 @@ losing an observation is recoverable, Codex dying mid-turn is not.
 import json
 import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -24,9 +26,10 @@ class JournalAdapter:
     def __init__(self, journal: StepJournal) -> None:
         self.journal = journal
         self.next_snapshot: str | None = None
+        self.last_step: int = -1
 
     def record(self, event: TraceEvent) -> None:
-        self.journal.record(event, snapshot=self.next_snapshot)
+        self.last_step = self.journal.record(event, snapshot=self.next_snapshot).step
         self.next_snapshot = None  # attaches to the first (proposal) event only
 
 
@@ -89,6 +92,30 @@ def journal_path(payload: dict[str, Any]) -> Path:
     return base / f"{session}.jsonl"
 
 
+def _maybe_spawn_shadow_review(config: SpotterConfig, payload: dict[str, Any], step: int) -> None:
+    """Fire-and-forget shadow review every N proposals (Wink-style cadence).
+
+    Detached: the hook must never wait on a model call. SPOTTER_DISABLE guards
+    recursion — the review itself runs `codex exec`, whose session would
+    otherwise trigger hooks that could spawn reviews of the review.
+    """
+    every = config.reviewer.every_steps
+    if not every or os.environ.get("SPOTTER_DISABLE"):
+        return
+    if step == 0 or step % every:
+        return
+    session = str(payload.get("session_id") or "")
+    if not session:
+        return
+    subprocess.Popen(
+        [sys.executable, "-m", "spotter", "review", "--session", session],
+        env={**os.environ, "SPOTTER_DISABLE": "1"},
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
 def run_hook(payload: dict[str, Any], config: SpotterConfig) -> str | None:
     """Process one hook invocation. Returns stdout JSON, or None to allow."""
     cwd = payload.get("cwd")
@@ -118,6 +145,8 @@ def run_hook(payload: dict[str, Any], config: SpotterConfig) -> str | None:
             decision = runtime.observe(event)
     else:
         decision = runtime.observe(event)
+    if event.kind == "tool_proposal":
+        _maybe_spawn_shadow_review(config, payload, adapter.last_step)
     if decision.allowed:
         return None  # implicit allow; stay silent on the happy path
     return json.dumps(

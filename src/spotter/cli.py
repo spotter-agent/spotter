@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import subprocess
 import sys
 import tomllib
 from collections.abc import Sequence
@@ -10,6 +11,7 @@ from pathlib import Path
 from spotter.codex import CodexAdapter
 from spotter.config import ConfigurationError, MainAgentConfig, ReviewerConfig, SpotterConfig
 from spotter.core import SpotterRuntime
+from spotter.experiment import results_path, run_experiment, summarize
 from spotter.gates import Gate
 from spotter.hook import journal_path, run_hook
 from spotter.replay import ReplayError, fork, plan_to_json
@@ -30,13 +32,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "command",
         nargs="?",
-        choices=["observe", "hook", "analyze", "fork", "prune", "review"],
+        choices=["observe", "hook", "analyze", "fork", "prune", "review", "experiment"],
         default="observe",
         help=(
             "observe: validate config and start; hook: Codex hook bridge (JSON on stdin); "
             "analyze: summarize journaled sessions; fork: branch a session at a step; "
             "prune: drop unreferenced refs/spotter snapshots (dry-run without --apply); "
-            "review: run the shadow reviewer on a session (records only, injects nothing)"
+            "review: run the shadow reviewer on a session (records only, injects nothing); "
+            "experiment: counterfactual fork pairs — nudge vs control (needs --run to execute)"
         ),
     )
     parser.add_argument("--config", type=Path, help="path to Spotter TOML config")
@@ -51,6 +54,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--window", type=int, default=40, help="review: trajectory tail size fed to the reviewer"
+    )
+    parser.add_argument("--pairs", type=int, default=1, help="experiment: counterfactual pairs")
+    parser.add_argument(
+        "--check", help="experiment: success command run in each fork worktree (exit 0 = pass)"
+    )
+    parser.add_argument(
+        "--run",
+        action="store_true",
+        help="experiment: actually execute the 2*pairs agent runs (costs real tokens)",
     )
     return parser
 
@@ -75,6 +87,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _analyze_main(args.session)
     if args.command == "prune":
         return _prune_main(args.repo or Path.cwd(), apply=args.apply)
+    if args.command == "experiment":
+        if not args.session or args.step is None or not args.guidance:
+            parser.error("experiment requires --session, --step and --guidance")
+        try:
+            results = run_experiment(
+                args.session,
+                args.step,
+                args.guidance,
+                pairs=args.pairs,
+                check=args.check,
+                run=args.run,
+            )
+        except (ReplayError, SnapshotError, OSError, subprocess.SubprocessError) as error:
+            print(f"experiment failed: {error}", file=sys.stderr)
+            return 1
+        print(summarize(results))
+        print(f"rows appended to {results_path(args.session, args.step)}")
+        return 0
     if args.command == "review":
         if not args.session:
             parser.error("review requires --session")
@@ -134,10 +164,19 @@ def _analyze_main(session: str | None) -> int:
         proposals = [r for r in records if r.event.kind == "tool_proposal"]
         snapshots = sum(1 for r in records if r.snapshot)
         flagged = [r for r in records if r.event.kind in ("gate_shadow_block", "gate_fail_open")]
+        verdicts = [r for r in records if r.event.kind == "reviewer_decision"]
         print(
             f"{journal.stem}: steps={len(records)} proposals={len(proposals)} "
-            f"snapshots={snapshots} flagged={len(flagged)}"
+            f"snapshots={snapshots} flagged={len(flagged)} reviews={len(verdicts)}"
         )
+        for record in verdicts:
+            payload = record.event.payload
+            print(
+                f"  step {record.step:4d} reviewer         "
+                f"{payload.get('decision')}/{payload.get('failure_class')} "
+                f"conf={payload.get('confidence')}: "
+                f"{str(payload.get('reason'))[:100]}"
+            )
         for record in flagged:
             trigger = _trigger_for(records, record)
             summary = str(trigger.get("command") or trigger.get("patch") or trigger)
