@@ -10,7 +10,11 @@ class ConfigurationError(ValueError):
     """Raised when a Spotter configuration is malformed."""
 
 
-DEFAULT_REVIEWER_MODEL = "gpt-5.3-spark"
+# "default" delegates to the codex account's own model. A pinned id is an
+# auth-dependent liability: ChatGPT-account auth rejects several ids with a
+# multi-minute retry loop, and the reviewer model is an experimental variable
+# (plan Q6/P5), not a constant. Pin one explicitly only if your auth allows it.
+DEFAULT_REVIEWER_MODEL = "default"
 
 
 @dataclass(frozen=True)

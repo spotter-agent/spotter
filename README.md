@@ -161,11 +161,14 @@ observation_only = true
 adapter = "codex"
 
 [reviewer]
-model = "gpt-5.3-spark"
+model = "default"
 ```
 
-`gpt-5.3-spark` is the default Spotter reviewer model, so the `[reviewer]` table may be
-omitted unless a different reviewer model is required.
+`"default"` delegates reviewer model choice to the codex account, so the `[reviewer]`
+table may be omitted. Pin a specific id only if your auth supports it: ChatGPT-account
+auth rejects some ids (observed: `gpt-5.3-spark`) with a slow retry loop rather than a
+fast error. Which reviewer model works best is an open experimental question (see
+docs/research.md RQ3), not a constant.
 
 To record Codex tool calls, add the bridge to `.codex/hooks.json` and review it with
 `/hooks` in Codex:
