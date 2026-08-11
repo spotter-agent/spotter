@@ -6,6 +6,8 @@ import subprocess
 import sys
 import tomllib
 from collections.abc import Sequence
+from contextlib import suppress
+from fcntl import LOCK_EX, LOCK_NB, flock
 from pathlib import Path
 
 from spotter.codex import CodexAdapter
@@ -82,7 +84,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     config = _load_config(parser, args.config)
 
     if args.command == "hook":
-        return _hook_main(config)
+        return _hook_main(config, args.config)
     if args.command == "analyze":
         return _analyze_main(args.session)
     if args.command == "prune":
@@ -90,6 +92,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "experiment":
         if not args.session or args.step is None or not args.guidance:
             parser.error("experiment requires --session, --step and --guidance")
+        if args.pairs < 1:
+            parser.error("--pairs must be >= 1")
         try:
             results = run_experiment(
                 args.session,
@@ -212,6 +216,16 @@ def _review_main(session: str, config: SpotterConfig, *, window: int) -> int:
     """Shadow reviewer: judge the trajectory tail, journal the verdict, inject
     nothing. Injection rights are earned later via labeling + fork pairs."""
     journal_file = journal_path({"session_id": session})
+    # In-flight guard: a slow model call must not stack duplicate paid reviews
+    # of the same session when the next cadence tick arrives.
+    lock_file = journal_file.with_suffix(".review.lock")
+    lock = lock_file.open("w")
+    try:
+        flock(lock, LOCK_EX | LOCK_NB)
+    except OSError:
+        print(f"review already in flight for {session}; skipping", file=sys.stderr)
+        lock.close()
+        return 0
     try:
         records = StepJournal.load(journal_file)
     except (OSError, SnapshotError) as error:
@@ -224,6 +238,12 @@ def _review_main(session: str, config: SpotterConfig, *, window: int) -> int:
         decision = review(records, config.reviewer.model, window=window)
     except Exception as error:  # noqa: BLE001 — reviewer failure must stay observable, not fatal
         print(f"review failed: {error}", file=sys.stderr)
+        # Failure evidence belongs in the journal too — "no verdict" must be
+        # distinguishable from "reviewer silently died".
+        with suppress(SnapshotError):
+            StepJournal(journal_file).record(
+                TraceEvent("reviewer_error", {"error": str(error)[:300]})
+            )
         return 1
     StepJournal(journal_file).record(
         TraceEvent(
@@ -269,7 +289,7 @@ def _prune_main(repo: Path, *, apply: bool) -> int:
     return 0
 
 
-def _hook_main(config: SpotterConfig | None) -> int:
+def _hook_main(config: SpotterConfig | None, config_path: Path | None = None) -> int:
     """Read one hook payload from stdin, print a decision if any.
 
     Always exits 0: any failure here fails open. Breaking the Codex session
@@ -281,7 +301,7 @@ def _hook_main(config: SpotterConfig | None) -> int:
         payload = json.load(sys.stdin)
         if not isinstance(payload, dict):
             raise ValueError("hook payload must be a JSON object")
-        output = run_hook(payload, config)
+        output = run_hook(payload, config, config_path)
     except Exception as error:  # noqa: BLE001 — deliberate fail-open boundary
         print(f"spotter hook error (failing open): {error}", file=sys.stderr)
         return 0

@@ -18,9 +18,12 @@ a crash loses at most one run.
 import json
 import os
 import subprocess
+import uuid
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
+from spotter.hook import sanitize_session, spotter_home
 from spotter.replay import fork
 
 CONTROL_PROMPT = "Continue the task."
@@ -28,6 +31,7 @@ CONTROL_PROMPT = "Continue the task."
 
 @dataclass(frozen=True)
 class ArmResult:
+    experiment_id: str
     pair: int
     arm: str  # "control" | "guidance"
     session_id: str
@@ -37,9 +41,9 @@ class ArmResult:
 
 
 def results_path(session_id: str, step: int) -> Path:
-    base = Path(os.environ.get("SPOTTER_HOME", Path.home() / ".spotter")) / "experiments"
+    base = spotter_home() / "experiments"
     base.mkdir(parents=True, exist_ok=True)
-    return base / f"{session_id}-step{step}.jsonl"
+    return base / f"{sanitize_session(session_id)}-step{step}.jsonl"
 
 
 def _run_arm(
@@ -84,13 +88,36 @@ def run_experiment(
     codex_home: Path | None = None,
 ) -> list[ArmResult]:
     """Build (and with run=True, execute) n counterfactual pairs."""
+    if pairs < 1:
+        raise ValueError("pairs must be >= 1 — an empty experiment is not a successful one")
     out = results_path(session_id, step)
+    experiment_id = str(uuid.uuid4())
+    # Provenance header: rows are meaningless as measurements unless the exact
+    # conditions that produced them can be recovered and compared.
+    meta = {
+        "meta": True,
+        "experiment_id": experiment_id,
+        "source_session": session_id,
+        "step": step,
+        "guidance": guidance,
+        "control_prompt": CONTROL_PROMPT,
+        "check": check,
+        "sandbox": sandbox,
+        "timeout": timeout,
+        "run": run,
+        "started_at": datetime.now(UTC).isoformat(),
+    }
+    with out.open("a", encoding="utf-8") as sink:
+        sink.write(json.dumps(meta) + "\n")
     results: list[ArmResult] = []
     for pair in range(pairs):
-        for arm, prompt in (
+        arms = [
             ("control", CONTROL_PROMPT),
             ("guidance", f"{CONTROL_PROMPT} {guidance}"),
-        ):
+        ]
+        if pair % 2:  # counterbalance: time-varying backend state must not
+            arms.reverse()  # always land on the same arm (order effect)
+        for arm, prompt in arms:
             plan = fork(session_id, step, codex_home=codex_home)
             agent_exit: int | None = None
             check_exit: int | None = None
@@ -102,7 +129,9 @@ def run_experiment(
                     check_exit = subprocess.run(
                         check, shell=True, cwd=plan.worktree, capture_output=True, timeout=timeout
                     ).returncode
-            result = ArmResult(pair, arm, plan.session_id, plan.worktree, agent_exit, check_exit)
+            result = ArmResult(
+                experiment_id, pair, arm, plan.session_id, plan.worktree, agent_exit, check_exit
+            )
             results.append(result)
             with out.open("a", encoding="utf-8") as sink:  # one row per run, crash-safe
                 sink.write(json.dumps(asdict(result)) + "\n")

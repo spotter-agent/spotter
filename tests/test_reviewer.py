@@ -96,3 +96,24 @@ def test_review_cli_journals_shadow_decision(
     assert verdict.event.payload["shadow"] is True
     assert verdict.event.payload["decision"] == "nudge"
     assert verdict.event.payload["reviewed_upto"] == 0
+
+
+def test_inflight_lock_skips_duplicate_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """PR #15 review P1: a slow review must not stack paid duplicates."""
+    from fcntl import LOCK_EX, flock
+
+    monkeypatch.setenv("SPOTTER_HOME", str(tmp_path))
+    journal = StepJournal(journal_path({"session_id": "busy"}))
+    journal.record(TraceEvent("tool_proposal", {"command": "pytest"}))
+
+    called: list[bool] = []
+    monkeypatch.setattr("spotter.cli.review", lambda *a, **k: called.append(True))
+
+    lock_file = journal_path({"session_id": "busy"}).with_suffix(".review.lock")
+    with lock_file.open("w") as held:
+        flock(held, LOCK_EX)  # simulate an in-flight review
+        assert main(["review", "--session", "busy"]) == 0
+    assert called == []  # no duplicate model call
+    assert "already in flight" in capsys.readouterr().err
