@@ -1,0 +1,97 @@
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from spotter.snapshot import (
+    SnapshotError,
+    StepJournal,
+    restore_snapshot,
+    snapshot_worktree,
+)
+from spotter.trace import TraceEvent
+
+
+@pytest.fixture()
+def repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    return repo
+
+
+def test_snapshot_captures_untracked_and_restore_does_not_touch_worktree(
+    repo: Path, tmp_path: Path
+) -> None:
+    (repo / "tracked.txt").write_text("v1")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
+    (repo / "untracked.txt").write_text("never committed")
+    (repo / "tracked.txt").write_text("v2 dirty")
+
+    sha = snapshot_worktree(repo)
+
+    # snapshotting must not mutate the user's state
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout
+    assert "untracked.txt" in status and "tracked.txt" in status
+
+    dest = tmp_path / "restore"
+    restore_snapshot(repo, sha, dest)
+    assert (dest / "untracked.txt").read_text() == "never committed"
+    assert (dest / "tracked.txt").read_text() == "v2 dirty"
+
+
+def test_snapshot_works_on_empty_repo_without_head(repo: Path) -> None:
+    (repo / "only.txt").write_text("x")
+    assert snapshot_worktree(repo)
+
+
+def test_snapshot_outside_git_repo_fails_loudly(tmp_path: Path) -> None:
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    with pytest.raises(SnapshotError):
+        snapshot_worktree(plain)
+
+
+def test_restore_refuses_existing_destination(repo: Path, tmp_path: Path) -> None:
+    (repo / "a.txt").write_text("a")
+    sha = snapshot_worktree(repo)
+    dest = tmp_path / "exists"
+    dest.mkdir()
+    with pytest.raises(SnapshotError, match="already exists"):
+        restore_snapshot(repo, sha, dest)
+
+
+def test_journal_roundtrip_prefix_and_resume(tmp_path: Path) -> None:
+    path = tmp_path / "journal.jsonl"
+    journal = StepJournal(path)
+    journal.record(TraceEvent("session_start"))
+    journal.record(TraceEvent("tool_proposal", {"command": "pytest"}), snapshot="abc123")
+
+    records = StepJournal.load(path)
+    assert [r.step for r in records] == [0, 1]
+    assert records[1].snapshot == "abc123"
+    assert StepJournal.prefix(records, 1)[-1].event.kind == "session_start"
+
+    # resuming appends with continued numbering instead of restarting at 0
+    resumed = StepJournal(path)
+    resumed.record(TraceEvent("tool_result"))
+    assert [r.step for r in StepJournal.load(path)] == [0, 1, 2]
+
+
+def test_journal_tolerates_torn_tail_but_rejects_reordering(tmp_path: Path) -> None:
+    path = tmp_path / "journal.jsonl"
+    journal = StepJournal(path)
+    journal.record(TraceEvent("session_start"))
+    with path.open("a") as f:
+        f.write('{"step": 1, "kind": "torn"')  # crash mid-write
+    assert len(StepJournal.load(path)) == 1  # valid prefix survives
+
+    bad = tmp_path / "bad.jsonl"
+    bad.write_text('{"step": 5, "kind": "x", "payload": {}, "snapshot": null}\n')
+    with pytest.raises(SnapshotError, match="mismatch"):
+        StepJournal.load(bad)

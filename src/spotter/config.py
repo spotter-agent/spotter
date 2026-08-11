@@ -24,9 +24,16 @@ class ReviewerConfig:
 
 
 @dataclass(frozen=True)
+class GatesConfig:
+    forbidden_paths: tuple[str, ...] = ()
+    block_dependency_changes: bool = False
+
+
+@dataclass(frozen=True)
 class SpotterConfig:
     main_agent: MainAgentConfig
     reviewer: ReviewerConfig
+    gates: GatesConfig = GatesConfig()
     observation_only: bool = True
 
     @classmethod
@@ -39,6 +46,7 @@ class SpotterConfig:
     def from_mapping(cls, raw: dict[str, Any]) -> "SpotterConfig":
         main_agent = _table(raw, "main_agent")
         reviewer = _optional_table(raw, "reviewer")
+        gates = _optional_table(raw, "gates")
         observation_only = raw.get("observation_only", True)
         if not isinstance(observation_only, bool):
             raise ConfigurationError("observation_only must be a boolean")
@@ -46,6 +54,10 @@ class SpotterConfig:
             main_agent=MainAgentConfig(adapter=_string(main_agent, "adapter")),
             reviewer=ReviewerConfig(
                 model=_optional_string(reviewer, "model", DEFAULT_REVIEWER_MODEL)
+            ),
+            gates=GatesConfig(
+                forbidden_paths=_string_tuple(gates, "forbidden_paths"),
+                block_dependency_changes=_bool(gates, "block_dependency_changes", False),
             ),
             observation_only=observation_only,
         )
@@ -76,3 +88,17 @@ def _optional_string(raw: dict[str, Any], key: str, default: str) -> str:
     if key not in raw:
         return default
     return _string(raw, key)
+
+
+def _string_tuple(raw: dict[str, Any], key: str) -> tuple[str, ...]:
+    value = raw.get(key, [])
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ConfigurationError(f"{key} must be a list of strings")
+    return tuple(value)
+
+
+def _bool(raw: dict[str, Any], key: str, default: bool) -> bool:
+    value = raw.get(key, default)
+    if not isinstance(value, bool):
+        raise ConfigurationError(f"{key} must be a boolean")
+    return value
