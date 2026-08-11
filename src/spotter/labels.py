@@ -17,7 +17,6 @@ later differs, the label is reported as stale rather than silently counted
 
 import hashlib
 import json
-import os
 import re
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -149,8 +148,11 @@ def matches(label: Label, records: list[StepRecord]) -> bool:
     return fingerprint(records[label.step]) == label.fingerprint
 
 
-_SESSION_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_SESSION_RE = re.compile(r"[A-Za-z0-9_-]+")
 
 
 def valid_session(session: str) -> bool:
-    return bool(_SESSION_RE.match(session)) and os.sep not in session
+    """fullmatch, not match: Python's ``$`` also matches before a trailing
+    newline, so "a\n" passed as valid and then sanitized to "a_" — sharing a
+    journal and label file with the distinct session "a_"."""
+    return bool(_SESSION_RE.fullmatch(session))

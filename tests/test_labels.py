@@ -3,8 +3,15 @@ from pathlib import Path
 import pytest
 
 from spotter.cli import main
-from spotter.hook import journal_path
-from spotter.labels import LabelError, add_label, labels_path, load_labels, matches
+from spotter.hook import journal_path, sanitize_session
+from spotter.labels import (
+    LabelError,
+    add_label,
+    labels_path,
+    load_labels,
+    matches,
+    valid_session,
+)
 from spotter.metrics import MIN_SAMPLES, Tally, merge, tally_session
 from spotter.snapshot import StepJournal, StepRecord
 from spotter.trace import TraceEvent
@@ -221,3 +228,13 @@ def test_cli_metrics_aborts_on_unreadable_labels(capsys: pytest.CaptureFixture[s
         sink.write("{torn")
     assert main(["metrics", "--session", "s1"]) == 1
     assert "metrics aborted" in capsys.readouterr().err
+
+
+def test_session_validation_rejects_trailing_newline() -> None:
+    """PR #17 review P1: `$` matches before a trailing newline, so "a\\n"
+    passed validation and then sanitized to "a_" — the same file as the
+    distinct session "a_"."""
+    assert not valid_session("a\n")
+    assert not valid_session("a\nb")
+    assert valid_session("a_") and valid_session("019fee58-ab26-72f2")
+    assert sanitize_session("a\n") == "a_"  # why the bypass mattered
