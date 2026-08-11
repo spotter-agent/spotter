@@ -12,6 +12,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -63,10 +64,16 @@ def _git(
     return result.stdout.strip()
 
 
-def snapshot_worktree(repo: Path) -> str:
+def snapshot_worktree(repo: Path, previous: str | None = None) -> str:
     """Snapshot the full worktree (untracked included) without touching the
     user's index or HEAD. Returns the commit sha, pinned under refs/spotter/
-    so gc cannot silently delete it out from under a later restore."""
+    so gc cannot silently delete it out from under a later restore.
+
+    When ``previous`` names a snapshot with an identical tree, that sha is
+    returned unchanged: a tool call that touched nothing must not mint a new
+    ref, or an idle session grows the ref namespace for free (issue #7).
+    Dedup is best-effort — an unreadable ``previous`` just means a new commit.
+    """
     _git(repo, "rev-parse", "--git-dir")  # fail early if not a git repo
     index_fd, index_path = tempfile.mkstemp(prefix="spotter-index-")
     os.close(index_fd)
@@ -84,6 +91,15 @@ def snapshot_worktree(repo: Path) -> str:
         )
         if head.returncode == 0:  # unborn HEAD (empty repo) has no parent
             parent_args = ["-p", head.stdout.strip()]
+        if previous:
+            unchanged = subprocess.run(
+                ["git", "rev-parse", "--verify", "-q", f"{previous}^{{tree}}"],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+            )
+            if unchanged.returncode == 0 and unchanged.stdout.strip() == tree:
+                return previous
         sha = _git(repo, "commit-tree", tree, *parent_args, "-m", "spotter step snapshot")
         _git(repo, "update-ref", f"refs/spotter/steps/{sha}", sha)
         return sha
@@ -123,7 +139,7 @@ class StepJournal:
         with lock_path.open("w") as lock:
             flock(lock, LOCK_EX)
             try:
-                state: dict[str, int] | None = None
+                state: dict[str, Any] | None = None
                 if state_path.exists() and self.path.exists():
                     try:
                         candidate = json.loads(state_path.read_text())
@@ -136,11 +152,14 @@ class StepJournal:
                     state = {
                         "steps": len(records),
                         "proposals": sum(r.event.kind == "tool_proposal" for r in records),
+                        "last_snapshot": next(
+                            (r.snapshot for r in reversed(records) if r.snapshot), None
+                        ),
                     }
-                step = state["steps"]
+                step = int(state["steps"])
                 payload = dict(event.payload)
                 if event.kind == "tool_proposal":
-                    state["proposals"] += 1
+                    state["proposals"] = int(state["proposals"]) + 1
                     payload["proposal_number"] = state["proposals"]
                 stored_event = TraceEvent(event.kind, payload)
                 record = StepRecord(step, stored_event, snapshot)
@@ -157,7 +176,9 @@ class StepJournal:
                     journal.write(line + "\n")
                     journal.flush()
                     os.fsync(journal.fileno())
-                state["steps"] += 1
+                state["steps"] = int(state["steps"]) + 1
+                if snapshot:
+                    state["last_snapshot"] = snapshot
                 state["size"] = self.path.stat().st_size
                 temporary = state_path.with_suffix(state_path.suffix + ".tmp")
                 temporary.write_text(json.dumps(state))
@@ -165,6 +186,24 @@ class StepJournal:
                 return record
             finally:
                 flock(lock, LOCK_UN)
+
+    def last_snapshot(self) -> str | None:
+        """Most recent snapshot sha, from the sidecar when it is fresh.
+
+        Best-effort: a missing or stale sidecar returns None, which costs a
+        redundant snapshot, never a wrong one.
+        """
+        state_path = self.path.with_suffix(self.path.suffix + ".state")
+        if not (state_path.exists() and self.path.exists()):
+            return None
+        try:
+            state = json.loads(state_path.read_text())
+            if state.get("size") != self.path.stat().st_size:
+                return None
+        except (json.JSONDecodeError, OSError):
+            return None
+        sha = state.get("last_snapshot")
+        return str(sha) if sha else None
 
     @staticmethod
     def load(path: Path, *, repair_tail: bool = False, strict: bool = False) -> list[StepRecord]:
@@ -236,23 +275,57 @@ def referenced_snapshots(sessions_dir: Path, repo: Path | None = None) -> set[st
     return shas
 
 
-def prune_snapshots(repo: Path, referenced: set[str], *, apply: bool = False) -> list[str]:
-    """List (and with apply=True, delete) refs/spotter/steps/* no journal references.
+@dataclass(frozen=True)
+class PrunedRef:
+    sha: str
+    reason: str  # "unreferenced" | "expired"
 
-    Touches nothing outside refs/spotter/steps — user refs, worktrees, and
-    referenced snapshots are structurally out of reach.
+
+def prune_snapshots(
+    repo: Path,
+    referenced: set[str],
+    *,
+    apply: bool = False,
+    max_age_days: int | None = None,
+    now: int | None = None,
+) -> list[PrunedRef]:
+    """List (and with apply=True, delete) prunable refs/spotter/steps/*.
+
+    Retention policy (issue #7):
+    - unreferenced snapshots are always prunable — nothing can fork from them;
+    - referenced snapshots are kept indefinitely by default, because deleting
+      one destroys the ability to fork that step;
+    - ``max_age_days`` opts into expiring referenced snapshots too. That is a
+      real trade, not a cleanup: bounded disk in exchange for losing
+      fork-ability of steps older than the window, so it is never the default
+      and the caller is told which refs went that way.
+
+    Touches nothing outside refs/spotter/steps — user refs and worktrees are
+    structurally out of reach.
     """
-    output = _git(repo, "for-each-ref", "--format=%(refname)%00%(objectname)", "refs/spotter/steps")
-    doomed: list[tuple[str, str]] = []
+    output = _git(
+        repo,
+        "for-each-ref",
+        "--format=%(refname)%00%(objectname)%00%(committerdate:unix)",
+        "refs/spotter/steps",
+    )
+    cutoff = None
+    if max_age_days is not None:
+        stamp = now if now is not None else int(time.time())
+        cutoff = stamp - max_age_days * 86400
+    doomed: list[tuple[str, PrunedRef]] = []
     for line in output.splitlines():
-        refname, _, sha = line.partition("\x00")
-        if not refname.startswith("refs/spotter/steps/"):
+        refname, _, rest = line.partition("\x00")
+        sha, _, committed = rest.partition("\x00")
+        if not refname.startswith("refs/spotter/steps/") or not sha:
             continue  # paranoia: never consider anything else deletable
-        if sha and sha not in referenced:
-            doomed.append((refname, sha))
+        if sha not in referenced:
+            doomed.append((refname, PrunedRef(sha, "unreferenced")))
+        elif cutoff is not None and committed.isdigit() and int(committed) < cutoff:
+            doomed.append((refname, PrunedRef(sha, "expired")))
     if apply and doomed:
         # One update-ref --stdin transaction: all deletions or none — a
         # mid-loop failure must not leave a half-pruned ref namespace.
-        script = "".join(f"delete {refname} {sha}\n" for refname, sha in doomed)
+        script = "".join(f"delete {refname} {pruned.sha}\n" for refname, pruned in doomed)
         _git(repo, "update-ref", "--stdin", input=script)
-    return [sha for _, sha in doomed]
+    return [pruned for _, pruned in doomed]

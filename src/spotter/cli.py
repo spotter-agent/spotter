@@ -70,6 +70,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--apply", action="store_true", help="prune: actually delete (default is dry-run)"
     )
     parser.add_argument(
+        "--max-age-days",
+        type=int,
+        help=(
+            "prune: also expire snapshots older than N days even when a journal "
+            "references them — bounded disk in exchange for losing fork-ability"
+        ),
+    )
+    parser.add_argument(
         "--window", type=int, default=40, help="review: trajectory tail size fed to the reviewer"
     )
     parser.add_argument("--pairs", type=int, default=1, help="experiment: counterfactual pairs")
@@ -118,7 +126,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "analyze":
         return _analyze_main(args.session)
     if args.command == "prune":
-        return _prune_main(args.repo or Path.cwd(), apply=args.apply)
+        if args.max_age_days is not None and args.max_age_days < 1:
+            parser.error("--max-age-days must be >= 1")
+        return _prune_main(
+            args.repo or Path.cwd(), apply=args.apply, max_age_days=args.max_age_days
+        )
     if args.command == "experiment":
         if not args.session or args.step is None or not args.guidance:
             parser.error("experiment requires --session, --step and --guidance")
@@ -363,7 +375,7 @@ def _metrics_main(session: str | None) -> int:
     return 0
 
 
-def _prune_main(repo: Path, *, apply: bool) -> int:
+def _prune_main(repo: Path, *, apply: bool, max_age_days: int | None = None) -> int:
     """Drop refs/spotter/steps/* that no journal references (issue #7).
 
     Dry-run by default: deleting a snapshot is the one spotter operation that
@@ -375,14 +387,17 @@ def _prune_main(repo: Path, *, apply: bool) -> int:
     try:
         with global_lock():
             referenced = referenced_snapshots(sessions_dir, repo)
-            pruned = prune_snapshots(repo, referenced, apply=apply)
+            pruned = prune_snapshots(repo, referenced, apply=apply, max_age_days=max_age_days)
     except SnapshotError as error:
         print(f"prune aborted: {error}", file=sys.stderr)
         return 1
     verb = "deleted" if apply else "would delete (pass --apply)"
+    expired = sum(p.reason == "expired" for p in pruned)
     print(f"{len(referenced)} snapshots referenced by journals; {verb} {len(pruned)} refs")
-    for sha in pruned:
-        print(f"  {sha}")
+    if expired:
+        print(f"  {expired} of them still referenced but past --max-age-days: forks lost")
+    for pruned_ref in pruned:
+        print(f"  {pruned_ref.sha} ({pruned_ref.reason})")
     return 0
 
 

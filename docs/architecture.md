@@ -312,6 +312,64 @@ reversible: true
 
 The initial MVP can simply classify and record effects. Full compensating rollback can come later.
 
+## Durability, retention, and ambiguity policy
+
+Supervision data is only useful if it survives crashes, stays bounded on disk,
+and is honest about what it could not judge. The three contracts below are what
+the implementation actually guarantees today.
+
+### Journal durability
+
+The step journal is append-only JSONL, one file per session, written by however
+many hook processes the runtime spawns.
+
+- **Serialization.** Every append takes an exclusive `flock` on a sidecar lock
+  file. Step numbers and proposal numbers are allocated inside that lock, so
+  concurrent hook processes cannot produce duplicate or reordered steps.
+- **Durability.** Each record is `flush`ed and `fsync`ed before the lock is
+  released. A record is therefore complete on disk or absent — never half
+  applied to the numbering.
+- **Crash recovery.** A process killed mid-write can leave a partial trailing
+  line. Readers keep the valid prefix; the next append truncates the torn tail
+  before writing. Destructive readers (`prune`) instead load strictly and abort,
+  because a torn tail may hold the newest snapshot reference and treating its
+  absence as fact would delete live data.
+- **Cost.** Step allocation reads a size-keyed sidecar cache rather than
+  re-parsing the journal: measured 9.2 ms cold and 0.30 ms warm at 3,000
+  records. A sidecar that does not match the file size is discarded and the
+  full repairing load runs instead.
+
+### Snapshot lifecycle and retention
+
+- **When.** Snapshots are taken at mutation boundaries — before and after
+  `apply_patch` — not on every event.
+- **No-op suppression.** If the worktree tree is identical to the session's
+  previous snapshot, that snapshot is reused and no new ref is created.
+- **Pinning.** Each snapshot is a commit pinned under `refs/spotter/steps/`, so
+  `gc` cannot remove a state a later fork depends on. The user's index, HEAD,
+  and worktree are never touched; restores go to a detached worktree.
+- **Retention.** `spotter prune` deletes snapshots no journal references, in a
+  single `update-ref --stdin` transaction, dry-run by default. Referenced
+  snapshots are kept indefinitely, because deleting one destroys the ability to
+  fork that step. `--max-age-days N` opts into expiring referenced snapshots
+  too; that is a deliberate trade — bounded disk for lost fork-ability — so it
+  is never the default and expired refs are reported separately.
+
+### Gate ambiguity policy
+
+Deterministic gates judge a parsed token stream. Where the parse cannot support
+a decision, the gate **fails open** and says so, rather than guessing:
+
+| Class | Behaviour | Telemetry |
+| --- | --- | --- |
+| Command that cannot be tokenized | allow, rule `unparseable_command` | `gate_fail_open` |
+| Absolute path with no known workspace root | allow, rule `unknown_workspace` | `gate_fail_open` |
+| Everything else | allow or block per rule | `gate_shadow_block` / `gate_block` |
+
+Every fail-open decision is journaled as a `gate_fail_open` record carrying the
+rule that abstained, so blindness is countable rather than invisible. Those
+records surface in `spotter analyze` and can be labeled like any other flag.
+
 ## Codex integration points
 
 Current official Codex documentation exposes the primitives that make Spotter plausible:

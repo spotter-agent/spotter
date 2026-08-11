@@ -162,7 +162,8 @@ def run_hook(
         root=str(cwd) if isinstance(cwd, str) else None,
     )
     journal_file = journal_path(payload)
-    adapter = JournalAdapter(StepJournal(journal_file))
+    journal = StepJournal(journal_file)
+    adapter = JournalAdapter(journal)
     runtime = SpotterRuntime(config, adapter, gate)
     event = event_from_hook(payload)
     if (
@@ -177,7 +178,9 @@ def run_hook(
         # a concurrent prune --apply could otherwise exploit.
         with global_lock():
             try:
-                adapter.next_snapshot = snapshot_worktree(Path(cwd))
+                # Reuse the previous snapshot when the tree is unchanged, so a
+                # tool call that touched nothing does not mint a ref (#7).
+                adapter.next_snapshot = snapshot_worktree(Path(cwd), journal.last_snapshot())
             except SnapshotError:
                 adapter.next_snapshot = None
             decision = runtime.observe(event)

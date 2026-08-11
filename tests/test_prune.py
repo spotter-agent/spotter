@@ -1,5 +1,7 @@
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -55,10 +57,10 @@ def test_prune_keeps_referenced_and_drops_orphans(repo: Path) -> None:
     referenced = referenced_snapshots(journal_path({"session_id": "s1"}).parent)
 
     # dry-run reports but deletes nothing
-    assert prune_snapshots(repo, referenced) == [orphan]
+    assert [p.sha for p in prune_snapshots(repo, referenced)] == [orphan]
     assert len(_refs(repo)) == 2
 
-    assert prune_snapshots(repo, referenced, apply=True) == [orphan]
+    assert [p.sha for p in prune_snapshots(repo, referenced, apply=True)] == [orphan]
     assert _refs(repo) == {f"refs/spotter/steps/{kept}"}
 
 
@@ -158,7 +160,7 @@ def test_race_hook_snapshot_vs_prune_is_serialized(repo: Path, spotter_home: Pat
             pruned = prune_snapshots(repo, referenced, apply=True)
     finally:
         assert worker.wait(timeout=30) == 0
-    assert pruned == []
+    assert [p.sha for p in pruned] == []
     assert _refs(repo) == {f"refs/spotter/steps/{ready.read_text()}"}
 
 
@@ -179,7 +181,7 @@ def test_apply_deletes_all_doomed_refs_in_one_transaction(repo: Path) -> None:
     for n in range(3):
         (repo / "a.txt").write_text(f"v{n}")
         shas.append(snapshot_worktree(repo))
-    assert sorted(prune_snapshots(repo, set(), apply=True)) == sorted(shas)
+    assert sorted(p.sha for p in prune_snapshots(repo, set(), apply=True)) == sorted(shas)
     assert _refs(repo) == set()
 
 
@@ -218,3 +220,105 @@ def test_referenced_snapshots_filters_by_repo(
 
     StepJournal(sessions / "s-nocwd.jsonl").record(TraceEvent("tool_proposal"), snapshot=sha)
     assert referenced_snapshots(sessions, repo) == {sha}  # unknown provenance → keep
+
+
+# --- issue #7: no-op events must not mint refs; retention must be bounded ---
+
+
+def test_unchanged_tree_reuses_the_previous_snapshot(repo: Path) -> None:
+    first = snapshot_worktree(repo)
+    again = snapshot_worktree(repo, first)  # nothing touched the tree
+    assert again == first
+    assert len(_refs(repo)) == 1  # no second ref for a no-op step
+
+    (repo / "a.txt").write_text("changed")
+    third = snapshot_worktree(repo, first)
+    assert third != first and len(_refs(repo)) == 2
+
+
+def test_dedup_falls_back_to_a_new_snapshot_when_previous_is_unusable(repo: Path) -> None:
+    """Best-effort: a bogus previous costs a redundant ref, never a wrong one."""
+    sha = snapshot_worktree(repo, "0" * 40)
+    assert sha and len(_refs(repo)) == 1
+
+
+def test_journal_reports_its_last_snapshot_for_dedup(repo: Path, tmp_path: Path) -> None:
+    journal = StepJournal(tmp_path / "j.jsonl")
+    assert journal.last_snapshot() is None
+    sha = snapshot_worktree(repo)
+    journal.record(TraceEvent("tool_proposal", {}), snapshot=sha)
+    journal.record(TraceEvent("tool_result", {}))  # a later unsnapshotted step
+    assert journal.last_snapshot() == sha
+
+
+def test_referenced_snapshots_survive_by_default_but_expire_on_policy(repo: Path) -> None:
+    kept = snapshot_worktree(repo)
+    referenced = {kept}
+    assert prune_snapshots(repo, referenced) == []  # referenced: kept indefinitely
+
+    future = int(time.time()) + 40 * 86400  # pretend 40 days have passed
+    pruned = prune_snapshots(repo, referenced, max_age_days=30, now=future)
+    assert [(p.sha, p.reason) for p in pruned] == [(kept, "expired")]
+    assert len(_refs(repo)) == 1  # dry-run still deletes nothing
+
+    prune_snapshots(repo, referenced, apply=True, max_age_days=30, now=future)
+    assert _refs(repo) == set()
+
+
+def test_expiry_window_keeps_recent_referenced_snapshots(repo: Path) -> None:
+    sha = snapshot_worktree(repo)
+    assert prune_snapshots(repo, {sha}, max_age_days=30) == []
+
+
+# --- issue #6: a real crash mid-append, not a simulated one ---
+
+
+def test_sigkill_during_append_leaves_a_recoverable_journal(tmp_path: Path) -> None:
+    journal = tmp_path / "j.jsonl"
+    StepJournal(journal).record(TraceEvent("before_crash"))
+    script = (
+        "import os, signal, sys\n"
+        "from pathlib import Path\n"
+        "path = Path(sys.argv[1])\n"
+        "handle = path.open('a')\n"
+        'handle.write(\'{"step": 1, "kind": "torn", "payl\')\n'  # half a record
+        "handle.flush()\n"
+        "os.kill(os.getpid(), signal.SIGKILL)\n"  # real crash, no cleanup runs
+    )
+    worker = subprocess.Popen(
+        [sys.executable, "-c", script, str(journal)],
+        cwd=Path(__file__).parent.parent,
+        env={"PYTHONPATH": "src", "PATH": "/usr/bin:/bin"},
+    )
+    assert worker.wait() == -signal.SIGKILL
+
+    # the valid prefix survives, and the journal keeps working afterwards
+    assert [r.event.kind for r in StepJournal.load(journal)] == ["before_crash"]
+    StepJournal(journal).record(TraceEvent("after_crash"))
+    recovered = StepJournal.load(journal)
+    assert [r.step for r in recovered] == [0, 1]
+    assert [r.event.kind for r in recovered] == ["before_crash", "after_crash"]
+
+
+def test_sigkill_before_flush_leaves_the_journal_untouched(tmp_path: Path) -> None:
+    """A record is complete or absent — never half-applied to step numbering."""
+    journal = tmp_path / "j.jsonl"
+    StepJournal(journal).record(TraceEvent("before_crash"))
+    size = journal.stat().st_size
+    script = (
+        "import os, signal, sys\n"
+        "from pathlib import Path\n"
+        "from spotter.snapshot import StepJournal\n"
+        "from spotter.trace import TraceEvent\n"
+        "journal = StepJournal(Path(sys.argv[1]))\n"
+        "os.kill(os.getpid(), signal.SIGKILL)\n"  # dies before any write
+    )
+    worker = subprocess.Popen(
+        [sys.executable, "-c", script, str(journal)],
+        cwd=Path(__file__).parent.parent,
+        env={"PYTHONPATH": "src", "PATH": "/usr/bin:/bin"},
+    )
+    worker.wait()
+    assert journal.stat().st_size == size
+    StepJournal(journal).record(TraceEvent("after"))
+    assert [r.step for r in StepJournal.load(journal)] == [0, 1]
