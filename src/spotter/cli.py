@@ -17,6 +17,8 @@ from spotter.core import SpotterRuntime
 from spotter.experiment import results_path, run_experiment, summarize
 from spotter.gates import Gate
 from spotter.hook import journal_path, run_hook
+from spotter.labels import LabelError, add_label
+from spotter.metrics import Tally, merge, tally_session
 from spotter.replay import ReplayError, fork, plan_to_json
 from spotter.reviewer import review
 from spotter.snapshot import (
@@ -35,14 +37,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "command",
         nargs="?",
-        choices=["observe", "hook", "analyze", "fork", "prune", "review", "experiment"],
+        choices=[
+            "observe",
+            "hook",
+            "analyze",
+            "fork",
+            "prune",
+            "review",
+            "experiment",
+            "label",
+            "metrics",
+        ],
         default="observe",
         help=(
             "observe: validate config and start; hook: Codex hook bridge (JSON on stdin); "
             "analyze: summarize journaled sessions; fork: branch a session at a step; "
             "prune: drop unreferenced refs/spotter snapshots (dry-run without --apply); "
             "review: run the shadow reviewer on a session (records only, injects nothing); "
-            "experiment: counterfactual fork pairs — nudge vs control (needs --run to execute)"
+            "experiment: counterfactual fork pairs — nudge vs control (needs --run to execute); "
+            "label: record a human verdict on a gate flag, reviewer decision, or session; "
+            "metrics: gate FP rate, reviewer precision and observability ceiling from labels"
         ),
     )
     parser.add_argument("--config", type=Path, help="path to Spotter TOML config")
@@ -68,6 +82,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="experiment: actually execute the 2*pairs agent runs (costs real tokens)",
     )
+    parser.add_argument(
+        "--verdict",
+        help="label: tp|fp|unclear for a step, visible|invisible|unclear for a session",
+    )
+    parser.add_argument("--note", default="", help="label: why (free text, stored verbatim)")
     parser.add_argument(
         "--keep-artifacts",
         action="store_true",
@@ -118,6 +137,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(summarize(results))
         print(f"rows appended to {results_path(args.session, args.step)}")
         return 0
+    if args.command == "label":
+        if not args.session or not args.verdict:
+            parser.error("label requires --session and --verdict")
+        return _label_main(args.session, args.step, args.verdict, args.note)
+    if args.command == "metrics":
+        return _metrics_main(args.session)
     if args.command == "review":
         if not args.session:
             parser.error("review requires --session")
@@ -274,6 +299,59 @@ def _review_main(session: str, config: SpotterConfig, *, window: int) -> int:
         f"[shadow] {decision.decision} ({decision.failure_class}, "
         f"conf={decision.confidence:.2f}): {decision.reason}"
     )
+    return 0
+
+
+def _label_main(session: str, step: int | None, verdict: str, note: str) -> int:
+    """Record a human verdict. Labels live outside the journal so the reviewer
+    never reads its own report card."""
+    try:
+        records = StepJournal.load(journal_path({"session_id": session}))
+    except (OSError, SnapshotError) as error:
+        print(f"label failed: {error}", file=sys.stderr)
+        return 1
+    try:
+        label = add_label(session, step, verdict, note, records)
+    except LabelError as error:
+        print(f"label failed: {error}", file=sys.stderr)
+        return 1
+    target = "session" if step is None else f"step {step}"
+    print(f"labeled {session} {target}: {label.verdict}")
+    return 0
+
+
+def _metrics_main(session: str | None) -> int:
+    """Report the three numbers the plan gates on, each with its coverage."""
+    sessions_dir = journal_path({"session_id": "probe"}).parent
+    journals = sorted(sessions_dir.glob("*.jsonl"))
+    if session:
+        journals = [j for j in journals if j == journal_path({"session_id": session})]
+    if not journals:
+        print("no journals found", file=sys.stderr)
+        return 1
+    gates: dict[str, Tally] = {}
+    reviewer = ceiling = Tally()
+    for journal in journals:
+        try:
+            records = StepJournal.load(journal)
+        except SnapshotError as error:
+            print(f"{journal.stem}: unreadable journal ({error})", file=sys.stderr)
+            continue
+        session_gates, session_reviewer, session_ceiling = tally_session(journal.stem, records)
+        for rule, tally in session_gates.items():
+            gates[rule] = merge(gates.get(rule, Tally()), tally)
+        reviewer = merge(reviewer, session_reviewer)
+        ceiling = merge(ceiling, session_ceiling)
+
+    print("P3 gate false positives (label each flag tp|fp):")
+    if not gates:
+        print("  no gate flags recorded")
+    for rule, tally in sorted(gates.items()):
+        print("  " + tally.rate_line(rule, "true-positive"))
+    print("P4 reviewer precision (label each verify/nudge tp|fp):")
+    print("  " + reviewer.rate_line("interventions", "correct"))
+    print("P1 observability ceiling (label failed sessions visible|invisible):")
+    print("  " + ceiling.rate_line("sessions", "visible"))
     return 0
 
 

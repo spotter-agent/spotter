@@ -197,8 +197,18 @@ To record Codex tool calls, add the bridge to `.codex/hooks.json` and review it 
 Without `--config`, the hook only records observations. Set `observation_only = false`
 explicitly to enforce configured gates.
 
-Recorded sessions can then be summarized with `spotter analyze`. Run `spotter --help`
-for the complete command and option list.
+Recorded sessions can then be summarized with `spotter analyze`, judged one flag at a
+time with `spotter label`, and scored with `spotter metrics`:
+
+```bash
+spotter analyze                                              # what was flagged, with context
+spotter label --session <id> --step 7 --verdict fp --note "quoted, not executed"
+spotter metrics                                              # gate FP rate, reviewer precision
+```
+
+Labels are stored outside the session journal, so a reviewer never reads its own report
+card. `spotter metrics` reports every rate with its coverage and withholds rates that
+rest on too few labels. Run `spotter --help` for the complete command and option list.
 
 ## Documentation
 
