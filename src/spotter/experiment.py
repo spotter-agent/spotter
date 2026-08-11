@@ -191,6 +191,20 @@ def _codex_version() -> str | None:
         return None
 
 
+def forks_dir() -> Path:
+    return spotter_home() / "forks"
+
+
+def list_forks() -> list[Path]:
+    """Fork worktrees currently on disk.
+
+    Prepare-only forks (``spotter fork``, or ``experiment`` without ``--run``)
+    were never cleaned up by anything, so they accumulated a full checkout each.
+    """
+    base = forks_dir()
+    return sorted(p for p in base.glob("*") if p.is_dir()) if base.exists() else []
+
+
 def _cleanup(worktree: str) -> None:
     if Path(worktree).exists():
         with suppress(OSError):

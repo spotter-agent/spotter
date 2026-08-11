@@ -14,17 +14,30 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from fcntl import LOCK_EX, LOCK_UN, flock
 from pathlib import Path
 from typing import Any
 
+from spotter.redact import redact
 from spotter.trace import TraceEvent
 
 
 class SnapshotError(RuntimeError):
     """Raised when git snapshot/restore plumbing fails."""
+
+
+def secure_dir(path: Path) -> Path:
+    """Create a directory only its owner can read.
+
+    Journals hold command history; 0644 was the default and made that history
+    readable by every process on the machine.
+    """
+    path.mkdir(parents=True, exist_ok=True)
+    with suppress(OSError):
+        path.chmod(0o700)
+    return path
 
 
 @contextmanager
@@ -36,7 +49,7 @@ def global_lock(spotter_home: Path | None = None) -> Iterator[None]:
     deletes a snapshot the journal is about to claim (PR #12 review, P0).
     """
     home = spotter_home or Path(os.environ.get("SPOTTER_HOME", Path.home() / ".spotter"))
-    home.mkdir(parents=True, exist_ok=True)
+    secure_dir(home)
     with (home / "lock").open("w") as handle:
         flock(handle, LOCK_EX)
         try:
@@ -162,7 +175,12 @@ class StepJournal:
                         ),
                     }
                 step = int(state["steps"])
-                payload = dict(event.payload)
+                # Redact before the record exists on disk: the journal is the
+                # durable artifact, so filtering afterwards would be too late.
+                redacted, fired = redact(dict(event.payload))
+                payload = dict(redacted) if isinstance(redacted, dict) else dict(event.payload)
+                if fired:
+                    payload["redacted"] = sorted(set(fired))
                 if event.kind == "tool_proposal":
                     state["proposals"] = int(state["proposals"]) + 1
                     payload["proposal_number"] = state["proposals"]
@@ -177,6 +195,8 @@ class StepJournal:
                     },
                     ensure_ascii=False,
                 )
+                if not self.path.exists():
+                    self.path.touch(mode=0o600)
                 with self.path.open("a", encoding="utf-8") as journal:
                     journal.write(line + "\n")
                     journal.flush()
@@ -295,6 +315,19 @@ def referenced_snapshots(sessions_dir: Path, repo: Path | None = None) -> set[st
 class PrunedRef:
     sha: str
     reason: str  # "unreferenced" | "expired"
+
+
+def stale_journals(sessions_dir: Path, max_age_days: int, now: float | None = None) -> list[Path]:
+    """Journals older than the window, by modification time.
+
+    Deleting a journal silently orphans the snapshots it references, so this
+    only *reports*; the caller must handle both together or not at all.
+    """
+    if not sessions_dir.exists():
+        return []
+    stamp = now if now is not None else time.time()
+    cutoff = stamp - max_age_days * 86400
+    return sorted(p for p in sessions_dir.glob("*.jsonl") if p.stat().st_mtime < cutoff)
 
 
 def prune_snapshots(

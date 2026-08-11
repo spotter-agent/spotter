@@ -16,7 +16,13 @@ from typing import Any
 from spotter.config import SpotterConfig
 from spotter.core import SpotterRuntime
 from spotter.gates import Gate
-from spotter.snapshot import SnapshotError, StepJournal, global_lock, snapshot_worktree
+from spotter.snapshot import (
+    SnapshotError,
+    StepJournal,
+    global_lock,
+    secure_dir,
+    snapshot_worktree,
+)
 from spotter.trace import TraceEvent
 
 _PATCH_PATH = re.compile(r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$", re.MULTILINE)
@@ -96,8 +102,8 @@ def spotter_home() -> Path:
 
 
 def journal_path(payload: dict[str, Any]) -> Path:
-    base = spotter_home() / "sessions"
-    base.mkdir(parents=True, exist_ok=True)
+    secure_dir(spotter_home())
+    base = secure_dir(spotter_home() / "sessions")
     return base / f"{sanitize_session(payload.get('session_id'))}.jsonl"
 
 

@@ -2,8 +2,10 @@
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
+import time
 import tomllib
 from collections.abc import Sequence
 from contextlib import suppress
@@ -14,11 +16,12 @@ from pathlib import Path
 from spotter.codex import CodexAdapter
 from spotter.config import ConfigurationError, MainAgentConfig, ReviewerConfig, SpotterConfig
 from spotter.core import SpotterRuntime
-from spotter.experiment import results_path, run_experiment, summarize
+from spotter.experiment import list_forks, results_path, run_experiment, summarize
 from spotter.gates import Gate
-from spotter.hook import journal_path, run_hook
+from spotter.hook import journal_path, run_hook, spotter_home
 from spotter.labels import LabelError, add_label, valid_session
 from spotter.metrics import Tally, merge, tally_session
+from spotter.redact import scan_text
 from spotter.replay import ReplayError, fork, plan_to_json
 from spotter.reviewer import review
 from spotter.snapshot import (
@@ -27,7 +30,9 @@ from spotter.snapshot import (
     StepRecord,
     global_lock,
     prune_snapshots,
+    secure_dir,
     snapshot_references,
+    stale_journals,
 )
 from spotter.trace import TraceEvent
 
@@ -47,6 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
             "experiment",
             "label",
             "metrics",
+            "status",
         ],
         default="observe",
         help=(
@@ -56,7 +62,8 @@ def build_parser() -> argparse.ArgumentParser:
             "review: run the shadow reviewer on a session (records only, injects nothing); "
             "experiment: counterfactual fork pairs — nudge vs control (needs --run to execute); "
             "label: record a human verdict on a gate flag, reviewer decision, or session; "
-            "metrics: gate FP rate, reviewer precision and observability ceiling from labels"
+            "metrics: gate FP rate, reviewer precision and observability ceiling from labels; "
+            "status: what Spotter is storing, and whether it is actually running"
         ),
     )
     parser.add_argument("--config", type=Path, help="path to Spotter TOML config")
@@ -68,6 +75,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--guidance", help="course-correction text for the forked run (fork)")
     parser.add_argument(
         "--apply", action="store_true", help="prune: actually delete (default is dry-run)"
+    )
+    parser.add_argument(
+        "--forks", action="store_true", help="prune: also remove orphaned fork worktrees"
+    )
+    parser.add_argument(
+        "--journals",
+        action="store_true",
+        help="prune: also remove journals past --max-age-days, with their snapshots",
     )
     parser.add_argument(
         "--max-age-days",
@@ -129,8 +144,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.max_age_days is not None and args.max_age_days < 1:
             parser.error("--max-age-days must be >= 1")
         return _prune_main(
-            args.repo or Path.cwd(), apply=args.apply, max_age_days=args.max_age_days
+            args.repo or Path.cwd(),
+            apply=args.apply,
+            max_age_days=args.max_age_days,
+            forks=args.forks,
+            journals=args.journals,
         )
+    if args.command == "status":
+        return _status_main()
     if args.command == "experiment":
         if not args.session or args.step is None or not args.guidance:
             parser.error("experiment requires --session, --step and --guidance")
@@ -347,6 +368,76 @@ def _review_main(session: str, config: SpotterConfig, *, window: int) -> int:
     return 0
 
 
+def _remove_worktree(worktree: Path) -> None:
+    """Remove a fork worktree through git so its administrative entry goes too.
+
+    A plain rmtree leaves the parent repository listing a worktree that no
+    longer exists, which then blocks reuse of that path.
+    """
+    result = subprocess.run(
+        ["git", "-C", str(worktree), "worktree", "remove", "--force", str(worktree)],
+        capture_output=True,
+    )
+    if result.returncode != 0 and worktree.exists():
+        shutil.rmtree(worktree, ignore_errors=True)
+
+
+def _status_main() -> int:
+    """What Spotter is storing, and whether it is actually observing.
+
+    Silence is Spotter's designed normal state, which is why silence cannot
+    also be its failure state (issue #41).
+    """
+    home = spotter_home()
+    if not home.exists():
+        print(f"no spotter home at {home} — nothing has ever been recorded", file=sys.stderr)
+        return 1
+    sessions_dir = home / "sessions"
+    journals = sorted(sessions_dir.glob("*.jsonl")) if sessions_dir.exists() else []
+    total_bytes = sum(p.stat().st_size for p in home.rglob("*") if p.is_file())
+    newest = max((p.stat().st_mtime for p in journals), default=None)
+
+    # status is where a wrong posture gets fixed, not merely reported: a
+    # journal of command history should never have been group-readable.
+    before = home.stat().st_mode & 0o777
+    secure_dir(home)
+    after = home.stat().st_mode & 0o777
+    note = f" (tightened from {oct(before)})" if before != after else ""
+    print(f"home: {home}  ({total_bytes / 1e6:.1f} MB, mode {oct(after)}{note})")
+    print(f"sessions: {len(journals)}")
+    if newest is None:
+        print("  last observation: never")
+    else:
+        age_hours = (time.time() - newest) / 3600
+        print(f"  last observation: {age_hours:.1f}h ago")
+        if age_hours > 24:
+            print("  WARNING: nothing observed in over a day — is the hook still registered?")
+    forks = list_forks()
+    if forks:
+        print(f"fork worktrees: {len(forks)} (remove with: spotter prune --forks --apply)")
+    errors = 0
+    exposed = 0
+    for journal in journals:
+        try:
+            records = StepJournal.load(journal)
+        except SnapshotError:
+            print(f"  UNREADABLE: {journal.name}")
+            errors += 1
+            continue
+        errors += sum(1 for r in records if r.event.kind == "reviewer_error")
+        exposed += sum(
+            1 for line in journal.read_text(errors="replace").splitlines() if scan_text(line)
+        )
+    if errors:
+        print(f"reviewer errors recorded: {errors} (see {home / 'logs'})")
+    if exposed:
+        print(
+            f"WARNING: {exposed} pre-redaction lines match credential patterns; "
+            "these journals predate redaction"
+        )
+    return 0
+
+
 def _label_main(session: str, step: int | None, verdict: str, note: str) -> int:
     """Record a human verdict. Labels live outside the journal so the reviewer
     never reads its own report card."""
@@ -414,7 +505,14 @@ def _metrics_main(session: str | None) -> int:
     return 0
 
 
-def _prune_main(repo: Path, *, apply: bool, max_age_days: int | None = None) -> int:
+def _prune_main(
+    repo: Path,
+    *,
+    apply: bool,
+    max_age_days: int | None = None,
+    forks: bool = False,
+    journals: bool = False,
+) -> int:
     """Drop refs/spotter/steps/* that no journal references (issue #7).
 
     Dry-run by default: deleting a snapshot is the one spotter operation that
@@ -431,6 +529,29 @@ def _prune_main(repo: Path, *, apply: bool, max_age_days: int | None = None) -> 
         print(f"prune aborted: {error}", file=sys.stderr)
         return 1
     verb = "deleted" if apply else "would delete (pass --apply)"
+    if journals:
+        if max_age_days is None:
+            print("--journals requires --max-age-days", file=sys.stderr)
+            return 1
+        # Order matters: journals must go first, because deleting one is what
+        # makes its snapshots unreferenced. Doing it the other way round would
+        # delete snapshots a surviving journal still points at.
+        doomed = stale_journals(sessions_dir, max_age_days)
+        for journal in doomed:
+            print(f"journal {verb}: {journal.stem}")
+            if apply:
+                journal.unlink(missing_ok=True)
+                for suffix in (".state", ".lock", ".review.lock"):
+                    journal.with_suffix(journal.suffix + suffix).unlink(missing_ok=True)
+        if doomed and apply:
+            # Recompute: the references those journals held are gone now.
+            references = snapshot_references(sessions_dir, repo)
+            pruned = prune_snapshots(repo, set(references), apply=apply, max_age_days=max_age_days)
+    if forks:
+        for worktree in list_forks():
+            print(f"fork worktree {verb}: {worktree.name}")
+            if apply:
+                _remove_worktree(worktree)
     print(f"{len(references)} snapshots referenced by journals; {verb} {len(pruned)} refs")
     for pruned_ref in pruned:
         print(f"  {pruned_ref.sha} ({pruned_ref.reason})")
