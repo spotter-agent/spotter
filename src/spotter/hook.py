@@ -43,13 +43,18 @@ def event_from_hook(payload: dict[str, Any]) -> TraceEvent:
         if isinstance(listed, list):
             files.extend(str(item) for item in listed)
         command = tool_input.get("command")
+        patch: str | None = None
         if payload.get("tool_name") == "apply_patch" and isinstance(command, str):
             files.extend(_PATCH_PATH.findall(command))
+            # A patch body is not a shell command; judging it as one produced
+            # real FPs (a patch editing gates.py tripped the gate it edits).
+            patch, command = command, None
         return TraceEvent(
             "tool_proposal",
             {
                 "tool": payload.get("tool_name"),
                 "command": command,
+                "patch": patch,
                 "files": files,
             },
         )

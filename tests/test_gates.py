@@ -22,6 +22,11 @@ from spotter.trace import TraceEvent
         'rm -rf "$HOME"',
         'rm -rf "$HOME/"',
         "git -c advice.detachedHead=false reset --hard",
+        'bash -c "rm -rf /"',  # the string IS executed — judge it as a command
+        "sudo rm -rf /",
+        "FOO=1 git reset --hard",
+        "true && git clean -fd",
+        "git status; git push -f",
     ],
 )
 def test_blocks_destructive_commands(command: str) -> None:
@@ -43,11 +48,28 @@ def test_allows_ordinary_commands(command: str) -> None:
     assert Gate().check_command(command).allowed, command
 
 
-def test_known_ceiling_quoted_destructive_text_is_blocked() -> None:
-    # ponytail: raw-string regex matches inside quoted text, so *mentioning* a
-    # destructive command can block. Deliberate: for catastrophic patterns we
-    # take the rare FP over parsing shell quoting. Upgrade path: command AST.
-    assert not Gate().check_command("git commit -m 'do not git reset --hard'").allowed
+# Regression suite for the first shadow-mode field data: 6/6 FPs, all from
+# raw-string regex matching destructive text that was merely *mentioned*.
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git commit -m 'do not git reset --hard'",
+        # steps 24/27: PR review body mentioning the command
+        "gh pr review 5 --repo x/y --body 'core issue: git reset --hard bypasses the gate'",
+        # steps 7/10/13: heredoc test code containing quoted destructive strings
+        "python3 - <<'PY'\nprint(Gate().check_command(\"git clean -fd\"))\nPY",
+        "git push --force-with-lease",  # the safe force is not the dangerous force
+    ],
+)
+def test_mentioning_destructive_text_no_longer_blocks(command: str) -> None:
+    assert Gate().check_command(command).allowed, command
+
+
+def test_known_ceiling_unquoted_mention_still_blocks() -> None:
+    # ponytail: token scan cannot tell `echo git reset --hard` (mention) from an
+    # exotic wrapper actually running git. Rare unquoted mentions stay blocked —
+    # for catastrophic patterns we keep the conservative side of that trade.
+    assert not Gate().check_command("echo git reset --hard").allowed
 
 
 def test_unparseable_command_fails_open_but_is_annotated() -> None:

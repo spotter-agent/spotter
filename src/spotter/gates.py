@@ -3,6 +3,12 @@
 Rules only — an LLM verdict must never produce a BLOCK. False positives here
 are the most expensive failure, so every pattern errs toward allowing:
 ambiguous input passes, but passes are annotated so blindness is measurable.
+
+Destructive-command judgment runs on the *parsed token stream*, not the raw
+string: quoted text collapses into single tokens, so a command that merely
+mentions ``git reset --hard`` (a PR review body, test code in a heredoc, a
+patch to this very file) no longer trips the gate. First shadow-mode field
+data showed 6/6 false positives from exactly that raw-string matching.
 """
 
 import posixpath
@@ -24,11 +30,10 @@ class GateDecision:
 
 ALLOW = GateDecision(allowed=True)
 
-# Only clearly catastrophic commands. "rm -rf build/" is legitimate agent work;
-# blocking it would burn the trust budget the plan warns about (양치기 소년).
+# Fallback ONLY for commands shlex cannot parse (unbalanced quotes): a raw
+# regex is better than nothing there, and quoted-text FPs cannot occur in a
+# string whose quoting is broken anyway.
 _DESTRUCTIVE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    # Keyed on the target, not the flags: `rm ..` without -rf just fails, and
-    # long options (--recursive) must not slip through a flag-shape regex.
     ("rm_root", re.compile(r"\brm\s+(?:-{1,2}\S+\s+)*(/|~|\$HOME|\.\.)/?(\s|$)")),
     ("git_reset_hard", re.compile(r"\bgit\s+reset\s+--hard\b")),
     ("git_clean_force", re.compile(r"\bgit\s+clean\b[^&|;]*-[a-zA-Z]*f")),
@@ -57,6 +62,33 @@ _DEPENDENCY_MANIFESTS = frozenset(
     }
 )
 
+_SHELLS = frozenset({"sh", "bash", "zsh", "dash"})
+_CHAIN_SEPARATORS = frozenset({";", "&", "&&", "||", "(", ")"})
+_RM_TARGETS = frozenset({"~", "$HOME", "${HOME}", ".."})
+# git global options that consume the following token
+_GIT_VALUE_OPTS = frozenset({"-c", "-C", "--exec-path", "--git-dir", "--work-tree", "--namespace"})
+
+
+def _tokenize(command: str) -> list[str]:
+    """Tokenize with quote awareness; operators split even without spaces."""
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    return list(lexer)
+
+
+def _split(tokens: list[str], separators: frozenset[str]) -> list[list[str]]:
+    groups: list[list[str]] = [[]]
+    for token in tokens:
+        if token in separators:
+            groups.append([])
+        else:
+            groups[-1].append(token)
+    return [group for group in groups if group]
+
+
+def _base(token: str) -> str:
+    return posixpath.basename(token)
+
 
 @dataclass(frozen=True)
 class Gate:
@@ -84,27 +116,55 @@ class Gate:
         return uncertain or ALLOW
 
     def check_command(self, command: str) -> GateDecision:
-        for rule, pattern in _DESTRUCTIVE_PATTERNS:
-            if pattern.search(command):
-                return GateDecision(False, rule, f"destructive command matched {rule}")
         try:
-            tokens = shlex.split(command)
+            tokens = _tokenize(command)
         except ValueError:
-            # Unparseable — cannot reason about it. Fail open, but say so:
-            # this pass is a measured blind spot, not a clean bill of health.
+            for rule, pattern in _DESTRUCTIVE_PATTERNS:
+                if pattern.search(command):
+                    return GateDecision(False, rule, f"destructive command matched {rule}")
+            # Unparseable and no raw-pattern hit — cannot reason about it.
+            # Fail open, but say so: this is a measured blind spot.
             return GateDecision(True, "unparseable_command", "fail-open: could not parse")
-        if "rm" in tokens and any(
-            (token and not token.strip("/")) or token.rstrip("/") in {"~", "$HOME", "${HOME}", ".."}
-            for token in tokens[tokens.index("rm") + 1 :]
-            if not token.startswith("-")
-        ):
-            return GateDecision(False, "rm_root", "destructive command matched rm_root")
-        if "git" in tokens:
-            git_args = tokens[tokens.index("git") + 1 :]
-            if "reset" in git_args and "--hard" in git_args[git_args.index("reset") + 1 :]:
-                return GateDecision(
-                    False, "git_reset_hard", "destructive command matched git_reset_hard"
-                )
+        for chain in _split(tokens, _CHAIN_SEPARATORS):
+            stages = _split(chain, frozenset({"|", "|&"}))
+            decision = self._check_pipeline(stages)
+            if not decision.allowed:
+                return decision
+        return ALLOW
+
+    def _check_pipeline(self, stages: list[list[str]]) -> GateDecision:
+        for index, stage in enumerate(stages):
+            if _base(stage[0]) in {"curl", "wget"} and any(
+                _base(later[0]) in _SHELLS for later in stages[index + 1 :]
+            ):
+                return GateDecision(False, "pipe_to_shell", "downloaded content piped into a shell")
+            decision = self._check_stage(stage)
+            if not decision.allowed:
+                return decision
+        return ALLOW
+
+    def _check_stage(self, stage: list[str]) -> GateDecision:
+        for index, token in enumerate(stage):
+            base = _base(token)
+            rest = stage[index + 1 :]
+            if base == "rm" and _rm_hits_catastrophic_target(rest):
+                return GateDecision(False, "rm_root", "rm targeting /, ~ or ..")
+            if base == "git":
+                verdict = _git_verdict(rest)
+                if verdict is not None:
+                    return verdict
+            if base in _SHELLS:
+                # bash -c '<string>' executes the string: judge it as a command.
+                for position, arg in enumerate(rest):
+                    if arg == "-c" and position + 1 < len(rest):
+                        inner = self.check_command(rest[position + 1])
+                        if not inner.allowed:
+                            return inner
+                        break
+            if base == "mkfs" or base.startswith("mkfs."):
+                return GateDecision(False, "mkfs", "filesystem creation")
+            if token.startswith("of=/dev/"):
+                return GateDecision(False, "dd_device", "writing to a raw device")
         return ALLOW
 
     def check_paths(self, paths: Iterable[str]) -> GateDecision:
@@ -132,3 +192,32 @@ class Gate:
                 if fnmatch(path, pattern):
                     return GateDecision(False, "forbidden_path", f"{path} matches {pattern}")
         return uncertain or ALLOW
+
+
+def _rm_hits_catastrophic_target(rest: list[str]) -> bool:
+    for token in rest:
+        if token.startswith("-"):
+            continue
+        if (token and not token.strip("/")) or token.rstrip("/") in _RM_TARGETS:
+            return True
+    return False
+
+
+def _git_verdict(args: list[str]) -> GateDecision | None:
+    index = 0
+    while index < len(args) and args[index].startswith("-"):
+        index += 2 if args[index] in _GIT_VALUE_OPTS else 1
+    if index >= len(args):
+        return None
+    subcommand, rest = args[index], args[index + 1 :]
+    if subcommand == "reset" and "--hard" in rest:
+        return GateDecision(False, "git_reset_hard", "destructive command matched git_reset_hard")
+    if subcommand == "clean" and any(
+        arg == "--force" or (arg.startswith("-") and not arg.startswith("--") and "f" in arg)
+        for arg in rest
+    ):
+        return GateDecision(False, "git_clean_force", "destructive command matched git_clean_force")
+    if subcommand == "push" and any(arg in {"--force", "-f"} for arg in rest):
+        # --force-with-lease is deliberately allowed: it is the safe force.
+        return GateDecision(False, "git_push_force", "destructive command matched git_push_force")
+    return None
