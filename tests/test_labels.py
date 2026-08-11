@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from spotter.cli import main
-from spotter.hook import journal_path, sanitize_session
+from spotter.hook import journal_path
 from spotter.labels import (
     LabelError,
     add_label,
@@ -13,6 +13,7 @@ from spotter.labels import (
     valid_session,
 )
 from spotter.metrics import MIN_SAMPLES, Tally, merge, tally_session
+from spotter.paths import sanitize_session
 from spotter.snapshot import StepJournal, StepRecord
 from spotter.trace import TraceEvent
 

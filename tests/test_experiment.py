@@ -9,7 +9,8 @@ import pytest
 import spotter.experiment as experiment
 from spotter.config import GatesConfig, MainAgentConfig, ReviewerConfig, SpotterConfig
 from spotter.experiment import ArmResult, results_path, run_experiment, summarize
-from spotter.hook import run_hook, spotter_home
+from spotter.hook import run_hook
+from spotter.paths import spotter_home
 from spotter.replay import ForkPlan
 
 

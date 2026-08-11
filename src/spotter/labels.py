@@ -22,7 +22,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from spotter.hook import sanitize_session, spotter_home
+from spotter.paths import sanitize_session, spotter_home
 from spotter.snapshot import StepRecord
 
 STEP_VERDICTS = ("tp", "fp", "unclear")

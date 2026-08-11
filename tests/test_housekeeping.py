@@ -1,5 +1,6 @@
 """Storage hygiene: fork leaks, journal retention, and honest status (#46, #41)."""
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -121,8 +122,12 @@ def test_status_warns_about_pre_redaction_credentials(
     home: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     journal = journal_path({"session_id": "legacy"})
-    journal.write_text(
-        '{"step": 0, "kind": "tool_proposal", "payload": {"command": "export API_KEY=leaked12345"}, "snapshot": null}\n'
-    )
+    record = {
+        "step": 0,
+        "kind": "tool_proposal",
+        "payload": {"command": "export API_KEY=leaked12345"},
+        "snapshot": None,
+    }
+    journal.write_text(json.dumps(record) + "\n")
     assert main(["status"]) == 0
     assert "match credential patterns" in capsys.readouterr().out

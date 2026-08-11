@@ -14,12 +14,13 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from dataclasses import dataclass
 from fcntl import LOCK_EX, LOCK_UN, flock
 from pathlib import Path
 from typing import Any
 
+from spotter.paths import secure_dir, spotter_home
 from spotter.redact import redact
 from spotter.trace import TraceEvent
 
@@ -28,27 +29,15 @@ class SnapshotError(RuntimeError):
     """Raised when git snapshot/restore plumbing fails."""
 
 
-def secure_dir(path: Path) -> Path:
-    """Create a directory only its owner can read.
-
-    Journals hold command history; 0644 was the default and made that history
-    readable by every process on the machine.
-    """
-    path.mkdir(parents=True, exist_ok=True)
-    with suppress(OSError):
-        path.chmod(0o700)
-    return path
-
-
 @contextmanager
-def global_lock(spotter_home: Path | None = None) -> Iterator[None]:
+def global_lock(spotter_home_override: Path | None = None) -> Iterator[None]:
     """Serialize snapshot-ref creation+journaling against prune.
 
     The ref exists before the journal references it; without this lock a
     concurrent prune --apply sees an unreferenced ref in that window and
     deletes a snapshot the journal is about to claim (PR #12 review, P0).
     """
-    home = spotter_home or Path(os.environ.get("SPOTTER_HOME", Path.home() / ".spotter"))
+    home = spotter_home_override or spotter_home()
     secure_dir(home)
     with (home / "lock").open("w") as handle:
         flock(handle, LOCK_EX)

@@ -13,24 +13,27 @@ from dataclasses import replace
 from fcntl import LOCK_EX, LOCK_NB, flock
 from pathlib import Path
 
+from spotter.budget import charge
 from spotter.codex import CodexAdapter
 from spotter.config import ConfigurationError, MainAgentConfig, ReviewerConfig, SpotterConfig
 from spotter.core import SpotterRuntime
+from spotter.doctor import FAIL, OK, WARN, worst
+from spotter.doctor import run as run_doctor
 from spotter.experiment import list_forks, results_path, run_experiment, summarize
 from spotter.gates import Gate
-from spotter.hook import journal_path, run_hook, spotter_home
+from spotter.hook import journal_path, run_hook
 from spotter.labels import LabelError, add_label, valid_session
 from spotter.metrics import Tally, merge, tally_session
+from spotter.paths import secure_dir, spotter_home
 from spotter.redact import scan_text
 from spotter.replay import ReplayError, fork, plan_to_json
-from spotter.reviewer import review
+from spotter.reviewer import last_usage, review
 from spotter.snapshot import (
     SnapshotError,
     StepJournal,
     StepRecord,
     global_lock,
     prune_snapshots,
-    secure_dir,
     snapshot_references,
     stale_journals,
 )
@@ -53,6 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
             "label",
             "metrics",
             "status",
+            "doctor",
         ],
         default="observe",
         help=(
@@ -63,7 +67,8 @@ def build_parser() -> argparse.ArgumentParser:
             "experiment: counterfactual fork pairs — nudge vs control (needs --run to execute); "
             "label: record a human verdict on a gate flag, reviewer decision, or session; "
             "metrics: gate FP rate, reviewer precision and observability ceiling from labels; "
-            "status: what Spotter is storing, and whether it is actually running"
+            "status: what Spotter is storing, and whether it is actually running; "
+            "doctor: verify supervision end to end (non-zero exit when broken)"
         ),
     )
     parser.add_argument("--config", type=Path, help="path to Spotter TOML config")
@@ -152,6 +157,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     if args.command == "status":
         return _status_main()
+    if args.command == "doctor":
+        return _doctor_main(args.config)
     if args.command == "experiment":
         if not args.session or args.step is None or not args.guidance:
             parser.error("experiment requires --session, --step and --guidance")
@@ -335,6 +342,7 @@ def _review_main(session: str, config: SpotterConfig, *, window: int) -> int:
                 TraceEvent("reviewer_error", {"error": str(error)[:300]})
             )
         return 1
+    spend = charge(session, last_usage())
     StepJournal(journal_file).record(
         TraceEvent(
             "reviewer_decision",
@@ -350,6 +358,7 @@ def _review_main(session: str, config: SpotterConfig, *, window: int) -> int:
                 # What the reviewer could actually see when it judged: a verdict
                 # made on a truncated view or with no goal must stay identifiable.
                 "inputs": digest.provenance(),
+                "spend": {"session_reviews": spend.session, "session_tokens": spend.tokens},
             },
         )
     )
@@ -360,6 +369,7 @@ def _review_main(session: str, config: SpotterConfig, *, window: int) -> int:
         notes.append(f"truncated to {digest.steps_shown} steps")
     if digest.injection_suspected:
         notes.append("possible injection in trajectory text")
+    notes.append(f"review {spend.session} this session, {spend.tokens} tokens")
     suffix = f"  [{'; '.join(notes)}]" if notes else ""
     print(
         f"[shadow] {decision.decision} ({decision.failure_class}, "
@@ -380,6 +390,26 @@ def _remove_worktree(worktree: Path) -> None:
     )
     if result.returncode != 0 and worktree.exists():
         shutil.rmtree(worktree, ignore_errors=True)
+
+
+def _doctor_main(config_path: Path | None) -> int:
+    """Report whether supervision works, and exit non-zero when it does not.
+
+    A tool whose normal output is silence needs one command that speaks.
+    """
+    checks = run_doctor(config_path)
+    marks = {OK: "  ok  ", WARN: " warn ", FAIL: " FAIL "}
+    for check in checks:
+        print(f"[{marks[check.status]}] {check.name}: {check.detail}")
+    verdict = worst(checks)
+    if verdict == FAIL:
+        print("\nsupervision is NOT working", file=sys.stderr)
+        return 2
+    if verdict == WARN:
+        print("\nsupervision works, with warnings above", file=sys.stderr)
+        return 1
+    print("\nsupervision is working")
+    return 0
 
 
 def _status_main() -> int:
@@ -430,6 +460,16 @@ def _status_main() -> int:
         )
     if errors:
         print(f"reviewer errors recorded: {errors} (see {home / 'logs'})")
+    ledger = home / "review-spend.json"
+    if ledger.exists():
+        spent = json.loads(ledger.read_text())
+        day = spent.get("day", {})
+        tokens = sum(
+            int(e.get("tokens", 0))
+            for e in spent.get("sessions", {}).values()
+            if isinstance(e, dict)
+        )
+        print(f"reviews today: {day.get('reviews', 0)}  |  tokens recorded: {tokens}")
     if exposed:
         print(
             f"WARNING: {exposed} pre-redaction lines match credential patterns; "

@@ -10,19 +10,16 @@ import os
 import re
 import subprocess
 import sys
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
+from spotter.budget import exhausted
 from spotter.config import SpotterConfig
 from spotter.core import SpotterRuntime
 from spotter.gates import Gate
-from spotter.snapshot import (
-    SnapshotError,
-    StepJournal,
-    global_lock,
-    secure_dir,
-    snapshot_worktree,
-)
+from spotter.paths import sanitize_session, secure_dir, spotter_home
+from spotter.snapshot import SnapshotError, StepJournal, global_lock, snapshot_worktree
 from spotter.trace import TraceEvent
 
 _PATCH_PATH = re.compile(r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$", re.MULTILINE)
@@ -92,15 +89,6 @@ def event_from_hook(payload: dict[str, Any]) -> TraceEvent:
     return TraceEvent(str(name or "unknown").lower())
 
 
-def sanitize_session(session_id: object) -> str:
-    """External input headed into a filename — never let it carry a path."""
-    return re.sub(r"[^A-Za-z0-9_-]", "_", str(session_id or "unknown"))
-
-
-def spotter_home() -> Path:
-    return Path(os.environ.get("SPOTTER_HOME", Path.home() / ".spotter"))
-
-
 def journal_path(payload: dict[str, Any]) -> Path:
     secure_dir(spotter_home())
     base = secure_dir(spotter_home() / "sessions")
@@ -129,6 +117,13 @@ def _maybe_spawn_shadow_review(
         return
     session = str(payload.get("session_id") or "")
     if not session:
+        return
+    capped = exhausted(session, config.reviewer.max_per_session, config.reviewer.max_per_day)
+    if capped:
+        # Journal it: a reviewer that stopped because it ran out of budget must
+        # not look like a reviewer with nothing to say (issues #52, #41).
+        with suppress(SnapshotError, OSError):
+            StepJournal(journal_file).record(TraceEvent("reviewer_capped", {"reason": capped}))
         return
     args = [
         sys.executable,

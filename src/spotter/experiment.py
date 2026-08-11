@@ -24,7 +24,8 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from spotter.hook import journal_path, sanitize_session, spotter_home
+from spotter.hook import journal_path
+from spotter.paths import sanitize_session, spotter_home
 from spotter.replay import fork
 from spotter.snapshot import StepJournal
 

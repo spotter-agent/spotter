@@ -123,6 +123,7 @@ def codex_runner(model: str, prompt: str) -> str:
                 str(schema),
                 "--output-last-message",
                 str(answer),
+                "--json",
                 prompt,
             ],
             capture_output=True,
@@ -134,7 +135,40 @@ def codex_runner(model: str, prompt: str) -> str:
         )
         if result.returncode != 0:
             raise RuntimeError(f"codex exec failed: {result.stderr.strip()[:300]}")
+        global _LAST_USAGE
+        _LAST_USAGE = _usage_from(result.stdout)
         return answer.read_text(encoding="utf-8")
+
+
+_LAST_USAGE = 0
+
+
+def last_usage() -> int:
+    """Tokens the most recent runner call reported, 0 when unknown.
+
+    Module state rather than a return value because the runner signature is
+    part of the test seam; a review that cannot be priced reports 0 rather
+    than guessing.
+    """
+    return _LAST_USAGE
+
+
+def _usage_from(stdout: str) -> int:
+    total = 0
+    for line in stdout.splitlines():
+        if '"usage"' not in line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        usage = event.get("usage") if isinstance(event, dict) else None
+        if isinstance(usage, dict):
+            for key in ("input_tokens", "output_tokens", "cached_input_tokens"):
+                value = usage.get(key)
+                if isinstance(value, int):
+                    total += value
+    return total
 
 
 def review(

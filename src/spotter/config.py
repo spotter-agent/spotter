@@ -29,6 +29,10 @@ class ReviewerConfig:
     # default: even shadow judgments spend the user's model tokens, and silent
     # spending is not "safe" just because nothing is injected.
     every_steps: int = 0
+    # Ceilings on that spend. Enabling a cadence without a ceiling offers the
+    # user an unbounded background bill they cannot see (issue #52).
+    max_per_session: int = 20
+    max_per_day: int = 100
 
 
 @dataclass(frozen=True)
@@ -64,6 +68,8 @@ class SpotterConfig:
             reviewer=ReviewerConfig(
                 model=_optional_string(reviewer, "model", DEFAULT_REVIEWER_MODEL),
                 every_steps=_int(reviewer, "every_steps", 0),
+                max_per_session=_int(reviewer, "max_per_session", 20),
+                max_per_day=_int(reviewer, "max_per_day", 100),
             ),
             gates=GatesConfig(
                 forbidden_paths=_string_tuple(gates, "forbidden_paths"),

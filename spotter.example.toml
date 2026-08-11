@@ -8,3 +8,5 @@ adapter = "codex"
 # only if your auth supports it — rejected ids fail slowly, not fast.
 model = "default"
 # every_steps = 25  # auto shadow review cadence (0 = off; spends model tokens)
+# max_per_session = 20   # ceilings on review spend; a cadence without one
+# max_per_day = 100      # offers an unbounded background bill (issue #52)
