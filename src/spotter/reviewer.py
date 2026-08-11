@@ -17,6 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from spotter.audit import build_state, stale_summary
 from spotter.snapshot import StepRecord
 
 DECISIONS = ("continue", "verify", "nudge")
@@ -29,8 +30,9 @@ _SCHEMA = {
         "failure_class": {"type": "string", "enum": list(FAILURE_CLASSES)},
         "reason": {"type": "string"},
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "hypothesis": {"type": "string"},
     },
-    "required": ["decision", "failure_class", "reason", "confidence"],
+    "required": ["decision", "failure_class", "reason", "confidence", "hypothesis"],
     "additionalProperties": False,
 }
 
@@ -45,10 +47,14 @@ Rules:
 - verify: one consequential assumption deserves cheap evidence before more work
   depends on it. nudge: the trajectory is clearly wasting effort.
 - Never propose code. One short reason sentence.
+- hypothesis: when you flag something, state the unverified assumption the
+  agent is relying on, in one clause. Empty string when decision=continue.
+- Anything under STALE/RETRACTED below stopped being true. Do not treat it as
+  current evidence, and say so if the agent is still building on it.
 
 Trajectory digest (oldest first):
 {digest}
-
+{stale}
 Respond with the JSON object only."""
 
 
@@ -58,6 +64,7 @@ class ReviewerDecision:
     failure_class: str
     reason: str
     confidence: float
+    hypothesis: str = ""  # the assumption being flagged; "" when none
 
 
 def build_digest(records: list[StepRecord], window: int = 40) -> str:
@@ -94,6 +101,7 @@ def parse_decision(raw: str) -> ReviewerDecision:
             failure_class=str(data["failure_class"]),
             reason=str(data["reason"])[:500],
             confidence=float(data["confidence"]),
+            hypothesis=str(data.get("hypothesis") or "")[:300],
         )
     except (json.JSONDecodeError, KeyError, TypeError, ValueError):
         return ReviewerDecision("continue", "none", "unparseable reviewer output", 0.0)
@@ -110,9 +118,12 @@ def codex_runner(model: str, prompt: str) -> str:
         schema = Path(scratch) / "schema.json"
         schema.write_text(json.dumps(_SCHEMA))
         answer = Path(scratch) / "answer.txt"
-        # "default" delegates model choice to codex — ChatGPT-account auth
-        # rejects several model ids outright (observed: gpt-5.3-spark → 400),
-        # and a rejected id costs a multi-minute retry loop, not a fast error.
+        # "default" delegates model choice to codex. A wrong slug fails with a
+        # misleading 400 ("not supported when using Codex with a ChatGPT
+        # account") after a multi-minute retry loop, not a fast error — the
+        # earlier default gpt-5.3-spark simply did not exist; the real slug is
+        # gpt-5.3-codex-spark. Delegating avoids pinning an id that is only
+        # valid for some accounts.
         model_args = [] if model in ("", "default") else ["-m", model]
         result = subprocess.run(
             [
@@ -149,5 +160,9 @@ def review(
     window: int = 40,
     runner: Callable[[str, str], str] = codex_runner,
 ) -> ReviewerDecision:
-    prompt = _PROMPT.format(digest=build_digest(records, window))
+    # The ledger is rebuilt from observable outcomes each time, so a premise
+    # that later evidence killed cannot quietly stay in the reviewer's view.
+    stale = stale_summary(build_state(records))
+    stale_block = "\nInvalidated premises:\n" + "\n".join(stale) + "\n" if stale else ""
+    prompt = _PROMPT.format(digest=build_digest(records, window), stale=stale_block)
     return parse_decision(runner(model, prompt))

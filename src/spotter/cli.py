@@ -304,6 +304,7 @@ def _review_main(session: str, config: SpotterConfig, *, window: int) -> int:
                 "decision": decision.decision,
                 "failure_class": decision.failure_class,
                 "reason": decision.reason,
+                "hypothesis": decision.hypothesis,
                 "confidence": decision.confidence,
                 "model": config.reviewer.model,
                 "reviewed_upto": records[-1].step,
