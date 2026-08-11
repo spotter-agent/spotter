@@ -8,6 +8,15 @@ Maintained by [@bogyie / Bogyoeng Kim](https://github.com/Bogyie) and [@zerone /
 
 Spotter is an experimental runtime supervision layer for coding agents, starting with Codex.
 
+## Contents
+
+- [How it works](#the-idea)
+- [Installation](#installation)
+- [First run](#first-run)
+- [Connect Spotter to Codex](#connect-spotter-to-codex)
+- [Documentation](#documentation)
+- [Development](#development)
+
 Modern coding agents are good at moving forward. They are less reliable at noticing when they are confidently moving in the wrong direction: drifting from the request, locking onto a weak hypothesis, repeating low-information actions, expanding scope, skipping validation, or carrying a stale assumption deep into an implementation.
 
 Spotter pairs the main coding agent with an **independent reviewer model** that observes the work as it unfolds and intervenes only when intervention is likely to help.
@@ -127,32 +136,33 @@ Trajectory engineering asks a different question:
 
 Spotter is intended as a reference implementation for exploring that layer.
 
-## Documentation
+## Installation
 
-- [Concept](docs/concept.md) — problem definition, principles, and scope
-- [Architecture](docs/architecture.md) — runtime design and Codex integration
-- [Research](docs/research.md) — related work and ideas Spotter borrows
-- [Roadmap](docs/roadmap.md) — staged implementation and evaluation plan
-
-## Development
-
-Spotter's initial implementation uses Python 3.11 or newer and has no runtime
-dependencies. Create an isolated environment, install the project with its development
-tools, and run every local check with:
+Spotter requires Python 3.11 or newer and has no third-party runtime dependencies. Clone
+the repository and install it in a virtual environment:
 
 ```bash
+git clone https://github.com/bogyie/spotter.git
+cd spotter
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install -e '.[dev]'
-ruff format --check .
-ruff check .
-mypy src tests
-pytest
-spotter --config spotter.example.toml
+python -m pip install -e .
 ```
 
-The example configuration selects the main-agent adapter and reviewer model and defaults
-to safe, passive observation:
+For a development installation, include the formatter, linter, type checker, and test
+runner with `python -m pip install -e '.[dev]'`.
+
+## First run
+
+Copy the example rather than editing the tracked file, then start Spotter:
+
+```bash
+cp spotter.example.toml spotter.toml
+spotter --config spotter.toml
+```
+
+The command validates the configuration and reports the selected adapter, reviewer, and
+operating mode. The example selects Codex and defaults to safe, passive observation:
 
 ```toml
 observation_only = true
@@ -166,6 +176,8 @@ model = "gpt-5.3-spark"
 
 `gpt-5.3-spark` is the default Spotter reviewer model, so the `[reviewer]` table may be
 omitted unless a different reviewer model is required.
+
+## Connect Spotter to Codex
 
 To record Codex tool calls, add the bridge to `.codex/hooks.json` and review it with
 `/hooks` in Codex:
@@ -181,6 +193,29 @@ To record Codex tool calls, add the bridge to `.codex/hooks.json` and review it 
 
 Without `--config`, the hook only records observations. Set `observation_only = false`
 explicitly to enforce configured gates.
+
+Recorded sessions can then be summarized with `spotter analyze`. Run `spotter --help`
+for the complete command and option list.
+
+## Documentation
+
+- [Concept](docs/concept.md) — the problem definition, design principles, terminology,
+  non-goals, and evaluation questions
+- [Architecture](docs/architecture.md) — components, event flow, intervention policy,
+  and the proposed Codex integration
+- [Research](docs/research.md) — related work and the ideas Spotter borrows
+- [Roadmap](docs/roadmap.md) — implementation stages, milestones, and evaluation plan
+
+## Development
+
+Install the development extras as described above, then run every local check with:
+
+```bash
+ruff format --check .
+ruff check .
+mypy src tests
+pytest
+```
 
 The package deliberately keeps normalized trace events and orchestration separate from
 the Codex adapter. The hook bridge records tool events and applies deterministic gates;
