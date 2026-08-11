@@ -5,7 +5,7 @@ import pytest
 
 from spotter.config import GatesConfig, MainAgentConfig, ReviewerConfig, SpotterConfig
 from spotter.hook import event_from_hook, journal_path, run_hook
-from spotter.snapshot import StepJournal
+from spotter.snapshot import StepJournal, restore_snapshot
 
 
 @pytest.fixture(autouse=True)
@@ -140,6 +140,16 @@ def test_apply_patch_takes_snapshot_for_fork(tmp_path: Path, spotter_home: Path)
     assert record.snapshot  # repo state pinned at the commit boundary
     assert record.event.payload["tool_use_id"] == "call_1"
     assert record.event.payload["cwd"] == str(repo)
+
+    (repo / "x.txt").write_text("patched")
+    post = {**payload, "hook_event_name": "PostToolUse", "tool_response": {"ok": True}}
+    assert run_hook(post, _config(observation_only=True)) is None
+    post_record = StepJournal.load(journal_path(payload))[1]
+    assert post_record.snapshot and post_record.snapshot != record.snapshot
+
+    restored = tmp_path / "restored"
+    restore_snapshot(repo, post_record.snapshot, restored)
+    assert (restored / "x.txt").read_text() == "patched"
 
 
 def test_snapshot_failure_fails_open(tmp_path: Path, spotter_home: Path) -> None:

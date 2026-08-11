@@ -20,6 +20,7 @@ Honest limits, stated rather than papered over:
 """
 
 import json
+import shlex
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -43,7 +44,11 @@ class ForkPlan:
 
 def find_rollout(session_id: str, codex_home: Path | None = None) -> Path:
     home = codex_home or Path.home() / ".codex"
-    matches = sorted((home / "sessions").rglob(f"rollout-*{session_id}.jsonl"))
+    matches = sorted(
+        path
+        for path in (home / "sessions").rglob("rollout-*.jsonl")
+        if path.stem.endswith(session_id)
+    )
     if not matches:
         raise ReplayError(f"no rollout found for session {session_id} under {home}/sessions")
     return matches[-1]
@@ -58,23 +63,26 @@ def fork_rollout(rollout: Path, call_id: str, new_id: str) -> Path:
     lines = rollout.read_text(encoding="utf-8").splitlines()
     if not lines:
         raise ReplayError(f"rollout is empty: {rollout}")
-    meta = json.loads(lines[0])
-    old_id = str(meta.get("payload", {}).get("session_id") or "")
+    meta = _rollout_record(lines[0], 1)
+    payload = meta.get("payload")
+    if not isinstance(payload, dict):
+        raise ReplayError("rollout has no session_meta payload on line 1")
+    old_id = str(payload.get("session_id") or "")
     if not old_id:
         raise ReplayError("rollout has no session_meta session_id on line 1")
-    cut = next(
-        (
-            index
-            for index, line in enumerate(lines)
-            if f'"call_id":"{call_id}"' in line or f'"call_id": "{call_id}"' in line
-        ),
-        None,
-    )
+    cut = None
+    for index, line in enumerate(lines[1:], 1):
+        if _call_id(_rollout_record(line, index + 1)) == call_id:
+            cut = index
+            break
     if cut is None:
         raise ReplayError(f"call_id {call_id} not found in rollout {rollout.name}")
     if cut == 0:
         raise ReplayError("branch point is the first record; nothing to resume from")
-    forked = [line.replace(old_id, new_id) for line in lines[:cut]]
+    payload["session_id"] = new_id
+    if payload.get("id") == old_id:
+        payload["id"] = new_id
+    forked = [json.dumps(meta), *lines[1:cut]]
     dest = rollout.with_name(rollout.name.replace(old_id, new_id))
     if dest.exists():
         raise ReplayError(f"forked rollout already exists: {dest}")
@@ -114,11 +122,17 @@ def fork(
 
     new_id = str(uuid.uuid4())
     worktree = dest or journal_file.parent.parent / "forks" / new_id
-    restore_snapshot(repo_path, snapshot, worktree)
     forked_rollout = fork_rollout(find_rollout(session_id, codex_home), call_id, new_id)
+    try:
+        restore_snapshot(repo_path, snapshot, worktree)
+    except Exception:
+        forked_rollout.unlink(missing_ok=True)
+        raise
 
-    prompt = f" {json.dumps(guidance)}" if guidance else ""
-    command = f"codex exec resume {new_id} -C {worktree} --json{prompt}"
+    argv = ["codex", "exec", "-C", str(worktree), "resume", "--json", new_id]
+    if guidance:
+        argv.append(guidance)
+    command = shlex.join(argv)
     return ForkPlan(
         session_id=new_id,
         branch_step=step,
@@ -130,6 +144,21 @@ def fork(
 
 def plan_to_json(plan: ForkPlan) -> str:
     return json.dumps(asdict(plan), indent=2)
+
+
+def _rollout_record(line: str, number: int) -> dict[str, object]:
+    try:
+        record = json.loads(line)
+    except json.JSONDecodeError as error:
+        raise ReplayError(f"invalid rollout JSON on line {number}: {error.msg}") from error
+    if not isinstance(record, dict):
+        raise ReplayError(f"rollout line {number} is not a JSON object")
+    return record
+
+
+def _call_id(record: dict[str, object]) -> object:
+    payload = record.get("payload")
+    return payload.get("call_id") if isinstance(payload, dict) else None
 
 
 def _nearest_snapshot(records: list[StepRecord], step: int) -> str | None:

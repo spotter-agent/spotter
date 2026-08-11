@@ -158,3 +158,36 @@ class StepJournal:
     def prefix(records: list[StepRecord], upto: int) -> list[StepRecord]:
         """Events before step ``upto`` — the branch point for a future replay."""
         return [r for r in records if r.step < upto]
+
+
+def referenced_snapshots(sessions_dir: Path) -> set[str]:
+    """Every snapshot sha any journal still points at.
+
+    An unreadable journal aborts the scan: pruning with unknown references
+    could delete a snapshot a future fork needs, and that loss is silent.
+    """
+    shas: set[str] = set()
+    for journal in sorted(sessions_dir.glob("*.jsonl")):
+        for record in StepJournal.load(journal):
+            if record.snapshot:
+                shas.add(record.snapshot)
+    return shas
+
+
+def prune_snapshots(repo: Path, referenced: set[str], *, apply: bool = False) -> list[str]:
+    """List (and with apply=True, delete) refs/spotter/steps/* no journal references.
+
+    Touches nothing outside refs/spotter/steps — user refs, worktrees, and
+    referenced snapshots are structurally out of reach.
+    """
+    output = _git(repo, "for-each-ref", "--format=%(refname)%00%(objectname)", "refs/spotter/steps")
+    pruned: list[str] = []
+    for line in output.splitlines():
+        refname, _, sha = line.partition("\x00")
+        if not refname.startswith("refs/spotter/steps/"):
+            continue  # paranoia: never consider anything else deletable
+        if sha and sha not in referenced:
+            pruned.append(sha)
+            if apply:
+                _git(repo, "update-ref", "-d", refname)
+    return pruned

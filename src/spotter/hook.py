@@ -98,12 +98,12 @@ def run_hook(payload: dict[str, Any], config: SpotterConfig) -> str | None:
     event = event_from_hook(payload)
     if (
         config.snapshot_on_patch
-        and event.kind == "tool_proposal"
+        and event.kind in ("tool_proposal", "tool_result")
         and event.payload.get("tool") == "apply_patch"
         and isinstance(cwd, str)
     ):
-        # Snapshot at the commit boundary so P0 fork has a repo state to
-        # restore. Fail open: losing a snapshot must not break the session.
+        # PreToolUse captures the state before this patch; PostToolUse captures
+        # the state after it, keeping later rollout prefixes aligned with disk.
         try:
             adapter.next_snapshot = snapshot_worktree(Path(cwd))
         except SnapshotError:
