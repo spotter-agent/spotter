@@ -4,15 +4,15 @@ Start here if you are reading the repository for the first time.
 
 ## Which document should I read?
 
-| Question | Document | Read time |
+| Question | Document | What you get |
 | --- | --- | --- |
-| What works today, what is blocked, what happens next? | **[Status](status.md)** | ~3 min |
-| What problem is Spotter trying to solve? | [Concept](concept.md) | ~8 min |
-| What processes/components/state should exist? | [Architecture](architecture.md) | ~15–20 min |
-| What happens from install through uninstall/reinstall? | [Lifecycle](lifecycle.md) | ~20 min |
-| What should be implemented first, and what gates each phase? | [Roadmap](roadmap.md) | ~15 min |
-| Which papers/ideas inform the design, and what remains unproven? | [Research](research.md) | ~20 min |
-| What is the umbrella direction decision? | [Issue #66](https://github.com/Bogyie/spotter/issues/66) | reference |
+| What works today, what is blocked, what happens next? | **[Status](status.md)** | implementation dashboard + immediate blocker |
+| What problem is Spotter trying to solve? | [Concept](concept.md) | mental model, principles, intervention semantics |
+| What processes/components/state should exist? | [Architecture](architecture.md) | component, state, IPC, and failure contracts |
+| What happens from install through uninstall/reinstall? | [Lifecycle](lifecycle.md) | command-by-command operational lifecycle |
+| What should be implemented first, and what gates each phase? | [Roadmap](roadmap.md) | dependency graph, deliverables, exit criteria |
+| Which papers/ideas inform the design, and what remains unproven? | [Research](research.md) | literature-to-mechanism map + evidence gates |
+| What is the umbrella direction decision? | [Issue #66](https://github.com/Bogyie/spotter/issues/66) | design rationale and ongoing decisions |
 
 ## Recommended reading paths
 
@@ -21,7 +21,7 @@ Start here if you are reading the repository for the first time.
 ```text
 Status
   ↓
-Roadmap (Now / Next)
+Roadmap → Now / Next
 ```
 
 ### I want to implement the standalone runtime
@@ -70,19 +70,19 @@ spotterd
 PreToolUse Hook only for deterministic blocking
 ```
 
-The target is **conditional on P0**: Spotter must prove that the user’s ordinary Codex TUI and Spotter can share the same external App Server and that `turn/steer` reaches the real active user turn.
+The target is **conditional on P0**: Spotter must prove that the user's ordinary Codex TUI and Spotter can share the same external App Server and that `turn/steer` reaches the real active user turn.
 
 If that does not work reliably, the target architecture is revisited before the daemon migration continues.
 
 ## Document responsibilities
 
-To avoid duplicating the same material everywhere:
+To avoid maintaining duplicate specifications:
 
 - **Status** owns “where are we now?”
 - **Concept** owns “what problem and principles define Spotter?”
-- **Architecture** owns runtime components, process/data flow, state ownership, and failure contracts.
+- **Architecture** owns runtime components, process/data flow, state ownership, IPC, and failure contracts.
 - **Lifecycle** owns package/service/integration/session/update/removal behavior.
-- **Roadmap** owns implementation dependencies and exit criteria.
+- **Roadmap** owns implementation dependencies, deliverables, and exit criteria.
 - **Research** owns prior work, hypotheses, evidence, and evaluation questions.
 
-When a detail belongs to another document, link to it rather than maintaining two competing specifications.
+When a detail belongs to another document, link to it rather than maintaining two competing definitions.
