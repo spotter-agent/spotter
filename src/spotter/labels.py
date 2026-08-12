@@ -40,6 +40,10 @@ class LabelError(ValueError):
     """Raised when a label cannot be applied to the thing it names."""
 
 
+SCHEMA_VERSION = 1
+LEGACY_VERSION = 0
+
+
 @dataclass(frozen=True)
 class Label:
     session: str
@@ -48,6 +52,10 @@ class Label:
     fingerprint: str
     note: str
     labeled_at: str
+    # The verdict vocabularies have already changed once. Without a version a
+    # future change reinterprets old labels silently, and every published rate
+    # rests on them (issue #47).
+    version: int = LEGACY_VERSION
 
 
 def labels_path(session: str) -> Path:
@@ -93,7 +101,7 @@ def add_label(
         if target.event.payload.get("decision") == "continue":
             raise LabelError(f"step {step} is a CONTINUE verdict; silence is not scored")
         mark = fingerprint(target)
-    label = Label(session, step, verdict, mark, note, datetime.now(UTC).isoformat())
+    label = Label(session, step, verdict, mark, note, datetime.now(UTC).isoformat(), SCHEMA_VERSION)
     with labels_path(session).open("a", encoding="utf-8") as sink:
         sink.write(json.dumps(asdict(label), ensure_ascii=False) + "\n")
     return label
@@ -115,6 +123,14 @@ def load_labels(session: str) -> dict[int | None, Label]:
             continue
         try:
             raw = json.loads(line)
+            version = raw.get("version", LEGACY_VERSION)
+            if not isinstance(version, int) or isinstance(version, bool):
+                raise LabelError(f"{path.name} line {number} has a non-integer version")
+            if version > SCHEMA_VERSION:
+                raise LabelError(
+                    f"{path.name} line {number} was written by schema v{version}; "
+                    f"this build understands up to v{SCHEMA_VERSION}"
+                )
             label = Label(
                 session=str(raw["session"]),
                 step=raw["step"],
@@ -122,6 +138,7 @@ def load_labels(session: str) -> dict[int | None, Label]:
                 fingerprint=str(raw["fingerprint"]),
                 note=str(raw.get("note") or ""),
                 labeled_at=str(raw.get("labeled_at") or ""),
+                version=version,
             )
         except (json.JSONDecodeError, KeyError, TypeError) as error:
             raise LabelError(

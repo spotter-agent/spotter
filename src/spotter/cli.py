@@ -236,6 +236,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
+def _span_of(records: list[StepRecord]) -> str:
+    """Wall-clock span of a session, or nothing when it cannot be known.
+
+    Records written before timestamps existed report as unknown rather than
+    contributing a zero, because a zero here is indistinguishable from a
+    session that really was instantaneous (issue #55).
+    """
+    stamped = [r.at for r in records if r.at is not None]
+    if not stamped:
+        return "" if not records else " span=unknown"
+    span = max(stamped) - min(stamped)
+    missing = len(records) - len(stamped)
+    suffix = f" (+{missing} untimed)" if missing else ""
+    return f" span={span / 60:.1f}m{suffix}"
+
+
 def _analyze_main(session: str | None) -> int:
     """Summarize journaled sessions: the aggregation step of the FP-review loop.
 
@@ -264,6 +280,7 @@ def _analyze_main(session: str | None) -> int:
         print(
             f"{journal.stem}: steps={len(records)} proposals={len(proposals)} "
             f"snapshots={snapshots} flagged={len(flagged)} reviews={len(verdicts)}"
+            f"{_span_of(records)}"
         )
         for record in verdicts:
             payload = record.event.payload

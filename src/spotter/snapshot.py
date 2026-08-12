@@ -127,11 +127,44 @@ def restore_snapshot(repo: Path, sha: str, dest: Path) -> Path:
     return dest
 
 
+# Bumped when a field changes *meaning*. Additive fields do not need it, but
+# a reader that cannot tell which rules produced a record cannot refuse the
+# ones it would misread — and journals are the evidence base for every rate
+# this project publishes, read by tools that delete and spend (issue #47).
+SCHEMA_VERSION = 1
+LEGACY_VERSION = 0  # records written before versioning existed
+
+
 @dataclass(frozen=True)
 class StepRecord:
     step: int
     event: TraceEvent
     snapshot: str | None
+    # Wall clock, not monotonic: it has to be comparable across processes and
+    # against the Codex rollout, which is the only reconciliation we have.
+    # None means the record predates timestamps — reported as unknown, never
+    # defaulted to anything (issue #55).
+    at: float | None = None
+    version: int = LEGACY_VERSION
+
+
+def _as_version(value: object, offset: int) -> int:
+    """Version of one record, refusing anything this reader cannot interpret.
+
+    A newer writer may have changed what a field means, and guessing is how
+    old evidence gets silently misread. Absence means the record predates
+    versioning, which is readable by definition.
+    """
+    if value is None:
+        return LEGACY_VERSION
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise SnapshotError(f"journal record at byte {offset} has a non-integer version")
+    if value > SCHEMA_VERSION:
+        raise SnapshotError(
+            f"journal record at byte {offset} was written by schema v{value}; "
+            f"this build understands up to v{SCHEMA_VERSION}"
+        )
+    return value
 
 
 class StepJournal:
@@ -174,10 +207,12 @@ class StepJournal:
                     state["proposals"] = int(state["proposals"]) + 1
                     payload["proposal_number"] = state["proposals"]
                 stored_event = TraceEvent(event.kind, payload)
-                record = StepRecord(step, stored_event, snapshot)
+                record = StepRecord(step, stored_event, snapshot, time.time(), SCHEMA_VERSION)
                 line = json.dumps(
                     {
+                        "v": record.version,
                         "step": record.step,
+                        "at": record.at,
                         "kind": stored_event.kind,
                         "payload": stored_event.payload,
                         "snapshot": snapshot,
@@ -253,11 +288,15 @@ class StepJournal:
                     raise SnapshotError(
                         f"journal step mismatch: expected {step}, got {raw.get('step')!r}"
                     )
+                version = _as_version(raw.get("v"), line_start)
+                at = raw.get("at")
                 records.append(
                     StepRecord(
                         step=step,
                         event=TraceEvent(str(raw["kind"]), dict(raw.get("payload") or {})),
                         snapshot=raw.get("snapshot"),
+                        at=float(at) if isinstance(at, int | float) else None,
+                        version=version,
                     )
                 )
         return records
