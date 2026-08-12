@@ -191,12 +191,11 @@ newer must still be available as `python3`.
 
 ### Codex
 
-Clone the repository, add its bundled local marketplace, and install Spotter:
+Add the Spotter GitHub repository as a marketplace, then add the qualified plugin:
 
 ```bash
-git clone https://github.com/bogyie/spotter.git
-codex plugin marketplace add "$(pwd)/spotter/.agents/plugins"
-codex plugin install spotter
+codex plugin marketplace add bogyie/spotter
+codex plugin add spotter@spotter
 ```
 
 Restart Codex after installation. Codex discovers `.codex-plugin/plugin.json` and the
@@ -204,11 +203,10 @@ bundled `hooks/hooks.json` configuration.
 
 ### Claude Code
 
-Add the repository as a marketplace and install its plugin:
+Add the Spotter GitHub repository as a marketplace and install its qualified plugin:
 
 ```bash
-git clone https://github.com/bogyie/spotter.git
-claude plugin marketplace add ./spotter
+claude plugin marketplace add bogyie/spotter
 claude plugin install spotter@spotter
 ```
 

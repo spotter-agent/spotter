@@ -15,9 +15,20 @@ def test_plugin_manifests_and_hooks_are_well_formed() -> None:
 
     assert codex["name"] == claude["name"] == "spotter"
     assert codex["version"] == claude["version"]
+    assert claude_marketplace["name"] == codex_marketplace["name"] == "spotter"
     assert claude_marketplace["plugins"][0]["source"] == "./"
     assert codex_marketplace["plugins"][0]["source"]["path"] == "./plugins/spotter"
+    assert Path(".agents/plugins/plugins/spotter").resolve() == Path.cwd().resolve()
     assert set(hooks) == {"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"}
+
+
+def test_readme_uses_remote_marketplace_install_commands() -> None:
+    readme = Path("README.md").read_text()
+
+    assert "codex plugin marketplace add bogyie/spotter" in readme
+    assert "codex plugin add spotter@spotter" in readme
+    assert "claude plugin marketplace add bogyie/spotter" in readme
+    assert "claude plugin install spotter@spotter" in readme
 
 
 def test_bundled_hook_runs_without_installing_package(tmp_path: Path) -> None:
