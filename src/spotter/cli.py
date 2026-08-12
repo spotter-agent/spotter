@@ -303,21 +303,55 @@ def _span_of(records: list[StepRecord]) -> str:
 def _forkable_of(records: list[StepRecord]) -> str:
     """How much of the session an experiment can actually branch from.
 
-    A fork needs both a preceding snapshot and the tool_use_id that locates the
-    branch point in the rollout. Reporting the ratio keeps the instrument's
-    reach visible instead of assumed (issue #43).
+    A fork needs three things, and this counts all three: a snapshot recorded
+    at or before the step, the tool_use_id that locates the branch point in the
+    rollout, and — the one that is easy to forget — a snapshot ref that still
+    exists. `prune --max-age-days` deliberately expires snapshots that journals
+    still reference, so counting a journaled sha as forkable reports success
+    for a restore that would fail (PR #74 review, P1).
+
+    When the surviving refs cannot be determined (no cwd recorded, the
+    repository is gone, or git is unavailable) the weaker fact is reported
+    under a weaker name, because calling it forkable would be a claim this
+    function cannot support.
     """
     proposals = [r for r in records if r.event.kind == "tool_proposal"]
     if not proposals:
         return "forkable=0/0"
-    snapshot_steps = [r.step for r in records if r.snapshot]
-    earliest = min(snapshot_steps) if snapshot_steps else None
-    forkable = sum(
+    alive = _surviving_snapshots(records)
+    usable = [r.step for r in records if r.snapshot and (alive is None or r.snapshot in alive)]
+    earliest = min(usable) if usable else None
+    counted = sum(
         1
         for r in proposals
         if earliest is not None and r.step >= earliest and r.event.payload.get("tool_use_id")
     )
-    return f"forkable={forkable}/{len(proposals)}"
+    label = "forkable" if alive is not None else "journaled_snapshot"
+    return f"{label}={counted}/{len(proposals)}"
+
+
+def _surviving_snapshots(records: list[StepRecord]) -> set[str] | None:
+    """Snapshot refs that still exist, or None when that cannot be determined."""
+    repo = next(
+        (
+            Path(str(r.event.payload["cwd"]))
+            for r in records
+            if isinstance(r.event.payload.get("cwd"), str) and r.event.payload["cwd"]
+        ),
+        None,
+    )
+    if repo is None or not repo.exists():
+        return None
+    try:
+        listing = subprocess.run(
+            ["git", "for-each-ref", "--format=%(objectname)", "refs/spotter/steps"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return None
+    return set(listing.stdout.split()) if listing.returncode == 0 else None
 
 
 def _slow_of(slow: list[StepRecord]) -> str:

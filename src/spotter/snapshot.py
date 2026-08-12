@@ -56,12 +56,17 @@ def _repo_identity(repo: Path) -> str:
     one lock. Outside a repository there is nothing to pin and no refs to
     race over, so the resolved path is a sufficient — and deterministic — key.
     """
-    common = subprocess.run(
-        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-        cwd=repo if repo.exists() else Path.cwd(),
-        capture_output=True,
-        text=True,
-    )
+    try:
+        common = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=repo if repo.exists() else Path.cwd(),
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        # No git on PATH — the same condition the plugin wrapper exists for.
+        # A lock key must never be the thing that takes the hook down.
+        return str(repo.resolve())
     if common.returncode == 0 and common.stdout.strip():
         return str(Path(common.stdout.strip()).resolve())
     return str(repo.resolve())
