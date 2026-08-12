@@ -2,185 +2,346 @@ Maintained by [@bogyie / Bogyoeng Kim](https://github.com/Bogyie) and [@zerone /
 
 # Spotter
 
-> **A runtime spotter for coding agents.**
->
+> **A runtime spotter for coding agents.**  
 > Your coding agent drives. Spotter watches the trajectory, challenges bad assumptions, and steps in before wasted work compounds.
 
-Spotter is an experimental runtime supervision system for coding agents, starting with Codex.
+Spotter is an experimental **runtime supervision system for coding agents**, starting with Codex.
 
-The project is moving from a hook/plugin-centered prototype toward a **standalone local supervision runtime**. The target architecture is tracked in [#66](https://github.com/Bogyie/spotter/issues/66): a long-lived `spotterd` owns live supervision state, Codex App Server becomes the primary observation/control plane, and hooks shrink to the minimum synchronous enforcement boundary.
+---
 
-> **Important:** that standalone architecture is the project direction, not the current shipping behavior. The current prototype still uses agent hooks/plugins for event collection and deterministic gates.
+## 30초 요약
 
-## Contents
+Spotter가 해결하려는 문제는 **“에이전트가 틀렸는가?”**보다 조금 더 구체적이다.
 
-- [The idea](#the-idea)
-- [Why trajectory-level supervision](#why-trajectory-level-supervision)
-- [Intervention ladder](#intervention-ladder)
-- [Architecture direction](#architecture-direction)
-- [Current status](#current-status)
-- [Use the current prototype](#use-the-current-prototype)
-- [Target installation experience](#target-installation-experience)
-- [Inspect and evaluate sessions](#inspect-and-evaluate-sessions)
-- [Documentation](#documentation)
-- [Development](#development)
+> **에이전트가 잘못된 가정·반복·범위 이탈을 계속 누적하기 전에, 실행 중간에 이를 감지하고 가장 약한 개입으로 경로를 되돌릴 수 있는가?**
 
-## The idea
+현재 repository는 이미 단순 scaffold를 넘었다. Hook 기반 trajectory 수집, deterministic gate, snapshot/fork/replay, shadow reviewer, audit ledger, labels/metrics, counterfactual experiment harness가 구현돼 있다.
 
-Modern coding agents are good at moving forward. They are less reliable at noticing when they are confidently moving in the wrong direction: drifting from the request, locking onto a weak hypothesis, repeating low-information actions, expanding scope, skipping validation, or carrying a stale assumption deep into an implementation.
-
-Spotter pairs the main coding agent with an **independent reviewer** that observes work while it unfolds and intervenes only when intervention is likely to help.
+다만 **현재 shipping prototype**과 **목표 architecture**는 다르다.
 
 ```text
-                 User Goal
-                    │
-                    ▼
-              Main Agent
-            drives the work
-                    │
-       trajectory / tools / results / diffs
-                    │
-                    ▼
-                 Spotter
-          observes and maintains state
-                    │
-       ┌────────────┼────────────┐
-       ▼            ▼            ▼
-    CONTINUE      VERIFY      NUDGE
-                                │
-                     BLOCK / INTERRUPT / RESTART
+현재 prototype
+
+Codex / Claude Code
+       │ hooks
+       ▼
+ spotter-hook process
+       │
+       ├─ journal
+       ├─ deterministic gate
+       ├─ snapshot
+       └─ periodic shadow review
+
+
+목표 architecture
+
+Codex TUI
+    │
+    ▼
+External Codex App Server
+    ↕ event stream / steer / interrupt
+ spotterd
+    │
+    └─ PreToolUse Hook
+       (deterministic synchronous gate만)
 ```
 
-A good gym spotter does not lift every rep for you. They watch, stay out of the way, and intervene when the lift is about to fail.
+**가장 가까운 다음 단계는 App Server lifecycle/attach PoC다.** 사용자 TUI와 Spotter가 동일한 외부 App Server를 공유하고, Spotter가 실제 active turn에 `turn/steer`를 보낼 수 있는지 먼저 E2E로 검증한다. 이 전제가 실패하면 daemon migration을 밀어붙이지 않는다.
 
-Spotter applies the same principle to coding agents:
+빠른 현재 상태는 [Status](docs/status.md), 상세 방향은 [#66](https://github.com/Bogyie/spotter/issues/66)을 본다.
 
-- **Always observe. Rarely interrupt.**
-- Review the **execution path**, not just the final diff.
-- Prefer **evidence and executable verification** over agent-to-agent debate.
-- Use deterministic checks for deterministic constraints; spend LLM reasoning only on ambiguous cases.
-- Keep the reviewer judgment context independent from the main agent where practical.
-- Escalate intervention gradually: `CONTINUE → VERIFY → NUDGE → BLOCK → INTERRUPT → RESTART`.
+---
 
-The goal is not to maximize reasoning. The goal is to keep reasoning and execution **grounded, economical, and recoverable**.
+## 빠른 탐색
 
-## Why trajectory-level supervision
+| 알고 싶은 것 | 바로 보기 |
+| --- | --- |
+| 지금 실제로 되는 기능 | [현재 상태](#현재-상태) / [docs/status.md](docs/status.md) |
+| Spotter가 정확히 무엇인가 | [핵심 개념](#핵심-개념) / [docs/concept.md](docs/concept.md) |
+| 목표 process/data flow | [목표 architecture](#목표-architecture) / [docs/architecture.md](docs/architecture.md) |
+| 설치→setup→세션→업데이트→제거 | [docs/lifecycle.md](docs/lifecycle.md) |
+| 다음 구현 순서와 dependency | [docs/roadmap.md](docs/roadmap.md) |
+| 근거 논문·연구 질문·미검증 가설 | [docs/research.md](docs/research.md) |
+| umbrella direction issue | [#66](https://github.com/Bogyie/spotter/issues/66) |
 
-Traditional review starts after code exists. Spotter starts earlier.
+---
 
-```text
-Traditional review
-intent → reasoning → exploration → edit → test → diff → REVIEW
+## 현재 상태
 
-Spotter
-intent → reasoning → exploration → edit → test → diff
-           ↑          ↑          ↑      ↑
-             runtime supervision
-```
+### 기능 상태 한눈에 보기
 
-Many agent failures are processes, not isolated bad outputs. A weak assumption can trigger unnecessary exploration, which triggers the wrong edit, which creates misleading failures, which causes further compensating changes. By the time a post-hoc reviewer sees the diff, most of the cost has already been paid.
-
-Spotter is about intervening near the **first meaningful deviation**, before the mistake becomes the trajectory.
-
-Typical targets include:
-
-- specification or scope drift
-- unsupported or stale assumptions
-- premature implementation
-- tunnel vision around one hypothesis
-- repetitive exploration with little new evidence
-- tool-error loops
-- unnecessary refactors or dependency creep
-- missed constraints
-- edits without adequate validation
-- continuing from a premise that later evidence invalidated
-
-## Intervention ladder
-
-| Decision | Meaning | Current state |
+| 기능 | 상태 | 설명 |
 | --- | --- | --- |
-| `CONTINUE` | Work looks healthy. Stay silent. | reviewer decision implemented in shadow mode |
-| `VERIFY` | A consequential assumption needs evidence. | reviewer decision implemented in shadow mode; live delivery not yet implemented |
-| `NUDGE` | The trajectory is drifting or wasting effort. | reviewer decision implemented in shadow mode; live delivery not yet implemented |
-| `BLOCK` | A pending action clearly violates a deterministic constraint. | deterministic gates implemented; default posture remains observation/shadow unless explicitly enabled |
-| `INTERRUPT` | Continuing the active turn is likely to compound failure. | target design, not implemented |
-| `RESTART` | The current reasoning context is no longer trustworthy. | target design, not implemented |
+| Hook trajectory collection | ✅ 구현 | `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse` 기록 |
+| Deterministic gate | ✅ 구현 | destructive command/path/dependency 등 rule-based 판단 |
+| Crash-safe journal | ✅ 구현 | cross-process locking, fsync, torn-tail recovery |
+| Git snapshot / restore | ✅ 구현 | user HEAD/index를 건드리지 않는 snapshot + detached restore |
+| Fork / continuation replay | ✅ 구현 | 동일 prefix에서 Codex continuation 분기 |
+| Shadow reviewer | ✅ 구현 | `CONTINUE / VERIFY / NUDGE` 판단 기록, live delivery는 없음 |
+| Claim/evidence audit ledger | 🟡 부분 | observable outcome 범위에서 stale premise propagation |
+| Label / metrics | ✅ 구현 | coverage-aware precision/FP 측정 |
+| Counterfactual experiment harness | ✅ 구현 | control/guidance same-prefix pair 실행 기반 |
+| Standalone `spotterd` runtime | ❌ 미구현 | #66 target |
+| App Server primary observation | 🧪 PoC 필요 | 가장 먼저 검증할 architecture 전제 |
+| Event-driven signal engine | ❌ 미구현 | 현재 reviewer는 periodic cadence 기반 |
+| Live `VERIFY / NUDGE` | ❌ 미구현 | target: `turn/steer` |
+| `INTERRUPT` | ❌ 미구현 | target: `turn/interrupt` |
+| `RESTART` | ❌ 미구현 | verified state + recovery design 필요 |
+| Homebrew/setup lifecycle | 🎯 target | `brew install spotter` / `spotter setup codex` |
 
-A central design question is not only **“Is the agent wrong?”** but **“Is intervening now better than letting it continue?”**
+> 구현 여부와 효과 입증은 다르다. 예를 들어 reviewer가 `NUDGE`를 생성할 수 있다는 사실은 NUDGE가 실제 task outcome을 개선한다는 증거가 아니다.
 
-## Architecture direction
-
-The hook-centric prototype proved useful enough to expose its own limits. Long-lived audit state, event-driven signals, reviewer scheduling, asynchronous intervention, multi-session supervision, and recovery all want a persistent runtime rather than a fresh process per hook.
-
-The target Codex architecture is:
-
-```text
-                     Codex TUI
-                         │
-                         ▼
-                 Codex App Server
-                  │             ▲
-                  │ events      │ steer / interrupt
-                  ▼             │
-                    spotterd
-                  │            │
-             live state     reviewer/control
-                  │
-          deterministic gate only
-                  │
-             PreToolUse Hook
-```
-
-Responsibility becomes:
+### 지금 가장 중요한 blocker
 
 ```text
-Codex App Server = primary observation + live control plane
-spotterd         = long-lived supervision runtime
-PreToolUse Hook  = narrow synchronous enforcement plane
-journal          = durable event log / recovery source
-CLI              = user control plane
+P0 — Codex App Server lifecycle / attach PoC
 ```
 
-This also changes the product boundary: Spotter is intended to be an independent runtime that can integrate with multiple coding agents, not a Codex plugin that happens to contain supervision logic.
+검증할 질문:
 
-See [Architecture](docs/architecture.md) and [Lifecycle](docs/lifecycle.md) for the detailed target design.
+1. 외부 App Server가 준비돼 있을 때 plain `codex`가 이를 안정적으로 재사용하는가?
+2. Spotter가 second client로 붙어 같은 thread/turn event를 받는가?
+3. active `turn_id`를 정확하게 추적할 수 있는가?
+4. `turn/steer`가 실제 사용자가 보고 있는 Codex TUI turn에 전달되는가?
+5. 여러 Codex session을 동시에 구분할 수 있는가?
+6. attach/control이 불가능한 경우 `status/doctor`가 이를 명확한 degraded mode로 보여줄 수 있는가?
 
-## Current status
+자세한 PoC와 exit criteria는 [Roadmap P0](docs/roadmap.md)을 본다.
 
-**Prototype / research runtime.** The repository has moved well beyond a scaffold, but the new standalone architecture is not implemented yet.
+---
 
-### Implemented today
+## 핵심 개념
 
-- Codex hook ingestion and journaled trajectories
-- deterministic pre-action gates with shadow/default-safe posture
-- shell-aware command analysis for several destructive command classes
-- crash-tolerant, cross-process step journals
-- Git-backed snapshots and safe detached-worktree restore
-- snapshot deduplication and pruning
-- Codex session fork / continuation replay machinery
-- shadow-mode model-backed reviewer
-- reviewer cadence and detached review execution
-- claim/evidence audit ledger with stale-premise propagation where observable outcomes exist
-- human labels and coverage-aware metrics
-- same-prefix counterfactual experiment harness
-- Codex and Claude Code plugin packaging for the current prototype
+Coding agent는 보통 긴 실행 경로를 만든다.
 
-### Not implemented yet
+```text
+understand
+   ↓
+inspect
+   ↓
+hypothesize
+   ↓
+edit
+   ↓
+run
+   ↓
+observe
+   ↓
+revise
+   ↓
+validate
+```
 
-- standalone Homebrew-installed runtime as the primary distribution path
-- `spotterd` as the owner of live in-memory supervision state
-- Codex App Server as the primary observation stream
-- event-driven two-stage signal → reviewer dispatch
-- live `VERIFY` / `NUDGE` delivery to an active turn
-- `INTERRUPT` / `RESTART`
-- complete side-effect/reversibility handling
-- a ground-truth task set with enough real intervention experiments to establish intervention advantage
+문제는 많은 실패가 한 번의 잘못된 출력이 아니라 **trajectory failure**라는 점이다.
 
-The project deliberately keeps strong intervention behind measurement. A detector that sounds plausible is not sufficient evidence that interrupting a working agent helps.
+예를 들어:
 
-## Use the current prototype
+```text
+잘못된 가정
+"timeout 원인은 Redis pool이다"
+        │
+        ▼
+관련 파일만 계속 탐색
+        │
+        ▼
+Redis 설정 수정
+        │
+        ▼
+테스트 실패
+        │
+        ▼
+실패를 보정하기 위한 추가 수정
+        │
+        ▼
+scope 확대 + 시간/토큰 낭비
+```
 
-The current repository can be installed from source with Python 3.11+:
+최종 diff review는 마지막에 문제를 발견할 수 있지만, 이미 대부분의 비용을 지불한 뒤다.
+
+Spotter는 다음 지점을 노린다.
+
+```text
+잘못된 가정
+    │
+    ├── evidence 부족 감지
+    │       ↓
+    │    VERIFY
+    │       ↓
+    │  stack trace 확인
+    │
+    └── 잘못된 edit가 누적되기 전에 경로 수정
+```
+
+즉 Spotter의 목적은 **오류 개수를 최대한 많이 찾는 것**이 아니라 **잘못된 진행이 비싸지기 전에 잡는 것**이다.
+
+---
+
+## 개입 단계
+
+Spotter는 가장 약한 개입부터 사용한다.
+
+| Action | 의미 | 현재 상태 | 목표 runtime primitive |
+| --- | --- | --- | --- |
+| `CONTINUE` | 문제 없음 또는 개입 가치 낮음 | ✅ shadow reviewer | no-op |
+| `VERIFY` | 중요한 가정에 근거가 부족함 | ✅ 판단만 구현 | async `turn/steer` |
+| `NUDGE` | trajectory가 이탈/낭비 쪽으로 기울고 있음 | ✅ 판단만 구현 | async `turn/steer` |
+| `BLOCK` | 명확한 deterministic constraint 위반 | ✅ gate 구현 | synchronous `PreToolUse` deny |
+| `INTERRUPT` | 현재 turn을 계속하면 손실이 누적될 가능성이 큼 | ❌ | `turn/interrupt` |
+| `RESTART` | reasoning context 자체를 신뢰하기 어려움 | ❌ | verified state 기반 새 continuation |
+
+중요한 원칙:
+
+> **Semantic reviewer가 “싫다”고 해서 BLOCK하지 않는다.**  
+> BLOCK은 가능한 한 deterministic하고 audit 가능한 규칙에만 사용한다.
+
+---
+
+## 목표 architecture
+
+### 역할 분리
+
+```text
+Observation plane
+  무엇이 일어나고 있는가?
+  → Codex App Server event stream
+
+Control plane
+  이미 실행 중인 trajectory에 어떻게 개입하는가?
+  → turn/steer, turn/interrupt
+
+Enforcement plane
+  실행 전에 반드시 결정해야 하는가?
+  → PreToolUse deterministic gate
+
+Supervision runtime
+  상태·신호·reviewer·policy를 누가 소유하는가?
+  → spotterd
+```
+
+### 목표 data flow
+
+```text
+                     ┌─────────────┐
+                     │  Codex TUI  │
+                     └──────┬──────┘
+                            │
+                            ▼
+                 ┌──────────────────────┐
+                 │ External App Server  │
+                 └──────┬────────▲──────┘
+                        │        │
+                events  │        │ steer / interrupt
+                        ▼        │
+                 ┌──────────────────┐
+                 │     spotterd     │
+                 │                  │
+                 │ SessionManager   │
+                 │ Live State       │
+                 │ Trace IR         │
+                 │ Audit State      │
+                 │ Signal Engine    │
+                 │ Reviewer         │
+                 │ Intervention     │
+                 │ Journal          │
+                 └────────┬─────────┘
+                          │
+                 deterministic gate
+                          │
+                          ▼
+                   PreToolUse Hook
+```
+
+### 상태 ownership
+
+```text
+memory  = 현재 살아 있는 thread/turn의 live supervision state
+journal = durable event history + crash/restart/resume recovery source
+```
+
+현재 prototype처럼 매 Hook마다 journal을 다시 읽어 live state를 복원하는 구조를 steady state로 유지하지 않는다.
+
+---
+
+## 정상 실행은 어떻게 보일까
+
+목표 runtime에서 평상시 event는 다음처럼 처리한다.
+
+```text
+App Server event
+      │
+      ▼
+spotterd normalize
+      │
+      ├─ live state update
+      ├─ journal append
+      └─ cheap signal evaluation
+                  │
+             suspicious?
+              ├─ no → 끝
+              └─ yes
+                    │
+                    ▼
+             async reviewer job
+                    │
+                    ├─ CONTINUE → no-op
+                    ├─ VERIFY   → active turn이면 steer
+                    ├─ NUDGE    → active turn이면 steer
+                    └─ strong action 후보 → 별도 policy
+```
+
+Main agent는 reviewer가 생각하는 동안 계속 실행한다.
+
+Reviewer verdict가 늦게 도착하면 대상 turn이 아직 active인지 확인한다.
+
+```text
+reviewer verdict ready
+        │
+        ▼
+target turn still active?
+   ├─ yes → deliver
+   └─ no  → stale / discard / explicit defer policy
+```
+
+뒤늦은 NUDGE를 unrelated later turn에 무조건 넣지 않는다.
+
+---
+
+## 왜 Hook은 하나만 남기려 하나
+
+현재 prototype은 네 Hook을 사용한다.
+
+| Hook | 현재 역할 | 목표 |
+| --- | --- | --- |
+| `SessionStart` | session 감지 | App Server lifecycle로 대체 후 제거 후보 |
+| `UserPromptSubmit` | user goal 기록 | App Server user-message event로 대체 후 제거 후보 |
+| `PreToolUse` | proposal + deterministic gate | **atomic gate 때문에 유지** |
+| `PostToolUse` | result/snapshot/review trigger | App Server result/diff event로 대체 후 제거 1순위 |
+
+관찰과 semantic review는 App Server/daemon 쪽으로 옮긴다.
+
+`PreToolUse`는 다음과 같은 실행 전 guarantee 때문에 남긴다.
+
+```text
+git reset --hard
+        │
+        ▼
+PreToolUse
+        │
+        ▼
+spotterd Gate Engine
+   ├─ ALLOW
+   └─ DENY  ← command가 실행되기 전에 확정
+```
+
+향후 App Server가 모든 tool call에 대해 신뢰할 수 있는 atomic veto primitive를 제공한다면 Hook 0개도 검토할 수 있다.
+
+---
+
+## 현재 prototype 사용
+
+### Source install
+
+Python 3.11+:
 
 ```bash
 git clone https://github.com/bogyie/spotter.git
@@ -190,20 +351,20 @@ source .venv/bin/activate
 python -m pip install -e .
 ```
 
-For development:
+Development extras:
 
 ```bash
 python -m pip install -e '.[dev]'
 ```
 
-Copy the example configuration and validate the runtime:
+Config:
 
 ```bash
 cp spotter.example.toml spotter.toml
 spotter --config spotter.toml
 ```
 
-The example defaults to passive observation:
+기본 예시는 passive observation을 사용한다.
 
 ```toml
 observation_only = true
@@ -215,9 +376,7 @@ adapter = "codex"
 model = "default"
 ```
 
-### Current plugin integration
-
-The current prototype can be installed as a Codex or Claude Code plugin. This is now considered a **compatibility/prototype path**, not the target product boundary.
+### Current plugin compatibility path
 
 Codex:
 
@@ -233,24 +392,86 @@ claude plugin marketplace add bogyie/spotter
 claude plugin install spotter@spotter
 ```
 
-The bundled integration currently uses lifecycle/tool hooks and writes journals under `~/.spotter/sessions`.
+이 방식은 **현재 prototype을 사용할 수 있는 경로**이고, target product boundary는 standalone runtime이다.
 
-## Target installation experience
+---
 
-The target standalone experience from [#66](https://github.com/Bogyie/spotter/issues/66) is intentionally different:
+## 현재 세션 분석/실험
+
+세션 요약:
+
+```bash
+spotter analyze
+```
+
+Shadow reviewer:
+
+```bash
+spotter review --session <id>
+```
+
+Human label:
+
+```bash
+spotter label \
+  --session <id> \
+  --step 7 \
+  --verdict fp \
+  --note "quoted text, not executed"
+```
+
+Metrics:
+
+```bash
+spotter metrics
+```
+
+Fork:
+
+```bash
+spotter fork --session <id> --step <k>
+```
+
+Counterfactual experiment:
+
+```bash
+spotter experiment \
+  --session <id> \
+  --step <k> \
+  --guidance "Verify the timeout source before editing Redis settings." \
+  --check "pytest tests/test_timeout.py"
+```
+
+Experiment machinery가 존재한다고 해서 intervention advantage가 이미 입증된 것은 아니다. 현재 가장 큰 evaluation gap 중 하나는 mechanically scorable ground-truth task set과 실제 실행 데이터다.
+
+---
+
+## 목표 설치/운영 UX
+
+목표는 다음 세 줄이다.
 
 ```bash
 brew install spotter
 spotter setup codex
 spotter doctor
+```
 
-# normal use after setup
+그 이후에는:
+
+```bash
 codex
 ```
 
-The user should not need to manually start `spotterd` or a Codex App Server before ordinary use. Manual daemon commands remain operational/debugging escape hatches.
+만 실행하면 된다.
 
-Planned control-plane shape:
+사용자가 매번 직접 다음을 실행하게 하지 않는다.
+
+```bash
+spotter daemon start
+codex app-server daemon start
+```
+
+Target control plane:
 
 ```text
 spotter setup codex|claude|--all
@@ -270,45 +491,49 @@ spotter config
 spotter version
 ```
 
-The exact App Server lifecycle strategy is deliberately gated on an E2E PoC because current Codex can choose an embedded App Server when no reusable external daemon is present. See [Lifecycle](docs/lifecycle.md).
+설치부터 update/uninstall/purge/reinstall까지의 정확한 ownership과 failure handling은 [Lifecycle](docs/lifecycle.md)에 정리한다.
 
-## Inspect and evaluate sessions
+---
 
-Recorded sessions can be summarized, labeled, and measured:
+## 다음 구현 순서
 
-```bash
-spotter analyze
-spotter label --session <id> --step 7 --verdict fp --note "quoted, not executed"
-spotter metrics
+```text
+P0  App Server lifecycle / attach PoC
+ ↓
+P1  spotterd + App Server client + IPC + thread/turn identity
+ ↓
+P2  package/setup/status/doctor/teardown lifecycle
+ ↓
+P3  기존 journal/gate/audit/reviewer/snapshot 기능을 runtime 뒤로 이동
+ ↓
+P4  App Server primary observation + Hook 최소화
+ ↓
+P5  cheap signal → event-driven reviewer
+ ↓
+P6  live VERIFY / NUDGE via turn/steer
+ ↓
+P7  INTERRUPT / RESTART / side-effect-aware recovery
+ ↓
+P8  upgrade/migration/retention/purge/multi-agent hardening
 ```
 
-The shadow reviewer can be run explicitly:
+각 phase의 구체적인 deliverable, dependency, exit criteria는 [Roadmap](docs/roadmap.md)을 본다.
 
-```bash
-spotter review --session <id>
-```
+---
 
-Counterfactual continuations can be prepared or executed where a mechanically decidable `--check` exists:
+## 문서
 
-```bash
-spotter experiment --session <id> --step <k> --guidance "..." --check "..."
-```
+- **[Status](docs/status.md)** — 현재 구현/미구현, blocker, 다음 단계 대시보드
+- **[Concept](docs/concept.md)** — Spotter가 무엇이고 왜 필요한지
+- **[Architecture](docs/architecture.md)** — process, state, event, control, failure contract
+- **[Lifecycle](docs/lifecycle.md)** — install → setup → runtime → update → teardown → purge
+- **[Roadmap](docs/roadmap.md)** — dependency 기반 구현 순서와 exit criteria
+- **[Research](docs/research.md)** — prior work, borrowed ideas, 미검증 가설, evaluation questions
+- **[#66](https://github.com/Bogyie/spotter/issues/66)** — standalone runtime 전환 umbrella issue
 
-Labels live outside the session journal so the reviewer does not read its own report card. Metrics report coverage and avoid publishing rates from very small samples.
+---
 
-## Documentation
-
-- [Concept](docs/concept.md) — the problem, principles, intervention semantics, and product boundary
-- [Architecture](docs/architecture.md) — current/target runtime structure, observation, state, gates, review, and control paths
-- [Lifecycle](docs/lifecycle.md) — install, setup, service/App Server lifecycle, sessions, recovery, upgrades, teardown, purge, and migration
-- [Research](docs/research.md) — related work, borrowed ideas, open hypotheses, and evidence gaps
-- [Roadmap](docs/roadmap.md) — migration sequence, implementation milestones, and evaluation plan
-
-The umbrella direction is tracked in [#66](https://github.com/Bogyie/spotter/issues/66).
-
-## Development
-
-Run the local checks with:
+## 개발
 
 ```bash
 ruff format --check .
@@ -317,20 +542,34 @@ mypy src tests
 pytest
 ```
 
-The architectural migration should preserve the useful boundaries already present in the prototype: normalized trace data, deterministic gates, review policy, snapshots/replay, and evaluation tooling should not become coupled to one Codex transport.
+Architecture migration에서 기존 prototype의 유용한 경계를 유지해야 한다.
+
+```text
+adapter-specific runtime events
+        ↓
+normalized Trace IR
+        ↓
+Spotter core policy / state / evaluation
+```
+
+Codex App Server event shape가 Spotter core 전체로 새어 들어가게 만들지 않는다.
+
+---
 
 ## Trajectory Engineering
 
-Spotter is also an experiment in a broader idea: **Trajectory Engineering**.
+Spotter는 **Trajectory Engineering**이라는 더 넓은 문제를 탐구하는 프로젝트이기도 하다.
 
-- Prompt engineering shapes the instruction.
-- Context engineering shapes what the model can see.
-- Harness engineering shapes tools and execution constraints around the model.
-- **Trajectory engineering shapes what happens while the agent is already executing.**
+- Prompt engineering — 무엇을 지시하는가
+- Context engineering — 무엇을 보게 하는가
+- Harness engineering — 어떤 도구와 환경에서 실행하는가
+- **Trajectory engineering — 실행 중인 경로를 어떻게 관찰·검증·조정·중단·복구하는가**
 
-The question is:
+Spotter가 검증하려는 가설은 다음과 같다.
 
-> **While the agent is working, how do we observe, verify, steer, stop, and recover its path without making supervision more expensive than the mistakes it prevents?**
+> **더 좋은 agent는 처음부터 실수하지 않는 agent만을 의미하지 않는다. 실수가 비싸지기 전에 발견되고 복구 가능한 agent도 더 좋은 agent다.**
+
+이 가설은 아직 Spotter에 대해 입증되지 않았다. Null/negative result도 그대로 기록하는 것이 프로젝트 원칙이다.
 
 ## License
 
