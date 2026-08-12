@@ -1,16 +1,65 @@
 #!/bin/sh
-# Run the bridge directly from an installed plugin checkout; no editable Python
-# installation is required. A project-local config wins unless SPOTTER_CONFIG
-# explicitly selects another file.
-set -eu
+# Run the bridge from an installed plugin checkout; no Python installation is
+# required, because Spotter has no runtime dependencies.
+#
+# Two rules govern this script:
+#
+#   1. It must resolve a Python that can actually run the package. The system
+#      python3 on macOS is 3.9, which cannot import tomllib, so calling `python3`
+#      unqualified fails on every hook invocation — silently, from the user's
+#      point of view, since a hook's stderr is discarded.
+#   2. It must fail open. A supervisor that cannot start has to let the session
+#      continue; the alternative is breaking the work it exists to protect.
+#
+# Note the deliberate absence of `set -e`: a failed probe must not take the
+# whole hook with it.
+set -u
 
-plugin_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+# Parameter expansion rather than dirname: an external tool is one more thing
+# that can be missing from a hook's PATH, and this script exists precisely
+# because such assumptions fail quietly.
+case "$0" in
+    */*) script_dir=${0%/*} ;;
+    *) script_dir=. ;;
+esac
+plugin_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
 export PYTHONPATH="$plugin_root/src${PYTHONPATH:+:$PYTHONPATH}"
 
+runs_spotter() {
+    # tomllib is the binding constraint (3.11+), so test for what we need
+    # rather than for a version string we would have to parse.
+    "$1" -c 'import sys, tomllib; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' \
+        >/dev/null 2>&1
+}
+
+interpreter=""
+for candidate in ${SPOTTER_PYTHON:-} python3.14 python3.13 python3.12 python3.11 python3 python; do
+    [ -n "$candidate" ] || continue
+    command -v "$candidate" >/dev/null 2>&1 || continue
+    if runs_spotter "$candidate"; then
+        interpreter="$candidate"
+        break
+    fi
+done
+
+if [ -z "$interpreter" ]; then
+    # Deliberately not falling back to `uv run`: it can download an interpreter,
+    # and a multi-second stall inside PreToolUse is worse than not observing.
+    echo "spotter: no python 3.11+ on PATH; this session is NOT being supervised" >&2
+    echo "spotter: set SPOTTER_PYTHON=/path/to/python3.11+ to fix" >&2
+    exit 0
+fi
+
+# Config discovery, most specific first. ~/.spotter/spotter.toml is included
+# because that is where the tool's own documentation puts it; omitting it made
+# an installed plugin silently ignore the gates the user had configured.
 if [ -n "${SPOTTER_CONFIG:-}" ]; then
-    exec python3 -m spotter hook --config "$SPOTTER_CONFIG"
+    exec "$interpreter" -m spotter hook --config "$SPOTTER_CONFIG"
 fi
 if [ -f "${PWD}/spotter.toml" ]; then
-    exec python3 -m spotter hook --config "${PWD}/spotter.toml"
+    exec "$interpreter" -m spotter hook --config "${PWD}/spotter.toml"
 fi
-exec python3 -m spotter hook
+if [ -f "${SPOTTER_HOME:-$HOME/.spotter}/spotter.toml" ]; then
+    exec "$interpreter" -m spotter hook --config "${SPOTTER_HOME:-$HOME/.spotter}/spotter.toml"
+fi
+exec "$interpreter" -m spotter hook

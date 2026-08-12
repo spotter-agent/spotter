@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${PLUGIN_ROOT}/scripts/spotter-hook\""
+            "command": "\"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT}}/scripts/spotter-hook\""
           }
         ]
       }
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${PLUGIN_ROOT}/scripts/spotter-hook\""
+            "command": "\"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT}}/scripts/spotter-hook\""
           }
         ]
       }
@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${PLUGIN_ROOT}/scripts/spotter-hook\""
+            "command": "\"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT}}/scripts/spotter-hook\""
           }
         ]
       }
@@ -38,7 +38,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${PLUGIN_ROOT}/scripts/spotter-hook\""
+            "command": "\"${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT}}/scripts/spotter-hook\""
           }
         ]
       }
