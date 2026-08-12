@@ -32,6 +32,13 @@ PreToolUse Hook only
 
 The **immediate blocker** is not writing `spotterd`. It is proving that ordinary `codex` and Spotter can share the **same externally reachable App Server**, so Spotter can observe the real thread and steer the real active turn. If that PoC fails, the target architecture must be revisited before the daemon migration continues.
 
+### Read next
+
+- Implementing runtime internals → [Architecture](architecture.md)
+- Implementing install/setup/update/remove → [Lifecycle](lifecycle.md)
+- Deciding what to build first → [Roadmap](roadmap.md)
+- Evaluating whether the idea actually works → [Research](research.md)
+
 ---
 
 ## Quick status
