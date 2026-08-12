@@ -10,6 +10,7 @@ import spotter.experiment as experiment
 from spotter.config import GatesConfig, MainAgentConfig, ReviewerConfig, SpotterConfig
 from spotter.experiment import ArmResult, results_path, run_experiment, summarize
 from spotter.hook import run_hook
+from spotter.metrics import MIN_SAMPLES, tally_harm
 from spotter.paths import spotter_home
 from spotter.replay import ForkPlan
 
@@ -237,6 +238,48 @@ def test_summary_compares_complete_pairs() -> None:
         ArmResult("e", 1, "guidance", "s", "/wt", 0, 0),
     ]
     assert "n=1/2 complete; guidance better=1" in summarize(rows)
+
+
+def test_harm_rate_uses_only_complete_counterfactual_pairs(tmp_path: Path) -> None:
+    path = tmp_path / "results.jsonl"
+    rows = []
+    for pair in range(MIN_SAMPLES):
+        rows += [
+            {
+                "experiment_id": "e",
+                "pair": pair,
+                "arm": "control",
+                "agent_exit": 0,
+                "check_exit": 0,
+            },
+            {
+                "experiment_id": "e",
+                "pair": pair,
+                "arm": "guidance",
+                "agent_exit": 0,
+                "check_exit": 1 if pair == 0 else 0,
+            },
+        ]
+    rows.append(
+        {"experiment_id": "e", "pair": 99, "arm": "control", "agent_exit": 124, "check_exit": None}
+    )
+    path.write_text("\n".join(json.dumps(row) for row in rows))
+    tally = tally_harm([path])
+    assert (tally.harmed, tally.complete, tally.total) == (1, MIN_SAMPLES, MIN_SAMPLES + 1)
+    assert "harm: 20%" in tally.line() and "provisional" in tally.line()
+
+
+def test_harm_rate_is_withheld_for_tiny_n(tmp_path: Path) -> None:
+    path = tmp_path / "results.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                '{"experiment_id":"e","pair":0,"arm":"control","agent_exit":0,"check_exit":0}',
+                '{"experiment_id":"e","pair":0,"arm":"guidance","agent_exit":0,"check_exit":1}',
+            ]
+        )
+    )
+    assert "too few complete pairs" in tally_harm([path]).line()
 
 
 def test_run_arm_forwards_model_and_codex_home(

@@ -10,6 +10,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -19,7 +20,7 @@ from spotter.config import SpotterConfig
 from spotter.core import SpotterRuntime
 from spotter.gates import Gate
 from spotter.paths import sanitize_session, secure_dir, spotter_home
-from spotter.snapshot import SnapshotError, StepJournal, global_lock, snapshot_worktree
+from spotter.snapshot import SnapshotError, StepJournal, repo_lock, snapshot_worktree
 from spotter.trace import TraceEvent
 
 _PATCH_PATH = re.compile(r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$", re.MULTILINE)
@@ -170,10 +171,34 @@ def _maybe_spawn_shadow_review(
             )
 
 
+# Hooks are registered with a 10s timeout that nobody measured. A hook killed
+# at that limit fails open, so supervision stops silently for exactly the tool
+# calls that mutate files — the one case where it matters most. Recording the
+# slow ones turns a guessed budget into an observed distribution (issue #49).
+SLOW_HOOK_MS = 1000.0
+
+
+def _record_if_slow(journal_file: Path, kind: str, elapsed_ms: float) -> None:
+    """Journal a hook that took long enough to be worth knowing about.
+
+    Only the slow ones: stamping every record with its own duration would
+    double the journal to describe the common case, which is uninteresting by
+    construction. The threshold is a fraction of the configured hook timeout,
+    so the record arrives before the kill, not after.
+    """
+    if elapsed_ms < SLOW_HOOK_MS:
+        return
+    with suppress(SnapshotError, OSError):
+        StepJournal(journal_file).record(
+            TraceEvent("hook_slow", {"kind": kind, "elapsed_ms": round(elapsed_ms, 1)})
+        )
+
+
 def run_hook(
     payload: dict[str, Any], config: SpotterConfig, config_path: Path | None = None
 ) -> str | None:
     """Process one hook invocation. Returns stdout JSON, or None to allow."""
+    started = time.perf_counter()
     cwd = payload.get("cwd")
     gate = Gate(
         forbidden_paths=config.gates.forbidden_paths,
@@ -193,9 +218,10 @@ def run_hook(
     ):
         # PreToolUse captures the state before this patch; PostToolUse captures
         # the state after it, keeping later rollout prefixes aligned with disk.
-        # The global lock closes the ref-created-but-not-yet-journaled window
-        # a concurrent prune --apply could otherwise exploit.
-        with global_lock():
+        # The repository lock closes the ref-created-but-not-yet-journaled
+        # window a concurrent prune --apply could otherwise exploit — scoped to
+        # this repository, because a session elsewhere has no stake in it.
+        with repo_lock(Path(cwd)):
             try:
                 # Reuse the previous snapshot when the tree is unchanged, so a
                 # tool call that touched nothing does not mint a ref (#7).
@@ -205,6 +231,7 @@ def run_hook(
             decision = runtime.observe(event)
     else:
         decision = runtime.observe(event)
+    _record_if_slow(journal_file, event.kind, (time.perf_counter() - started) * 1000)
     if event.kind == "tool_proposal":
         _maybe_spawn_shadow_review(
             config, payload, journal_file, adapter.last_proposal_number, config_path

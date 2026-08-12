@@ -8,6 +8,7 @@ the full worktree (including untracked files), and restore never mutates the
 user's checkout.
 """
 
+import hashlib
 import json
 import os
 import subprocess
@@ -31,15 +32,44 @@ class SnapshotError(RuntimeError):
 
 @contextmanager
 def global_lock(spotter_home_override: Path | None = None) -> Iterator[None]:
-    """Serialize snapshot-ref creation+journaling against prune.
+    """Serialize operations that span repositories.
 
-    The ref exists before the journal references it; without this lock a
-    concurrent prune --apply sees an unreferenced ref in that window and
-    deletes a snapshot the journal is about to claim (PR #12 review, P0).
+    Only journal retention needs this: journals are not per repository, so two
+    prunes selecting the same stale journal must not race. Snapshot pinning
+    does *not* belong here — see repo_lock.
     """
     home = spotter_home_override or spotter_home()
     secure_dir(home)
     with (home / "lock").open("w") as handle:
+        flock(handle, LOCK_EX)
+        try:
+            yield
+        finally:
+            flock(handle, LOCK_UN)
+
+
+@contextmanager
+def repo_lock(repo: Path, spotter_home_override: Path | None = None) -> Iterator[None]:
+    """Serialize snapshot-ref creation+journaling against prune, per repository.
+
+    The ref exists before the journal references it; without a lock a
+    concurrent prune --apply sees an unreferenced ref in that window and
+    deletes a snapshot the journal is about to claim (PR #12 review, P0).
+
+    That invariant is per repository — refs live in one repo and prune already
+    filters references by repo — but the lock protecting it was global, so a
+    patch in repository A blocked the PreToolUse hook of an unrelated session
+    in repository B. Measured on a 27,669-file repository, the hold is 397 ms
+    of git work, taken on every mutation (issue #49).
+
+    Keyed by the resolved path so two spellings of the same repository take the
+    same lock, and hashed so the key cannot collide with a sanitised name or
+    outgrow a filename.
+    """
+    home = spotter_home_override or spotter_home()
+    locks = secure_dir(home / "locks")
+    key = hashlib.sha256(str(repo.resolve()).encode()).hexdigest()[:24]
+    with (locks / f"{key}.lock").open("w") as handle:
         flock(handle, LOCK_EX)
         try:
             yield

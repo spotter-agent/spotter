@@ -31,8 +31,8 @@ from spotter.experiment import list_forks, results_path, run_experiment, summari
 from spotter.gates import Gate
 from spotter.hook import journal_path, run_hook
 from spotter.labels import LabelError, add_label, valid_session
-from spotter.metrics import Tally, merge, tally_session
-from spotter.paths import secure_dir, spotter_home
+from spotter.metrics import Tally, merge, tally_harm, tally_session
+from spotter.paths import sanitize_session, secure_dir, spotter_home
 from spotter.redact import scan_text
 from spotter.replay import ReplayError, fork, plan_to_json
 from spotter.reviewer import last_usage, review
@@ -42,6 +42,7 @@ from spotter.snapshot import (
     StepRecord,
     global_lock,
     prune_snapshots,
+    repo_lock,
     snapshot_references,
     stale_journals,
 )
@@ -258,6 +259,18 @@ def _span_of(records: list[StepRecord]) -> str:
     return f" span={span / 60:.1f}m{suffix}"
 
 
+def _slow_of(slow: list[StepRecord]) -> str:
+    """Hooks that ran long enough to risk the runtime's timeout.
+
+    A hook killed at the limit fails open, so supervision stops precisely for
+    the tool calls that mutate files; the count belongs next to the others.
+    """
+    if not slow:
+        return ""
+    worst = max(float(r.event.payload.get("elapsed_ms") or 0) for r in slow)
+    return f" slow_hooks={len(slow)} (worst {worst:.0f}ms)"
+
+
 def _analyze_main(session: str | None) -> int:
     """Summarize journaled sessions: the aggregation step of the FP-review loop.
 
@@ -283,10 +296,11 @@ def _analyze_main(session: str | None) -> int:
         snapshots = sum(1 for r in records if r.snapshot)
         flagged = [r for r in records if r.event.kind in ("gate_shadow_block", "gate_fail_open")]
         verdicts = [r for r in records if r.event.kind == "reviewer_decision"]
+        slow = [r for r in records if r.event.kind == "hook_slow"]
         print(
             f"{journal.stem}: steps={len(records)} proposals={len(proposals)} "
             f"snapshots={snapshots} flagged={len(flagged)} reviews={len(verdicts)}"
-            f"{_span_of(records)}"
+            f"{_span_of(records)}{_slow_of(slow)}"
         )
         for record in verdicts:
             payload = record.event.payload
@@ -652,6 +666,20 @@ def _metrics_main(session: str | None) -> int:
     print("  " + reviewer.rate_line("interventions", "correct"))
     print("P1 observability ceiling (label failed sessions visible|invisible):")
     print("  " + ceiling.rate_line("sessions", "visible"))
+    experiment_dir = spotter_home() / "experiments"
+    experiment_paths = sorted(experiment_dir.glob("*.jsonl")) if experiment_dir.exists() else []
+    if session:
+        prefix = sanitize_session(session) + "-step"
+        experiment_paths = [path for path in experiment_paths if path.name.startswith(prefix)]
+    try:
+        harm = tally_harm(experiment_paths)
+    except (OSError, ValueError) as error:
+        print(f"metrics aborted: {error}", file=sys.stderr)
+        return 1
+    print("Tier 2 intervention safety:")
+    print("  " + harm.line())
+    print("  recovery: not measurable — no explicit intervention outcome events recorded")
+    print("  ignored intervention: not measurable — delivery journaling is not implemented")
     return 0
 
 
@@ -681,7 +709,11 @@ def _prune_main(
         # still referenced, and pruning. Releasing between those steps lets a
         # hook append to a journal being deleted, or pin a ref this pass has
         # already decided is unreferenced (PR #58 review, P0).
-        with global_lock():
+        # Global for the journal phase (journals are not per repository, so two
+        # prunes must not select the same stale file), repo-scoped for the ref
+        # phase. Always in this order; the hook only ever takes the repo lock,
+        # so no caller can acquire them the other way round.
+        with global_lock(), repo_lock(repo):
             cutoff = time.time() - (max_age_days or 0) * 86400
             doomed = (
                 stale_journals(sessions_dir, max_age_days)
