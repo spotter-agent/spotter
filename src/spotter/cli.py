@@ -410,7 +410,7 @@ def _review_main(
 
 
 def _delete_journal(journal: Path, cutoff: float) -> bool:
-    """Remove a journal and its sidecars, holding its own lock first.
+    """Remove a journal and its state while no writer or reviewer is active.
 
     Staleness is re-checked *after* the lock is acquired. Holding the lock
     proves no one is writing right now; it says nothing about whether the
@@ -429,24 +429,35 @@ def _delete_journal(journal: Path, cutoff: float) -> bool:
     by nothing (PR #58 review, P0). An empty lock file is a few bytes; a
     corrupted journal is the evidence base for every published rate.
     """
+    review_lock_path = journal.with_suffix(".review.lock")
+    try:
+        review_handle = review_lock_path.open("a")
+    except OSError:
+        return False
+    try:
+        flock(review_handle, LOCK_EX | LOCK_NB)
+    except OSError:
+        review_handle.close()
+        return False
+
     lock_path = journal.with_suffix(journal.suffix + ".lock")
-    handle = None
     try:
         handle = lock_path.open("a")
-        flock(handle, LOCK_EX)
-    except OSError:
-        handle = None
-    try:
-        if not journal.exists() or journal.stat().st_mtime >= cutoff:
-            return False  # became current while we waited
-        journal.unlink(missing_ok=True)
-        for suffix in (".state", ".review.lock"):
-            journal.with_suffix(journal.suffix + suffix).unlink(missing_ok=True)
-        return True
-    finally:
-        if handle is not None:
+        try:
+            flock(handle, LOCK_EX)
+            if not journal.exists() or journal.stat().st_mtime >= cutoff:
+                return False  # became current while we waited
+            journal.unlink(missing_ok=True)
+            journal.with_suffix(journal.suffix + ".state").unlink(missing_ok=True)
+            return True
+        finally:
             flock(handle, LOCK_UN)
             handle.close()
+    except OSError:
+        return False
+    finally:
+        flock(review_handle, LOCK_UN)
+        review_handle.close()
 
 
 def _remove_worktree(worktree: Path) -> None:

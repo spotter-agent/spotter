@@ -190,6 +190,33 @@ def test_journal_deletion_holds_the_journal_lock(repo: Path, home: Path) -> None
     assert lock_path.exists(), "removing the lock lets the next writer create a second inode"
 
 
+def test_active_review_keeps_a_stale_journal(repo: Path, home: Path) -> None:
+    """A reviewer loads the journal before its model call, so pruning it during
+    that call would let the eventual verdict recreate only stale data."""
+    import os
+    from fcntl import LOCK_EX, flock
+
+    journal = journal_path({"session_id": "reviewing"})
+    StepJournal(journal).record(TraceEvent("x"))
+    old = 40 * 86400
+    os.utime(journal, (journal.stat().st_atime - old, journal.stat().st_mtime - old))
+
+    review_lock = journal.with_suffix(".review.lock")
+    with review_lock.open("a") as held:
+        flock(held, LOCK_EX)
+        assert (
+            main(["prune", "--repo", str(repo), "--journals", "--max-age-days", "30", "--apply"])
+            == 0
+        )
+        assert journal.exists()
+
+    assert (
+        main(["prune", "--repo", str(repo), "--journals", "--max-age-days", "30", "--apply"]) == 0
+    )
+    assert not journal.exists()
+    assert review_lock.exists()
+
+
 def test_worktree_removal_failure_does_not_orphan_git_metadata(
     home: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
