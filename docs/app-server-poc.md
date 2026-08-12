@@ -17,9 +17,12 @@ uv run python -m spotter.app_server_poc \
   --thread-id THREAD --turn-id TURN --steer "[Spotter] Verify the failing assumption."
 ```
 
-## Result on Codex 0.147.0
+## Result on Codex 0.147.0: no shared live control plane
 
-- A second client can initialize and list threads over the external Unix-socket App Server.
+- The required Tier-0 result is negative: the active TUI did not share the external App Server, so
+  Spotter could not observe or steer its live turn.
+- A second client can initialize and read durable thread history over the external Unix socket, but
+  this alone does not prove live attachment.
 - `turn/steer` is present in the generated protocol and requires both thread and active-turn IDs.
 - `codex app-server daemon start` rejected the Homebrew/Cask install because managed daemon mode
   requires Codex's standalone installer.

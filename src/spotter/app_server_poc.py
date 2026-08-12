@@ -21,10 +21,13 @@ class _Readable(Protocol):
 
 
 def _read_exact(stream: _Readable, size: int) -> bytes:
-    data = stream.read(size)
-    if data is None or len(data) != size:
-        raise AppServerError("app-server connection closed")
-    return data
+    chunks = bytearray()
+    while len(chunks) < size:
+        chunk = stream.read(size - len(chunks))
+        if not chunk:
+            raise AppServerError("app-server connection closed")
+        chunks.extend(chunk)
+    return bytes(chunks)
 
 
 def _client_frame(payload: bytes, opcode: int = 1) -> bytes:
@@ -40,8 +43,9 @@ def _client_frame(payload: bytes, opcode: int = 1) -> bytes:
 
 
 class AppServerClient:
-    def __init__(self, socket_path: Path) -> None:
+    def __init__(self, socket_path: Path, timeout: float = 10.0) -> None:
         connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        connection.settimeout(timeout)
         try:
             connection.connect(str(socket_path))
         except OSError as error:
@@ -72,11 +76,14 @@ class AppServerClient:
             raise AppServerError(f"websocket upgrade failed: {status}")
 
     def _send(self, message: dict[str, Any]) -> None:
+        message = {"jsonrpc": "2.0", **message}
         self._stream.write(_client_frame(json.dumps(message, separators=(",", ":")).encode()))
 
     def _receive(self) -> dict[str, Any]:
+        message = bytearray()
         while True:
             first, second = _read_exact(self._stream, 2)
+            final = bool(first & 0x80)
             opcode = first & 0x0F
             size = second & 0x7F
             if size == 126:
@@ -93,9 +100,20 @@ class AppServerClient:
                 self._stream.write(_client_frame(payload, opcode=10))
                 continue
             if opcode == 1:
-                value = json.loads(payload)
+                if message:
+                    raise AppServerError("new text frame before fragmented message completed")
+                message.extend(payload)
+            elif opcode == 0:
+                if not message:
+                    raise AppServerError("continuation frame without an initial text frame")
+                message.extend(payload)
+            else:
+                continue
+            if final:
+                value = json.loads(message)
                 if isinstance(value, dict):
                     return value
+                raise AppServerError("app-server returned a non-object message")
 
     def request(self, method: str, params: dict[str, Any]) -> Any:
         request_id = self._next_id
@@ -129,11 +147,8 @@ class AppServerClient:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--socket",
-        type=Path,
-        default=Path.home() / ".codex/app-server-control/app-server-control.sock",
-    )
+    parser.add_argument("--socket", type=Path, required=True)
+    parser.add_argument("--timeout", type=float, default=10.0)
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--thread-id")
     parser.add_argument("--turn-id")
@@ -142,7 +157,7 @@ def main() -> int:
     if args.steer and not (args.thread_id and args.turn_id):
         parser.error("--steer requires --thread-id and --turn-id")
     try:
-        client = AppServerClient(args.socket)
+        client = AppServerClient(args.socket, args.timeout)
         server = client.initialize()
         threads = client.request("thread/list", {"limit": args.limit, "sortKey": "updated_at"})
         result: dict[str, Any] = {"server": server, "threads": threads.get("data", [])}
