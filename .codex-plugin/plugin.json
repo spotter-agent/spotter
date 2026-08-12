@@ -1,0 +1,32 @@
+{
+  "name": "spotter",
+  "version": "0.1.0",
+  "description": "Runtime trajectory supervision for coding agents",
+  "author": {
+    "name": "Spotter contributors"
+  },
+  "homepage": "https://github.com/bogyie/spotter#readme",
+  "repository": "https://github.com/bogyie/spotter",
+  "license": "MIT",
+  "keywords": [
+    "coding-agents",
+    "runtime-supervision",
+    "codex"
+  ],
+  "interface": {
+    "displayName": "Spotter",
+    "shortDescription": "Runtime supervision for coding agents",
+    "longDescription": "Observe coding-agent tool calls, journal trajectories, and apply configurable deterministic safety gates before costly mistakes compound.",
+    "developerName": "Spotter contributors",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive"
+    ],
+    "websiteURL": "https://github.com/bogyie/spotter",
+    "defaultPrompt": [
+      "Show me how to inspect this session's Spotter journal."
+    ],
+    "brandColor": "#F59E0B",
+    "screenshots": []
+  }
+}

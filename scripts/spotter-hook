@@ -1,0 +1,16 @@
+#!/bin/sh
+# Run the bridge directly from an installed plugin checkout; no editable Python
+# installation is required. A project-local config wins unless SPOTTER_CONFIG
+# explicitly selects another file.
+set -eu
+
+plugin_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+export PYTHONPATH="$plugin_root/src${PYTHONPATH:+:$PYTHONPATH}"
+
+if [ -n "${SPOTTER_CONFIG:-}" ]; then
+    exec python3 -m spotter hook --config "$SPOTTER_CONFIG"
+fi
+if [ -f "${PWD}/spotter.toml" ]; then
+    exec python3 -m spotter hook --config "${PWD}/spotter.toml"
+fi
+exec python3 -m spotter hook

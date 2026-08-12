@@ -1,0 +1,16 @@
+{
+  "name": "spotter",
+  "version": "0.1.0",
+  "description": "Runtime trajectory supervision for coding agents",
+  "author": {
+    "name": "Spotter contributors"
+  },
+  "homepage": "https://github.com/bogyie/spotter#readme",
+  "repository": "https://github.com/bogyie/spotter",
+  "license": "MIT",
+  "keywords": [
+    "coding-agents",
+    "runtime-supervision",
+    "claude-code"
+  ]
+}
