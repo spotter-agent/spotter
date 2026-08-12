@@ -1,246 +1,428 @@
 # Roadmap
 
-> **Status:** roadmap reset around the standalone runtime direction in [#66](https://github.com/Bogyie/spotter/issues/66).
-
-Spotter should still earn complexity through evaluation, but the implementation order needs to change.
-
-The hook/plugin prototype already proved enough of the idea to expose a structural problem: the next features—event-driven detection, live steering, richer audit state, interruption, multi-session supervision—want a long-lived runtime and a richer observation/control channel. Building them deeply into the current per-hook-process model would create work that must immediately be migrated again.
-
-The roadmap therefore splits into two tracks that must advance together:
-
-```text
-Runtime/Product track
-  build the architecture that can supervise reliably
-
-Evaluation track
-  prove that the supervision actually helps
-```
-
-Neither substitutes for the other.
-
-## Current baseline
-
-### Implemented in the prototype
-
-- Codex lifecycle/tool hook ingestion
-- deterministic pre-action gates
-- shell-aware handling for several destructive command classes
-- crash-tolerant step journals
-- Git-backed snapshots and detached restore
-- snapshot dedup/pruning
-- Codex continuation fork/replay machinery
-- shadow-mode model-backed reviewer
-- periodic/detached reviewer execution
-- typed claim/evidence ledger with stale propagation where outcomes are observable
-- labels and coverage-aware metrics
-- same-prefix counterfactual experiment harness
-- Codex and Claude Code plugin packaging
-
-### Still missing or unproven
-
-- standalone runtime distribution and lifecycle
-- `spotterd` live state ownership
-- App Server as Codex's primary observation/control plane
-- event-driven signal layer
-- live `VERIFY` / `NUDGE` delivery
-- `INTERRUPT` / `RESTART`
-- complete side-effect/reversibility handling
-- a ground-truth task corpus and enough executed experiments to estimate intervention advantage
-- recall/miss-rate evidence for detectors
-- full efficiency/cost accounting
-
-This means the project is **implementation-rich but evidence-poor**: the measurement machinery exists, but the central claim that Spotter improves outcomes is not yet established.
+> **Status:** reset around the standalone-runtime direction in [#66](https://github.com/Bogyie/spotter/issues/66).  
+> This roadmap separates **runtime/product work** from **evaluation work**. Shipping more mechanisms does not substitute for proving that intervention helps.
 
 ---
 
-# Runtime / product roadmap
+## 30-second summary
 
-## P0 — App Server lifecycle and attach PoC
+### Now
 
-**Priority: first.**
+**P0 — App Server lifecycle / attach PoC**
 
-Before building the daemon migration, validate the premise that makes the target Codex architecture possible.
+Prove that ordinary `codex` and Spotter can share the same external App Server, observe the same thread/turn, and that `turn/steer` reaches the actual user session.
 
-### Goal
-
-Prove that the user's ordinary Codex TUI and Spotter can share the same externally reachable App Server, and that Spotter can observe and steer the real active turn.
-
-### Experiments
-
-#### A. Codex-managed daemon
+### Next
 
 ```text
-external App Server daemon
-        ↓
-plain `codex` attaches
-        ↓
-Spotter attaches as second client
-        ↓
-receive same thread/turn events
-        ↓
-turn/steer reaches the user session
+P1  standalone runtime foundation
+ ↓
+P2  product lifecycle: package/setup/status/doctor/teardown
+ ↓
+P3  move existing capabilities behind spotterd
+ ↓
+P4  App Server primary observation + Hook minimization
 ```
 
-#### B. Spotter-managed external App Server
+### Then
 
-Test whether Spotter can safely ensure the external App Server when relying on Codex's experimental daemon lifecycle is undesirable.
+```text
+P5  cheap signals → event-driven reviewer
+ ↓
+P6  live VERIFY / NUDGE
+ ↓
+P7  INTERRUPT / RESTART / side-effect-aware recovery
+ ↓
+P8  operational hardening
+ ↓
+P9  adaptation / learned policy only after evidence is strong enough
+```
 
-#### C. Embedded/degraded baseline
+The corresponding evaluation path is:
 
-Document exactly what Spotter can and cannot do when Codex chooses an embedded App Server that Spotter cannot attach to.
+```text
+E0  observability ceiling
+ ↓
+E1  mechanically scored task set
+ ↓
+E2  replay/fork fidelity
+ ↓
+E3  precision + miss rate
+ ↓
+E4  intervention advantage / harm
+ ↓
+E5  real-session operational A/B
+```
+
+---
+
+## Quick phase table
+
+| Phase | Outcome | Hard dependency | Done when... |
+| --- | --- | --- | --- |
+| **P0** | App Server strategy selected | none | same real Codex turn can be observed and steered |
+| **P1** | long-lived runtime boundary | P0 | `spotterd` owns live multi-thread state and reconnects |
+| **P2** | product lifecycle | P1 | clean install → setup → `codex` → teardown works |
+| **P3** | current features moved behind daemon | P1 | journal/gate/audit/reviewer/snapshot no longer depend on per-hook state rebuild |
+| **P4** | App Server primary observation | P0–P3 | observation hooks removed where coverage is proven |
+| **P5** | event-driven review | P4 | reviewer is triggered mainly by cheap candidate signals |
+| **P6** | live soft intervention | P5 + E3/E4 evidence | `VERIFY/NUDGE` can reach correct active turn safely |
+| **P7** | strong control/recovery | P6 + strong evidence | interrupt/restart operate with side-effect awareness |
+| **P8** | operational hardening | P1–P7 | upgrades/crashes/purge/reinstall are boring and diagnosable |
+| **P9** | adaptation | E4/E5 mature | learned policy can be evaluated for regressions |
+
+---
+
+# Baseline: what already exists
+
+## Implemented in the current prototype
+
+- Codex lifecycle/tool Hook ingestion;
+- deterministic pre-action gates;
+- shell-aware handling of several destructive command classes;
+- crash-tolerant step journals;
+- Git-backed snapshots and detached restore;
+- snapshot deduplication and pruning;
+- Codex continuation fork/replay machinery;
+- model-backed reviewer in shadow mode;
+- periodic/detached reviewer execution;
+- typed claim/evidence ledger with stale propagation where outcomes are observable;
+- human labels and coverage-aware metrics;
+- same-prefix counterfactual experiment harness;
+- Codex and Claude Code plugin packaging.
+
+## Missing or unproven
+
+- standalone runtime distribution/lifecycle;
+- `spotterd` live-state ownership;
+- App Server as primary Codex observation/control plane;
+- event-driven signal layer;
+- live `VERIFY / NUDGE` delivery;
+- `INTERRUPT / RESTART`;
+- complete side-effect/reversibility handling;
+- a mechanically scored task corpus with enough executed experiments;
+- detector miss-rate/recall evidence;
+- positive intervention advantage;
+- full runtime/operational cost accounting.
+
+The project is therefore **implementation-rich but evidence-poor**: substantial machinery exists, but the central causal claim is still open.
+
+---
+
+# Runtime / product track
+
+## P0 — App Server lifecycle / attach PoC
+
+**Priority:** first.  
+**Why:** every later App Server/daemon decision depends on this.
+
+### Entry criteria
+
+- current Codex version exposes App Server client/control surfaces worth testing;
+- Spotter can run local integration experiments without changing production policy.
+
+### Questions to answer
+
+1. Does plain `codex` reuse a pre-existing default external App Server daemon?
+2. Can Spotter attach as a second client to the exact same server?
+3. Do TUI and Spotter observe the same thread id and active turn id?
+4. Does `turn/steer` affect the actual user-visible turn?
+5. What happens with multiple simultaneous TUI sessions?
+6. Which CLI/config overrides disable daemon reuse?
+7. What can Spotter still do when Codex chooses an embedded server?
+8. What lifecycle/ownership guarantees does Codex's experimental daemon actually provide?
+
+### Experiment A — Codex-managed daemon
+
+```text
+ensure Codex App Server daemon
+        ↓
+plain `codex`
+        ↓
+TUI reuses external daemon
+        ↓
+Spotter attaches as client B
+        ↓
+observe same thread/turn
+        ↓
+turn/steer reaches user session
+```
+
+Record:
+
+- daemon endpoint/path;
+- Codex CLI/version/config;
+- thread ids seen by both clients;
+- turn ids over several actions;
+- event duplication/order;
+- steer latency and visible result;
+- disconnect/reconnect behavior.
+
+### Experiment B — Spotter-managed App Server
+
+```text
+Spotter starts external `codex app-server`
+        ↓
+TUI attaches same endpoint
+        ↓
+Spotter attaches same endpoint
+```
+
+Answer whether a normal plain-`codex` UX can still be preserved without relying on Codex's managed-daemon lifecycle.
+
+### Experiment C — embedded baseline
+
+Run ordinary Codex without an attachable external server and write down the real capability matrix:
+
+```text
+thread observation:    ?
+tool result visibility:?
+live steer:            ?
+interrupt:             ?
+PreToolUse gate:       ?
+```
+
+### Non-goals
+
+- no daemon rewrite;
+- no new reviewer policy;
+- no Homebrew packaging;
+- no Hook migration yet.
 
 ### Exit criteria
 
-- canonical App Server ownership/attach strategy chosen
-- ordinary `codex` UX remains possible
-- Spotter receives live events for the user's real thread
-- active turn identity is reliable
-- `turn/steer` works end to end
-- multi-client/multi-session behavior is understood
-- degraded mode is explicit
+- one canonical App Server strategy selected;
+- ordinary `codex` UX remains acceptable;
+- same-thread/same-turn observation is proven;
+- real `turn/steer` delivery is proven;
+- concurrent sessions are understood;
+- degraded/embedded mode is documented;
+- ownership and reconnect rules are known.
 
-If this phase fails, revisit the target architecture before continuing.
+**If a core property fails, stop and revise #66 before P1.**
+
+---
 
 ## P1 — Standalone runtime foundation
 
 ### Goal
 
-Create the smallest long-lived runtime boundary without yet rewriting every supervision feature.
+Create the smallest long-lived runtime boundary that can own state and connections.
 
-### Scope
+### Entry criteria
 
-- `spotterd` process/runtime
-- user-service/lifecycle abstraction where required
-- Unix-domain-socket IPC for the remaining synchronous hook bridge
-- App Server manager/client
-- capability negotiation
-- thread / turn / runtime-attachment identity model
-- live state container
-- connection/reconnect state machine
-- protocol/version handshake
+- P0 selected an App Server integration strategy.
 
-### Design constraint
+### Deliverables
 
-Do not rewrite the whole project in Rust/Go. The current Python implementation is sufficient to validate the runtime boundary. A native `spotter-hook` is a later optimization if cold-start measurements justify it.
+#### `spotterd`
+
+- per-user daemon process;
+- CLI control RPC;
+- graceful start/stop/restart;
+- explicit protocol version.
+
+#### Runtime state
+
+- `ThreadState` registry;
+- `TurnState` / active-turn identity;
+- `RuntimeAttachment` identity;
+- capability/connection state;
+- multi-thread isolation.
+
+#### App Server client
+
+- connect/initialize;
+- capability probe;
+- event subscription;
+- reconnect state machine;
+- list/reconcile loaded threads.
+
+#### Hook IPC
+
+- Unix-domain-socket request/reply for `PreToolUse`;
+- bounded timeout;
+- fail-open when unavailable;
+- startup/protocol handshake.
+
+#### Service abstraction
+
+- `ServiceManager` interface;
+- managed-vs-portable runtime mode;
+- defer exact launchd/systemd behavior until P0 result requires it.
+
+### Non-goals
+
+- no native hook rewrite unless measurements demand it;
+- no event-driven reviewer yet;
+- no live steering policy beyond a PoC control request.
 
 ### Exit criteria
 
-- daemon can own more than one concurrent session/thread state
-- App Server event stream updates live memory
-- daemon restart can reconnect/reconcile state
-- current coding session does not fail when Spotter is unavailable
+- one `spotterd` handles multiple concurrent thread states;
+- App Server events update memory without journal reconstruction;
+- CLI can query daemon health/state;
+- daemon restart reconnects and reconciles active threads;
+- a dead daemon does not break the coding session.
+
+---
 
 ## P2 — Product lifecycle
 
 ### Goal
 
-Make the runtime installable, diagnosable, upgradable, and removable as a product rather than a development harness.
+Make Spotter installable and removable as a product, not merely runnable from a checkout.
 
-### Scope
+### Entry criteria
 
-Target distribution/control plane:
+- P1 runtime exists locally.
+
+### Deliverables
 
 ```text
 brew install spotter
 spotter setup codex
-spotter doctor
 spotter status
+spotter doctor
 spotter teardown codex
 ```
 
-Implementation areas:
+Implementation:
 
-- Homebrew/release packaging
-- `setup` transaction
-- integration manifest
-- legacy plugin migration
-- service registration if managed mode requires it
-- `doctor` and `status`
-- `teardown`
-- stable executable paths across package upgrades
-- config/schema versioning foundation
+- release artifacts/Homebrew formula;
+- package provenance/version detection;
+- transactional setup (`INSPECT → PLAN → BACKUP → APPLY → VERIFY → COMMIT`);
+- `IntegrationManifest`;
+- legacy plugin detection/migration;
+- service registration if required;
+- App Server strategy installation/reconciliation;
+- minimal Hook installation;
+- synthetic `doctor` checks;
+- teardown and interrupted-setup recovery;
+- stable executable paths across upgrades.
+
+### Fixtures/tests
+
+- clean machine fixture;
+- existing Codex config fixture;
+- existing legacy Spotter plugin fixture;
+- interrupted setup at each transaction stage;
+- repeated setup three times;
+- uninstall without teardown.
 
 ### Exit criteria
 
-- clean install → setup → ordinary `codex` → teardown round trip works
-- setup is idempotent
-- partial setup failure is recoverable
-- uninstall without teardown cannot break Codex through a dangling Spotter hook
+- clean install → setup → plain `codex` → teardown works;
+- setup is idempotent;
+- interrupted setup can be reconciled;
+- Spotter removes only its own config changes;
+- uninstall without teardown cannot make Codex unusable.
 
-See [Lifecycle](lifecycle.md) for the complete target lifecycle.
+Detailed contract: [Lifecycle](lifecycle.md).
+
+---
 
 ## P3 — Move existing capabilities behind the runtime boundary
 
 ### Goal
 
-Preserve the useful prototype mechanisms while changing who owns their live state.
+Preserve useful prototype behavior while changing who owns live state.
 
-### Move/refactor
+### Migrate/refactor
 
-- journal writer
-- Trace IR/state updates
-- audit ledger
-- gate engine
-- snapshot manager
-- replay/fork manager
-- reviewer scheduler
-- labels/metrics integration
-- experiment harness
+- journal writer;
+- Trace IR normalization;
+- audit ledger;
+- deterministic gate;
+- snapshot manager;
+- fork/replay manager;
+- reviewer scheduler;
+- labels/metrics integration;
+- experiment harness.
 
-### Key change
+### Required architecture change
 
 ```text
-before:
+BEFORE
 hook → journal → rebuild state
 
-after:
+AFTER
 event → live state → policy
-                  └→ durable journal
+                  └→ journal append
+```
+
+### Specific work
+
+- daemon becomes primary journal writer where possible;
+- audit ledger updates incrementally from Trace IR;
+- reviewer context is read from live state + bounded durable data, not full journal rebuild;
+- snapshot calls become managed resources linked to thread/turn identity;
+- existing commands continue to work against durable history.
+
+### Exit criteria
+
+- current safety tests remain valid;
+- current session analysis/fork/metrics workflows still work;
+- normal event handling does not reconstruct full state from disk;
+- daemon restart/resume is the explicit reconstruction boundary.
+
+---
+
+## P4 — App Server primary observation + Hook minimization
+
+### Goal
+
+Move broad observation off Hooks and prove no critical signal is lost.
+
+### Migration matrix
+
+| Hook | Target |
+| --- | --- |
+| `SessionStart` | remove if App Server thread lifecycle covers it |
+| `UserPromptSubmit` | remove if App Server user-message events cover it |
+| `PreToolUse` | retain only for bounded deterministic enforcement |
+| `PostToolUse` | remove in favor of App Server tool/result/diff events |
+
+### Deliverables
+
+- App Server event → Trace IR adapter;
+- lifecycle/user-message/tool/result/diff/token coverage map;
+- event ordering/idempotency handling;
+- provenance from Trace IR back to App Server item/turn;
+- reduced Hook configuration;
+- Hook latency and invocation count measurement;
+- re-measured observable-outcome ceiling.
+
+### Measurement
+
+Compare before/after:
+
+```text
+hook invocations / session
+hook p50 / p95 / p99
+observable tool-result rate
+missing goal/constraint rate
+App Server event loss/duplication
+CPU/memory overhead
 ```
 
 ### Exit criteria
 
-- current tests/guarantees remain meaningful
-- journal becomes durable history/recovery, not the hot-path state database
-- reviewer does not rebuild whole state from disk on every invocation
+- App Server is the primary trajectory source;
+- no required observation silently disappears;
+- the old 10% hook-era outcome figure is replaced with a measured App Server-era result;
+- the remaining Hook path is small, bounded, and deterministic.
 
-## P4 — Make App Server primary and minimize hooks
+---
 
-### Goal
-
-Move broad observation away from hooks.
-
-### Target migration
-
-| Hook | Target state |
-| --- | --- |
-| `SessionStart` | remove if App Server lifecycle covers it |
-| `UserPromptSubmit` | remove if App Server user-message events cover it |
-| `PreToolUse` | retain only for bounded deterministic blocking |
-| `PostToolUse` | remove in favor of App Server results/diffs |
-
-### Scope
-
-- App Server → Trace IR normalization
-- thread/turn lifecycle handling
-- command/result/diff coverage
-- reasoning/plan signals where exposed
-- token/cost observation where exposed
-- re-measure observability ceiling
-- measure hook latency/invocation reduction
-
-### Exit criteria
-
-- App Server is the primary trajectory source
-- no required observation silently disappears when hooks are removed
-- existing 10% hook-era outcome observability figure is replaced with a measured App Server-era figure
-- synchronous hook path is small and bounded
-
-## P5 — Event-driven semantic supervision
+## P5 — Event-driven semantic review
 
 ### Goal
 
-Replace fixed periodic review with cheap candidate signals followed by semantic review only when warranted.
+Replace fixed periodic model calls with cheap candidate detection.
+
+### Target flow
 
 ```text
 runtime event
@@ -248,313 +430,371 @@ runtime event
 cheap signal / verifier
     ↓
 possible issue?
-    ├─ no → continue
+    ├─ no → done
     └─ yes
          ↓
-     Pair Reviewer
+     ReviewerJob
 ```
 
-Candidate signals:
+### Initial candidate signals
 
-- repeated equivalent actions
-- failure streaks
-- stagnant exploration frontier
-- touched-scope growth
-- edits without validation
-- stale premise reuse
-- block circumvention
-- budget anomalies
+- repeated equivalent tool calls;
+- failure streaks;
+- repeated reads with no frontier expansion;
+- sudden touched-scope growth;
+- edits accumulating without validation;
+- stale hypothesis reuse;
+- repeated behavior after a deterministic block;
+- tool/token/time budget anomalies.
 
-Signals produce candidates, not verdicts.
+### Data contract
+
+Candidate example:
+
+```json
+{
+  "candidate": "POSSIBLE_EXPLORATION_LOOP",
+  "thread_id": "T1",
+  "turn_id": "U8",
+  "evidence": ["same search pattern repeated 4 times"],
+  "signal_version": 1
+}
+```
+
+A signal is not a verdict.
 
 ### Exit criteria
 
-- candidate signals are journaled and labelable
-- reviewer dispatch is primarily event-driven
-- calls/session and detection behavior are measured before/after the change
+- candidate signals are journaled and labelable;
+- reviewer calls/session decrease or become more targeted;
+- detection latency/precision/miss rate are measured before and after;
+- cadence, if retained, is an explicit fallback rather than the primary trigger.
+
+---
 
 ## P6 — Live soft intervention
 
 ### Goal
 
-Deliver useful reviewer decisions without blocking Main while the reviewer thinks.
+Deliver `VERIFY / NUDGE` while Main continues in parallel.
 
-### Runtime actions
+### Entry criteria
 
-- `CONTINUE`
-- `VERIFY`
-- `NUDGE`
+- P5 produces reviewer jobs;
+- E3 has enough precision/miss-rate evidence to set a conservative live policy;
+- E4 has at least initial intervention-harm evidence.
 
-### Flow
+### Deliverables
+
+#### Reviewer job lifecycle
 
 ```text
-signal at turn T
-    ↓
-reviewer runs asynchronously
-    ↓
-Main continues
-    ↓
-verdict ready
-    ↓
-T still active?
-  ├─ yes → turn/steer
-  └─ no  → stale/defer/discard policy
+QUEUED → RUNNING → DECIDED
+                    ├─ DELIVERED
+                    ├─ STALE
+                    ├─ DISCARDED
+                    └─ FAILED
 ```
 
-### Required support
+#### Freshness
 
-- reviewer job state machine
-- target turn identity
-- intervention freshness policy
-- delivery journaling
-- ignored/stale intervention metrics
-- pair-runtime contract for Main
+- every job anchors to `thread_id` + `target_turn_id`;
+- only the intended active turn receives the verdict;
+- late decisions follow explicit stale/defer policy.
+
+#### Delivery
+
+```text
+VERIFY → concise evidence request via turn/steer
+NUDGE  → concise course correction via turn/steer
+```
+
+#### Measurement
+
+- reviewer latency;
+- delivery latency;
+- stale rate;
+- ignored intervention rate;
+- duplicate delivery prevention;
+- user-visible supervision provenance.
 
 ### Exit criteria
 
-- a shadow-earned reviewer decision can reach the active real Codex turn
-- repeat delivery is impossible
-- stale decisions do not leak into unrelated later turns
-- intervention latency and stale rate are measurable
+- live decision reaches the correct real active Codex turn;
+- the same decision cannot be delivered twice;
+- stale decisions do not leak into unrelated turns;
+- Main can distinguish Spotter supervision from user intent;
+- live intervention remains off by default until measurement gates are met.
+
+---
 
 ## P7 — Strong control and recovery
 
 ### Goal
 
-Add high-cost actions only after soft intervention has evidence.
+Add higher-cost actions only after soft intervention is understood.
 
-### Runtime actions
-
-- `BLOCK` — already deterministic, but re-measured in new runtime
-- `INTERRUPT`
-- `RESTART`
-
-### Required support
-
-- high precision budgets per action
-- last-sound-state representation
-- checkpoint metadata
-- side-effect/reversibility ledger
-- explicit retained-state selection
-- restart lineage
-
-### Restart payload
-
-A fresh continuation should receive only what is deliberately retained:
-
-- user goal
-- explicit constraints
-- verified evidence
-- current repository state
-- intentionally preserved artifacts
-
-Do not imply that a reasoning restart undoes external state.
-
-## P8 — Operational hardening
-
-### Scope
-
-- daemon/App Server reconnect recovery
-- Codex upgrade capability negotiation
-- Spotter upgrade and graceful daemon restart
-- config/journal/label/experiment schema migration
-- retention policies
-- repository registry
-- purge
-- reinstall
-- multi-agent integration lifecycle
-
-### Goal
-
-A Spotter installation should remain understandable after months of normal upgrades, crashes, resumes, and repository churn.
-
-## P9 — Experience and adaptation
-
-Only after intervention quality is measurable should Spotter learn from prior runs.
-
-Possible directions:
-
-- model-specific failure profiles
-- repository-specific signal thresholds
-- retrieval of previous useful/harmful interventions
-- offline learning of intervention policy
-
-Do not introduce adaptive behavior without an evaluation harness capable of detecting regressions.
-
----
-
-# Evaluation roadmap
-
-The runtime migration does not relax the project's measurement discipline. It makes better measurement possible.
-
-## E0 — Observability ceiling
-
-Re-measure what failures are visible before they compound after App Server becomes the observation surface.
-
-Questions:
-
-- what fraction of failed/degraded sessions were observable early enough?
-- what fraction of tool outcomes are directly observable?
-- which failure classes remain invisible?
-
-A smarter reviewer cannot beat an observation surface that never exposes the relevant evidence.
-
-## E1 — Ground-truth task set
-
-Create a small reproducible task corpus with mechanical checks so counterfactual experiments can actually run.
+### `INTERRUPT`
 
 Requirements:
 
-- fixture repository/task
-- prompt
-- objective `--check`
-- provenance
-- cost budget
+- high precision threshold;
+- shadow “would interrupt” mode first;
+- `turn/interrupt` control path;
+- clear post-interrupt replanning contract.
 
-The first measured intervention result should be recorded even if negative or inconclusive.
+### `RESTART`
+
+Requirements:
+
+```text
+last sound state
+verified evidence set
+checkpoint/snapshot lineage
+explicit retained artifacts
+external side-effect ledger
+fresh continuation payload
+```
+
+Restart payload should be deliberately minimal:
+
+```text
+user goal
+explicit constraints
+verified evidence
+current repository state
+retained artifacts
+```
+
+Do not imply that external writes were rolled back.
+
+### Exit criteria
+
+- strong actions have explicit precision/harm budgets;
+- shadow evidence precedes active control;
+- external side effects remain visible in recovery UX;
+- restart lineage is reproducible and auditable.
+
+---
+
+## P8 — Operational hardening
+
+### Goal
+
+Make months of use boring.
+
+### Scope
+
+- daemon/App Server reconnect;
+- crash recovery;
+- Codex upgrade capability negotiation;
+- Spotter upgrade with running old daemon;
+- config/journal/label/experiment schema migration;
+- repository registry;
+- retention policy;
+- worktree/snapshot cleanup;
+- `purge --dry-run`;
+- uninstall/reinstall fixtures;
+- multi-agent integration lifecycle;
+- logs/diagnostic bundle if useful.
+
+### Exit criteria
+
+- upgrade and reinstall fixtures pass across supported schema ranges;
+- stale resources are discoverable and cleanable;
+- `status`/`doctor` explain partial failures;
+- package uninstall and integration teardown have separate, predictable ownership.
+
+---
+
+## P9 — Experience and adaptation
+
+Do not build learned/adaptive intervention policy until the evaluation harness can detect regressions.
+
+Possible later directions:
+
+- model-specific failure profiles;
+- repository-specific signal thresholds;
+- retrieval of prior useful/harmful interventions;
+- offline policy learning;
+- personalized intervention tolerance.
+
+Entry gate:
+
+- E4/E5 produce enough repeatable evidence to compare policy versions.
+
+---
+
+# Evaluation track
+
+The evaluation track advances alongside runtime work.
+
+## E0 — Observability ceiling
+
+### Question
+
+What fraction of important failures are visible **early enough to act** on the chosen observation surface?
+
+Measure:
+
+- directly observable tool outcomes;
+- visible goal/constraint context;
+- failure classes that are structurally invisible;
+- earliest step/turn where a warranted intervention becomes observable.
+
+Re-measure after App Server migration.
+
+---
+
+## E1 — Ground-truth task set
+
+Build a small reproducible corpus where success is mechanically decidable.
+
+Each task needs:
+
+```text
+repository/fixture version
+user prompt
+known initial failing state
+objective check command
+provenance
+cost budget
+```
+
+Possible source: a carefully selected SWE-bench Verified subset or equivalent local fixtures.
+
+Exit criterion: `spotter experiment --run --check ...` completes across enough tasks to produce real control/guidance outcomes.
+
+---
 
 ## E2 — Replay/fork fidelity
 
-Before causal claims rely on fork pairs, measure the instrument itself:
+Before using forks for causal claims, measure the instrument.
 
-- identical-arm noise floor
-- continuation similarity
-- environmental failure rate
-- effect of detached worktree differences
+Experiments:
 
-Any claimed intervention effect should be interpreted relative to this noise floor.
+- identical control vs identical control;
+- repeated continuations from the same prefix;
+- worktree/environment failure rate;
+- model nondeterminism distribution.
+
+Report a noise floor before interpreting intervention deltas.
+
+---
 
 ## E3 — Precision and miss rate
 
-Positive-only labeling is insufficient.
+Positive labels alone are insufficient.
 
-Measure both:
+Measure:
 
-- precision / false-positive rate on flags and reviewer findings
-- sampled miss rate / recall estimate on unflagged trajectories or proposals
+- precision / false-positive rate on emitted candidates/verdicts;
+- sampled miss rate / recall estimate on unflagged trajectories;
+- coverage per failure class;
+- abstention/blind-spot rate separately from incorrect verdicts.
 
 A detector that never fires should not appear perfect.
 
+---
+
 ## E4 — Intervention advantage and harm
 
-Use same-prefix counterfactuals to ask:
+For a shared prefix:
 
-> Did this intervention improve the outcome compared with continuing from the same prefix?
+```text
+control: continue
+vs
+intervention: VERIFY / NUDGE / later stronger action
+```
 
-Report at least:
+Classify outcomes:
 
-- guidance better
-- control better (harm)
-- tied
-- incomplete/failed
+```text
+intervention better
+control better (harm)
+tied
+incomplete / infrastructure failure
+```
 
-Do not enable live injection by default before useful intervention advantage and wrong-nudge/sycophancy behavior are measured.
+Report sample size and coverage. Do not enable live intervention by default from anecdotal success.
 
-## E5 — Operational effect
+Also test **wrong-nudge susceptibility**: Main should be able to reject plausible but incorrect Spotter advice when evidence contradicts it.
 
-Eventually compare real-session configurations:
+---
+
+## E5 — Real-session operational A/B
+
+Eventually compare full runtime configurations:
 
 ```text
 A. Vanilla Codex
 B. Periodic async reviewer
 C. Event-driven Spotter
 D. Event-driven Spotter + deterministic gate
-E. Full Spotter with stronger control
+E. Full Spotter with stronger recovery/control
 ```
 
-This answers a different question from fork pairs: whether running Spotter at all improves real work across a population of sessions.
+This answers a population-level question different from same-prefix forks: **does running Spotter in real work improve outcomes enough to justify its cost?**
 
 ---
 
 # Primary metrics
 
-## Outcome
-
-- task success / resolution
-- regression rate
-
-## Efficiency
-
-- main-agent tokens
-- reviewer tokens
-- tool calls
-- repeated-action count
-- elapsed/tool-execution time
-- Spotter CPU/memory overhead
-
-## Observation quality
-
-- observable outcome rate
-- event coverage
-- missing-goal/constraint rate
-- supervision liveness
-
-## Intervention quality
-
-- interventions per run
-- precision
-- miss rate / sampled recall
-- intervention advantage
-- harm rate
-- recovery rate
-- ignored-intervention rate
-
-## Timing
-
-- steps from warranted intervention range to verdict
-- wasted actions before intervention
-- reviewer latency
-- delivery latency
-- stale intervention rate
-
-## Recovery
-
-- success after nudge
-- success after interrupt
-- success after restart
-- useful work retained across restart
-- external effects left unreverted
-
-## Operations
-
-- hook p50/p95/p99
-- App Server reconnect latency
-- daemon restart/recovery latency
-- storage growth
-- migration/upgrade failures in fixtures
+| Dimension | Metrics |
+| --- | --- |
+| Outcome | task success/resolution, regression rate |
+| Main efficiency | main tokens, tool calls, repeated actions, elapsed/tool time |
+| Spotter cost | reviewer tokens, model calls, CPU/memory, journal/storage growth |
+| Observation | event coverage, observable outcome rate, missing goal/constraint rate, disconnect rate |
+| Detection | precision, FP rate, miss-rate/recall estimate, abstention/blind spots |
+| Intervention | intervention advantage, harm rate, recovery, ignored rate |
+| Timing | detection delay, reviewer latency, delivery latency, stale rate, wasted actions before intervention |
+| Recovery | success after nudge/interrupt/restart, retained useful work, unreverted external effects |
+| Operations | Hook p50/p95/p99, reconnect time, daemon recovery time, upgrade/migration failure rate |
 
 ---
 
-# False-positive budgets
+# Intervention evidence budgets
 
-Strong interventions need increasingly strict evidence.
-
-Initial philosophy:
-
-- `VERIFY`: can tolerate uncertainty because it requests evidence
-- `NUDGE`: conservative
-- `BLOCK`: near-deterministic
-- `INTERRUPT`: very high confidence
-- `RESTART`: extremely rare and likely user-visible/confirmable
-
-Exact thresholds should be learned from evaluation rather than chosen once from intuition.
-
----
-
-# Revised MVP definition
-
-A useful public Spotter does not need a graph database, learned policy, or automatic rollback engine.
-
-It needs to demonstrate this loop reliably **on the standalone runtime boundary**:
+The stronger the action, the stronger the evidence requirement.
 
 ```text
-1. Observe an active coding-agent trajectory through a reliable runtime surface.
+VERIFY
+  can tolerate uncertainty because it asks for evidence
+
+NUDGE
+  conservative semantic intervention
+
+BLOCK
+  near-deterministic policy only
+
+INTERRUPT
+  very high precision + shadow evidence first
+
+RESTART
+  extremely rare, auditable, likely user-visible/confirmable initially
+```
+
+Exact thresholds should come from evaluation, not intuition.
+
+---
+
+# Revised MVP
+
+A useful public Spotter does **not** require a graph database, learned policy, or automatic rollback engine.
+
+It must prove this loop on the standalone runtime boundary:
+
+```text
+1. Observe the real active coding-agent trajectory.
 2. Maintain independent live state for goal, constraints, hypotheses, evidence, and progress.
-3. Detect a small set of trajectory problems with cheap signals/verifiers.
-4. Ask an independently configured reviewer to verify ambiguous candidates.
-5. Intervene with async VERIFY/NUDGE or deterministic BLOCK.
-6. Record timing, cost, delivery, and outcome.
-7. Measure whether intervention helped more than it harmed.
+3. Generate a small set of cheap candidate failure signals.
+4. Use an independent reviewer only for ambiguous candidates.
+5. Deliver async VERIFY/NUDGE to the correct active turn or deterministic BLOCK before execution.
+6. Record timing, cost, freshness, delivery, and outcome.
+7. Demonstrate that intervention helps more than it harms.
 ```
 
 The architecture is successful only if it enables this experiment without itself becoming a major source of latency, fragility, or operational burden.
+
+For current status, see [Status](status.md). For concrete runtime contracts, see [Architecture](architecture.md). For product lifecycle, see [Lifecycle](lifecycle.md).
