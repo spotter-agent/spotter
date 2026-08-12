@@ -86,7 +86,7 @@ def test_wrapper_fails_open_when_no_usable_python_exists(tmp_path: Path) -> None
         ),
         text=True,
         capture_output=True,
-        env={"PATH": f"{unusable}:/usr/bin:/bin", "HOME": str(home), "SPOTTER_HOME": str(home)},
+        env={"PATH": str(unusable), "HOME": str(home), "SPOTTER_HOME": str(home)},
         check=False,
     )
 
@@ -113,6 +113,8 @@ def test_wrapper_runs_with_an_empty_path(tmp_path: Path) -> None:
 
 def test_wrapper_finds_a_usable_python_by_explicit_override(tmp_path: Path) -> None:
     unusable = _fake_bin(tmp_path, "python3", "#!/bin/sh\nexit 1\n")
+    override = tmp_path / "python with spaces"
+    override.symlink_to(sys.executable)
     home = tmp_path / "home"
     result = subprocess.run(
         [str(Path("scripts/spotter-hook").resolve())],
@@ -128,15 +130,74 @@ def test_wrapper_finds_a_usable_python_by_explicit_override(tmp_path: Path) -> N
         text=True,
         capture_output=True,
         env={
-            "PATH": f"{unusable}:/usr/bin:/bin",
+            "PATH": str(unusable),
             "HOME": str(home),
             "SPOTTER_HOME": str(home),
-            "SPOTTER_PYTHON": sys.executable,
+            "SPOTTER_PYTHON": str(override),
         },
         check=False,
     )
     assert result.returncode == 0
     assert (home / "sessions" / "override.jsonl").exists()
+
+
+def test_wrapper_keeps_observing_when_the_config_is_invalid(tmp_path: Path) -> None:
+    """The bad config is handled inside the hook rather than by the wrapper's
+    catch-all, so supervision degrades to defaults instead of stopping."""
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "spotter.toml").write_text("not valid toml")
+
+    result = subprocess.run(
+        [str(Path("scripts/spotter-hook").resolve())],
+        input=json.dumps(
+            {
+                "hook_event_name": "PreToolUse",
+                "session_id": "bad-toml",
+                "cwd": str(tmp_path),
+                "tool_name": "Bash",
+                "tool_input": {"command": "true"},
+            }
+        ),
+        text=True,
+        capture_output=True,
+        env={**os.environ, "HOME": str(home), "SPOTTER_HOME": str(home)},
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "using defaults" in result.stderr
+    assert StepJournal.load(home / "sessions" / "bad-toml.jsonl")
+
+
+def test_wrapper_converts_an_unexpected_crash_into_fail_open(tmp_path: Path) -> None:
+    """Nothing in the hook path should exit non-zero any more, which is exactly
+    why the wrapper's catch-all must stay: it covers the failures nobody
+    predicted, such as an interpreter that dies on import."""
+    crasher = tmp_path / "bin-crash"
+    crasher.mkdir()
+    fake = crasher / "python3"
+    fake.write_text(
+        "#!/bin/sh\n"
+        'for arg in "$@"; do\n'
+        "  [ \"$arg\" = '-m' ] && exit 3\n"
+        "done\n"
+        "exit 0\n"  # the capability probe succeeds
+    )
+    fake.chmod(0o755)
+    home = tmp_path / "home"
+
+    result = subprocess.run(
+        [str(Path("scripts/spotter-hook").resolve())],
+        input="{}",
+        text=True,
+        capture_output=True,
+        env={"PATH": str(crasher), "HOME": str(home), "SPOTTER_HOME": str(home)},
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "allowed unsupervised" in result.stderr
 
 
 def test_wrapper_reads_the_documented_home_config(tmp_path: Path) -> None:
@@ -182,3 +243,65 @@ def test_hook_command_uses_the_runtime_plugin_root_variable() -> None:
     assert commands
     for command in commands:
         assert "${CLAUDE_PLUGIN_ROOT" in command
+
+
+def test_a_malformed_config_never_blocks_the_session(tmp_path: Path) -> None:
+    """A PreToolUse hook exits 2 to mean *deny*, and argparse.error() exits 2.
+    Loading config outside the fail-open boundary therefore turned a typo in
+    spotter.toml into a block on every tool call."""
+    home = tmp_path / "home"
+    home.mkdir()
+    broken = home / "spotter.toml"
+    broken.write_text("this is not = valid = toml\n")
+
+    result = subprocess.run(
+        [sys.executable, "-m", "spotter", "hook", "--config", str(broken)],
+        input=json.dumps(
+            {
+                "hook_event_name": "PreToolUse",
+                "session_id": "broken-config",
+                "cwd": str(tmp_path),
+                "tool_name": "Bash",
+                "tool_input": {"command": "true"},
+            }
+        ),
+        text=True,
+        capture_output=True,
+        env={**os.environ, "SPOTTER_HOME": str(home), "PYTHONPATH": "src"},
+        check=False,
+    )
+
+    assert result.returncode == 0, "a bad config denied the tool call"
+    assert result.stdout == ""  # no deny decision emitted either
+    assert "using defaults" in result.stderr
+    # supervision continues on defaults rather than stopping
+    assert StepJournal.load(home / "sessions" / "broken-config.jsonl")
+
+
+def test_a_missing_config_also_fails_open(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    result = subprocess.run(
+        [sys.executable, "-m", "spotter", "hook", "--config", str(tmp_path / "absent.toml")],
+        input=json.dumps({"hook_event_name": "SessionStart", "session_id": "absent"}),
+        text=True,
+        capture_output=True,
+        env={**os.environ, "SPOTTER_HOME": str(home), "PYTHONPATH": "src"},
+        check=False,
+    )
+    assert result.returncode == 0
+    assert "using defaults" in result.stderr
+
+
+def test_other_commands_still_reject_a_bad_config(tmp_path: Path) -> None:
+    """Only the hook fails open. Everything else should still refuse to run on
+    a config it cannot parse, rather than silently using different settings."""
+    broken = tmp_path / "spotter.toml"
+    broken.write_text("nope = = =\n")
+    result = subprocess.run(
+        [sys.executable, "-m", "spotter", "observe", "--config", str(broken)],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONPATH": "src"},
+        check=False,
+    )
+    assert result.returncode == 2

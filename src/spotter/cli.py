@@ -115,14 +115,20 @@ def _load_config(parser: argparse.ArgumentParser, path: Path | None) -> SpotterC
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if args.command == "hook":
+        # Config is loaded inside the hook's own fail-open boundary rather than
+        # by the shared path below. parser.error() exits 2, and 2 is how a
+        # PreToolUse hook says "deny" — so a malformed config file would not
+        # merely disable supervision, it would block every tool call in the
+        # session. Unsupervised beats blocked.
+        return _hook_main(None, args.config)
+
     config = _load_config(parser, args.config)
     # One boundary check for every command that names a session: sanitizing
     # instead of rejecting maps distinct ids onto one file ("a/b" -> "a_b").
     if args.session is not None and not valid_session(args.session):
         parser.error(f"--session {args.session!r} is not a valid session id")
-
-    if args.command == "hook":
-        return _hook_main(config, args.config)
     if args.command == "analyze":
         return _analyze_main(args.session)
     if args.command == "prune":
@@ -419,6 +425,14 @@ def _hook_main(config: SpotterConfig | None, config_path: Path | None = None) ->
     Always exits 0: any failure here fails open. Breaking the Codex session
     over a supervision bug would be the exact harm Spotter exists to prevent.
     """
+    if config is None and config_path is not None:
+        try:
+            config = SpotterConfig.from_toml(config_path)
+        except (OSError, tomllib.TOMLDecodeError, ConfigurationError) as error:
+            # Unsupervised beats blocked: fall back to defaults and say so.
+            print(
+                f"spotter: unusable config {config_path} ({error}); using defaults", file=sys.stderr
+            )
     if config is None:
         config = SpotterConfig(MainAgentConfig("codex"), ReviewerConfig())
     try:

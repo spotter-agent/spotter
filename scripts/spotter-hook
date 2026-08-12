@@ -33,7 +33,12 @@ runs_spotter() {
 }
 
 interpreter=""
-for candidate in ${SPOTTER_PYTHON:-} python3.14 python3.13 python3.12 python3.11 python3 python; do
+if [ -n "${SPOTTER_PYTHON:-}" ] && command -v "$SPOTTER_PYTHON" >/dev/null 2>&1 \
+    && runs_spotter "$SPOTTER_PYTHON"; then
+    interpreter=$SPOTTER_PYTHON
+fi
+for candidate in python3.14 python3.13 python3.12 python3.11 python3 python; do
+    [ -z "$interpreter" ] || break
     [ -n "$candidate" ] || continue
     command -v "$candidate" >/dev/null 2>&1 || continue
     if runs_spotter "$candidate"; then
@@ -53,13 +58,15 @@ fi
 # Config discovery, most specific first. ~/.spotter/spotter.toml is included
 # because that is where the tool's own documentation puts it; omitting it made
 # an installed plugin silently ignore the gates the user had configured.
+set --
 if [ -n "${SPOTTER_CONFIG:-}" ]; then
-    exec "$interpreter" -m spotter hook --config "$SPOTTER_CONFIG"
+    set -- --config "$SPOTTER_CONFIG"
+elif [ -f "${PWD}/spotter.toml" ]; then
+    set -- --config "${PWD}/spotter.toml"
+elif [ -f "${SPOTTER_HOME:-$HOME/.spotter}/spotter.toml" ]; then
+    set -- --config "${SPOTTER_HOME:-$HOME/.spotter}/spotter.toml"
 fi
-if [ -f "${PWD}/spotter.toml" ]; then
-    exec "$interpreter" -m spotter hook --config "${PWD}/spotter.toml"
-fi
-if [ -f "${SPOTTER_HOME:-$HOME/.spotter}/spotter.toml" ]; then
-    exec "$interpreter" -m spotter hook --config "${SPOTTER_HOME:-$HOME/.spotter}/spotter.toml"
-fi
-exec "$interpreter" -m spotter hook
+"$interpreter" -m spotter hook "$@" || {
+    echo "spotter: hook failed; this event was allowed unsupervised" >&2
+    exit 0
+}
