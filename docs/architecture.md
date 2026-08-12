@@ -1,122 +1,249 @@
 # Architecture
 
-## Goal
+> **Status:** current prototype + target architecture.  
+> The target standalone runtime is tracked by [#66](https://github.com/Bogyie/spotter/issues/66) and is not fully implemented yet.
 
-Spotter should supervise a coding-agent trajectory with the smallest practical impact on normal execution latency.
+## 1. Goal
 
-The main design rule is:
+Spotter should supervise coding-agent trajectories with the smallest practical impact on normal execution latency.
 
-> **Cheap checks first. Semantic review only when needed. Strong intervention only when justified.**
+The design rule is:
 
-The initial target is Codex because its current extension/runtime surface exposes useful interception and control points.
+> **Observe broadly. Check deterministic facts cheaply. Review semantic ambiguity asynchronously. Intervene only when intervention is worth its cost.**
 
-## High-level architecture
+The first target is Codex because it exposes both runtime observation/control through App Server and synchronous tool interception through hooks.
+
+## 2. Current prototype vs target runtime
+
+The repository currently proves several pieces of the supervision loop through hooks, journals, snapshots, replay, a shadow reviewer, labels, metrics, and counterfactual experiments.
+
+Current prototype shape:
 
 ```text
-                         User Goal
-                            │
-                            ▼
-                    ┌──────────────┐
-                    │  Main Agent  │
-                    │    Codex     │
-                    └──────┬───────┘
-                           │
-              events / tools / diffs / results
-                           │
-                           ▼
-                    ┌──────────────┐
-                    │   Trace IR   │
-                    └──────┬───────┘
-                           │
-               ┌───────────┴───────────┐
-               ▼                       ▼
-       Deterministic checks        Fast signals
-               │                       │
-               └───────────┬───────────┘
-                           │ candidate issue
-                           ▼
-                    ┌──────────────┐
-                    │ Pair Reviewer│
-                    │ separate LLM │
-                    └──────┬───────┘
-                           │
-                           ▼
-                 Intervention Controller
-                           │
-       ┌──────────┬────────┼─────────┬─────────┐
-       ▼          ▼        ▼         ▼         ▼
-   CONTINUE    VERIFY    NUDGE      BLOCK   INTERRUPT
-                                               │
-                                            RESTART
+Codex / Claude Code
+       │
+       │ lifecycle + tool hooks
+       ▼
+  spotter-hook process
+       │
+       ├─ journal
+       ├─ deterministic gate
+       ├─ snapshot
+       └─ periodic shadow review trigger
 ```
 
-## Components
+This was intentionally simple, but it makes every hook invocation pay process/bootstrap and durable-state reconstruction costs.
 
-### 1. Main Harness
+The target architecture moves state and orchestration into a long-lived runtime:
 
-The main Codex session performs the task normally.
+```text
+                     ┌─────────────┐
+                     │  Codex TUI  │
+                     └──────┬──────┘
+                            │
+                            ▼
+                 ┌──────────────────────┐
+                 │ External App Server  │
+                 │ observation/control  │
+                 └──────┬────────▲──────┘
+                        │        │
+             event stream       │ turn/steer
+                        │        │ turn/interrupt
+                        │        │ thread injection
+                        ▼        │
+                 ┌──────────────────┐
+                 │     spotterd     │
+                 │                  │
+                 │ SessionManager   │
+                 │ Live State       │
+                 │ Trace IR         │
+                 │ Audit State      │
+                 │ Signal Engine    │
+                 │ Gate Engine      │
+                 │ Reviewer         │
+                 │ Intervention     │
+                 │ Journal          │
+                 └────────┬─────────┘
+                          │
+                 bounded deterministic
+                      request/reply
+                          │
+                          ▼
+                   PreToolUse Hook
+                   if still required
+```
 
-Spotter should inject only a small pair-runtime contract at session start so Main understands supervision signals without waiting for approval on every action.
+Responsibility becomes:
 
-The contract should establish:
+```text
+Codex App Server = primary observation + live control plane
+spotterd         = long-lived supervision state and orchestration
+PreToolUse Hook  = narrow synchronous enforcement plane
+journal          = durable event log / recovery source
+CLI              = user control plane
+```
 
-- the user remains the source of task intent
-- Spotter messages are runtime supervision signals
-- `VERIFY` and `NUDGE` require reassessment, not blind compliance
-- blocked actions must not be trivially retried
-- interruptions require replanning
-- disagreements should be resolved with evidence where possible
+The architecture should remain adapter-oriented so another coding agent can expose different observation/control/enforcement surfaces without changing Spotter core policy.
 
-### 2. Event Collector
+## 3. Three runtime planes
 
-Spotter subscribes to the observable execution surface and normalizes relevant events.
+Separating the planes prevents every agent event from being forced through the same mechanism.
 
-Potential Codex sources include:
+### Observation plane
 
-- session / turn lifecycle
-- plan and agent-message events
-- reasoning-summary events when exposed by the runtime/model
-- tool proposals and results
-- command output
-- patches and diffs
-- test results
-- interruption and completion states
+Answers: **What is happening?**
 
-Spotter should not depend on private chain-of-thought access. The design must remain useful with observable actions, summaries, repository state, and tool results alone.
+Target Codex source: App Server event stream.
 
-### 3. Trace IR
+Relevant information includes:
 
-Raw runtime events are noisy and backend-specific. Spotter should compile them into a compact intermediate representation.
+- thread and turn lifecycle
+- user messages
+- plan updates
+- reasoning summaries exposed by the runtime/model
+- command/tool start and completion
+- stdout/stderr/exit status where available
+- file changes and diffs
+- MCP calls
+- web search
+- token usage
 
-Example:
+### Control plane
+
+Answers: **How can Spotter influence an already-running trajectory?**
+
+Target Codex primitives include:
+
+- `turn/steer` for soft course correction
+- `turn/interrupt` for strong intervention
+- thread/context injection primitives where appropriate
+
+Control is asynchronous relative to most observation. Main does not pause while an LLM reviewer thinks.
+
+### Enforcement plane
+
+Answers: **What must be decided atomically before execution?**
+
+Target Codex primitive: `PreToolUse` while it remains the reliable synchronous veto boundary.
+
+Only narrow deterministic policy belongs here.
+
+## 4. Why App Server becomes primary for Codex
+
+Hook collection proved useful, but it is a limited observation surface and a poor place for long-lived semantic supervision.
+
+The target architecture prefers App Server because it can provide richer trajectory events and a live control channel in the same integration.
+
+The project must first validate one critical lifecycle property: Spotter must attach to the **same App Server used by the user's Codex TUI**. A separate App Server process that hosts a different thread cannot steer the active user session.
+
+A plain Codex TUI may choose an embedded App Server when no reusable external daemon is available. Therefore the architecture cannot rely on waking Spotter for the first time at `PreToolUse`; by then the App Server target may already be fixed.
+
+The canonical App Server strategy is deliberately gated on an E2E PoC. See [Lifecycle](lifecycle.md) and #66.
+
+## 5. `spotterd`
+
+`spotterd` is the target owner of live supervision state.
+
+Conceptual responsibilities:
+
+```text
+Session / Thread Manager
+Trace normalization
+Independent audit state
+Cheap signal detection
+Deterministic gate policy
+Reviewer scheduling and budgets
+Intervention freshness and delivery
+Journal persistence
+Recovery / reconciliation
+```
+
+The key state rule is:
+
+```text
+memory  = live state
+journal = durable history + recovery
+```
+
+Journal replay is appropriate at daemon restart, thread resume, offline analysis, and experiment boundaries. It should not be the normal way to reconstruct state for every event.
+
+## 6. Agent thread, turn, and attachment model
+
+The word “session” is currently overloaded. The target runtime should distinguish:
+
+```text
+Agent Thread
+  └─ Turn
+       └─ Events
+
+Runtime Attachment
+  = one TUI/runtime connection period to the thread
+```
+
+A thread can outlive one TUI process:
+
+```text
+Thread A
+├─ attachment #1
+│  ├─ turn 1
+│  └─ turn 2
+└─ attachment #2 after resume
+   ├─ turn 3
+   └─ turn 4
+```
+
+Audit state generally belongs to the thread. Runtime health/latency may belong to an attachment. Intervention freshness belongs to a specific turn.
+
+The durable/runtime model should preserve enough identity to correlate:
+
+- agent thread id
+- Spotter thread/session id if separate
+- runtime attachment id
+- turn id
+- tool/item id
+- repository/worktree
+
+## 7. Event collector and Trace IR
+
+Backend-specific runtime events should be normalized before they reach policy.
+
+Conceptually:
+
+```text
+App Server event / Hook event / future adapter event
+                   │
+                   ▼
+                Trace IR
+                   │
+       ┌───────────┴───────────┐
+       ▼                       ▼
+   live state               journal
+       │
+       ├─ signals
+       ├─ reviewer
+       └─ metrics
+```
+
+Example IR:
 
 ```text
 STEP 42
+thread: T7
+turn: U12
 kind: TOOL_PROPOSAL
 tool: apply_patch
-intent: fix authentication timeout
 files: [src/redis.ts]
-depends_on: H3
 constraints: [C1, C2]
 risk: medium
-
-H3
-claim: Redis pool exhaustion is the timeout source
-support:
-  - high concurrency correlates with timeout
-  - pool max is 10
-missing:
-  - stack trace has not confirmed Redis as source
-status: UNVERIFIED
 ```
 
-The IR allows rules, replay, benchmark generation, and reviewer-model changes without coupling them to a particular raw Codex event format.
+The IR should retain provenance. A normalized event must still be traceable to the underlying runtime event/tool id so live intervention and replay do not rely on journal adjacency.
 
-### 4. Audit State
+## 8. Independent audit state
 
-Spotter keeps an independent state rather than treating Main's summaries as ground truth.
+Spotter should not treat Main's own explanation as ground truth.
 
-Minimum useful state:
+Minimum useful live state:
 
 ```text
 Goal
@@ -126,47 +253,75 @@ Evidence
 Open questions
 Touched scope
 Validation state
-Recent tool failures
+Recent failures
 Intervention history
-External side effects
+Active turn
+Pending reviewer jobs
+Reviewer budget
+External side effects (later)
 ```
 
-Claims should be connected to evidence. When supporting evidence is retracted or contradicted, dependent hypotheses and actions become stale and require revalidation.
+Claims should be linked to evidence. When supporting evidence is retracted or contradicted, dependent hypotheses and plans become stale and require revalidation.
 
-### 5. Deterministic Verifiers
+The current prototype already implements a typed claim/evidence ledger and mechanical stale propagation for observable outcomes. In the target runtime this ledger should become live state instead of being rebuilt before every review.
+
+## 9. Deterministic Gate Engine
 
 Some supervision decisions should bypass the reviewer LLM entirely.
 
 Examples:
 
 - path allow/deny rules
-- dependency changes
+- dependency-manifest changes
 - destructive shell commands
-- external-write operations
-- test-result requirements
-- file-count or diff-size thresholds
-- explicitly forbidden tools
+- workspace escape
+- explicit user execution restrictions
+- eventually external-write classes with clear rules
 
-These checks are especially suitable for synchronous pre-action gating.
+Target synchronous path:
 
-### 6. Fast Signals
+```text
+PreToolUse
+    │
+    ▼
+spotter-hook
+    │ Unix socket / bounded IPC
+    ▼
+spotterd Gate Engine
+    ├─ ALLOW
+    └─ DENY
+```
 
-Cheap heuristics generate **candidate failure hypotheses**, not final judgments.
+Do not perform these operations synchronously:
 
-Examples:
+- semantic LLM review
+- long journal replay
+- whole-state reconstruction
+- metrics aggregation
+- broad repository analysis
+
+The gate must have a measured latency budget and fail-open semantics when Spotter itself is unavailable, unless a future explicitly configured fail-closed mode is designed separately.
+
+## 10. Fast Signal Engine
+
+Cheap heuristics create **candidate failure hypotheses**, not semantic verdicts.
+
+Candidate signals include:
 
 - same tool repeatedly invoked with equivalent arguments
-- repeated failure exit codes
+- failure streaks
 - repeated reads with no expansion in the dependency frontier
-- sudden growth in touched files
+- sudden growth in touched scope
 - edits accumulating without validation
-- a previously invalidated hypothesis still appearing in proposed actions
-- budget anomalies in tool calls, tokens, or elapsed steps
+- stale hypothesis reuse
+- unusual tool/token/time budgets
+- attempted circumvention after a deterministic block
 
-A signal should say:
+Output should look like:
 
 ```text
 candidate: POSSIBLE_EXPLORATION_LOOP
+support: repeated equivalent search 4x
 ```
 
 not:
@@ -175,274 +330,283 @@ not:
 verdict: EXPLORATION_LOOP
 ```
 
-The semantic reviewer decides ambiguous cases.
+The reviewer remains responsible for ambiguous semantic judgment.
 
-### 7. Pair Reviewer
+The signal layer is also how Spotter should move away from fixed periodic reviewer calls once the signal quality is measured.
 
-The Pair Reviewer is an independently configured model.
+## 11. Reviewer Scheduler
 
-Its job is not to solve the task again. Its job is to test failure hypotheses and propose the smallest useful intervention.
+The Pair Reviewer is independently configured from Main where practical.
 
-A useful reviewer input contains:
+Its job is not to solve the task again. It tests candidate failure hypotheses and proposes the weakest useful intervention.
+
+Useful reviewer input:
 
 - user goal and explicit constraints
 - relevant Trace IR window
-- relevant audit-state subgraph
+- relevant independent audit state
 - candidate failure hypothesis
 - available verification actions
-- prior interventions around the same issue
+- prior interventions for the same issue
+- which inputs are missing or truncated
 
-A useful structured output:
+Example output:
 
 ```json
 {
   "decision": "VERIFY",
   "target": "hypothesis:H3",
-  "reason": "The pending edit depends on an unverified timeout-source assumption.",
+  "reason": "The proposed change depends on an unverified timeout-source assumption.",
   "probe": "Inspect the timeout stack trace before editing Redis configuration.",
   "confidence": 0.91
 }
 ```
 
-### 8. Intervention Controller
+### Reviewer job lifecycle
 
-The controller translates review decisions into runtime actions.
-
-#### CONTINUE
-
-No action.
-
-#### VERIFY
-
-Inject a concise evidence request into Main's active work.
-
-#### NUDGE
-
-Inject a concise course correction.
-
-#### BLOCK
-
-Reject a pending action synchronously.
-
-#### INTERRUPT
-
-Stop the current turn and request replanning from the last sound state.
-
-#### RESTART
-
-Launch a fresh rollout with only the user goal, verified state, current repository state, and deliberately retained changes.
-
-## Why two paths: asynchronous observer + synchronous gate
-
-Using a reviewer model synchronously before every action would create unacceptable latency.
-
-Spotter therefore separates supervision into two paths.
+Reviewer work is asynchronous:
 
 ```text
-                    Main
-                     │
-        ┌────────────┴────────────┐
-        ▼                         ▼
- Async trajectory review     Pre-action gate
- semantic / broad             narrow / fast
-        │                         │
- VERIFY / NUDGE            ALLOW / BLOCK
+QUEUED
+  ↓
+RUNNING
+  ↓
+DECIDED
+  ├─ DELIVERED
+  ├─ STALE
+  ├─ CANCELLED
+  └─ FAILED
 ```
 
-Most reading, searching, and reversible exploration can proceed while Spotter observes asynchronously.
+Each job is anchored to the thread/turn that motivated it.
 
-Actions with meaningful external or hard-to-reverse effects deserve stronger synchronous scrutiny.
+## 12. Intervention Controller
 
-## Action reversibility classes
+Spotter prefers the weakest sufficient action.
 
-A practical policy can classify actions by reversibility.
+```text
+CONTINUE    → no-op
+VERIFY      → async steer / evidence request
+NUDGE       → async steer
+BLOCK       → synchronous deterministic deny
+INTERRUPT   → turn interrupt
+RESTART     → fresh continuation from verified state
+```
 
-### Class A — freely reversible / observational
+### Freshness
 
-Examples:
+A reviewer verdict can become obsolete while Main continues.
 
-- read
-- grep / search
-- ls
-- git diff
+```text
+signal at turn U12
+      ↓
+reviewer thinks
+      ↓
+verdict ready
+      ↓
+is U12 still the active target?
+   ├─ yes → deliver
+   └─ no  → stale policy
+```
+
+A stale verdict must not be blindly injected into a later turn.
+
+Record:
+
+- detection time/step
+- reviewer start/end
+- target turn
+- attempted delivery
+- delivered/stale/discarded outcome
+- intervention latency
+
+This turns responsiveness into a measurable quantity.
+
+## 13. Pair-aware Main contract
+
+Runtime supervision changes Main's environment. A small contract should clarify:
+
+- the user remains the source of task intent
+- Spotter messages are supervision, not new requirements
+- `VERIFY` and `NUDGE` request reassessment, not blind compliance
+- blocked actions should not be retried through superficial reformulation
+- interruptions require replanning
+- disagreement should be resolved with evidence where possible
+- Main should not wait for Spotter during ordinary execution
+
+The target delivery mechanism should not depend on keeping a hook process alive after it returns.
+
+## 14. Action reversibility and side effects
+
+A practical policy distinguishes actions by reversibility.
+
+### Class A — observational / freely reversible
+
+Examples: read, grep/search, ls, diff.
 
 Default: asynchronous observation.
 
 ### Class B — locally reversible
 
-Examples:
+Examples: patching files, local builds, local dependency operations.
 
-- apply patch
-- modify files
-- local dependency installation
-
-Default: checkpoint + asynchronous review; synchronous checks for known constraints.
+Default: checkpoint where useful + asynchronous review; deterministic gates for explicit constraints.
 
 ### Class C — external or semantically irreversible
 
-Examples:
+Examples: push, deploy, database writes, issue/PR creation, arbitrary MCP writes.
 
-- push
-- deploy
-- create external resources
-- database writes
-- issue / PR creation
-- arbitrary MCP writes
+Target: stronger synchronous policy and side-effect recording.
 
-Default: synchronous gate plus side-effect recording.
+Reasoning rollback does not undo external state. Before `RESTART` can claim meaningful recovery, Spotter needs an effect ledger that can say what remains changed outside the local worktree.
 
-## Side-effect ledger
+## 15. Snapshots, replay, and counterfactuals
 
-Reasoning rollback does not undo external state.
+The current prototype already provides Git-backed snapshots, detached-worktree restore, Codex continuation fork machinery, and a same-prefix experiment harness.
 
-Spotter should record external effects before supporting restart/rollback semantics:
+These remain important in the target architecture because they support two different goals:
+
+1. recovery primitives
+2. causal evaluation of intervention advantage
+
+Resource lifecycle must be explicit:
 
 ```text
-EFFECT 18
-kind: github.create_issue
-resource: repo/foo
-result: issue #392
-reversible: false
-
-EFFECT 19
-kind: filesystem.patch
-checkpoint: C14
-reversible: true
+snapshot / fork worktree
+CREATED → IN_USE → RETAINED or CLEANED
 ```
 
-The initial MVP can simply classify and record effects. Full compensating rollback can come later.
+Never manipulate user worktrees or refs outside Spotter-owned namespaces. Cleanup should be Git-aware.
 
-## Durability, retention, and ambiguity policy
+## 16. Durability and recovery
 
-Supervision data is only useful if it survives crashes, stays bounded on disk,
-and is honest about what it could not judge. The three contracts below are what
-the implementation actually guarantees today.
+### Current journal contract
+
+The prototype step journal is append-only JSONL and includes cross-process locking, fsync, torn-tail recovery, and strict reads for destructive operations.
+
+That durability work remains useful, but the target runtime should reduce the number of independent writers because `spotterd` becomes the primary live writer.
+
+### Target recovery path
+
+On daemon restart:
+
+```text
+spotterd starts
+    ↓
+reconnect App Server
+    ↓
+list/reconcile active threads
+    ↓
+hydrate durable Spotter state as needed
+    ↓
+resume live supervision
+```
+
+Recovery is a boundary condition, not the normal event-processing loop.
+
+### Degraded state
+
+Observation/control health must be visible independently from daemon health:
+
+```text
+Spotter daemon:       running
+Codex App Server:     unavailable
+Observation:          unavailable
+Live intervention:    unavailable
+PreToolUse gate:      available
+```
+
+Silence cannot mean both “nothing is wrong” and “Spotter is disconnected”.
+
+## 17. Current prototype implementation notes
+
+The architectural migration should preserve the useful guarantees already built.
 
 ### Journal durability
 
-The step journal is append-only JSONL, one file per session, written by however
-many hook processes the runtime spawns.
+- cross-process append serialization
+- monotonic step/proposal allocation
+- flush/fsync before releasing the write lock
+- torn-tail recovery for normal readers
+- strict reads for destructive cleanup decisions
 
-- **Serialization.** Every append takes an exclusive `flock` on a sidecar lock
-  file. Step numbers and proposal numbers are allocated inside that lock, so
-  concurrent hook processes cannot produce duplicate or reordered steps.
-- **Durability.** Each record is `flush`ed and `fsync`ed before the lock is
-  released. A record is therefore complete on disk or absent — never half
-  applied to the numbering.
-- **Crash recovery.** A process killed mid-write can leave a partial trailing
-  line. Readers keep the valid prefix; the next append truncates the torn tail
-  before writing. Destructive readers (`prune`) instead load strictly and abort,
-  because a torn tail may hold the newest snapshot reference and treating its
-  absence as fact would delete live data.
-- **Cost.** Step allocation reads a size-keyed sidecar cache rather than
-  re-parsing the journal: measured 9.2 ms cold and 0.30 ms warm at 3,000
-  records. A sidecar that does not match the file size is discarded and the
-  full repairing load runs instead.
+### Snapshot safety
 
-### Snapshot lifecycle and retention
+- snapshots use Git objects/refs without touching user HEAD/index
+- restore happens in detached worktrees
+- refs are pinned under Spotter-owned namespaces
+- unchanged states can be deduplicated
+- prune is conservative and dry-run by default
 
-- **When.** Snapshots are taken at mutation boundaries — before and after
-  `apply_patch` — not on every event.
-- **No-op suppression.** If the worktree tree is identical to the session's
-  previous snapshot, that snapshot is reused and no new ref is created.
-- **Pinning.** Each snapshot is a commit pinned under `refs/spotter/steps/`, so
-  `gc` cannot remove a state a later fork depends on. The user's index, HEAD,
-  and worktree are never touched; restores go to a detached worktree.
-- **Reuse re-pins.** A deduped snapshot is re-pinned on every reuse. A pruned
-  commit stays resolvable until `gc` runs, so reusing one without restoring its
-  ref would hand the journal a sha that `gc` later destroys.
-- **Retention.** `spotter prune` deletes snapshots no journal references, in a
-  single `update-ref --stdin` transaction, dry-run by default. Referenced
-  snapshots are kept indefinitely, because deleting one destroys the ability to
-  fork that step. `--max-age-days N` opts into expiring referenced snapshots
-  too. Age is measured from a snapshot's **creation**, and dedup reuses an
-  unchanged snapshot without refreshing it, so expiry drops old *states* rather
-  than old *steps*: a step recorded today that references a month-old unchanged
-  state loses its fork with it. Because that cost is easy to miss, `prune`
-  prints the exact `session`/`step` pairs each expired snapshot takes down, and
-  the flag is never the default.
+### Audit ledger
 
-### Audit ledger (claim/evidence)
+- Main reasoning summaries are not accepted as evidence
+- only observable outcomes can become evidence
+- contradicting outcomes retract previous evidence
+- stale propagation is transitive
 
-The reviewer does not treat the agent's own account as fact. A ledger is
-rebuilt from the journal before every review:
+The hook-collected prototype measured observable outcomes on only 33 of 340 real tool results (10%). This figure is specific to the current observation surface. The App Server migration must re-measure it instead of treating 10% as a permanent architectural limit.
 
-- **Evidence** comes only from observable outcomes of tool calls. A reasoning
-  summary can never become evidence — `EvidenceSource` has no member for it,
-  so mypy rejects the call site.
-- **Hypotheses** come from the reviewer's own flagged assumptions and enter as
-  `unverified`.
-- **Retraction is mechanical**: when the same command later produces a
-  different outcome, the earlier outcome is retracted and every hypothesis
-  resting solely on it goes stale, transitively. Stale premises are listed in
-  the next review prompt so a killed assumption cannot quietly stay in view.
+### Gate ambiguity
 
-**Measured limit.** Only 33 of 340 real Codex tool results (10%) carry an
-observable outcome at all — Codex reports an exit code for `apply_patch` and
-nothing for shell commands. The ledger records outcomes where they exist and
-stays silent where they do not; inferring pass/fail from output text would
-retract evidence every time `git status` changed. This is an
-observability-ceiling fact (P1), not a parser gap, and it bounds how much
-stale-premise detection can do on Codex today.
+Where deterministic parsing cannot support a safe judgment, the current gate fails open and records the blind spot separately from false-positive metrics.
 
-### Gate ambiguity policy
+That distinction should survive the migration.
 
-Deterministic gates judge a parsed token stream. Where the parse cannot support
-a decision, the gate **fails open** and says so, rather than guessing:
+## 18. Integration lifecycle and service ownership
 
-| Class | Behaviour | Telemetry |
-| --- | --- | --- |
-| Command that cannot be tokenized | allow, rule `unparseable_command` | `gate_fail_open` |
-| Absolute path with no known workspace root | allow, rule `unknown_workspace` | `gate_fail_open` |
-| Everything else | allow or block per rule | `gate_shadow_block` / `gate_block` |
+Runtime architecture does not end at the event loop. Spotter must also own setup, service lifecycle, upgrades, teardown, and repair coherently.
 
-Every fail-open decision is journaled as a `gate_fail_open` record carrying the
-rule that abstained, so blindness is countable rather than invisible. Those
-records surface in `spotter analyze` and are counted by `spotter metrics` as
-**blind spots, reported separately from the false-positive rate**. They are
-deliberately not labelable: a fail-open is an abstention, not a judgment, so
-scoring it `tp`/`fp` would mix "the gate was wrong" with "the gate could not
-tell" in one number.
+Target user flow:
 
-## Codex integration points
+```bash
+brew install spotter
+spotter setup codex
+spotter doctor
 
-Current official Codex documentation exposes the primitives that make Spotter plausible:
+# normal use
+codex
+```
 
-### Hooks
+The user should not need to manually start `spotterd` or an App Server before each Codex launch.
 
-Codex supports lifecycle hooks such as `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, and stop-related hooks.
+Because an external App Server may need to exist before Codex chooses its target, a fully lazy “start on first tool hook” daemon can conflict with the full target experience. The App Server lifecycle PoC decides whether managed mode needs a login-scoped service.
 
-`PreToolUse` is particularly important because it can run before supported tool execution and can influence whether/how the call proceeds.
+Detailed lifecycle and ownership rules live in [lifecycle.md](lifecycle.md).
 
-Official documentation:
+## 19. Adapter boundary
 
-- https://developers.openai.com/codex/hooks
+Codex is the first target, not the permanent core API.
 
-### App Server
+An agent adapter should expose normalized capabilities such as:
 
-Codex App Server exposes a programmatic thread/turn interface and streamed runtime events suitable for building richer clients and orchestration around active Codex work.
+```text
+observe thread/turn events
+observe tool/result/diff
+synchronous pre-action veto (optional)
+soft steer active turn (optional)
+interrupt active turn (optional)
+thread resume/fork primitives (optional)
+```
 
-Spotter is particularly interested in:
+Spotter core should degrade explicitly when a capability is missing rather than assuming every agent has Codex's exact surfaces.
 
-- streamed turn/item events
-- `turn/steer` for in-flight course correction
-- `turn/interrupt` for terminating an active turn
+## 20. First migration boundary
 
-Official documentation:
+The architecture migration should intentionally avoid turning into a rewrite of everything at once.
 
-- https://developers.openai.com/codex/app-server
+First prove:
 
-## First implementation boundary
+1. a stable external App Server path can host the same Codex TUI thread that Spotter observes
+2. Spotter can receive the event stream as a second client
+3. Spotter can track the active turn
+4. `turn/steer` reaches the real user session
+5. the `PreToolUse` gate can remain a small bounded synchronous path
 
-The first implementation should intentionally avoid several advanced ideas:
+Only then move the existing reviewer/state/metrics machinery into the daemon.
 
-- no model training
-- no full graph database
-- no automatic harness self-repair
-- no general rollback engine
-- no multi-agent debate
-- no requirement for hidden reasoning traces
+The MVP hypothesis remains:
 
-The MVP should prove one thing first:
+> **Can an independent runtime spotter detect a useful subset of trajectory failures early enough that intervention improves task outcomes without becoming an expensive source of false positives or latency?**
 
-> **Can an independent runtime spotter detect a useful subset of trajectory failures early enough that intervention improves task outcomes without becoming an expensive source of false positives?**
+Architecture makes that experiment possible; it does not answer it by itself.
