@@ -147,7 +147,9 @@ def test_the_start_snapshot_can_be_turned_off(repo: Path) -> None:
     assert _refs(repo) == []
 
 
-def test_forkable_ratio_reports_the_instrument_reach() -> None:
+def test_the_ratio_reports_the_instrument_reach() -> None:
+    """Synthetic records carry no cwd, so ref survival cannot be checked and
+    the weaker name is the honest one."""
     from spotter.snapshot import StepRecord
     from spotter.trace import TraceEvent
 
@@ -156,7 +158,7 @@ def test_forkable_ratio_reports_the_instrument_reach() -> None:
 
     # a snapshot arriving only at step 2 leaves the first two unreachable
     records = [proposal(0, None), proposal(1, None), proposal(2, "abc"), proposal(3, None)]
-    assert _forkable_of(records) == "forkable=2/4"
+    assert _forkable_of(records) == "journaled_snapshot=2/4"
     assert _forkable_of([]) == "forkable=0/0"
 
 
@@ -165,7 +167,7 @@ def test_proposals_without_a_correlation_id_are_not_counted_forkable() -> None:
     from spotter.trace import TraceEvent
 
     records = [StepRecord(0, TraceEvent("tool_proposal", {}), "abc")]
-    assert _forkable_of(records) == "forkable=0/1"
+    assert _forkable_of(records) == "journaled_snapshot=0/1"
 
 
 def test_expired_snapshots_stop_counting_as_forkable(repo: Path) -> None:
