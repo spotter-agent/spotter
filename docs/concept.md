@@ -1,339 +1,616 @@
 # Concept
 
-## What is Spotter?
+> **Purpose:** define the problem Spotter is trying to solve, the intervention model, and the principles that should remain true even if the implementation changes.
+
+---
+
+## 30-second summary
 
 Spotter is a **runtime supervision system for coding agents**.
 
-A primary coding agent remains responsible for doing the work. Spotter observes the execution trajectory, keeps an independent view of what is known and uncertain, and intervenes only when intervention is likely to improve the outcome.
-
-The metaphor is intentional: a good spotter does not perform the lift. They watch closely, avoid unnecessary interference, and step in before a recoverable mistake becomes a failure.
-
-> **The user defines the goal. Spotter reviews the path.**
-
-The project started as a hook/plugin-centered prototype. The target product boundary is now broader: Spotter should be an **independent local runtime** that integrates with coding agents such as Codex through their observation, control, and enforcement surfaces. The agent integration is an adapter; it is not the identity of Spotter itself.
-
-## The problem
-
-Coding agents increasingly operate over long trajectories:
+The main agent still owns the task. Spotter observes the execution path, keeps an independent view of claims/evidence/progress, and intervenes only when intervention is more useful than letting Main continue.
 
 ```text
-understand → inspect → hypothesize → edit → run → observe → revise → validate
-```
-
-Many failures are not single incorrect outputs. They are **trajectory failures**.
-
-A weak assumption can become a plan. The plan can trigger unnecessary edits. Those edits can create secondary failures. The agent then spends more time compensating for consequences of the original mistake. A final-diff reviewer may detect the problem, but only after most of the cost has already been incurred.
-
-Common examples include:
-
-- drifting away from the requested scope
-- treating an unverified hypothesis as fact
-- continuing to use a premise after new evidence invalidates it
-- repetitive exploration that produces little new information
-- repeatedly retrying a failing tool strategy
-- expanding a local fix into an unnecessary refactor
-- forgetting a user constraint midway through a long run
-- editing before gathering enough evidence
-- making changes without validating the behavior they affect
-
-Spotter aims to catch these failures **while the trajectory is still recoverable**.
-
-## What changes with runtime supervision?
-
-Traditional review mainly examines an artifact after execution:
-
-```text
-request → implementation → diff → review
-```
-
-Runtime supervision adds another loop:
-
-```text
-request
+User goal
    ↓
-Main Agent ───────────────► execution continues
+Main Agent ───────────────────────────► keeps working
    │
    │ observable trajectory
    ▼
 Spotter
-   │
    ├─ maintain independent state
-   ├─ detect possible failure
+   ├─ detect possible trajectory failure
    ├─ verify ambiguous cases
-   └─ intervene only when useful
+   └─ choose the weakest useful intervention
 ```
 
-The key distinction is timing. Spotter tries to reduce the amount of **wasted progress after a meaningful deviation**, not merely increase the number of errors noticed eventually.
+Spotter is not trying to make the agent ask for approval before every action. Its core question is:
 
-## Core principles
+> **How do we keep a recoverable mistake from becoming an expensive trajectory?**
 
-### 1. Always observe, rarely interrupt
+The target intervention ladder is:
 
-Silence is a valid and desirable Spotter action.
+```text
+CONTINUE → VERIFY → NUDGE → BLOCK → INTERRUPT → RESTART
+```
 
-An observer that comments on every imperfect decision becomes another source of noise, latency, and anchoring. Spotter should intervene only when the expected value of intervention exceeds the expected value of letting Main continue.
+The target product boundary is also explicit: Spotter should be an **independent local runtime**, not a Codex plugin that happens to contain supervision logic. Codex is the first adapter.
 
-### 2. Review the process, not only the artifact
+---
 
-Static review asks whether the code is correct.
+## Quick reference
+
+| Concept | Meaning |
+| --- | --- |
+| Main | the coding agent that performs the user's task |
+| Spotter | independent runtime supervisor |
+| Trajectory | the sequence of observations, hypotheses, actions, tool calls, edits, results, and revisions |
+| Candidate signal | cheap evidence that something may be going wrong; not yet a semantic verdict |
+| Reviewer | an independent model that evaluates ambiguous candidates |
+| Deterministic gate | executable policy that can allow/deny a pending action without an LLM |
+| Intervention | `VERIFY`, `NUDGE`, `BLOCK`, `INTERRUPT`, or `RESTART` |
+| Audit state | Spotter's independent model of goal, constraints, hypotheses, evidence, progress, and failures |
+| Intervention advantage | whether intervening from a prefix improves the outcome compared with continuing from the same prefix |
+
+---
+
+# 1. The problem: trajectory failures
+
+Coding agents increasingly operate over long sequences:
+
+```text
+understand
+  ↓
+inspect
+  ↓
+hypothesize
+  ↓
+edit
+  ↓
+run
+  ↓
+observe
+  ↓
+revise
+  ↓
+validate
+```
+
+Many important failures are not a single wrong output. They are **trajectory failures**: one weak premise creates a path that keeps generating further work.
+
+Example:
+
+```text
+E1: timeout happens under load
+        │
+        ▼
+H1: Redis pool exhaustion is the cause
+        │   (never verified)
+        ▼
+P1: change Redis pool configuration
+        │
+        ▼
+new failures appear
+        │
+        ▼
+agent compensates with more edits
+        │
+        ▼
+scope expands and the original mistake becomes expensive
+```
+
+A post-hoc reviewer can still catch the bad diff, but by then the agent may already have spent most of the tokens, tool calls, elapsed time, and repository churn.
+
+Spotter tries to act closer to the first meaningful deviation:
+
+```text
+H1 appears
+  ↓
+Spotter notices consequential assumption has weak evidence
+  ↓
+VERIFY: inspect stack trace / focused probe
+  ↓
+H1 confirmed → continue
+or
+H1 refuted → avoid the wrong branch
+```
+
+The optimization target is therefore not “detect every imperfect action.” It is **reduce wasted progress while preserving Main's autonomy**.
+
+---
+
+# 2. What Spotter observes
+
+Typical failure classes include:
+
+### Goal / scope failures
+
+- drifting from the user's request;
+- forgetting a constraint in a long run;
+- expanding a local change into an unnecessary refactor;
+- dependency or file-scope creep.
+
+### Epistemic failures
+
+- treating an unverified hypothesis as fact;
+- continuing from evidence that was later contradicted;
+- mistaking correlation for cause;
+- over-trusting Main's own summary of what happened.
+
+### Search / execution failures
+
+- repeated low-information exploration;
+- retrying equivalent failing commands;
+- staying inside one hypothesis despite contradictory signals;
+- continuing after a tool strategy repeatedly fails.
+
+### Validation failures
+
+- meaningful edits without targeted validation;
+- tests run at the wrong layer;
+- passing a partial check while the affected behavior remains untested;
+- accumulating a large change before any feedback loop.
+
+Not every instance is an error. Exploration can be neutral and repetition can be justified. Cheap signals therefore create **candidates**, while semantic judgment remains a separate step.
+
+---
+
+# 3. Core loop
+
+The intended supervision loop is:
+
+```text
+1. OBSERVE
+   collect runtime events and relevant repository/tool outcomes
+
+2. UPDATE STATE
+   maintain goal, constraints, hypotheses, evidence, touched scope,
+   validation state, recent failures, and intervention history
+
+3. DETECT CANDIDATE
+   use cheap signals or deterministic verifiers
+
+4. REVIEW WHEN NEEDED
+   ask an independent reviewer only for ambiguous semantic judgment
+
+5. CHOOSE ACTION
+   prefer the weakest intervention likely to help
+
+6. DELIVER / ENFORCE
+   async steer for VERIFY/NUDGE; sync deny for deterministic BLOCK
+
+7. MEASURE
+   record timing, cost, precision, harm, recovery, and outcome
+```
+
+Spotter is successful only if this loop improves outcomes **without becoming a larger source of cost, latency, or noise than the failures it prevents**.
+
+---
+
+# 4. Core principles
+
+## 4.1 Always observe, rarely interrupt
+
+Silence is a valid and desirable Spotter outcome.
+
+An observer that comments on every imperfect decision creates:
+
+- latency;
+- token cost;
+- anchoring;
+- unnecessary plan churn;
+- a second source of mistakes.
+
+Spotter should intervene only when expected intervention value exceeds the expected value of letting Main continue.
+
+## 4.2 Review the path, not only the artifact
+
+Static review asks “is this code correct?”
 
 Spotter also asks:
 
 - Why is this file being edited?
-- What evidence supports the current hypothesis?
-- Is this action still connected to the user's goal?
-- Did the agent already invalidate the premise behind this plan?
-- Is exploration producing new information?
-- Has the agent accumulated changes without validating them?
+- Which hypothesis motivates this change?
+- What observable evidence supports that hypothesis?
+- Did later evidence invalidate it?
+- Is the search frontier expanding or repeating?
+- Has the agent changed meaningful behavior without validation?
+- Is the current action still connected to the user's goal?
 
-### 3. Prefer falsification over opinion
+## 4.3 Prefer falsification over model debate
 
-When Main and Spotter disagree, the preferred resolution is not a longer conversation between models.
-
-Spotter should look for the cheapest discriminating evidence:
-
-- run a focused test
-- inspect the stack trace
-- search the call sites
-- check the compiler or type system
-- inspect repository state
-- query logs
-
-The reviewer is not a competing implementation agent. It is an independent falsifier that tries to expose fragile assumptions and move the trajectory toward evidence.
-
-### 4. Deterministic facts deserve deterministic checks
-
-Known constraints do not need an LLM judge.
+When Main and Spotter disagree, the preferred next step is a **cheap discriminating probe**, not a long conversation between models.
 
 Examples:
 
-- “Do not add dependencies” → inspect manifest changes
-- “Only modify this directory” → inspect affected paths
-- forbidden commands → judge the pending tool call
-- explicit execution boundaries → deterministic policy
-
-LLM review should be reserved for semantic ambiguity: scope drift, unsupported reasoning, missed requirements, stale assumptions, premature abstraction, and similar judgments.
-
-This leads to two different control paths:
-
 ```text
-semantic supervision        deterministic enforcement
-asynchronous                synchronous when required
-VERIFY / NUDGE              ALLOW / BLOCK
+focused test
+compiler/type checker
+stack trace inspection
+call-site search
+repository state inspection
+log query
+small reproduction
 ```
 
-### 5. Main and Spotter should fail differently
+The reviewer should not become a second coding agent racing Main to produce an alternate solution.
 
-Spotter should be independently configurable and, where practical, use a different reviewer model or model family from Main.
+## 4.4 Deterministic facts deserve deterministic checks
 
-Its state should also preserve judgment independence. Main's conclusions must not automatically become Spotter's facts. A claim can be recorded as a hypothesis with supporting and contradicting evidence rather than copied into shared state as truth.
-
-Model diversity is still an empirical question. Independent context is valuable even when only the same model family is available.
-
-### 6. Intervention should be incremental
-
-Spotter uses an escalation ladder:
+Examples:
 
 ```text
-CONTINUE
-   ↓
-VERIFY
-   ↓
-NUDGE
-   ↓
-BLOCK
-   ↓
-INTERRUPT
-   ↓
-RESTART
+"Do not add dependencies"
+  → inspect manifest modification
+
+"Only modify src/auth/**"
+  → inspect proposed/changed paths
+
+"Never run destructive git commands"
+  → inspect pending command
 ```
 
-The weakest sufficient intervention is preferred.
+These do not need an LLM.
 
-### 7. Supervision must not become the bottleneck
+Semantic review is reserved for claims such as:
 
-The main agent should not wait for a semantic reviewer before every action.
+```text
+"This approach is drifting from the requested scope."
+"The next edit depends on a weak assumption."
+"The agent is repeating exploration without gaining information."
+```
 
-The target architecture therefore keeps semantic supervision asynchronous: the agent continues, Spotter thinks in parallel, and a decision is delivered to the active turn only if it is still relevant.
+## 4.5 Semantic supervision should be asynchronous
 
-Only narrow deterministic enforcement belongs on a synchronous pre-action path.
+Main should not wait for a reviewer before each ordinary action.
 
-### 8. Live state belongs in the runtime, not in the log
+```text
+Main continues ─────────────────────────────►
 
-The prototype reconstructs substantial state from hook-written journals. That is acceptable for experimentation but not the desired steady-state architecture.
+candidate
+   ↓
+reviewer thinks in parallel
+   ↓
+verdict arrives
+   ↓
+is target turn still relevant?
+   ├─ yes → deliver
+   └─ no  → stale policy
+```
 
-Target responsibility:
+Only narrow deterministic enforcement belongs in a synchronous pre-action path.
+
+## 4.6 Main and Spotter should fail differently
+
+Spotter should preserve judgment independence:
+
+- separate reviewer context;
+- independently configured model where practical;
+- Main's explanation is not automatically evidence;
+- uncertainty and missing evidence remain explicit.
+
+Different model families may reduce correlated errors, but that is an empirical question. Independent state/context is useful even when only the same model family is available.
+
+## 4.7 Live state belongs in the runtime, not the log
+
+Target ownership:
 
 ```text
 memory  = live supervision state
-journal = durable history / recovery source
+journal = durable event history / recovery source
+snapshot = repository state checkpoint
 ```
 
-Journal replay should happen at recovery, resume, and analysis boundaries—not on every ordinary event.
+Journal replay belongs at resume/recovery/offline analysis boundaries, not on every ordinary event.
 
-### 9. Agent integrations are adapters
+## 4.8 Integrations are adapters
 
-Spotter should not be defined by Codex plugin packaging.
+Spotter should not be defined as “a Codex plugin.”
 
-For Codex, the target is to use App Server as the primary observation/control plane and keep hooks only where they provide a unique enforcement primitive such as atomic pre-tool blocking.
+A coding-agent adapter may expose different capabilities:
 
-A future agent integration may expose different primitives. Spotter core should depend on normalized capabilities rather than a specific hook or transcript format.
+```text
+observe events
+soft steer active turn
+interrupt active turn
+atomic pre-action veto
+resume/fork
+```
 
-## Intervention semantics
+Spotter core should reason over normalized capabilities and Trace IR rather than Codex-specific event formats.
 
-### CONTINUE
+---
 
-No meaningful issue is detected, or an issue exists but intervention is unlikely to help. Spotter remains silent.
+# 5. Intervention semantics
 
-### VERIFY
+## `CONTINUE`
 
-A consequential decision depends on a weakly supported assumption. Spotter asks Main to gather a small amount of discriminating evidence before compounding the assumption.
+No useful intervention is justified.
 
-### NUDGE
+Possible reasons:
 
-The trajectory shows early drift, inefficiency, or omission. Spotter injects a concise course correction without taking over the task.
+- trajectory looks healthy;
+- signal was a false alarm;
+- uncertainty exists but the next action is cheap/reversible;
+- intervening would create more disruption than value.
 
-### BLOCK
+Expected behavior: **silent no-op**.
 
-A pending action clearly violates a known deterministic constraint or configured execution boundary. The action is stopped before execution.
+## `VERIFY`
 
-`BLOCK` should remain near-deterministic. Semantic reviewer disagreement should not casually become a synchronous denial.
+A consequential decision depends on weak evidence.
 
-### INTERRUPT
+Good VERIFY:
 
-The active turn has entered a trajectory where continued execution is likely to compound waste or damage. Spotter stops the turn and requires reassessment instead of allowing the same plan to continue indefinitely.
+```text
+Before changing the Redis pool size, inspect the timeout stack trace;
+the current evidence does not yet identify Redis as the source.
+```
 
-### RESTART
+Bad VERIFY:
 
-The current reasoning context itself is considered contaminated by stale assumptions or cascading failures. A fresh continuation begins from the user's goal, verified evidence, current repository state, and deliberately retained artifacts.
+```text
+Think more carefully about the problem.
+```
 
-This should be rare and should not pretend that external side effects have been rolled back when they have not.
+VERIFY should request a small, discriminating piece of evidence.
 
-## Pair-aware Main
+## `NUDGE`
 
-Runtime supervision changes the environment in which the primary agent operates. Main therefore benefits from a small execution contract.
+The path shows early drift, omission, or inefficient commitment.
 
-It should understand that:
+Good NUDGE:
 
-- Spotter signals are runtime supervision, not new user requirements.
-- Spotter feedback should not be accepted blindly.
-- disagreement should preferably be resolved with external evidence.
-- a blocked action should not be retried through superficial reformulation.
-- an interrupt requires reassessment before continuing.
-- Main should not wait for Spotter approval during normal execution.
+```text
+The last three edits expand beyond the requested auth timeout fix.
+Re-check the user scope before continuing the refactor.
+```
+
+A NUDGE is not a replacement implementation plan.
+
+## `BLOCK`
+
+A pending action violates a deterministic constraint.
+
+Examples:
+
+```text
+git reset --hard
+forbidden path mutation
+unapproved dependency manifest change
+workspace escape
+```
+
+BLOCK should remain near-deterministic. Semantic disagreement must not silently become a deny.
+
+## `INTERRUPT`
+
+The current turn is likely to compound a bad trajectory faster than a soft correction can help.
+
+INTERRUPT has a much higher false-positive cost than NUDGE, so it requires a stronger evidence/precision gate.
+
+## `RESTART`
+
+The reasoning context itself is no longer trustworthy.
+
+A fresh continuation should receive deliberately selected state:
+
+```text
+user goal
+explicit constraints
+verified evidence
+current repository state
+intentionally retained artifacts
+```
+
+It should not automatically inherit the entire failed reasoning history.
+
+RESTART must also account for external side effects. Restarting reasoning does not undo a push, deploy, database write, or external API mutation.
+
+---
+
+# 6. Pair-aware Main contract
+
+Runtime supervision changes Main's environment. Main needs a small contract:
+
+- the user remains the source of task intent;
+- Spotter feedback is supervision, not a new requirement;
+- `VERIFY` / `NUDGE` request reassessment, not blind compliance;
+- disagreement should be resolved with evidence when possible;
+- blocked actions should not be retried through superficial reformulation;
+- an interrupt requires replanning;
+- Main should not wait for Spotter during ordinary execution.
 
 A useful rule is:
 
 > **Pair feedback is a request to re-evaluate the path, not authority to redefine the goal.**
 
-The exact delivery mechanism is runtime-specific. In the target Codex architecture, soft feedback should be delivered through the live App Server control path rather than by keeping a hook process alive.
+---
 
-## Independent working state
+# 7. Independent working state
 
-Spotter needs more than a raw transcript, but the first useful implementation does not need a large graph database.
-
-A compact state is enough:
+A useful first state model does not require a graph database.
 
 ```text
-Goal
-Constraints
-Current hypotheses
-Evidence for / against
-Open questions
-Current action
-Files touched
-Validation state
-Recent failures
-Intervention history
-Active thread / turn
-Reviewer jobs / budgets
+ThreadState
+  Goal
+  Constraints
+  Active turn
+  Hypotheses
+  Evidence for/against
+  Open questions
+  Touched scope
+  Validation state
+  Recent actions
+  Recent failures
+  Intervention history
+  Pending reviewer jobs
+  Reviewer budgets
 ```
 
-The important relationship is between **claims and evidence**. If evidence is invalidated, downstream hypotheses and plans that depended on it should become stale and require revalidation.
+The key relationship is claim → evidence dependency.
 
-## Observation, control, and enforcement are different planes
-
-A useful conceptual split is:
+Example:
 
 ```text
-Observation plane
-  → what happened / is happening?
+E1: failures correlate with high concurrency
+        ↓ supports
+H1: Redis pool exhaustion causes timeout
+        ↓ motivates
+P1: change Redis pool settings
 
-Control plane
-  → how can Spotter steer or stop the active trajectory?
-
-Enforcement plane
-  → what must be decided atomically before an action executes?
+E2 arrives: stack trace points to upstream HTTP client
+        ↓
+H1 becomes stale
+        ↓
+P1 must be revalidated
 ```
 
-For the current Codex target, the intended mapping is:
+Main's own prose summary is not enough to turn H1 into verified evidence.
+
+---
+
+# 8. Observation, control, and enforcement
+
+These are different product surfaces.
 
 ```text
-App Server      → primary observation + live control
-PreToolUse Hook → narrow synchronous enforcement
-spotterd        → state, detection, review, policy, orchestration
+Observation
+  What is happening?
+
+Control
+  How can Spotter influence an active trajectory?
+
+Enforcement
+  What must be decided atomically before execution?
 ```
 
-This mapping is a target architecture and depends on the App Server lifecycle/attach PoC tracked by [#66](https://github.com/Bogyie/spotter/issues/66).
+Target Codex mapping:
 
-## Product lifecycle is part of the design
+```text
+Codex App Server
+  → primary observation + live control
 
-A supervision runtime that works only after manually starting several background processes is not a complete product.
+PreToolUse Hook
+  → narrow deterministic enforcement
 
-The target UX is:
+spotterd
+  → state, signals, reviewer, policy, budgets, recovery
+```
+
+This mapping depends on the App Server lifecycle/attach PoC in #66.
+
+---
+
+# 9. Product lifecycle is part of the concept
+
+A runtime supervisor is not complete if the user must manually orchestrate several background processes every time they use Codex.
+
+Target experience:
 
 ```bash
 brew install spotter
 spotter setup codex
 spotter doctor
 
-# thereafter
+# after setup
 codex
 ```
 
-Spotter must also define behavior for:
+The design must also define:
 
-- login/startup
-- multiple simultaneous agent sessions
-- thread resume
-- daemon or App Server crash
-- Spotter upgrade
-- Codex upgrade
-- schema migration
-- integration teardown
-- uninstall without teardown
-- data purge
-- reinstall
+- login/startup behavior;
+- multiple simultaneous coding sessions;
+- thread resume;
+- daemon/App Server crash recovery;
+- Spotter upgrade;
+- Codex upgrade;
+- config/schema migration;
+- teardown;
+- uninstall without teardown;
+- data purge;
+- reinstall;
+- legacy plugin migration.
 
-See [Lifecycle](lifecycle.md) for the full operational model.
+See [Lifecycle](lifecycle.md) for the operational contract.
 
-## What Spotter is not
+---
+
+# 10. What Spotter is not
 
 Spotter is not:
 
-- a second coding agent racing Main to solve the same task
-- a static code-review bot
-- a security-only guardrail
-- a mandatory approval gate for every tool call
-- a multi-agent debate system
-- a mechanism for maximizing the amount of reasoning
-- a Codex-only plugin as a product boundary
+- a second coding agent racing Main to solve the same task;
+- a static code-review bot;
+- a security-only guardrail;
+- a mandatory approval gate before every tool call;
+- a multi-agent debate framework;
+- a mechanism for maximizing the amount of reasoning;
+- a Codex-only plugin as a permanent product boundary;
+- a claim that every detectable mistake should be interrupted.
 
-Its purpose is to reduce **wasted progress** while preserving Main's autonomy.
+Its purpose is narrower: **reduce wasted progress while preserving Main's autonomy**.
 
-## Trajectory Engineering
+---
 
-Spotter is an experiment in a broader layer we call **Trajectory Engineering**.
+# 11. What would count as success?
+
+Implementation success and research success are different.
+
+### Implementation success
+
+Spotter can:
+
+1. observe the real active coding-agent trajectory;
+2. maintain independent live state;
+3. detect candidates cheaply;
+4. run semantic review asynchronously;
+5. deliver a decision to the correct active turn;
+6. deterministically block narrow policy violations;
+7. survive restart/resume/upgrades without losing ownership clarity.
+
+### Research success
+
+Compared with a matched baseline, Spotter demonstrates:
+
+- positive intervention advantage;
+- acceptable false-positive and miss rates;
+- reduced wasted actions/tokens/time;
+- low intervention harm;
+- acceptable runtime and operational overhead.
+
+A plausible reviewer verdict is not enough. A polished daemon is not enough. The system must prove that intervention is worth its cost.
+
+---
+
+# 12. Trajectory Engineering
+
+Spotter is an experiment in a broader layer: **Trajectory Engineering**.
 
 - Prompt engineering shapes the instruction.
 - Context engineering shapes what the model can see.
-- Harness engineering shapes the execution environment, tools, and orchestration.
+- Harness engineering shapes the environment, tools, and constraints.
 - **Trajectory engineering shapes what happens while the agent is already executing.**
 
-Its concerns include observation, state tracking, verification, intervention timing, steering, interruption, rollback boundaries, restart, and recovery.
+Its concerns include:
 
-The working hypothesis behind Spotter is:
+```text
+observation
+state tracking
+verification
+intervention timing
+steering
+blocking
+interruption
+restart boundaries
+recovery
+causal evaluation of interventions
+```
 
-> Better agents are not only agents that reason better. They are agents whose mistakes are detected early enough that they remain cheap to correct.
+The working hypothesis is:
 
-That hypothesis is not yet proven for Spotter. The project should keep mechanisms behind measurement gates and treat negative or null intervention results as first-class outcomes.
+> **A better agent system is not only one that makes fewer mistakes. It is also one that detects mistakes early enough that they remain cheap to correct.**
+
+That hypothesis is not yet proven for Spotter. Null and negative results are first-class outcomes.
+
+For current implementation state, see [Status](status.md). For runtime mechanics, see [Architecture](architecture.md). For implementation order, see [Roadmap](roadmap.md).
