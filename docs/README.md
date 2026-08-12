@@ -12,7 +12,9 @@ Start here if you are reading the repository for the first time.
 | What happens from install through uninstall/reinstall? | [Lifecycle](lifecycle.md) | command-by-command operational lifecycle |
 | What should be implemented first, and what gates each phase? | [Roadmap](roadmap.md) | dependency graph, deliverables, exit criteria |
 | Which papers/ideas inform the design, and what remains unproven? | [Research](research.md) | literature-to-mechanism map + evidence gates |
-| What is the umbrella direction decision? | [Issue #66](https://github.com/Bogyie/spotter/issues/66) | design rationale and ongoing decisions |
+| How should code, branches, commits, tests, and docs be structured? | [Conventions](conventions.md) | repository-wide working conventions |
+| How do I contribute? | [Contributing](../CONTRIBUTING.md) | issue/PR workflow, setup, and review expectations |
+| What is the umbrella direction decision? | [Issue #66](https://github.com/spotter-agent/spotter/issues/66) | design rationale and ongoing decisions |
 
 ## Recommended reading paths
 
@@ -50,6 +52,16 @@ Roadmap → Evaluation track
 Status → Evidence status
 ```
 
+### I want to contribute code or docs
+
+```text
+Contributing
+  ↓
+Conventions
+  ↓
+Status / Architecture as needed
+```
+
 ## Current architectural decision in one screen
 
 ```text
@@ -84,5 +96,7 @@ To avoid maintaining duplicate specifications:
 - **Lifecycle** owns package/service/integration/session/update/removal behavior.
 - **Roadmap** owns implementation dependencies, deliverables, and exit criteria.
 - **Research** owns prior work, hypotheses, evidence, and evaluation questions.
+- **Conventions** owns repository-wide code/test/git/documentation conventions.
+- **Contributing** owns the human contribution workflow.
 
 When a detail belongs to another document, link to it rather than maintaining two competing definitions.
