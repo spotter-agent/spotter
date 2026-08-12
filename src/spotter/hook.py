@@ -14,7 +14,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from spotter.budget import reserve
+from spotter.budget import cancel, reserve
 from spotter.config import SpotterConfig
 from spotter.core import SpotterRuntime
 from spotter.gates import Gate
@@ -159,6 +159,9 @@ def _maybe_spawn_shadow_review(
                 start_new_session=True,
             )
         except OSError as error:
+            # The slot was taken before the spawn; a spawn that never happened
+            # must not consume budget (PR #58 review, P1).
+            cancel(session)
             StepJournal(journal_file).record(
                 TraceEvent("reviewer_error", {"error": f"review process failed: {error}"[:300]})
             )

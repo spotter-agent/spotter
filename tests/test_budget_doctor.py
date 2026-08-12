@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from spotter.budget import LedgerCorrupt, charge, exhausted, read, reserve, settle
+from spotter.budget import LedgerCorrupt, cancel, charge, exhausted, read, reserve, settle
 from spotter.cli import main
 from spotter.config import GatesConfig, MainAgentConfig, ReviewerConfig, SpotterConfig
 from spotter.doctor import FAIL, OK, WARN, check_freshness, check_roundtrip, run, worst
@@ -208,3 +208,61 @@ def test_status_survives_a_corrupt_ledger(home: Path, capsys: pytest.CaptureFixt
     (home / "review-spend.json").write_text("{torn")
     assert main(["status"]) == 0
     assert "spend ledger unreadable" in capsys.readouterr().out
+
+
+def test_unused_slots_are_returned(home: Path) -> None:
+    """PR #58 review, P1: reservation happens before the work, so every path
+    that gives up before the model call must hand the slot back."""
+    allowed, _ = reserve("a", 2, 100)
+    assert allowed and read("a").session == 1
+    cancel("a")
+    assert read("a").session == 0 and read("a").day == 0
+    # the cap is genuinely restored, not merely reported
+    for _ in range(2):
+        assert reserve("a", 2, 100)[0]
+    assert not reserve("a", 2, 100)[0]
+
+
+def test_in_flight_skip_returns_the_slot(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Two cadence children for one session both reserve; the one that loses
+    the in-flight lock never reviews, so ordinary operation would leak."""
+    from fcntl import LOCK_EX, flock
+
+    StepJournal(journal_path({"session_id": "busy"})).record(TraceEvent("x"))
+    allowed, _ = reserve("busy", 5, 100)
+    assert allowed and read("busy").session == 1
+
+    lock_file = journal_path({"session_id": "busy"}).with_suffix(".review.lock")
+    with lock_file.open("w") as held:
+        flock(held, LOCK_EX)
+        assert main(["review", "--session", "busy", "--reserved"]) == 0
+    assert "already in flight" in capsys.readouterr().err
+    assert read("busy").session == 0, "a skipped review kept its slot"
+
+
+def test_manual_review_refuses_to_spend_on_a_corrupt_ledger(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """PR #58 review, P0: the manual path calls the model first, so a corrupt
+    ledger would pay for a review and then erase the history proving a cap was
+    reached."""
+    StepJournal(journal_path({"session_id": "s"})).record(
+        TraceEvent("tool_proposal", {"command": "ls"})
+    )
+    charge("s")
+    (home / "review-spend.json").write_text("{torn")
+
+    called: list[bool] = []
+    monkeypatch.setattr("spotter.cli.review", lambda *a, **k: called.append(True))
+    assert main(["review", "--session", "s"]) == 1
+    assert called == [], "the model was called despite an unreadable ledger"
+    assert "refused" in capsys.readouterr().err
+
+
+def test_charge_fails_closed_on_corruption(home: Path) -> None:
+    charge("a")
+    (home / "review-spend.json").write_text("{torn")
+    with pytest.raises(LedgerCorrupt):
+        charge("a")

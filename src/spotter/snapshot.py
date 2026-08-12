@@ -269,7 +269,9 @@ class StepJournal:
 
 
 def snapshot_references(
-    sessions_dir: Path, repo: Path | None = None
+    sessions_dir: Path,
+    repo: Path | None = None,
+    exclude: list[Path] | None = None,
 ) -> dict[str, list[tuple[str, int]]]:
     """Map each referenced snapshot to the (session, step) pairs holding it.
 
@@ -277,8 +279,11 @@ def snapshot_references(
     to fork specific steps, and the operator is owed their names.
     """
     target = repo.resolve() if repo else None
+    skip = {p.resolve() for p in (exclude or [])}
     references: dict[str, list[tuple[str, int]]] = {}
     for journal in sorted(sessions_dir.glob("*.jsonl")):
+        if journal.resolve() in skip:
+            continue  # about to be deleted: its claims must not preserve refs
         for record in StepJournal.load(journal, strict=True):
             if not record.snapshot:
                 continue

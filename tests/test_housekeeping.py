@@ -182,11 +182,12 @@ def test_journal_deletion_holds_the_journal_lock(repo: Path, home: Path) -> None
         with lock_path.open("a") as probe, pytest.raises(OSError):
             flock(probe, LOCK_EX | LOCK_NB)
 
-    # Once released, deletion proceeds and removes the lock file last.
+    # Once released, deletion proceeds — and the lock file deliberately stays.
     assert (
         main(["prune", "--repo", str(repo), "--journals", "--max-age-days", "30", "--apply"]) == 0
     )
-    assert not journal.exists() and not lock_path.exists()
+    assert not journal.exists()
+    assert lock_path.exists(), "removing the lock lets the next writer create a second inode"
 
 
 def test_worktree_removal_failure_does_not_orphan_git_metadata(
@@ -205,3 +206,56 @@ def test_worktree_removal_failure_does_not_orphan_git_metadata(
 
     assert orphan.exists(), "directory was deleted despite git refusing"
     assert "could not remove" in capsys.readouterr().err
+
+
+def test_a_blocked_writer_keeps_the_same_lock_inode(repo: Path, home: Path) -> None:
+    """PR #58 review, P0: a writer already blocked on the old inode wakes up
+    after deletion; if the lock path is then removed, the next writer creates
+    a fresh inode and the two are serialised by nothing."""
+    import os
+    import sys as _sys
+    import time as _time
+
+    journal = journal_path({"session_id": "waited"})
+    StepJournal(journal).record(TraceEvent("x"))
+    lock_path = journal.with_suffix(journal.suffix + ".lock")
+    old = 40 * 86400
+    os.utime(journal, (journal.stat().st_atime - old, journal.stat().st_mtime - old))
+
+    # A writer that opens the current lock inode, then blocks on it.
+    waiter = subprocess.Popen(
+        [
+            _sys.executable,
+            "-c",
+            (
+                "import sys, time\n"
+                "from fcntl import LOCK_EX, flock\n"
+                "handle = open(sys.argv[1], 'a')\n"  # holds the OLD inode
+                "print('opened', flush=True)\n"
+                "time.sleep(0.6)\n"
+                "flock(handle, LOCK_EX)\n"
+                "import os\n"
+                "print(os.fstat(handle.fileno()).st_ino, flush=True)\n"
+            ),
+            str(lock_path),
+        ],
+        cwd=Path(__file__).parent.parent,
+        stdout=subprocess.PIPE,
+        text=True,
+        env={"PYTHONPATH": "src", "PATH": "/usr/bin:/bin", "SPOTTER_HOME": str(home)},
+    )
+    assert waiter.stdout is not None
+    waiter.stdout.readline()  # wait until it has the old inode open
+    inode_before = lock_path.stat().st_ino
+
+    assert (
+        main(["prune", "--repo", str(repo), "--journals", "--max-age-days", "30", "--apply"]) == 0
+    )
+    waiter_inode = int(waiter.stdout.readline().strip())
+    waiter.wait(timeout=10)
+    _time.sleep(0.05)
+
+    # The path still resolves to the inode the blocked writer holds, so a new
+    # writer arriving now contends with it rather than beside it.
+    assert lock_path.exists()
+    assert lock_path.stat().st_ino == inode_before == waiter_inode

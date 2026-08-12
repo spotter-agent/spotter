@@ -12,7 +12,16 @@ from dataclasses import replace
 from fcntl import LOCK_EX, LOCK_NB, LOCK_UN, flock
 from pathlib import Path
 
-from spotter.budget import LedgerCorrupt, charge, settle, spend_totals
+from spotter.budget import (
+    LedgerCorrupt,
+    cancel,
+    charge,
+    settle,
+    spend_totals,
+)
+from spotter.budget import (
+    read as read_spend,
+)
 from spotter.codex import CodexAdapter
 from spotter.config import ConfigurationError, MainAgentConfig, ReviewerConfig, SpotterConfig
 from spotter.core import SpotterRuntime
@@ -323,16 +332,32 @@ def _review_main(
     try:
         flock(lock, LOCK_EX | LOCK_NB)
     except OSError:
+        # Losing this race is ordinary: two cadence children for one session
+        # both reserve, and this one never reviews. Hand the slot back.
+        if reserved:
+            cancel(session)
         print(f"review already in flight for {session}; skipping", file=sys.stderr)
         lock.close()
         return 0
     try:
         records = StepJournal.load(journal_file)
     except (OSError, SnapshotError) as error:
+        if reserved:
+            cancel(session)  # nothing was reviewed and nothing was spent
         print(f"review failed: {error}", file=sys.stderr)
         return 1
     if not records:
+        if reserved:
+            cancel(session)
         print("review failed: empty journal", file=sys.stderr)
+        return 1
+    try:
+        # Check the ledger before spending, not after: the manual path calls
+        # the model first, so a corrupt ledger would otherwise pay for a review
+        # and then overwrite the history proving a ceiling was hit.
+        read_spend(session)
+    except LedgerCorrupt as error:
+        print(f"review refused: {error}", file=sys.stderr)
         return 1
     constraints = _constraints_of(config)
     try:
@@ -389,10 +414,12 @@ def _review_main(
 def _delete_journal(journal: Path) -> None:
     """Remove a journal and its sidecars, holding its own lock first.
 
-    The global lock keeps other prune runs out; this one keeps a hook from
-    appending to the file mid-deletion. Deleting the lock file itself last
-    matters: a hook that acquires it afterwards creates a fresh inode, and two
-    writers holding different locks are not serialised at all.
+    The lock file itself is deliberately left behind. Removing it — even last —
+    does not remove the writers already blocked on the old inode: one wakes on
+    the unlinked inode while the next writer creates a fresh file at the same
+    path, and two processes holding locks on different inodes are serialised
+    by nothing (PR #58 review, P0). An empty lock file is a few bytes; a
+    corrupted journal is the evidence base for every published rate.
     """
     lock_path = journal.with_suffix(journal.suffix + ".lock")
     handle = None
@@ -409,7 +436,6 @@ def _delete_journal(journal: Path) -> None:
         if handle is not None:
             flock(handle, LOCK_UN)
             handle.close()
-    lock_path.unlink(missing_ok=True)
 
 
 def _remove_worktree(worktree: Path) -> None:
@@ -625,7 +651,11 @@ def _prune_main(
             # snapshots are pruned exactly once, after that. The previous
             # version pruned before deleting and then again after, which is
             # the opposite of what its own comment claimed.
-            references = snapshot_references(sessions_dir, repo)
+            #
+            # In dry-run the journals are still on disk, so they are excluded
+            # logically instead: a preview that omits the snapshots an apply
+            # would orphan is a preview of a different operation.
+            references = snapshot_references(sessions_dir, repo, exclude=doomed)
             pruned = prune_snapshots(repo, set(references), apply=apply, max_age_days=max_age_days)
     except SnapshotError as error:
         print(f"prune aborted: {error}", file=sys.stderr)

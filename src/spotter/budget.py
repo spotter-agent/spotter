@@ -161,6 +161,33 @@ def reserve(
         return True, ""
 
 
+def cancel(session: str, now: float | None = None) -> None:
+    """Return a reserved slot that was never used.
+
+    Reservation happens before the work, so every path that gives up before
+    the model call must hand the slot back — otherwise ordinary operation
+    leaks budget: two cadence children for one session both reserve, and the
+    one that loses the in-flight lock exits without ever reviewing
+    (PR #58 review, P1). Paths that gave up *after* a model call keep the
+    slot, because that spend really happened.
+    """
+    with _locked() as path:
+        try:
+            data = _load(path)
+        except LedgerCorrupt:
+            return  # nothing trustworthy to decrement
+        sessions, spend = _project(data, session, now)
+        _write(
+            path,
+            sessions,
+            session,
+            max(0, spend.session - 1),
+            spend.tokens,
+            max(0, spend.day - 1),
+            now,
+        )
+
+
 def settle(session: str, tokens: int, now: float | None = None) -> Spend:
     """Attach the measured cost to a slot already reserved.
 
@@ -187,10 +214,10 @@ def charge(session: str, tokens: int = 0, now: float | None = None) -> Spend:
     subprocess boundary.
     """
     with _locked() as path:
-        try:
-            data = _load(path)
-        except LedgerCorrupt:
-            data = {}
+        # Fail closed here as well: the manual path spends real tokens before
+        # charging, so swallowing corruption both pays and erases the history
+        # that proved a ceiling was reached (PR #58 review, P0).
+        data = _load(path)
         sessions, spend = _project(data, session, now)
         _write(
             path,
