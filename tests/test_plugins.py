@@ -18,7 +18,8 @@ def test_plugin_manifests_and_hooks_are_well_formed() -> None:
     assert claude_marketplace["name"] == codex_marketplace["name"] == "spotter"
     assert claude_marketplace["plugins"][0]["source"] == "./"
     assert codex_marketplace["plugins"][0]["source"]["path"] == "./plugins/spotter"
-    assert Path(".agents/plugins/plugins/spotter").resolve() == Path.cwd().resolve()
+    source_path = codex_marketplace["plugins"][0]["source"]["path"]
+    assert Path(source_path).resolve() == Path.cwd().resolve()
     assert set(hooks) == {"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"}
 
 
