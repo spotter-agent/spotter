@@ -428,7 +428,7 @@ def _hook_main(config: SpotterConfig | None, config_path: Path | None = None) ->
     if config is None and config_path is not None:
         try:
             config = SpotterConfig.from_toml(config_path)
-        except (OSError, tomllib.TOMLDecodeError, ConfigurationError) as error:
+        except Exception as error:  # noqa: BLE001 — config is inside the fail-open boundary
             # Unsupervised beats blocked: fall back to defaults and say so.
             print(
                 f"spotter: unusable config {config_path} ({error}); using defaults", file=sys.stderr

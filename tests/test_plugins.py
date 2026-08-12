@@ -252,7 +252,7 @@ def test_a_malformed_config_never_blocks_the_session(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
     broken = home / "spotter.toml"
-    broken.write_text("this is not = valid = toml\n")
+    broken.write_bytes(b"\xff")
 
     result = subprocess.run(
         [sys.executable, "-m", "spotter", "hook", "--config", str(broken)],
