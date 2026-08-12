@@ -1,8 +1,38 @@
 # Research
 
-Spotter is not based on a single paper. It combines ideas from several recent lines of work on runtime supervision, process-level evaluation, online auditing, restart/recovery, verifiable reasoning, and harness diagnosis.
+Spotter is not based on a single paper. It combines ideas from recent work on runtime supervision, process-level evaluation, online auditing, restart/recovery, verifiable reasoning, claim/evidence tracking, and harness diagnosis.
 
-This document tracks the most relevant prior work and the concrete ideas Spotter intends to borrow.
+This document has two purposes:
+
+1. track the ideas Spotter borrows from prior work;
+2. keep a clear boundary between **design inspiration**, **implemented mechanisms**, and **measured evidence**.
+
+That distinction matters. Spotter already implements several mechanisms, but its central causal claim—**that runtime intervention improves coding-agent outcomes more than it harms them**—is not yet established.
+
+The standalone-runtime direction in [#66](https://github.com/Bogyie/spotter/issues/66) does not change the research hypothesis. It changes the observation/control substrate so the hypothesis can be tested with better state, timing, and intervention primitives.
+
+## Current evidence posture
+
+Before the literature survey, an honest status summary:
+
+| Claim / mechanism | Status |
+| --- | --- |
+| hook-level trajectory collection | implemented |
+| deterministic pre-action gates | implemented, default-safe/shadow posture |
+| Git snapshot/fork/replay machinery | implemented |
+| model-backed reviewer judgment | implemented in shadow mode |
+| claim/evidence ledger | implemented for observable outcomes |
+| counterfactual experiment machinery | implemented |
+| ground-truth task set and enough executed experiments | **missing** |
+| positive intervention advantage | **not established** |
+| live NUDGE/VERIFY delivery | **not implemented** |
+| event-driven signal → reviewer path | **not implemented** |
+| INTERRUPT / RESTART | **not implemented** |
+| App Server-based observation/control | **target architecture, not implemented** |
+
+The current hook-collected corpus also exposed an observation limitation: only a small fraction of real tool results carried directly usable outcomes for the audit ledger. The target App Server migration should re-measure that ceiling rather than assume it is permanent.
+
+---
 
 ## 1. Wink — asynchronous course correction for coding agents
 
@@ -12,32 +42,32 @@ https://arxiv.org/abs/2602.17037
 
 ### Why it matters
 
-Wink is the closest direct precedent for Spotter's core product idea.
+Wink is the closest direct precedent for Spotter's core product idea: observe a coding agent while it works and inject a targeted course correction when its trajectory begins to misbehave.
 
-It studies production coding-agent trajectories and identifies three broad misbehavior classes:
-
-- specification drift
-- reasoning problems
-- tool-call failures
-
-The paper reports that these misbehaviors appear in roughly 30% of observed production trajectories. Wink adds a lightweight asynchronous observer that watches the coding agent and injects targeted course-correction guidance when it detects a problem. The evaluation covers more than 10,000 real-world trajectories; the paper reports that about 90% of misbehaviors requiring a single intervention were recovered.
+Its framing is important for Spotter because it treats many coding-agent failures as **process failures**, not merely bad final diffs.
 
 ### What Spotter borrows
 
-- persistent online observation rather than post-hoc review
-- course correction during the active coding trajectory
-- a concrete taxonomy of coding-agent misbehavior
-- the principle that the observer should be lightweight and mostly asynchronous
+- persistent online observation rather than post-hoc-only review
+- asynchronous course correction during an active coding trajectory
+- a compact taxonomy of coding-agent misbehavior
+- the principle that the observer should normally stay out of Main's way
 
-### Where Spotter extends it
+### Where Spotter intends to differ
 
-Wink primarily nudges after observing trajectory steps. Spotter additionally explores:
+| Extension | Spotter status |
+| --- | --- |
+| deterministic pre-action blocking | implemented in the prototype |
+| independent claim/evidence state | implemented, limited by observation coverage |
+| stronger interruption/restart | not implemented |
+| action-conditioned intervention choice | not implemented as a complete policy |
+| explicit external side-effect handling | not implemented |
 
-- pre-action blocking for deterministic violations
-- stronger interruption/restart actions
-- independent claim/evidence state
-- action-conditioned intervention choice
-- explicit handling of external side effects
+The project should not present the unimplemented rows as delivered differentiators.
+
+### Architecture implication
+
+Wink reinforces the decision that semantic supervision should be asynchronous. In the target architecture, App Server events feed `spotterd`; the reviewer runs in parallel; soft guidance is delivered only when ready and still relevant.
 
 ---
 
@@ -49,24 +79,22 @@ https://arxiv.org/abs/2509.02360
 
 ### Why it matters
 
-SWE-PRM treats software-engineering agent failures as trajectory-level problems rather than only bad final outputs. It uses inference-time process supervision to detect redundant exploration, loops, premature stopping, and other execution inefficiencies, then feeds interpretable feedback back into the running agent.
-
-On SWE-bench Verified, the paper reports an improvement from 40.0% to 50.6% resolution for its strongest closed-source PRM configuration.
+SWE-PRM treats software-engineering failures as trajectory-level problems and applies inference-time process supervision to redundant exploration, loops, premature stopping, and related inefficiencies.
 
 ### What Spotter borrows
 
-- process-level failure taxonomy
-- inference-time correction without modifying the main model policy
-- lightweight, interpretable feedback rather than verbose alternate solutions
+- process-level failure categories
+- inference-time correction without retraining Main
+- interpretable feedback rather than a full competing implementation
 - evaluation of trajectory efficiency as well as final success
 
 ### Design lesson
 
-Taxonomy-guided feedback performs better than unconstrained reviewer chatter. Spotter's reviewer output should therefore be structured around a small set of failure hypotheses and control actions.
+Taxonomy-guided feedback is more testable than unconstrained reviewer chatter. Spotter should keep reviewer outputs structured around explicit candidate failures, targets, probes, and control actions.
 
 ---
 
-## 3. AgentForesight — alarm at the earliest decisive error
+## 3. AgentForesight — online auditing and early failure prediction
 
 **AgentForesight: Online Auditing for Early Failure Prediction in Multi-Agent Systems**  
 Boxuan Zhang et al., 2026  
@@ -74,23 +102,23 @@ https://arxiv.org/abs/2605.08715
 
 ### Why it matters
 
-AgentForesight reframes failure attribution as **online auditing**. At each step, the auditor sees only the current trajectory prefix and must decide whether to continue or alarm at the earliest decisive error, without access to future steps.
-
-Its benchmark includes coding, math, and general agentic trajectories.
+AgentForesight frames auditing as a prefix-only problem: decide from the trajectory so far whether a meaningful failure has become visible, without relying on future hindsight.
 
 ### What Spotter borrows
 
-- prefix-only judgment: the reviewer must not depend on hindsight
-- first-error localization as a separate objective
-- the distinction between detecting failure eventually and detecting it early enough to intervene
+- prefix-only judgment
+- timing as a first-class objective
+- the distinction between eventually detecting a failure and detecting it early enough to matter
 
 ### Design lesson
 
-A useful Spotter should measure **time-to-intervention** and **wasted actions before intervention**, not only whether it eventually spotted a problem.
+Spotter should report **regret / wasted actions before intervention** and intervention latency. A detector that is always correct twenty steps too late is not necessarily useful.
+
+The daemon/App Server architecture improves the ability to measure real wall-clock timing because events and intervention delivery can carry explicit timestamps instead of only journal order.
 
 ---
 
-## 4. FailFast-RestartSmart — abort bad trajectories and restart cleanly
+## 4. FailFast-RestartSmart — stop bad trajectories and restart cleanly
 
 **Fail-Fast, Restart-Smart: Early Failure Prediction and Restart for SWE Agentic Tasks**  
 Chenyu Wang et al., 2026  
@@ -98,24 +126,31 @@ https://arxiv.org/abs/2608.03222
 
 ### Why it matters
 
-FailFast-RestartSmart uses a small monitor to predict failure from observable trajectory prefixes. When risk becomes high enough, it terminates the current run and starts a fresh rollout without the old prompt history, while optionally preserving useful repository edits as an overlay.
-
-The paper reports 14.6%–20.4% execution-token savings at a 5% false-positive target across transferred policies, and a resolution increase from 66.6% to 71.8% for one studied policy under a more aggressive restart setting.
+This line of work asks whether a trajectory can become bad enough that continuing inside the same reasoning context is less useful than starting a fresh rollout while deliberately preserving useful external state.
 
 ### What Spotter borrows
 
-- `RESTART` as a control primitive distinct from a nudge
-- recognition that a reasoning context can become contaminated
-- preservation of useful code state without preserving the entire failed reasoning history
-- explicit false-positive budgets for strong intervention
+- `RESTART` as a primitive distinct from `NUDGE`
+- the possibility that reasoning context becomes contaminated
+- preservation of useful repository state without blindly preserving the whole failed trajectory
+- stricter false-positive budgets for stronger control
 
 ### Design lesson
 
-Sometimes telling an agent to "try again" inside the same context is weaker than discarding the trajectory and starting from verified state.
+Restart is not “send another message to the same context.” It is a state-selection problem.
+
+Before Spotter implements it, the runtime needs:
+
+- verified-state representation
+- checkpoint lineage
+- explicit retained artifacts
+- external side-effect accounting
+
+The target long-lived runtime makes those state boundaries more explicit, but does not solve them automatically.
 
 ---
 
-## 5. Calibration Is Not Control — predict the value of intervention
+## 5. Calibration Is Not Control — intervention advantage
 
 **Calibration Is Not Control: Why LLM-Agent Oversight Needs Intervention**  
 Chubin Zhang et al., 2026  
@@ -123,27 +158,27 @@ https://arxiv.org/abs/2606.21399
 
 ### Why it matters
 
-The paper argues that scalar failure probability is the wrong control target for runtime oversight.
+Failure probability is not the same thing as control value. Two prefixes can look equally risky while only one benefits from intervention.
 
-Two trajectory prefixes can have the same estimated chance of failure while requiring different actions: one may be highly recoverable through intervention, while another may not benefit from intervention at all.
+The relevant question is closer to:
 
-It proposes **intervention advantage** — the expected utility difference between intervening and continuing — as the relevant decision quantity, and uses same-prefix counterfactual branching to evaluate it.
+> What is the expected outcome if we intervene now compared with letting this exact prefix continue?
 
 ### What Spotter borrows
 
-- ask "will intervention help?" rather than only "is this risky?"
-- intervention should be action-conditioned (`continue`, `nudge`, `interrupt`, etc.)
-- same-prefix branching as an evaluation technique for intervention policy
+- optimize for useful intervention, not maximum alarm rate
+- condition the decision on the available action (`continue`, `verify`, `nudge`, `interrupt`, ...)
+- use same-prefix branching to estimate intervention advantage
 
-### Design lesson
+### Current Spotter status
 
-A reviewer that accurately predicts failure can still be a bad controller.
+The repository already has machinery for same-prefix counterfactual pairs, but the project still lacks a ground-truth task set and enough executed runs to make a causal claim.
 
-Spotter should optimize for **useful intervention**, not maximum detection rate.
+This is one of the most important current evidence gaps.
 
 ---
 
-## 6. interwhen — verifier-first runtime reasoning supervision
+## 6. interwhen — verifier-first runtime supervision
 
 **interwhen: A Generalizable Framework for Verifiable Reasoning with Test-time Monitors**  
 Vishak K. Bhat et al., 2026  
@@ -152,18 +187,26 @@ Code: https://github.com/microsoft/interwhen
 
 ### Why it matters
 
-interwhen verifies partial reasoning during generation rather than only testing the final answer. It separates verifiable properties from general free-form reasoning and checks them with external or self-verifiers only when needed.
+interwhen separates verifiable properties from broad free-form reasoning and uses monitors only where they add information.
 
 ### What Spotter borrows
 
-- identify which runtime properties can be made executable
-- verify deterministic constraints outside the reviewer LLM
-- avoid forcing the whole reasoning process into a rigid step schema
-- steer only when a verifiable invariant is actually violated
+- turn deterministic properties into executable checks
+- use external/verifiable evidence before semantic debate
+- avoid forcing all reasoning into a rigid schema
+- call the semantic reviewer only for what code cannot decide cheaply
 
-### Design lesson
+### Architecture implication
 
-Do not spend an expensive semantic reviewer call on facts that can be checked by code.
+This supports Spotter's split between:
+
+```text
+PreToolUse synchronous gate
+  = narrow, deterministic, bounded
+
+Async reviewer
+  = semantic, selective, parallel to Main
+```
 
 ---
 
@@ -175,15 +218,13 @@ https://arxiv.org/abs/2605.14175
 
 ### Why it matters
 
-Grounded Continuation maintains an explicit graph that records which claims depend on which evidence. When evidence is retracted, invalidation propagates to conclusions that depended on it.
-
-The original work targets long conversations, but the mechanism maps naturally to coding-agent trajectories.
+Grounded Continuation maintains explicit relationships between claims and evidence. When evidence is retracted, conclusions that depended on it can become stale.
 
 ### What Spotter borrows
 
 - evidence-backed hypotheses instead of copying Main's conclusions as truth
 - explicit stale-premise detection
-- transitive invalidation of dependent plans/actions
+- transitive invalidation
 
 ### Coding example
 
@@ -201,6 +242,10 @@ E2: stack trace points to upstream HTTP client
 → P1 requires revalidation
 ```
 
+### Current Spotter status
+
+The prototype implements a typed audit ledger and stale propagation. Its practical reach is bounded by the observable event surface. Moving to richer App Server events is therefore not only an architecture cleanup; it is an experiment in whether the evidence graph becomes materially more useful.
+
 ---
 
 ## 8. AgentProcessBench — neutral exploration is not failure
@@ -212,19 +257,19 @@ Code/data: https://github.com/RUCBM/AgentProcessBench
 
 ### Why it matters
 
-AgentProcessBench provides human-labeled step-level annotations for realistic tool-using trajectories and explicitly uses a ternary label scheme to distinguish useful, neutral/exploratory, and erroneous behavior.
-
-A key finding is that current models struggle to distinguish neutral exploration from actual error.
+Real tool-using trajectories contain actions that are not obviously useful but are also not errors. Current models can struggle to distinguish neutral exploration from genuine failure.
 
 ### What Spotter borrows
 
-- `NEUTRAL` / uncertainty must exist in the reviewer worldview
-- repeated reads or exploration are not automatically loops
-- early intervention policy must be conservative around ambiguous exploratory steps
+- uncertainty/neutrality must exist in the reviewer worldview
+- repeated reads are not automatically a loop
+- early intervention should be conservative around ambiguous exploration
 
 ### Design lesson
 
-"The agent is taking a while" is not itself a failure signal.
+> “The agent is taking a while” is not itself a failure signal.
+
+This is especially relevant for the planned cheap Signal Engine: signals must produce candidates, not verdicts.
 
 ---
 
@@ -236,17 +281,19 @@ https://arxiv.org/abs/2606.06324
 
 ### Why it matters
 
-HarnessFix compiles raw execution traces and harness code into a Harness-aware Trace Intermediate Representation (HTIR), then attributes recurring failures to specific trajectory steps and harness layers.
+HarnessFix compiles raw execution traces into a harness-aware intermediate representation and reasons about failures across both agent behavior and harness structure.
 
 ### What Spotter borrows
 
 - normalize raw runtime streams into a backend-independent Trace IR
-- track provenance between runtime behavior and harness configuration
+- keep provenance between normalized state and runtime events
 - distinguish Main failure from Spotter/harness failure
 
-### Future direction
+### Architecture implication
 
-Repeated Spotter diagnoses may eventually reveal that the right fix is not another runtime intervention, but a change to the agent harness itself.
+The move from hooks to App Server should not leak Codex event shapes throughout Spotter core. The adapter should normalize events so the runtime, reviewer, metrics, and replay machinery remain transport-independent.
+
+A repeated Spotter diagnosis may eventually imply that the right fix is a harness change rather than another intervention.
 
 ---
 
@@ -258,23 +305,23 @@ https://arxiv.org/abs/2604.19049
 
 ### Why it matters
 
-This work uses adversarial reviewers to try to kill candidate findings before they are promoted. It highlights correlated reviewer errors and reports an instructive case where multiple reviewers agreed on a nonexistent vulnerability that was eliminated by a single empirical test.
+This work emphasizes killing candidate findings before promoting them and illustrates the danger of correlated model agreement without empirical evidence.
 
 ### What Spotter borrows
 
-- Spotter should try to **falsify** a consequential Main hypothesis rather than produce a competing full solution
-- cross-model review may reduce correlated blind spots
-- empirical evidence outranks model consensus
+- try to falsify a consequential Main hypothesis rather than produce a competing solution
+- treat cross-model diversity as a possible way to reduce correlated blind spots
+- rank empirical verification above model consensus
 
 ### Design lesson
 
-Ten models agreeing is weaker evidence than one decisive test.
+Ten models agreeing can still be weaker evidence than one decisive test.
 
 ---
 
-## Synthesis
+# Synthesis
 
-The core Spotter design can be seen as the intersection of these ideas:
+Spotter sits at the intersection of these ideas:
 
 ```text
 Wink
@@ -284,7 +331,7 @@ SWE-PRM
   trajectory failure taxonomy
           +
 AgentForesight
-  earliest-error online auditing
+  early prefix-only auditing
           +
 FailFast-RestartSmart
   interrupt + clean restart
@@ -302,15 +349,33 @@ AgentProcessBench
   neutral exploration awareness
           +
 HarnessFix
-  Trace IR / harness attribution
+  normalized Trace IR / harness attribution
           +
 Refute-or-Promote
   falsification + empirical gates
 ```
 
-## Research questions for Spotter
+The target runtime architecture adds an engineering hypothesis underneath that synthesis:
 
-### RQ1 — Intervention timing
+```text
+rich observation/control stream
+          +
+long-lived independent state
+          +
+selective async review
+          +
+bounded synchronous enforcement
+```
+
+should be a better substrate for studying runtime supervision than rebuilding state inside independent hook processes.
+
+That engineering hypothesis must also be measured: richer infrastructure is not automatically better if its operational cost or fragility outweighs the supervision benefit.
+
+---
+
+# Research questions
+
+## RQ1 — Intervention timing
 
 How early should a coding-agent trajectory be reviewed?
 
@@ -318,61 +383,213 @@ Compare:
 
 - periodic asynchronous review
 - event-triggered review
-- synchronous pre-action gate
+- synchronous deterministic gate
 
-### RQ2 — Intervention policy
+Measure not only detection but wasted actions and wall-clock time before intervention.
 
-When is a `NUDGE` better than `INTERRUPT`? When is `RESTART` better than continuing inside the same context?
+## RQ2 — Intervention policy
 
-### RQ3 — Model diversity
+When is `VERIFY` better than `NUDGE`? When does `INTERRUPT` help? When is `RESTART` better than continuing inside the same reasoning context?
 
-Does a different reviewer model reduce correlated failures compared with same-model review?
+The action should be chosen for expected intervention value, not only failure severity.
+
+## RQ3 — Model diversity
+
+Does a different reviewer model/family reduce correlated failures compared with same-model isolated-context review?
 
 Compare:
 
 - same model / isolated context
 - different model / isolated context
-- small specialized reviewer
+- smaller specialized reviewer
 
-### RQ4 — Reviewer harm
+Do not conflate “different family” with “stronger model”.
 
-How often does Spotter interrupt a trajectory that would have succeeded on its own?
+## RQ4 — Reviewer harm and sycophancy
 
-This should be treated as a first-class metric, not a footnote.
+How often does Spotter degrade a trajectory that would have succeeded on its own?
 
-### RQ5 — Deterministic vs semantic supervision
+Related failure direction: how often does Main comply with a deliberately wrong but plausible Spotter nudge instead of refuting it with evidence?
 
-What fraction of useful interventions can be triggered by cheap executable checks before an LLM reviewer is needed?
+Both should gate live injection policy.
 
-## Evaluation metrics
+## RQ5 — Deterministic vs semantic supervision
 
-Spotter should report more than final task success:
+What fraction of useful supervision can be triggered or resolved by cheap executable checks before an LLM reviewer is needed?
 
-- task resolution rate
-- token usage
-- tool-call count
-- wall-clock latency
-- interventions per run
-- intervention precision
-- intervention harm rate
-- recovery rate after intervention
-- time-to-intervention
-- wasted actions before intervention
-- ignored-intervention rate
-- restart recovery rate
+This directly affects latency and cost.
 
-The core benchmark comparison should eventually include:
+## RQ6 — Observation surface
+
+How much does the move from hook-collected events to App Server events change:
+
+- visible tool outcomes
+- failure observability ceiling
+- goal/constraint availability
+- timing precision
+- trace fidelity
+
+A better reviewer cannot compensate for missing evidence.
+
+## RQ7 — Event-driven triggering
+
+Can cheap candidate signals reduce reviewer calls without reducing useful detection?
+
+Sweep:
+
+- signal thresholds
+- fallback cadence
+- reviewer calls/session
+- detection latency
+- precision/miss rate
+- token cost
+
+## RQ8 — Runtime overhead
+
+Does the standalone runtime reduce hot-path cost enough to justify its operational complexity?
+
+Measure:
+
+- hook p50/p95/p99 before/after
+- App Server processing overhead
+- idle/active daemon CPU and memory
+- reconnect/recovery latency
+- additional failure modes introduced by the runtime
+
+## RQ9 — Replay/fork fidelity
+
+How similar is a forked continuation to what the original prefix would have produced without intervention?
+
+Before causal claims rely on forks, establish:
+
+- identical-arm noise floor
+- continuation similarity
+- environmental failure rate
+
+## RQ10 — User experience of supervision
+
+Correct but annoying supervision can still be a product failure.
+
+Measure or collect:
+
+- dismiss/disagree signals
+- blocks users override
+- interventions perceived as useful vs disruptive
+- whether the user can understand when Spotter is active, degraded, or disconnected
+
+---
+
+# Evaluation matrix
+
+The eventual comparison should include at least:
 
 ```text
 A. Vanilla coding agent
-B. Periodic async reviewer (Wink-style)
-C. Event-triggered Spotter
-D. Spotter + pre-action deterministic gates
-E. Spotter + interrupt/restart
+
+B. Periodic async reviewer
+   fixed cadence, soft guidance
+
+C. Event-driven Spotter
+   cheap signals + semantic reviewer
+
+D. Spotter + deterministic gate
+   event-driven + PreToolUse enforcement
+
+E. Full Spotter
+   gate + steer + stronger interrupt/recovery primitives
 ```
 
-## Notes on research status
+The runtime substrate should be held constant where possible when comparing supervision policy, otherwise architecture changes become a confound.
 
-This is a fast-moving area. Several papers listed here are 2026 preprints rather than established production standards. Spotter should treat them as design evidence and experimental hypotheses, not as proof that every mechanism will generalize to Codex or every repository/task class.
+## Primary metrics
 
-The project should therefore keep its architecture modular enough to remove mechanisms that do not survive empirical evaluation.
+### Outcome
+
+- task resolution
+- regression rate
+
+### Efficiency
+
+- main-agent tokens
+- reviewer tokens
+- tool-call count
+- repeated-action count
+- elapsed/tool time
+- Spotter CPU/memory
+
+### Observation quality
+
+- event coverage
+- observable outcome rate
+- failure observability ceiling
+- missing goal/constraint rate
+- liveness / disconnect rate
+
+### Intervention quality
+
+- intervention precision
+- sampled miss rate / recall estimate
+- intervention advantage
+- harm rate
+- recovery rate
+- ignored-intervention rate
+
+### Timing
+
+- wasted actions before intervention
+- reviewer latency
+- delivery latency
+- stale intervention rate
+
+### Recovery
+
+- success after nudge
+- success after interrupt
+- success after restart
+- useful work retained
+- external state left unreverted
+
+---
+
+# Evidence gates for stronger behavior
+
+The project should continue using an “earn the right to intervene” progression:
+
+```text
+observe
+  ↓
+measure detector/reviewer quality
+  ↓
+run counterfactuals
+  ↓
+soft intervention
+  ↓
+measure harm/recovery
+  ↓
+stronger intervention
+```
+
+A feature being implemented is not a reason to enable it by default.
+
+Examples:
+
+- deterministic gate: measure per-rule false positives and misses
+- NUDGE/VERIFY: require reviewer quality + intervention-advantage evidence + wrong-nudge behavior
+- INTERRUPT: require substantially stricter precision/harm budget
+- RESTART: require recovery-state/side-effect correctness in addition to reviewer confidence
+
+---
+
+# Notes on research status
+
+This is a fast-moving area. Several sources above are recent preprints rather than established production standards.
+
+Spotter should treat them as:
+
+- design evidence
+- experimental hypotheses
+- useful benchmark ideas
+
+not as proof that every mechanism transfers to Codex, every repository, or every model generation.
+
+The architecture should remain modular enough to remove mechanisms that do not survive measurement. A negative result—such as no measurable intervention advantage, excessive stale interventions, or negligible benefit from model diversity—is a useful project result, not something to hide behind additional complexity.
