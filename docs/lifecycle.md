@@ -1,15 +1,89 @@
 # Lifecycle and Operations
 
-> **Status:** target design, tracked by [#66](https://github.com/Bogyie/spotter/issues/66).  
-> The current prototype is still hook/plugin-centered. This document defines the lifecycle Spotter should converge on; it is not a claim that every command or runtime component described here ships today.
+> **Status:** target design tracked by [#66](https://github.com/Bogyie/spotter/issues/66).  
+> The current prototype is still hook/plugin-centered. Commands such as Homebrew installation, managed `spotterd`, and full App Server integration described here are the **intended product lifecycle**, not current shipping behavior.
 
-Spotter is moving from an agent plugin that runs work inside individual hooks to a standalone local supervision runtime. That change is only useful if the entire product lifecycle is coherent: install, integration setup, normal use, session resume, crashes, upgrades, teardown, uninstall, purge, and reinstall.
+---
 
-This document defines that lifecycle and the ownership rules behind it.
+## 30-second summary
 
-## 1. Lifecycle at a glance
+The user-facing lifecycle should be understandable as four operations:
 
-From the user's point of view:
+```bash
+# 1. Install the product
+brew install spotter
+
+# 2. Integrate an agent once
+spotter setup codex
+spotter doctor
+
+# 3. Use the agent normally
+codex
+
+# 4. Remove the integration/product
+spotter teardown codex
+brew uninstall spotter
+```
+
+Persistent Spotter data is removed only by an explicit purge:
+
+```bash
+spotter purge --all
+```
+
+Ownership is intentionally split:
+
+```text
+brew install / uninstall
+  owns Spotter package files only
+
+spotter setup / teardown
+  owns agent integration changes only
+
+spotterd
+  owns live supervision state
+
+Codex App Server
+  may be shared Codex infrastructure, not Spotter-private state
+
+journals / snapshots / labels / experiments
+  are user data and survive a normal uninstall unless explicitly purged
+```
+
+The most important lifecycle constraint is this:
+
+> **If full Codex mode requires an external App Server, that server must be available before ordinary `codex` chooses its App Server target.**
+
+That can conflict with a completely lazy “wake Spotter on the first Hook” design. P0 must determine the canonical startup strategy before the service lifecycle is finalized.
+
+---
+
+## Quick navigation
+
+| Task | Command / section |
+| --- | --- |
+| Install Spotter | `brew install spotter` → [3. Install](#3-install-package-only) |
+| Connect Codex | `spotter setup codex` → [4. Setup](#4-spotter-setup-codex) |
+| Understand App Server ownership | [5. App Server lifecycle](#5-app-server-lifecycle) |
+| Understand background service startup | [6. Managed runtime startup](#6-managed-runtime-startup) |
+| Normal day-to-day execution | `codex` → [7. Normal runtime](#7-normal-runtime) |
+| Resume/fork an existing thread | [8. Resume, fork, experiment](#8-resume-fork-and-experiment) |
+| Check health | `spotter status`, `spotter doctor` → [9. Status / doctor / repair](#9-status-doctor-and-repair) |
+| Recover from crashes | [10. Failure recovery](#10-failure-recovery) |
+| Upgrade Codex | [11. Codex upgrade](#11-codex-upgrade) |
+| Upgrade Spotter | `brew upgrade spotter` → [12. Spotter upgrade](#12-spotter-upgrade) |
+| Change config | [13. Configuration lifecycle](#13-configuration-lifecycle) |
+| Disconnect Codex | `spotter teardown codex` → [14. Teardown](#14-spotter-teardown-codex) |
+| Uninstall Spotter | `brew uninstall spotter` → [15. Uninstall](#15-brew-uninstall-spotter) |
+| Remove data too | `spotter purge --all` → [16. Purge](#16-purge) |
+| Reinstall safely | [17. Reinstall](#17-reinstall) |
+| Migrate current plugin users | [18. Legacy plugin migration](#18-legacy-plugin-migration) |
+
+---
+
+# 1. Lifecycle state model
+
+## 1.1 User-visible states
 
 ```text
 UNINSTALLED
@@ -17,17 +91,20 @@ UNINSTALLED
     │ brew install spotter
     ▼
 INSTALLED
+    │ package exists
+    │ no agent integration
     │
     │ spotter setup codex
     ▼
 SETTING_UP
     │
-    ├─ detect / compatibility check
-    ├─ migrate legacy integration
-    ├─ prepare Spotter runtime/service
-    ├─ ensure a usable Codex App Server path
-    ├─ install the minimum required hook surface
-    └─ verify end-to-end health
+    ├─ inspect environment
+    ├─ plan mutations
+    ├─ back up owned config fragments
+    ├─ prepare runtime/service
+    ├─ prepare App Server strategy
+    ├─ install minimal Hook surface
+    └─ verify end-to-end
     │
     ▼
 READY
@@ -38,258 +115,474 @@ ACTIVE
     │
     ├─ observe
     ├─ update live state
-    ├─ detect
-    ├─ review asynchronously
-    ├─ steer / block when justified
-    └─ persist durable history
+    ├─ detect/review
+    ├─ steer/block
+    └─ persist history
     │
-    ├───────────────┐
-    │               │
-Codex exits     Spotter/Codex upgrade
-    │               │
-    ▼               ▼
-READY           MIGRATING
-                    │
-                    └──────────► READY
+    ├──────────────┐
+    │              │
+TUI exits      update/failure
+    │              │
+    ▼              ▼
+READY       MIGRATING / RECOVERING
+                   │
+                   └────► READY
 
 READY
-  │
   │ spotter teardown codex
   ▼
 INSTALLED
-  │
   │ brew uninstall spotter
   ▼
 UNINSTALLED
 
-User data remains until an explicit purge policy removes it.
+DATA may remain until explicit purge
 ```
 
-Internally this is not one lifecycle. It is the composition of several independent ones:
+## 1.2 Internal lifecycles
+
+The product composes several independent state machines:
+
+| Resource | Example states |
+| --- | --- |
+| Spotter package | absent / installed / upgrading |
+| Agent integration | absent / setting-up / ready / drifted / tearing-down |
+| `spotterd` | stopped / starting / ready / degraded / recovering |
+| Codex App Server | absent / embedded / external-ready / disconnected |
+| Agent Thread | new / active / dormant / resumed / archived |
+| Turn | started / active / completed / interrupted |
+| Reviewer Job | queued / running / decided / delivered / stale / failed |
+| Snapshot | created / referenced / expired / pruned |
+| Fork Worktree | created / running / complete / orphaned / cleaned |
+
+Never assume that stopping one resource automatically destroys another:
 
 ```text
-Spotter package
-Spotter agent integration
+spotterd stop
+  ≠ Codex App Server stop
+  ≠ journal delete
+  ≠ snapshot delete
+  ≠ integration teardown
+```
+
+---
+
+# 2. Resource ownership
+
+Safe upgrades and removal depend on Spotter knowing what it owns.
+
+## 2.1 Package-owned resources
+
+Installed by the package manager:
+
+```text
+spotter
 spotterd
-Codex App Server
-Codex Thread
-Codex Turn
-Reviewer Job
-Journal / Snapshot / Fork Worktree
+spotter-hook
+package metadata
 ```
 
-Each must have explicit ownership, start/stop semantics, and recovery rules.
+Homebrew owns these files.
 
-## 2. Distribution and release lifecycle
+## 2.2 Integration-owned resources
 
-The package lifecycle starts before installation:
+Conceptual layout:
 
 ```text
-source
-  ↓
-version
-  ↓
-test
-  ↓
-build/package
-  ↓
-release artifacts
-  ↓
-Homebrew formula
+~/.config/spotter/
+  config.toml
+  integrations/
+    codex.json
+    claude.json
 ```
 
-The project should version independently evolving contracts rather than treating the package version as sufficient:
+An `IntegrationManifest` records exactly which agent config fragments Spotter added, removed, or migrated.
+
+## 2.3 Runtime-owned resources
+
+Conceptual:
 
 ```text
-spotter_version
-ipc_protocol_version
-config_schema_version
-journal_schema_version
-label_schema_version
-experiment_schema_version
-integration_manifest_version
+runtime socket
+service registration metadata
+runtime protocol/version metadata
+connection state
 ```
 
-This is necessary because upgrades can temporarily produce combinations such as a new CLI talking to an older running daemon or a new reader opening old journals.
+A PID file may be useful for bookkeeping but should not be the liveness source of truth. A real IPC/socket handshake should be.
 
-### Required implementation
+## 2.4 User data
 
-- release automation for supported macOS/Linux artifacts
-- stable package-manager paths for `spotter`, `spotterd`, and `spotter-hook`
-- protocol/version handshakes
-- explicit reader compatibility ranges
-- schema migration rules
-- refusal rather than guessing when a newer incompatible schema is encountered
+Logical data categories:
 
-Do not embed Homebrew Cellar version paths in hooks or service definitions. Use stable `bin`/`opt` paths so upgrades do not leave dead integrations.
+```text
+session journals
+labels
+experiments
+reviewer spend ledger
+logs
+repository registry
+```
 
-## 3. Installation
+The current prototype stores much of this under `~/.spotter`; migration must preserve or explicitly migrate it.
 
-Target primary installation:
+## 2.5 Repository-owned Spotter resources
+
+Spotter can leave resources outside its home directory:
+
+```text
+refs/spotter/...
+Spotter-created detached worktrees
+snapshot/fork lineage
+```
+
+That is why a true `purge --all` needs a repository registry and Git-aware cleanup.
+
+---
+
+# 3. Install: package only
+
+Target command:
 
 ```bash
 brew install spotter
 ```
 
-Installation should place the Spotter binaries/runtime on the machine but should not silently mutate Codex, Claude Code, or other agent configuration.
+### Preconditions
 
-Installation and integration setup are intentionally separate operations:
+- supported OS/architecture;
+- supported package manager;
+- no requirement that Codex is already installed.
 
-```text
-brew install spotter     = package operation
-spotter setup codex      = integration operation
+### Actions
+
+1. Install `spotter`.
+2. Install `spotterd`.
+3. Install `spotter-hook` if the target build still requires it.
+4. Install package/version metadata.
+
+### Must not happen during package install
+
+Do **not** silently:
+
+- mutate Codex configuration;
+- register Hooks;
+- register a background service;
+- start a Codex App Server;
+- delete or migrate user data.
+
+Package installation and agent integration are separate transactions.
+
+### Success check
+
+```bash
+spotter version
+spotter status
 ```
 
-This separation keeps both upgrade and uninstall behavior predictable.
-
-Target installed entry points:
+Expected state:
 
 ```text
-spotter       user CLI / control plane
-spotterd      long-lived supervision runtime
-spotter-hook  minimal synchronous hook bridge, if still required
+Spotter:      installed 0.x.y
+Daemon:       not configured
+Codex:        detected or not detected
+Integration:  not configured
 ```
 
-The current Python package remains the implementation substrate during the migration; a native hook client is an optimization, not a prerequisite.
+### Implementation required
 
-## 4. First-time agent setup
+- Homebrew formula and release artifacts;
+- stable executable paths;
+- package provenance detection (`homebrew`, source, standalone, etc.);
+- `spotter version`;
+- package-vs-running-daemon version comparison.
 
-Target command:
+---
+
+# 4. `spotter setup codex`
+
+`setup` is the **integration installer**.
 
 ```bash
 spotter setup codex
 ```
 
-Setup is the integration installer. It should be idempotent and transactional.
+It must be **idempotent** and **transactional**.
 
-Recommended flow:
-
-```text
-inspect
-  ↓
-plan
-  ↓
-backup
-  ↓
-apply
-  ↓
-verify
-  ↓
-commit integration manifest
-```
-
-A partial failure must not leave duplicate hooks, broken Codex configuration, or a service definition that points at missing binaries.
-
-### Setup responsibilities
-
-1. Detect OS, Spotter version, Codex path/version/install type.
-2. Detect current and legacy Spotter integrations.
-3. Probe required Codex capabilities instead of relying only on a minimum version number.
-4. Choose the verified App Server integration strategy.
-5. Install/register the Spotter user runtime if the selected mode requires it.
-6. Install only the minimum hook surface that remains necessary.
-7. Preserve user configuration and create recoverable backups where appropriate.
-8. Run an end-to-end synthetic health check.
-9. Persist an integration manifest describing exactly what Spotter changed.
-
-### Integration manifest
-
-Spotter needs durable knowledge of its own mutations. Conceptually:
+## 4.1 Transaction stages
 
 ```text
-~/.config/spotter/integrations/codex.json
+INSPECT
+   ↓
+PLAN
+   ↓
+BACKUP
+   ↓
+APPLY
+   ↓
+START / CONNECT
+   ↓
+VERIFY
+   ↓
+COMMIT MANIFEST
 ```
 
-The manifest should record at least:
+## 4.2 INSPECT
+
+Collect enough information to make a deterministic plan:
+
+```text
+OS / architecture
+Spotter package version and install method
+Codex binary path
+Codex version
+Codex install method
+CODEX_HOME
+existing App Server state
+existing Codex Hook configuration
+legacy Spotter plugin/integration
+existing Spotter integration manifest
+existing Spotter data/schema versions
+```
+
+Probe capabilities rather than relying on one version check:
+
+```text
+thread lifecycle events
+user-message events
+tool start/completion
+tool result/exit status
+diff/file-change events
+token usage
+turn/steer
+turn/interrupt
+PreToolUse veto
+```
+
+## 4.3 PLAN
+
+Build an internal mutation plan before writing anything.
+
+Example:
+
+```text
+Plan
+  App Server strategy: codex-managed-external
+  Runtime mode: managed/login-scoped
+  Hooks:
+    add PreToolUse
+    remove legacy PostToolUse
+    remove legacy UserPromptSubmit
+  Legacy plugin: migrate
+  Existing data: preserve
+  Agent config backup/fingerprint: required
+```
+
+A future dry-run surface is useful:
+
+```bash
+spotter setup codex --dry-run
+```
+
+## 4.4 BACKUP
+
+Before modifying an agent-owned file:
+
+- record a content fingerprint;
+- preserve the specific original fragment Spotter will replace;
+- create a recoverable backup when the mutation API cannot be safely inverted.
+
+Do **not** plan teardown as “restore the entire old file”. The user may legitimately edit the file after Spotter setup.
+
+## 4.5 APPLY
+
+The exact changes depend on the P0-selected App Server strategy. Conceptually:
+
+1. register/prepare the Spotter runtime service if managed mode requires it;
+2. ensure the external App Server path or attach strategy;
+3. prepare Spotter's App Server client connection;
+4. register only the minimum required Hook surface;
+5. remove legacy duplicate Spotter Hooks/plugin wiring;
+6. create/update config/state directories with correct permissions.
+
+## 4.6 START / CONNECT
+
+Bring required runtime components to a testable state:
+
+```text
+spotterd ready
+App Server reachable
+Spotter ↔ App Server initialized
+Hook IPC reachable
+```
+
+## 4.7 VERIFY
+
+A synthetic E2E verification should check at least:
+
+```text
+spotterd handshake succeeds
+App Server initialize succeeds
+Spotter can subscribe/read required event surface
+Hook round-trip succeeds
+journal path is writable and private
+protocol versions are compatible
+schemas are readable
+```
+
+Once live steering is implemented, also verify the control capability without mutating user work unexpectedly.
+
+## 4.8 COMMIT MANIFEST
+
+Only after verification succeeds should the integration become `READY`.
+
+Example manifest:
 
 ```json
 {
   "schema": 1,
-  "setup_by": "0.x.y",
   "agent": "codex",
-  "agent_path": "...",
+  "setup_by": "0.6.0",
+  "agent_path": "/opt/homebrew/bin/codex",
   "agent_version": "...",
-  "app_server_strategy": "...",
+  "app_server_strategy": "codex-managed-external",
+  "runtime_mode": "managed",
   "hooks_added": ["PreToolUse"],
-  "service_installed": true,
-  "previous_config_fingerprint": "..."
+  "legacy_hooks_removed": ["PostToolUse"],
+  "config_fingerprint_before": "...",
+  "created_at": "..."
 }
 ```
 
-This is what makes `setup`, `repair`, and `teardown` safe and idempotent.
+## 4.9 Failure / rollback
 
-## 5. The App Server prerequisite
+| Failure stage | Expected behavior |
+| --- | --- |
+| INSPECT | no mutation |
+| PLAN | no mutation |
+| BACKUP | no mutation |
+| APPLY | roll back Spotter-owned mutations already applied |
+| START/CONNECT | either roll back or leave an explicit incomplete/degraded manifest |
+| VERIFY | do not report READY; preserve actionable diagnostics |
 
-The target Codex architecture requires Spotter to observe and control the **same App Server** used by the user's TUI session.
+A second `spotter setup codex` must reconcile safely from any interrupted setup state.
 
-A plain Codex TUI can use an embedded App Server when no reusable external daemon is available. Once that choice has been made, waking Spotter later at the first tool hook is too late to retroactively create an attachable control plane.
+---
 
-Therefore the first architecture PoC in #66 must choose and validate a canonical external App Server strategy.
+# 5. App Server lifecycle
 
-Candidate paths:
+This is the largest open lifecycle dependency in the target design.
 
-### A. Reuse Codex-managed App Server daemon
+## 5.1 Why startup order matters
+
+Plain `codex` may choose an embedded App Server when no reusable external daemon is present:
 
 ```text
-Codex App Server daemon already/automatically available
-        ↓
-plain `codex` attaches
-        ↓
-Spotter attaches as a second client
+codex starts
+   │
+   ├─ reusable external/default daemon?
+   │      ├─ yes → attach
+   │      └─ no
+   │
+   └─ Embedded App Server
 ```
 
-### B. Spotter ensures an external App Server process
+If Codex has already selected an embedded server, waking Spotter later at the first `PreToolUse` is too late to create an external sidecar observation/control plane for that turn.
+
+## 5.2 Candidate canonical strategies
+
+### Strategy A — Codex-managed daemon
 
 ```text
-Spotter runtime
-    ↓
-external App Server ready
-    ↓
-Codex TUI and Spotter both attach
+ensure Codex App Server daemon
+      ↓
+plain `codex` reuses default daemon
+      ↓
+Spotter attaches as client B
 ```
 
-### C. Embedded/degraded mode
+Advantages:
 
-If Spotter cannot acquire the observation/control channel, it must expose that state explicitly instead of looking merely quiet:
+- follows Codex's own lifecycle tooling;
+- plain `codex` can remain unchanged if default-daemon reuse works reliably.
+
+Risks:
+
+- daemon lifecycle is currently experimental;
+- some CLI/config overrides may disable daemon reuse;
+- Spotter must not assume exclusive ownership.
+
+### Strategy B — Spotter-managed App Server process
 
 ```text
-Observation:       unavailable/limited
+Spotter starts external `codex app-server`
+      ↓
+TUI attaches to explicit/shared endpoint
+      ↓
+Spotter attaches to same endpoint
+```
+
+Advantages:
+
+- lifecycle can be isolated behind `CodexAppServerManager`.
+
+Risks:
+
+- preserving plain `codex` UX may require wrapper/config/service work;
+- version mismatch and process ownership become Spotter concerns.
+
+### Strategy C — Embedded/degraded mode
+
+If no external attachable server can be guaranteed, Spotter must explicitly report reduced capability:
+
+```text
+Observation:       limited/unavailable
 Live NUDGE:        unavailable
 INTERRUPT:         unavailable
-PreToolUse gate:   available or unavailable independently
+PreToolUse gate:   independently available/unavailable
 ```
 
-### Ownership rule
+Silence must never mean both “nothing to report” and “Spotter is disconnected”.
 
-An App Server may be shared by consumers other than Spotter.
+## 5.3 Ownership rule
+
+App Server may be shared with non-Spotter clients.
 
 ```text
 pre-existing App Server
-    → attach
-    → never stop it merely because Spotter stops
+  → attach
+  → never stop merely because Spotter exits
 
-App Server started during Spotter ensure
-    → record provenance
-    → do not automatically couple its lifetime to spotterd exit
-    → stop only under an explicit, safe cleanup policy
+App Server started while Spotter ensures availability
+  → record provenance
+  → do not automatically couple lifetime to spotterd exit
+  → stop only through an explicit safe cleanup policy
 ```
 
-`spotter daemon stop` means “stop Spotter”, not “kill Codex infrastructure”.
+Therefore:
 
-## 6. User-login / background-service lifecycle
+```bash
+spotter daemon stop
+```
 
-The original daemon idea was fully lazy: start at the first hook and exit when idle. That conflicts with the target full Codex mode if an external App Server must exist **before** the user types `codex`.
+means “stop Spotter”, **not** “kill shared Codex infrastructure”.
 
-The requirement should be stated independently of mechanism:
+---
 
-> In managed mode, whatever runtime is required for full Spotter observation/control must be ready before an ordinary `codex` invocation chooses its App Server target.
+# 6. Managed runtime startup
 
-If the App Server PoC confirms that requirement, the likely default is a login-scoped lightweight service:
+The original daemon idea was fully lazy: start on the first Hook, exit when idle. That is attractive operationally but may be incompatible with full Codex App Server observation.
+
+The requirement is mechanism-independent:
+
+> **In managed mode, whatever runtime is required for full observation/control must be ready before ordinary `codex` chooses its App Server target.**
+
+If P0 confirms that an external App Server must already exist, a likely default is a login-scoped user service:
 
 ```text
 user login
    ↓
-spotterd ready
+spotterd starts / becomes available
    ↓
 ensure external App Server path
    ↓
@@ -298,338 +591,407 @@ user runs `codex` at any later time
 
 Possible implementations:
 
-- macOS: `launchd`
-- Linux: `systemd --user`
+- macOS: `launchd`;
+- Linux: `systemd --user`.
 
-A portable mode may intentionally trade capability for zero persistent service installation:
+Do not hard-code these mechanisms into Spotter core. Hide them behind a `ServiceManager` abstraction.
+
+A portable mode may trade capability for zero persistent service registration:
 
 ```bash
 spotter setup codex --portable
 ```
 
-Portable mode must report the capabilities it cannot guarantee.
+Portable mode must display exactly which guarantees are lost.
 
-## 7. Normal runtime lifecycle
+---
 
-The hot path should be App Server-driven, not hook-driven:
+# 7. Normal runtime
+
+## 7.1 Codex launch
+
+Target managed flow:
 
 ```text
-Codex App Server event
+external App Server already reachable
+        │
+user runs `codex`
         │
         ▼
-     spotterd
+TUI attaches to server
         │
-        ├─ normalize to Trace IR
-        ├─ update live state
-        ├─ append durable journal
-        └─ run cheap signals
-                  │
-             suspicious?
-             ├─ no
-             └─ yes
-                  ↓
-            Reviewer Job
+Spotter sees/attaches same thread
+        │
+        ▼
+RuntimeAttachment becomes ACTIVE
 ```
 
-The journal becomes the durable history and recovery source. It should not be reparsed on every event merely to reconstruct state that the daemon already owns in memory.
+## 7.2 Thread initialization
 
-### Primary App Server observations
+For a newly observed thread, Spotter should create live state and a durable provenance header.
 
-Where available, Spotter should prefer App Server data for:
+Suggested provenance:
 
-- thread / turn lifecycle
-- user messages
-- plan updates
-- reasoning summaries exposed by the runtime
-- command execution start/completion
-- tool results and exit status
-- file changes / diffs
-- MCP calls
-- web search
-- token usage
+```text
+Spotter version
+agent binary/version
+App Server version/capabilities
+repository/worktree
+config fingerprint
+reviewer model/config
+runtime attachment id
+start timestamp
+```
 
-The current 10% observed-outcome ceiling was measured on hook-collected data and must be re-measured after the App Server migration.
+## 7.3 Event processing
 
-## 8. Minimal synchronous hook lifecycle
+```text
+App Server event
+      ↓
+normalize to Trace IR
+      ↓
+update ThreadState
+      ├─ append durable journal
+      └─ evaluate cheap signals
+                 │
+            candidate?
+            ├─ no
+            └─ yes → ReviewerJob
+```
 
-Codex currently still benefits from one hook class: an execution-before-commit boundary for deterministic policy.
+## 7.4 Deterministic gate
 
-Target steady state:
+Only the bounded synchronous path uses Hook IPC:
 
 ```text
 PreToolUse
-    │
-    ▼
+  ↓
 spotter-hook
-    │ IPC
-    ▼
-spotterd
-    │
-Gate Engine
-    ├─ ALLOW
-    └─ DENY
-```
-
-Only bounded deterministic checks belong here:
-
-- destructive command policy
-- forbidden paths
-- dependency policy
-- workspace escape
-- similarly auditable rules
-
-Do not put semantic LLM review, large journal replay, full-state reconstruction, or metrics calculations on this synchronous path.
-
-Target hook reduction:
-
-| Hook | Target |
-| --- | --- |
-| `SessionStart` | replace with App Server lifecycle if coverage is sufficient |
-| `UserPromptSubmit` | replace with App Server user-message events |
-| `PreToolUse` | retain for atomic deterministic blocking |
-| `PostToolUse` | replace with App Server result/diff events |
-
-If Codex later exposes a reliable atomic veto primitive through the App Server, a zero-hook integration becomes worth reconsidering.
-
-## 9. Thread, turn, and attachment lifecycle
-
-“Session” is too overloaded for the target runtime. Spotter should distinguish at least:
-
-```text
-Agent Thread
-  └─ Turn
-       └─ Events
-
-Runtime Attachment
-  = one client/runtime attachment to that thread
-```
-
-A thread may continue across multiple TUI launches:
-
-```text
-Thread A
-├─ attachment #1
-│  ├─ turn 1
-│  └─ turn 2
-└─ attachment #2 after resume
-   ├─ turn 3
-   └─ turn 4
-```
-
-Audit state naturally belongs primarily to the thread. Some operational metrics belong to an attachment/run.
-
-The internal identity model should therefore preserve:
-
-```text
-agent_thread_id
-spotter_thread_id (if needed)
-runtime_attachment_id
-turn_id
-```
-
-At first attachment Spotter should journal provenance such as Spotter version, agent/App Server versions, repository, config fingerprint, reviewer configuration, and observed capabilities.
-
-## 10. Semantic review and intervention lifecycle
-
-Semantic supervision runs asynchronously. Main should continue while Spotter thinks.
-
-```text
-signal
   ↓
-Reviewer Job
+spotterd GateEngine
   ↓
-QUEUED → RUNNING → DECIDED
-                    │
-                    ├─ DELIVERED
-                    ├─ STALE
-                    ├─ CANCELLED
-                    └─ FAILED
+ALLOW / DENY
 ```
 
-Every reviewer job is bound to the thread/turn that motivated it.
+No LLM call, broad repository scan, or journal replay belongs here.
 
-If the target turn is still active when the verdict arrives:
+## 7.5 Async reviewer
 
 ```text
-VERIFY / NUDGE → turn/steer
-critical case  → later turn/interrupt policy
+Candidate at turn U7
+  ↓
+ReviewerJob QUEUED → RUNNING
+  ↓
+Main continues
+  ↓
+DECIDED
+  ↓
+U7 still active?
+  ├─ yes → deliver VERIFY/NUDGE
+  └─ no  → stale/defer/discard policy
 ```
 
-If the target turn has already ended, the verdict must pass an explicit stale policy rather than being blindly injected into a different turn.
+Every delivery decision is journaled.
 
-Track at least:
+## 7.6 Turn completion
 
-- signal time/step
-- reviewer start/end time
-- target thread/turn
-- delivery attempt
-- delivered/stale/discarded state
-- intervention latency
+On `turn/completed`:
 
-This makes stale rate and actual supervision latency measurable.
+- clear/update active-turn state;
+- finalize per-turn counters;
+- finalize validation state;
+- re-evaluate jobs targeting that turn;
+- mark late jobs stale if policy requires.
 
-## 11. Turn completion, TUI exit, and resume
+The Thread remains durable.
 
-### Turn completion
+## 7.7 TUI exit
 
-On turn completion:
-
-- clear/update active-turn state
-- finalize turn metrics
-- update validation state
-- mark late reviewer jobs stale or defer them according to policy
-
-The thread remains alive.
-
-### TUI exit
-
-TUI exit closes an attachment, not the durable thread model:
+TUI exit closes a runtime attachment, not the underlying durable thread:
 
 ```text
 attachment closed
       ↓
 thread becomes dormant
       ↓
-journal/audit state remains
+Spotter journal/audit state remains
 ```
 
-### Resume
+---
 
-On resume:
+# 8. Resume, fork, and experiment
+
+## 8.1 Resume
 
 ```text
-existing agent thread
+Codex resumes agent thread T1
       ↓
-find Spotter durable history
+Spotter identifies durable T1 history
       ↓
-hydrate live state
+hydrate missing live state from journal
       ↓
-reconcile with App Server thread state
+reconcile with App Server current state
       ↓
-continue
+create new RuntimeAttachment
 ```
 
-Journal replay belongs at recovery/resume boundaries, not on every event.
+Journal replay is correct here because this is a recovery/reconstruction boundary.
 
-## 12. Fork and experiment lifecycle
+## 8.2 Fork
 
-Spotter already uses detached Git worktrees and forked continuations for counterfactual experiments. In the target runtime these remain first-class managed resources.
+A fork creates explicit lineage:
 
-Conceptual lifecycle:
+```text
+parent_thread
+branch point (turn/step/tool)
+snapshot
+forked rollout/thread
+worktree
+```
+
+Forked worktree lifecycle:
 
 ```text
 CREATED
   ↓
-RUNNING
+RUNNING / PREPARED
   ↓
 COMPLETE / FAILED
   ↓
 CLEANED
 ```
 
-Lineage should remain explicit:
+Cleanup must use Git-aware operations.
+
+## 8.3 Counterfactual experiment
+
+Each experiment pair should record:
 
 ```text
-parent_thread
-branch_step / branch_turn
-snapshot
-control/guidance arm
 experiment_id
+shared prefix
+control prompt/guidance
+intervention prompt/guidance
+check command
+model/config provenance
+result
+cost/timing
 ```
 
-Cleanup must use Git-aware worktree/ref operations rather than deleting directories blindly.
+Do not treat experiment machinery as evidence of positive intervention advantage until enough mechanically scored runs exist.
 
-## 13. Crash and degraded-mode lifecycle
+---
 
-### spotterd crash
+# 9. Status, doctor, and repair
 
-In managed mode the service manager should be able to restart the runtime:
+## 9.1 `spotter status`
 
-```text
-spotterd crash
-    ↓
-service restart
-    ↓
-reconnect App Server
-    ↓
-list/reconcile active threads
-    ↓
-hydrate from journal where needed
-    ↓
-READY
-```
+Designed for a quick operational answer.
 
-During daemon unavailability the synchronous gate must retain the project's fail-open posture unless an explicit stronger policy is introduced later.
-
-### App Server disconnect/crash
-
-Observation/control has its own state machine:
-
-```text
-CONNECTED
-   ↓
-DEGRADED
-   ↓
-RECONNECTING
-   ↓
-CONNECTED or UNAVAILABLE
-```
-
-A healthy `spotterd` with no App Server control plane must not be reported as fully healthy.
-
-Example status:
-
-```text
-Spotter daemon:       running
-Codex App Server:     unavailable
-Observation:          unavailable
-Live intervention:    unavailable
-PreToolUse gate:      active
-```
-
-## 14. Status, doctor, and repair
-
-`spotter status` is the concise runtime view. `spotter doctor` is the diagnostic view.
-
-Target doctor surface:
+Example:
 
 ```text
 Spotter
-  ✓ binary/version
-  ✓ config
-  ✓ storage permissions
-  ✓ daemon/service
-  ✓ IPC
+  package:        0.6.0
+  daemon:         running
+  IPC:            healthy
 
 Codex
-  ✓ installed
-  ✓ capability-compatible
-  ✓ external App Server path
-  ✓ Spotter attached
-  ✓ event stream
-  ✓ turn/steer
-  ✓ turn/interrupt (when required)
-  ✓ PreToolUse gate
+  integration:    ready
+  App Server:     external/shared, connected
+  observation:    healthy
+  live steer:     available
+  PreToolUse:     active
 
-Data
-  ✓ journal writable
-  ✓ schemas supported
-  ✓ repository/snapshot state
-
-Integration
-  ✓ manifest consistent
-  ✓ no duplicate hooks
-  ✓ stable executable paths
+Sessions
+  active:         2
+  dormant:        7
 ```
 
-A future `spotter doctor --repair` can repair safe, well-understood drift. Destructive repair should require explicit user intent.
+## 9.2 `spotter doctor`
 
-## 15. Configuration lifecycle
+Doctor should be diagnostic and synthetic, not just configuration inspection.
 
-A reasonable target precedence is:
+Checks:
 
 ```text
-runtime override
+Spotter
+  binary/package provenance
+  config parse/schema
+  state directory permissions
+  daemon/service registration
+  IPC handshake
+
+Codex
+  binary/version
+  integration manifest consistency
+  App Server reachability
+  capability negotiation
+  same-thread observation path
+  Hook registration
+  synthetic PreToolUse round-trip
+
+Data
+  journal writable
+  supported schema versions
+  repository registry consistency
+  snapshot/worktree sanity
+```
+
+## 9.3 Repair
+
+A future:
+
+```bash
+spotter doctor --repair
+```
+
+may repair safe drift, such as:
+
+- missing Spotter-owned Hook fragment;
+- stale service path after a known package-manager migration;
+- missing owner-only permissions;
+- stale runtime socket after confirmed dead daemon.
+
+Destructive repair requires explicit confirmation or a separate command.
+
+---
+
+# 10. Failure recovery
+
+## 10.1 `spotterd` crash
+
+In managed mode:
+
+```text
+spotterd crashes
+  ↓
+service manager restarts it
+  ↓
+App Server reconnect
+  ↓
+list loaded/active threads
+  ↓
+reconcile current runtime state
+  ↓
+hydrate durable state where needed
+  ↓
+READY
+```
+
+During daemon downtime, the Hook gate remains fail-open unless a future opt-in fail-closed mode is designed separately.
+
+## 10.2 App Server disconnect/crash
+
+Connection state:
+
+```text
+CONNECTED
+  ↓
+DEGRADED
+  ↓
+RECONNECTING
+  ├─ CONNECTED
+  └─ UNAVAILABLE
+```
+
+A running daemon without its observation/control plane is not fully healthy.
+
+## 10.3 Journal write failure
+
+Policy must distinguish:
+
+- inability to persist telemetry/history;
+- inability to answer an atomic safety rule.
+
+A journal failure should surface loudly in status/logs, but should not imply a deny if the gate policy itself can still safely return.
+
+## 10.4 Reviewer/provider failure
+
+```text
+reviewer timeout / model error
+  → ReviewerJob FAILED
+  → no live intervention
+  → Main continues
+  → record error and spend if known
+```
+
+---
+
+# 11. Codex upgrade
+
+Codex and Spotter release independently.
+
+After an upgrade, do capability negotiation rather than assuming compatibility from version strings alone.
+
+Probe at least:
+
+```text
+thread/turn events
+tool start/result events
+diff visibility
+token usage
+turn/steer
+turn/interrupt
+PreToolUse veto
+```
+
+Possible outcome:
+
+```text
+Observation:        healthy
+Tool outcomes:      healthy
+Live steer:         healthy
+Interrupt:          unsupported
+PreToolUse gate:    healthy
+```
+
+This is a valid degraded state; it is better than incorrectly declaring the whole integration either compatible or broken.
+
+`doctor` should detect drift after Codex upgrade and recommend `spotter setup codex` reconciliation if integration files changed.
+
+---
+
+# 12. Spotter upgrade
+
+Target package operation:
+
+```bash
+brew upgrade spotter
+```
+
+Potential transient state:
+
+```text
+CLI binary:      0.7.0
+running spotterd: 0.6.0
+hook helper:      package path now points to 0.7.0
+```
+
+Required behavior:
+
+1. CLI performs daemon protocol/version handshake.
+2. If the running daemon is outside the supported compatibility range, request/recommend a graceful restart.
+3. Stop accepting new long operations if a migration requires exclusivity.
+4. Flush durable state.
+5. Restart daemon using stable package-manager path.
+6. Run schema migrations if needed.
+7. Reconnect App Server.
+8. Reconcile live threads.
+9. Return to READY.
+
+Never write versioned Homebrew Cellar paths into agent Hooks/service definitions. Use stable `bin`/`opt` paths.
+
+`spotter update` should not compete with Homebrew for file ownership. It may check for updates or delegate to the package-manager-supported path.
+
+---
+
+# 13. Configuration lifecycle
+
+Recommended precedence:
+
+```text
+runtime CLI override
     > repository config
     > user/global config
     > defaults
@@ -643,287 +1005,312 @@ Conceptual locations:
 CLI/runtime overrides
 ```
 
-Configuration fields should declare whether they support hot reload or require runtime/integration restart.
+Each configuration field should declare reload semantics.
 
-Examples:
+| Setting class | Likely behavior |
+| --- | --- |
+| reviewer model/budget/cadence | hot reload where safe |
+| signal thresholds | hot reload |
+| deterministic gate rules | hot reload with atomic config swap |
+| socket/runtime path | daemon restart |
+| service strategy | setup/migration required |
+| App Server integration strategy | setup/migration required |
 
-```text
-reviewer model/cadence     potentially hot-reloadable
-gate rules                 potentially hot-reloadable
-socket/service strategy    restart required
-agent integration strategy setup/migration required
-```
+Config reload must not leave half-old/half-new gate policy during a synchronous request. Parse/validate new config first, then atomically replace the active snapshot.
 
-## 16. Codex upgrade lifecycle
+---
 
-Codex and Spotter have independent release cycles. Spotter should negotiate capabilities rather than assuming one global compatible version.
+# 14. `spotter teardown codex`
 
-After a Codex upgrade, independently assess features such as:
-
-```text
-thread/turn events
-command/result visibility
-diff visibility
-turn/steer
-turn/interrupt
-hook veto support
-```
-
-This allows explicit degraded modes:
-
-```text
-Observation:  available
-Steer:        available
-Interrupt:    unsupported
-Gate:         available
-```
-
-The experimental Codex App Server daemon lifecycle must remain behind a `CodexAppServerManager` abstraction so Spotter can change strategy without rewriting the supervision runtime.
-
-## 17. Spotter upgrade lifecycle
-
-Target package update remains package-manager-owned:
-
-```bash
-brew upgrade spotter
-```
-
-A running daemon may still be the previous binary image after the package files change. The control plane therefore needs version negotiation and graceful restart:
-
-```text
-new CLI/hook installed
-      ↓
-connect old spotterd
-      ↓
-version/protocol check
-      ↓
-compatible → continue
-incompatible → graceful daemon restart
-      ↓
-schema migration if required
-      ↓
-App Server reconnect
-      ↓
-READY
-```
-
-`spotter update` should not overwrite Homebrew-owned files. It can check/report availability or delegate to the package manager.
-
-## 18. Schema migration lifecycle
-
-For journals, labels, experiments, config, and integration manifests:
-
-- prefer read-old/write-new compatibility where reasonable
-- migrations must be explicit and versioned
-- destructive migrations should follow backup → migrate → verify → replace
-- older readers encountering unknown newer formats should refuse rather than silently reinterpret them
-- mixed-version durable data needs tests
-
-## 19. Teardown, uninstall, purge, and reinstall
-
-These are intentionally separate operations.
-
-### Agent teardown
+Teardown removes the integration while preserving the Spotter installation and user data.
 
 ```bash
 spotter teardown codex
 ```
 
-Teardown should:
+### Preconditions
 
-- read the integration manifest
-- detach Spotter from Codex observation/control
-- remove only hooks/config changes that Spotter owns
-- restore preserved agent configuration when appropriate
-- remove the integration manifest
-- leave Spotter itself installed
-- not stop a shared Codex App Server merely because Spotter detached
+- package may be installed;
+- integration manifest may be present, missing, or partially drifted.
 
-Rule:
+### Actions
 
-> Never delete configuration Spotter did not create or explicitly own.
+1. Read/reconcile the integration manifest.
+2. Detach Spotter from active Codex observation/control if necessary.
+3. Remove only Spotter-owned Hook/config fragments.
+4. Remove legacy Spotter plugin wiring if it was part of the migrated integration.
+5. Disable/remove Spotter's service integration if no remaining agent needs it.
+6. Preserve session journals, labels, experiments, snapshots unless explicitly requested otherwise.
+7. Remove/mark integration manifest as torn down.
 
-### Package uninstall
+### Critical rule
 
-```bash
-brew uninstall spotter
+> **Do not delete configuration Spotter did not create.**
+
+Do not blindly restore an entire old Codex config file.
+
+### App Server rule
+
+```text
+teardown codex
+  ≠ codex app-server stop
 ```
 
-Uninstall removes binaries/package state. It should not silently delete durable user research/history data.
+A shared App Server may still be used by Codex or other clients.
 
-The integration must be resilient even if the user uninstalls without running `teardown` first: a dangling Spotter hook must fail open rather than breaking Codex.
+---
 
-### Purge
+# 15. `brew uninstall spotter`
 
-An explicit purge handles durable Spotter-owned data/resources:
+Users may uninstall without running teardown first. Codex must not become unusable because a Spotter Hook points at a missing binary.
+
+Desired safety property:
+
+```text
+Spotter helper exists
+  → normal Hook IPC
+
+Spotter helper missing/unavailable
+  → Hook path fails open / no-op
+  → Codex continues
+```
+
+Package uninstall removes package files only.
+
+It should not remove:
+
+- journals;
+- labels;
+- experiments;
+- Git snapshot refs;
+- detached worktree metadata;
+- user configuration unless explicitly owned by package manager.
+
+If package-manager uninstall cannot run lifecycle cleanup reliably, `spotter teardown --all` remains the recommended clean path but not a correctness requirement for Codex availability.
+
+---
+
+# 16. Purge
+
+Purge is the destructive data-cleanup operation.
+
+Examples:
 
 ```bash
 spotter purge --data
 spotter purge --snapshots
+spotter purge --logs
 spotter purge --all
 ```
 
-Purge may need to clean resources outside `~/.spotter`, including:
+`--all` may need to clean resources in repositories, not only `~/.spotter`/state directories.
 
-- `refs/spotter/*`
-- detached fork worktrees / Git worktree metadata
-- repository-specific state
-
-This implies a repository registry or equivalent provenance store that records which repositories Spotter has touched.
-
-### Reinstall
-
-On reinstall/setup:
+Safe order:
 
 ```text
-existing Spotter data found
-       ↓
-schema compatible?
-  ├─ yes → reuse
-  └─ no  → migrate or clearly refuse
+1. identify registered repositories/resources
+2. clean Spotter-created detached worktrees through Git
+3. clean Spotter-owned refs according to explicit policy
+4. remove journals/labels/experiments/logs
+5. remove integration/runtime metadata if requested
+6. remove repository registry last
 ```
 
-Setup must remain idempotent and repairable.
+Purge must support dry-run for repository-affecting cleanup:
 
-## 20. Legacy plugin migration
+```bash
+spotter purge --all --dry-run
+```
 
-The current plugin installation is a real migration path, not a hypothetical one.
+Never remove non-Spotter refs/worktrees based on path guessing.
 
-Target transition:
+---
+
+# 17. Reinstall
+
+A normal reinstall may encounter durable data from an earlier Spotter version.
 
 ```text
-old
-Codex plugin hooks
+brew install spotter
+      ↓
+existing Spotter data found
+      ↓
+schema compatible?
+  ├─ yes → reuse
+  └─ no  → migrate or refuse with actionable error
+```
+
+Then:
+
+```bash
+spotter setup codex
+```
+
+must be safe and idempotent even if old integration fragments remain.
+
+Desired behavior:
+
+- detect prior integration manifest;
+- reconcile rather than duplicate Hooks;
+- preserve journal/label/experiment history;
+- migrate schema explicitly;
+- re-run synthetic doctor checks.
+
+---
+
+# 18. Legacy plugin migration
+
+Current users may already have the hook/plugin integration:
+
+```text
+Legacy
+Codex plugin
 ├─ SessionStart
 ├─ UserPromptSubmit
 ├─ PreToolUse
 └─ PostToolUse
-
-        ↓ spotter setup codex
-
-new
-External App Server ↔ spotterd
-PreToolUse only (while atomic blocking still needs it)
 ```
 
-Migration must detect and remove/replace the legacy integration without double-recording events. Existing `~/.spotter` journals, labels, and experiment data should remain usable whenever their schemas are supported.
-
-## 21. Required components
-
-The lifecycle implies a concrete component set:
-
-| Component | Responsibility |
-| --- | --- |
-| `spotter` | user CLI / control plane |
-| `spotterd` | long-lived supervision runtime |
-| `spotter-hook` | minimal synchronous `PreToolUse` bridge |
-| `ServiceManager` | login/user service lifecycle |
-| `CodexIntegration` | setup/teardown/capability negotiation |
-| `CodexAppServerManager` | discover/ensure/attach App Server strategy |
-| `AppServerClient` | event stream + steer/interrupt control |
-| `SessionManager` | thread/turn/attachment lifecycle |
-| `GateEngine` | synchronous deterministic policy |
-| `SignalEngine` | cheap event-driven candidates |
-| `ReviewerScheduler` | asynchronous semantic review |
-| `InterventionController` | freshness, steer, interrupt policy |
-| `JournalStore` | durable event log |
-| `MigrationManager` | config/schema/integration migration |
-| `IntegrationManifest` | record what Spotter owns/changed |
-| `Doctor` | diagnose and safely repair drift |
-| `RepositoryRegistry` | track repos with Spotter resources |
-| `RetentionManager` | journals, snapshots, forks, logs |
-
-These are responsibility boundaries, not a requirement to create one module/class per row immediately.
-
-## 22. Measurements required across the lifecycle
-
-Architecture migration must be measured, not only described:
-
-- App Server event coverage
-- observable tool-result rate
-- hook invocations per session
-- hook latency p50/p95/p99
-- daemon CPU/memory while idle and active
-- journal write overhead
-- reviewer dispatch latency
-- intervention latency
-- stale intervention rate
-- reconnect/recovery latency
-- upgrade/migration failure rate in fixtures
-- storage growth and retention behavior
-
-## 23. Implementation sequence
-
-The lifecycle suggests this order:
-
-### P0 — App Server lifecycle PoC
+Target migration:
 
 ```text
-external App Server
-→ plain codex auto-attach
-→ Spotter second client
-→ event stream
-→ active turn identity
-→ turn/steer
+spotter setup codex
+      ↓
+detect legacy plugin/hooks
+      ↓
+preserve current data/config
+      ↓
+install standalone runtime integration
+      ↓
+remove observation hooks replaced by App Server
+      ↓
+retain only required PreToolUse gate
 ```
 
-If this fails, revisit the architecture before building more runtime semantics.
+Migration rules:
 
-### P1 — Runtime foundation
+- never register duplicate Spotter Hooks;
+- preserve existing `~/.spotter` data;
+- record which legacy mutations were removed;
+- keep rollback information until verification succeeds;
+- show the migration plan before destructive config changes when ambiguity exists.
 
-- `spotterd`
-- service/lifecycle abstraction
-- App Server manager/client
-- session/thread/turn model
-- IPC
+---
 
-### P2 — Product lifecycle
+# 19. Versioned contracts and schema migration
 
-- package/distribution path
-- `setup` / integration manifest
-- `doctor` / `status`
-- `teardown`
-- migration framework
+Do not overload the package version as the only compatibility identifier.
 
-### P3 — Move existing capabilities into the runtime
+Version independently:
 
-- journal
-- audit state
-- deterministic gates
-- snapshots/forks
-- reviewer
-- metrics/labels/experiment
+```text
+spotter_version
+ipc_protocol_version
+config_schema_version
+journal_schema_version
+label_schema_version
+experiment_schema_version
+integration_manifest_version
+```
 
-### P4 — Make App Server primary and minimize hooks
+Prefer:
 
-- migrate observation to App Server
-- re-measure observability
-- remove `SessionStart`
-- remove `UserPromptSubmit`
-- remove `PostToolUse`
-- keep only bounded `PreToolUse` enforcement if required
+```text
+read old
+write current
+```
 
-### P5 — Complete asynchronous supervision
+where practical.
 
-- event-driven signals
-- asynchronous reviewer scheduling
-- intervention freshness/staleness
-- `turn/steer`
-- later `turn/interrupt`
+For destructive migration:
 
-### P6 — Operational hardening
+```text
+backup
+  ↓
+migrate to temporary/new representation
+  ↓
+validate
+  ↓
+commit/replace
+```
 
-- crash/reconnect recovery
-- upgrade/schema migration
-- retention/purge
-- reinstall
-- multi-agent integration lifecycle
+When a newer incompatible schema is encountered, refuse rather than guessing.
 
-## 24. Non-goals for the first migration
+---
 
-- rewriting the whole runtime in Rust/Go
-- requiring a native hook client before the daemon design is validated
-- Windows support in the first App Server/daemon integration
-- solving compensating rollback for arbitrary external effects
-- implementing full automatic `RESTART` as part of the architecture migration
-- claiming positive intervention value before the evaluation task set and experiments produce evidence
+# 20. Release lifecycle
+
+The user lifecycle starts with a release pipeline:
+
+```text
+source
+  ↓
+tests
+  ↓
+version/tag
+  ↓
+build artifacts
+  ↓
+checksums/signing as applicable
+  ↓
+GitHub Release
+  ↓
+Homebrew formula update
+```
+
+Release verification should include fixtures for:
+
+- clean install;
+- setup;
+- idempotent setup;
+- upgrade with running daemon;
+- schema migration;
+- teardown;
+- uninstall without teardown;
+- reinstall with retained data.
+
+---
+
+# 21. Required implementation components
+
+The lifecycle implies concrete components rather than one monolithic CLI.
+
+| Component | Lifecycle responsibility |
+| --- | --- |
+| `PackageInfo` | detect Spotter install/version/provenance |
+| `IntegrationManager` | setup/teardown/reconcile agent integrations |
+| `IntegrationManifest` | record Spotter-owned mutations |
+| `ServiceManager` | launchd/systemd-user or selected runtime startup mechanism |
+| `CodexAppServerManager` | ensure/discover/attach App Server without assuming ownership |
+| `CapabilityProbe` | determine supported observation/control/enforcement surfaces |
+| `DaemonClient` | CLI ↔ spotterd control protocol |
+| `Doctor` | synthetic health diagnostics |
+| `MigrationManager` | config/journal/label/etc. schema migration |
+| `RepositoryRegistry` | track repositories containing Spotter refs/worktrees |
+| `RetentionManager` | journal/snapshot/log lifecycle |
+| `PurgeManager` | safe destructive cleanup with dry-run |
+
+---
+
+# 22. Lifecycle acceptance checklist
+
+The target lifecycle is not complete until all of these work end-to-end:
+
+- [ ] clean package install does not modify Codex;
+- [ ] `spotter setup codex` is idempotent;
+- [ ] interrupted setup can be resumed/reconciled;
+- [ ] ordinary `codex` requires no manual Spotter/App Server startup in managed mode;
+- [ ] `status` distinguishes daemon, observation, control, enforcement, storage health;
+- [ ] `doctor` performs a real synthetic round-trip;
+- [ ] multiple concurrent threads/sessions remain isolated;
+- [ ] daemon crash recovers without corrupting journal/live state;
+- [ ] Codex upgrade degrades by capability rather than silently breaking;
+- [ ] Spotter upgrade handles a running old daemon and schema migration;
+- [ ] `teardown codex` removes only Spotter-owned integration changes;
+- [ ] uninstall without teardown does not break Codex;
+- [ ] user data survives normal uninstall;
+- [ ] purge can enumerate and safely clean repository resources;
+- [ ] reinstall can reuse/migrate retained data;
+- [ ] legacy plugin users migrate without duplicate events.
+
+For runtime component boundaries, see [Architecture](architecture.md). For implementation sequencing, see [Roadmap](roadmap.md). For current implementation state, see [Status](status.md).
