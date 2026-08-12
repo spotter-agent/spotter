@@ -48,7 +48,7 @@ External Codex App Server
 
 The immediate next step is **not** to blindly build the daemon. First we must prove that the ordinary Codex TUI and Spotter can share the **same external App Server**, observe the same thread/turn, and that Spotter can steer the real active turn. That is P0 in the roadmap.
 
-For the fastest project snapshot, read [Status](docs/status.md). The umbrella design decision lives in [#66](https://github.com/Bogyie/spotter/issues/66).
+For the fastest project snapshot, read [Status](docs/status.md). To browse all documentation by question, start at [Documentation](docs/README.md). The umbrella design decision lives in [#66](https://github.com/Bogyie/spotter/issues/66).
 
 ---
 
@@ -62,6 +62,7 @@ For the fastest project snapshot, read [Status](docs/status.md). The umbrella de
 | Install → setup → run → recover → upgrade → remove | [docs/lifecycle.md](docs/lifecycle.md) |
 | What to build next and why | [docs/roadmap.md](docs/roadmap.md) |
 | Research basis and evidence gaps | [docs/research.md](docs/research.md) |
+| All docs by question/reading path | [docs/README.md](docs/README.md) |
 | Umbrella direction | [#66](https://github.com/Bogyie/spotter/issues/66) |
 
 ---
@@ -508,6 +509,7 @@ See [Roadmap](docs/roadmap.md) for deliverables, dependencies, and exit criteria
 
 ## Documentation
 
+- **[Docs index](docs/README.md)** — choose a document by question/reading path
 - **[Status](docs/status.md)** — current implementation, blocker, and next steps
 - **[Concept](docs/concept.md)** — problem definition, principles, and intervention semantics
 - **[Architecture](docs/architecture.md)** — process, state, event, control, and failure contracts
