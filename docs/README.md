@@ -1,0 +1,88 @@
+# Spotter Documentation
+
+Start here if you are reading the repository for the first time.
+
+## Which document should I read?
+
+| Question | Document | Read time |
+| --- | --- | --- |
+| What works today, what is blocked, what happens next? | **[Status](status.md)** | ~3 min |
+| What problem is Spotter trying to solve? | [Concept](concept.md) | ~8 min |
+| What processes/components/state should exist? | [Architecture](architecture.md) | ~15–20 min |
+| What happens from install through uninstall/reinstall? | [Lifecycle](lifecycle.md) | ~20 min |
+| What should be implemented first, and what gates each phase? | [Roadmap](roadmap.md) | ~15 min |
+| Which papers/ideas inform the design, and what remains unproven? | [Research](research.md) | ~20 min |
+| What is the umbrella direction decision? | [Issue #66](https://github.com/Bogyie/spotter/issues/66) | reference |
+
+## Recommended reading paths
+
+### I only want the current project picture
+
+```text
+Status
+  ↓
+Roadmap (Now / Next)
+```
+
+### I want to implement the standalone runtime
+
+```text
+Status
+  ↓
+Architecture
+  ↓
+Lifecycle
+  ↓
+Roadmap
+  ↓
+#66
+```
+
+### I want to evaluate the research hypothesis
+
+```text
+Concept
+  ↓
+Research
+  ↓
+Roadmap → Evaluation track
+  ↓
+Status → Evidence status
+```
+
+## Current architectural decision in one screen
+
+```text
+CURRENT
+Codex hooks
+   ↓
+per-hook Spotter processes
+   ↓
+journal / gate / snapshot / periodic shadow reviewer
+
+TARGET
+Codex TUI
+   ↓
+External Codex App Server
+   ↕ events / steer / interrupt
+spotterd
+   ↓
+PreToolUse Hook only for deterministic blocking
+```
+
+The target is **conditional on P0**: Spotter must prove that the user’s ordinary Codex TUI and Spotter can share the same external App Server and that `turn/steer` reaches the real active user turn.
+
+If that does not work reliably, the target architecture is revisited before the daemon migration continues.
+
+## Document responsibilities
+
+To avoid duplicating the same material everywhere:
+
+- **Status** owns “where are we now?”
+- **Concept** owns “what problem and principles define Spotter?”
+- **Architecture** owns runtime components, process/data flow, state ownership, and failure contracts.
+- **Lifecycle** owns package/service/integration/session/update/removal behavior.
+- **Roadmap** owns implementation dependencies and exit criteria.
+- **Research** owns prior work, hypotheses, evidence, and evaluation questions.
+
+When a detail belongs to another document, link to it rather than maintaining two competing specifications.
