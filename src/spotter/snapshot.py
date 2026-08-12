@@ -48,6 +48,25 @@ def global_lock(spotter_home_override: Path | None = None) -> Iterator[None]:
             flock(handle, LOCK_UN)
 
 
+def _repo_identity(repo: Path) -> str:
+    """A stable name for the repository containing ``repo``.
+
+    The common git directory is shared by the root, every subdirectory and
+    every linked worktree, which is precisely the set that must contend for
+    one lock. Outside a repository there is nothing to pin and no refs to
+    race over, so the resolved path is a sufficient — and deterministic — key.
+    """
+    common = subprocess.run(
+        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        cwd=repo if repo.exists() else Path.cwd(),
+        capture_output=True,
+        text=True,
+    )
+    if common.returncode == 0 and common.stdout.strip():
+        return str(Path(common.stdout.strip()).resolve())
+    return str(repo.resolve())
+
+
 @contextmanager
 def repo_lock(repo: Path, spotter_home_override: Path | None = None) -> Iterator[None]:
     """Serialize snapshot-ref creation+journaling against prune, per repository.
@@ -62,13 +81,16 @@ def repo_lock(repo: Path, spotter_home_override: Path | None = None) -> Iterator
     in repository B. Measured on a 27,669-file repository, the hold is 397 ms
     of git work, taken on every mutation (issue #49).
 
-    Keyed by the resolved path so two spellings of the same repository take the
-    same lock, and hashed so the key cannot collide with a sanitised name or
-    outgrow a filename.
+    Keyed by the repository's own identity, not by the path handed in. A hook
+    runs wherever the agent is working — often a subdirectory — while prune is
+    given the root, and resolving a path only normalises its spelling, not
+    which repository it belongs to. Keying on the path let /repo and
+    /repo/packages/a take different locks inside one repository, which
+    reinstates exactly the race this lock exists to prevent (PR #73 review, P0).
     """
     home = spotter_home_override or spotter_home()
     locks = secure_dir(home / "locks")
-    key = hashlib.sha256(str(repo.resolve()).encode()).hexdigest()[:24]
+    key = hashlib.sha256(_repo_identity(repo).encode()).hexdigest()[:24]
     with (locks / f"{key}.lock").open("w") as handle:
         flock(handle, LOCK_EX)
         try:

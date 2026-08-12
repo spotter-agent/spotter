@@ -158,3 +158,87 @@ def test_spotter_home_override_isolates_locks(tmp_path: Path) -> None:
     with repo_lock(repo, spotter_home_override=other):
         assert (other / "locks").exists()
     assert not (spotter_home() / "locks").exists()
+
+
+def test_one_repository_is_one_lock_whatever_path_is_handed_in(tmp_path: Path, home: Path) -> None:
+    """PR #73 review, P0: the hook runs wherever the agent is working, often a
+    subdirectory, while prune is given the root. Keying on the path let them
+    take different locks inside one repository, reinstating the race."""
+    repo = tmp_path / "repo"
+    (repo / "packages" / "a").mkdir(parents=True)
+    for command in (
+        ["git", "init", "-q"],
+        ["git", "config", "user.email", "t@t"],
+        ["git", "config", "user.name", "t"],
+    ):
+        subprocess.run(command, cwd=repo, check=True)
+
+    holder = _holder(repo / "packages" / "a", 1.0, home)
+    try:
+        started = time.perf_counter()
+        with repo_lock(repo):  # the root must contend with the subdirectory
+            waited = time.perf_counter() - started
+    finally:
+        holder.wait(timeout=10)
+    assert waited > 0.4, "root and subdirectory of one repository took different locks"
+
+
+def test_separate_repositories_still_do_not_contend(tmp_path: Path, home: Path) -> None:
+    repos = []
+    for name in ("one", "two"):
+        repo = tmp_path / name
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        repos.append(repo)
+
+    holder = _holder(repos[0], 1.5, home)
+    try:
+        started = time.perf_counter()
+        with repo_lock(repos[1]):
+            waited = time.perf_counter() - started
+    finally:
+        holder.wait(timeout=10)
+    assert waited < 0.5
+
+
+def test_a_linked_worktree_shares_the_repository_lock(tmp_path: Path, home: Path) -> None:
+    """Linked worktrees share refs, so they must share the lock that protects
+    them — the common git dir is exactly that set."""
+    repo = tmp_path / "main"
+    repo.mkdir()
+    for command in (
+        ["git", "init", "-q"],
+        ["git", "config", "user.email", "t@t"],
+        ["git", "config", "user.name", "t"],
+    ):
+        subprocess.run(command, cwd=repo, check=True)
+    (repo / "f.txt").write_text("x")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
+    linked = tmp_path / "linked"
+    subprocess.run(
+        ["git", "worktree", "add", "--detach", str(linked)],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+    holder = _holder(linked, 1.0, home)
+    try:
+        started = time.perf_counter()
+        with repo_lock(repo):
+            waited = time.perf_counter() - started
+    finally:
+        holder.wait(timeout=10)
+    assert waited > 0.4, "a linked worktree took a different lock from its repository"
+
+
+def test_slow_hook_output_says_it_counts_survivors_only(home: Path) -> None:
+    """PR #73 review, P1: a hook killed at the timeout writes nothing, so the
+    number must not be read as a full distribution."""
+    from spotter.cli import _slow_of
+
+    journal = StepJournal(journal_path({"session_id": "s"}))
+    journal.record(TraceEvent("hook_slow", {"kind": "tool_proposal", "elapsed_ms": 1500.0}))
+    line = _slow_of([r for r in StepJournal.load(journal.path) if r.event.kind == "hook_slow"])
+    assert "completed only" in line

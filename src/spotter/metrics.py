@@ -65,6 +65,78 @@ def tally_harm(paths: list[Path]) -> HarmTally:
 
 
 @dataclass(frozen=True)
+class InterventionTally:
+    delivered: int = 0
+    assessed: int = 0
+    recovered: int = 0
+    degraded: int = 0
+    ignored: int = 0
+
+    def lines(self, kind: str) -> tuple[str, str]:
+        acted = self.recovered + self.degraded
+        coverage = f"{self.assessed}/{self.delivered} outcomes recorded"
+        if acted < MIN_SAMPLES:
+            recovery = f"{kind} recovery: too few acted interventions ({acted}) to state a rate"
+        else:
+            recovery = f"{kind} recovery: {self.recovered / acted:.0%} of {acted} acted"
+        if self.assessed < MIN_SAMPLES:
+            ignored = (
+                f"{kind} ignored: {coverage} — too few recorded outcomes "
+                f"({self.assessed}) to state a rate"
+            )
+        else:
+            qualifier = "" if self.assessed == self.delivered else " (provisional)"
+            ignored = (
+                f"{kind} ignored: {self.ignored / self.assessed:.0%} of "
+                f"{self.assessed}; {coverage}{qualifier}"
+            )
+        return recovery, ignored
+
+
+def tally_interventions(records: list[StepRecord]) -> dict[str, InterventionTally]:
+    """Join explicit delivery and outcome events; absence is unknown, never ignored."""
+    delivered: dict[str, str] = {}
+    outcomes: dict[str, str] = {}
+    for record in records:
+        payload = record.event.payload
+        intervention_id = str(payload.get("intervention_id") or "")
+        if record.event.kind == "reviewer_injected" and intervention_id:
+            delivered[intervention_id] = str(payload.get("intervention_type") or "unknown")
+        elif record.event.kind == "intervention_outcome" and intervention_id in delivered:
+            outcome = str(payload.get("outcome") or "")
+            if outcome in ("recovered", "degraded", "ignored"):
+                outcomes[intervention_id] = outcome
+    tallies: dict[str, InterventionTally] = {}
+    for intervention_id, kind in delivered.items():
+        old = tallies.get(kind, InterventionTally())
+        recorded_outcome = outcomes.get(intervention_id)
+        tallies[kind] = InterventionTally(
+            delivered=old.delivered + 1,
+            assessed=old.assessed + (recorded_outcome is not None),
+            recovered=old.recovered + (recorded_outcome == "recovered"),
+            degraded=old.degraded + (recorded_outcome == "degraded"),
+            ignored=old.ignored + (recorded_outcome == "ignored"),
+        )
+    return tallies
+
+
+def merge_interventions(
+    left: dict[str, InterventionTally], right: dict[str, InterventionTally]
+) -> dict[str, InterventionTally]:
+    merged = dict(left)
+    for kind, value in right.items():
+        old = merged.get(kind, InterventionTally())
+        merged[kind] = InterventionTally(
+            old.delivered + value.delivered,
+            old.assessed + value.assessed,
+            old.recovered + value.recovered,
+            old.degraded + value.degraded,
+            old.ignored + value.ignored,
+        )
+    return merged
+
+
+@dataclass(frozen=True)
 class Tally:
     labeled: int = 0
     total: int = 0
