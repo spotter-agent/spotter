@@ -89,8 +89,8 @@ def test_corrupt_ledger_fails_closed_on_the_spending_path(home: Path) -> None:
     with pytest.raises(LedgerCorrupt):
         read("a")
     assert "refusing to spend" in (exhausted("a", 3, 100) or "")
-    allowed, refusal = reserve("a", 3, 100)
-    assert not allowed and "refusing to spend" in refusal
+    token, refusal = reserve("a", 3, 100)
+    assert token is None and "refusing to spend" in refusal
 
 
 def test_ledger_writes_are_atomic(home: Path) -> None:
@@ -177,8 +177,8 @@ def test_reserve_is_atomic_across_processes(home: Path) -> None:
     script = (
         "import os, sys\n"
         "from spotter.budget import reserve\n"
-        "allowed, _ = reserve(sys.argv[1], 0, 3)\n"  # daily cap of 3
-        "sys.exit(0 if allowed else 7)\n"
+        "token, _ = reserve(sys.argv[1], 0, 3)\n"  # daily cap of 3
+        "sys.exit(0 if token else 7)\n"
     )
     workers = [
         subprocess.Popen(
@@ -193,10 +193,10 @@ def test_reserve_is_atomic_across_processes(home: Path) -> None:
 
 
 def test_reserve_then_settle_counts_the_review_once(home: Path) -> None:
-    allowed, _ = reserve("a", 5, 100)
-    assert allowed
+    token, _ = reserve("a", 5, 100)
+    assert token
     assert read("a").session == 1  # the slot is already counted
-    settle("a", tokens=250)
+    settle("a", token, 250)
     spend = read("a")
     assert (spend.session, spend.tokens) == (1, 250)  # cost added, count unchanged
 
@@ -213,14 +213,39 @@ def test_status_survives_a_corrupt_ledger(home: Path, capsys: pytest.CaptureFixt
 def test_unused_slots_are_returned(home: Path) -> None:
     """PR #58 review, P1: reservation happens before the work, so every path
     that gives up before the model call must hand the slot back."""
-    allowed, _ = reserve("a", 2, 100)
-    assert allowed and read("a").session == 1
-    cancel("a")
+    token, _ = reserve("a", 2, 100)
+    assert token and read("a").session == 1
+    assert cancel("a", token)
     assert read("a").session == 0 and read("a").day == 0
     # the cap is genuinely restored, not merely reported
     for _ in range(2):
         assert reserve("a", 2, 100)[0]
     assert not reserve("a", 2, 100)[0]
+
+
+def test_a_slot_can_only_be_returned_once() -> None:
+    """Self-audit: without a token, cancelling twice credits back a slot that
+    was never taken."""
+    first, _ = reserve("a", 9, 100)
+    reserve("a", 9, 100)
+    assert read("a").session == 2
+    assert cancel("a", first) is True
+    assert cancel("a", first) is False  # already returned
+    assert cancel("a", "not-a-token") is False
+    assert read("a").session == 1
+
+
+def test_asserting_a_reservation_cannot_buy_a_free_review() -> None:
+    """Self-audit: settle adds cost but no count, so an unverifiable claim of
+    'already reserved' would bypass every ceiling."""
+    for _ in range(3):
+        reserve("a", 3, 100)
+    assert reserve("a", 3, 100)[0] is None  # cap reached
+    assert settle("a", "forged-token", 999) is None
+    assert settle("a", None, 999) is None
+    token, _ = reserve("a", 99, 100)
+    assert settle("a", token, 10) is not None
+    assert settle("a", token, 10) is None  # a token settles once
 
 
 def test_in_flight_skip_returns_the_slot(
@@ -231,13 +256,13 @@ def test_in_flight_skip_returns_the_slot(
     from fcntl import LOCK_EX, flock
 
     StepJournal(journal_path({"session_id": "busy"})).record(TraceEvent("x"))
-    allowed, _ = reserve("busy", 5, 100)
-    assert allowed and read("busy").session == 1
+    token, _ = reserve("busy", 5, 100)
+    assert token and read("busy").session == 1
 
     lock_file = journal_path({"session_id": "busy"}).with_suffix(".review.lock")
     with lock_file.open("w") as held:
         flock(held, LOCK_EX)
-        assert main(["review", "--session", "busy", "--reserved"]) == 0
+        assert main(["review", "--session", "busy", "--reservation", str(token)]) == 0
     assert "already in flight" in capsys.readouterr().err
     assert read("busy").session == 0, "a skipped review kept its slot"
 
@@ -266,3 +291,55 @@ def test_charge_fails_closed_on_corruption(home: Path) -> None:
     (home / "review-spend.json").write_text("{torn")
     with pytest.raises(LedgerCorrupt):
         charge("a")
+
+
+def test_doctor_reports_a_corrupt_ledger(home: Path) -> None:
+    """Self-audit: doctor called supervision healthy while every review was
+    being refused for an unreadable ledger."""
+    from spotter.doctor import check_ledger
+
+    home.mkdir(parents=True, exist_ok=True)
+    assert check_ledger().status == OK  # nothing recorded yet
+    charge("a", tokens=7)
+    assert "7 tokens" in check_ledger().detail
+    (home / "review-spend.json").write_text("{torn")
+    check = check_ledger()
+    assert check.status == FAIL and "refused" in check.detail
+
+
+def test_a_crashed_holder_does_not_consume_a_slot_forever(home: Path) -> None:
+    """Self-audit: a child killed between reserving and settling leaks a slot
+    by a path no caller can catch."""
+    from spotter.budget import SLOT_TTL_SECONDS
+
+    start = 1_000_000
+    for _ in range(3):
+        assert reserve("a", 3, 100, now=start)[0]
+    assert reserve("a", 3, 100, now=start)[0] is None  # cap reached, holders alive
+
+    # Long after any review could still be running, the slots come back.
+    later = start + SLOT_TTL_SECONDS + 1
+    token, refusal = reserve("a", 3, 100, now=later)
+    assert token, f"expired slots were not reclaimed: {refusal}"
+
+
+def test_reclaim_does_not_touch_live_reservations(home: Path) -> None:
+    start = 1_000_000
+    live, _ = reserve("a", 5, 100, now=start)
+    assert live
+    reserve("a", 5, 100, now=start + 60)
+    # A reservation younger than the TTL is still its holder's.
+    assert settle("a", live, 10, now=start + 120) is not None
+
+
+def test_reclaimed_slot_cannot_be_settled_later(home: Path) -> None:
+    """The assumption is stated in the code: a holder that returns after the
+    TTL finds its token gone and charges instead, over-counting rather than
+    under-counting."""
+    from spotter.budget import SLOT_TTL_SECONDS
+
+    start = 1_000_000
+    token, _ = reserve("a", 5, 100, now=start)
+    assert token
+    reserve("a", 5, 100, now=start + SLOT_TTL_SECONDS + 1)  # triggers reclaim
+    assert settle("a", token, 10) is None

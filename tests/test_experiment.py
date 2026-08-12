@@ -173,7 +173,9 @@ def test_cadence_forwards_user_config(monkeypatch: pytest.MonkeyPatch, tmp_path:
     # Without --config the child builds a default config, so the constraints
     # the user configured never reach the reviewer (PR #58 review, P1).
     assert "--config" in argv and str(config_path) in argv
-    assert "--reserved" in argv  # the slot was taken before spawning
+    # the slot was taken before spawning and is identified by a token, so the
+    # child cannot claim a reservation it never received
+    assert "--reservation" in argv and len(argv[argv.index("--reservation") + 1]) == 32
 
 
 def test_failed_agent_is_not_checked_or_counted_as_success(

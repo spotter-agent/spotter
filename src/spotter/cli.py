@@ -111,9 +111,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pairs", type=int, default=1, help="experiment: counterfactual pairs")
     parser.add_argument("--model", help="review/experiment: pin the Codex model")
     parser.add_argument(
-        "--reserved",
-        action="store_true",
-        help="review: a budget slot was already reserved by the caller",
+        "--reservation",
+        help="review: token for a budget slot the caller already reserved (internal)",
     )
     parser.add_argument(
         "--check", help="experiment: success command run in each fork worktree (exit 0 = pass)"
@@ -207,7 +206,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             config = SpotterConfig(MainAgentConfig("codex"), ReviewerConfig())
         if args.model:
             config = replace(config, reviewer=replace(config.reviewer, model=args.model))
-        return _review_main(args.session, config, window=args.window, reserved=args.reserved)
+        return _review_main(args.session, config, window=args.window, reservation=args.reservation)
     if args.command == "fork":
         if not args.session or args.step is None:
             parser.error("fork requires --session and --step")
@@ -320,7 +319,7 @@ def _constraints_of(config: SpotterConfig) -> list[str]:
 
 
 def _review_main(
-    session: str, config: SpotterConfig, *, window: int, reserved: bool = False
+    session: str, config: SpotterConfig, *, window: int, reservation: str | None = None
 ) -> int:
     """Shadow reviewer: judge the trajectory tail, journal the verdict, inject
     nothing. Injection rights are earned later via labeling + fork pairs."""
@@ -334,21 +333,18 @@ def _review_main(
     except OSError:
         # Losing this race is ordinary: two cadence children for one session
         # both reserve, and this one never reviews. Hand the slot back.
-        if reserved:
-            cancel(session)
+        cancel(session, reservation)
         print(f"review already in flight for {session}; skipping", file=sys.stderr)
         lock.close()
         return 0
     try:
         records = StepJournal.load(journal_file)
     except (OSError, SnapshotError) as error:
-        if reserved:
-            cancel(session)  # nothing was reviewed and nothing was spent
+        cancel(session, reservation)  # nothing was reviewed and nothing was spent
         print(f"review failed: {error}", file=sys.stderr)
         return 1
     if not records:
-        if reserved:
-            cancel(session)
+        cancel(session, reservation)
         print("review failed: empty journal", file=sys.stderr)
         return 1
     try:
@@ -374,8 +370,10 @@ def _review_main(
             )
         return 1
     # A reserved slot was already counted by the caller; charging again would
-    # double-count it against both ceilings.
-    spend = settle(session, last_usage()) if reserved else charge(session, last_usage())
+    # double-count it. An unrecognised token means no slot was ever taken, so
+    # the review is charged normally — otherwise passing the flag would be
+    # enough to review for free.
+    spend = settle(session, reservation, last_usage()) or charge(session, last_usage())
     StepJournal(journal_file).record(
         TraceEvent(
             "reviewer_decision",

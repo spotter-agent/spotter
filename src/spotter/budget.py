@@ -9,6 +9,7 @@ working must never look like a supervisor with nothing to say.
 import json
 import os
 import time
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -110,6 +111,52 @@ def _project(
     return sessions, Spend(entry["reviews"], carried, entry["tokens"])
 
 
+SLOT_TTL_SECONDS = 3600  # far beyond the reviewer's own 300s timeout
+
+
+def _open_slots(data: dict[str, object]) -> dict[str, dict[str, object]]:
+    """Reservations taken but not yet settled or cancelled."""
+    raw = data.get("open_slots")
+    if not isinstance(raw, dict):
+        return {}
+    slots: dict[str, dict[str, object]] = {}
+    for key, value in raw.items():
+        if isinstance(value, dict) and isinstance(value.get("session"), str):
+            slots[str(key)] = {"session": value["session"], "at": _as_int(value.get("at"))}
+    return slots
+
+
+def _reclaim(
+    data: dict[str, object],
+    sessions: dict[str, dict[str, int]],
+    slots: dict[str, dict[str, object]],
+    now: float | None,
+) -> int:
+    """Drop reservations whose holder died, crediting their counts back.
+
+    A child killed between reserving and settling would otherwise consume a
+    slot forever — the same leak class as the in-flight skip, arriving by a
+    path no caller can catch. The TTL is an order of magnitude beyond the
+    reviewer's own timeout, so an expired slot means the holder is gone, not
+    slow. The assumption is stated because it is an assumption: a review that
+    somehow ran for an hour and then settled would find its token consumed and
+    fall back to charging, which over-counts rather than under-counts.
+    """
+    stamp = int(now if now is not None else time.time())
+    expired = [t for t, slot in slots.items() if stamp - _as_int(slot.get("at")) > SLOT_TTL_SECONDS]
+    reclaimed_today = 0
+    for token in expired:
+        slot = slots.pop(token)
+        name = str(slot.get("session"))
+        entry = sessions.get(name)
+        if entry:
+            entry["reviews"] = max(0, entry["reviews"] - 1)
+        day = data.get("day")
+        if isinstance(day, dict) and day.get("date") == _today(now):
+            reclaimed_today += 1
+    return reclaimed_today
+
+
 def _write(
     path: Path,
     sessions: dict[str, dict[str, int]],
@@ -118,6 +165,7 @@ def _write(
     tokens: int,
     day_reviews: int,
     now: float | None,
+    open_slots: dict[str, dict[str, object]] | None = None,
 ) -> None:
     """Replace the ledger atomically.
 
@@ -126,7 +174,12 @@ def _write(
     thing that creates that state.
     """
     sessions[sanitize_session(session)] = {"reviews": reviews, "tokens": tokens}
-    payload = {"sessions": sessions, "day": {"date": _today(now), "reviews": day_reviews}}
+    payload: dict[str, object] = {
+        "sessions": sessions,
+        "day": {"date": _today(now), "reviews": day_reviews},
+    }
+    if open_slots:
+        payload["open_slots"] = open_slots
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(payload))
     os.replace(temporary, path)
@@ -137,13 +190,18 @@ def reserve(
     max_per_session: int,
     max_per_day: int,
     now: float | None = None,
-) -> tuple[bool, str]:
-    """Atomically take a review slot, or refuse.
+) -> tuple[str | None, str]:
+    """Atomically take a review slot, returning its token.
 
     Checking a ceiling and then spending against it in a separate step is not
     a ceiling: concurrent sessions all read the same remaining budget and all
     proceed. The check and the increment happen under one lock here, so the
     last slot can only be taken once.
+
+    The token exists because the slot is consumed in one process and settled
+    in another. Without it, "already reserved" is an unverifiable claim: any
+    caller could assert it and review for free, and a cancel could be applied
+    more times than a slot was ever taken.
     """
     with _locked() as path:
         try:
@@ -151,18 +209,39 @@ def reserve(
         except LedgerCorrupt as error:
             # Fail closed on the spending path: an unreadable ledger is not
             # evidence of remaining budget.
-            return False, f"ledger unreadable, refusing to spend ({error})"
+            return None, f"ledger unreadable, refusing to spend ({error})"
         sessions, spend = _project(data, session, now)
+        # Reclaim before judging the ceiling: a dead holder's slot must not
+        # keep a live session out.
+        open_slots = _open_slots(data)
+        reclaimed = _reclaim(data, sessions, open_slots, now)
+        if reclaimed:
+            spend = Spend(
+                sessions.get(sanitize_session(session), {"reviews": 0})["reviews"],
+                max(0, spend.day - reclaimed),
+                spend.tokens,
+            )
         if max_per_session and spend.session >= max_per_session:
-            return False, f"session cap reached ({spend.session}/{max_per_session})"
+            return None, f"session cap reached ({spend.session}/{max_per_session})"
         if max_per_day and spend.day >= max_per_day:
-            return False, f"daily cap reached ({spend.day}/{max_per_day})"
-        _write(path, sessions, session, spend.session + 1, spend.tokens, spend.day + 1, now)
-        return True, ""
+            return None, f"daily cap reached ({spend.day}/{max_per_day})"
+        token = uuid.uuid4().hex
+        open_slots[token] = {"session": sanitize_session(session), "at": int(now or time.time())}
+        _write(
+            path,
+            sessions,
+            session,
+            spend.session + 1,
+            spend.tokens,
+            spend.day + 1,
+            now,
+            open_slots,
+        )
+        return token, ""
 
 
-def cancel(session: str, now: float | None = None) -> None:
-    """Return a reserved slot that was never used.
+def cancel(session: str, token: str | None, now: float | None = None) -> bool:
+    """Return a reserved slot that was never used. Idempotent by token.
 
     Reservation happens before the work, so every path that gives up before
     the model call must hand the slot back — otherwise ordinary operation
@@ -170,12 +249,21 @@ def cancel(session: str, now: float | None = None) -> None:
     one that loses the in-flight lock exits without ever reviewing
     (PR #58 review, P1). Paths that gave up *after* a model call keep the
     slot, because that spend really happened.
+
+    Consuming the token is what makes a repeat call harmless; without it,
+    cancelling twice credits back a slot that was never taken.
     """
+    if not token:
+        return False
     with _locked() as path:
         try:
             data = _load(path)
         except LedgerCorrupt:
-            return  # nothing trustworthy to decrement
+            return False  # nothing trustworthy to decrement
+        open_slots = _open_slots(data)
+        slot = open_slots.pop(token, None)
+        if slot is None or slot.get("session") != sanitize_session(session):
+            return False  # unknown or already settled/cancelled
         sessions, spend = _project(data, session, now)
         _write(
             path,
@@ -185,24 +273,44 @@ def cancel(session: str, now: float | None = None) -> None:
             spend.tokens,
             max(0, spend.day - 1),
             now,
+            open_slots,
         )
+        return True
 
 
-def settle(session: str, tokens: int, now: float | None = None) -> Spend:
+def settle(session: str, token: str | None, tokens: int, now: float | None = None) -> Spend | None:
     """Attach the measured cost to a slot already reserved.
 
     Reservation happens before the work and cannot know the price; this adds
     it afterwards without touching the counts, so a crash between the two
     loses the cost figure but never the ceiling.
+
+    An unknown token returns None so the caller charges normally. Without that
+    check, asserting "already reserved" would be enough to review for free:
+    settle adds cost but no count, so every ceiling would be bypassed by a
+    flag anyone can pass.
     """
+    if not token:
+        return None
     with _locked() as path:
         try:
             data = _load(path)
         except LedgerCorrupt:
-            return Spend(0, 0, 0)
+            return None
+        open_slots = _open_slots(data)
+        slot = open_slots.pop(token, None)
+        if slot is None or slot.get("session") != sanitize_session(session):
+            return None
         sessions, spend = _project(data, session, now)
         _write(
-            path, sessions, session, spend.session, spend.tokens + max(0, tokens), spend.day, now
+            path,
+            sessions,
+            session,
+            spend.session,
+            spend.tokens + max(0, tokens),
+            spend.day,
+            now,
+            open_slots,
         )
         return Spend(spend.session, spend.day, spend.tokens + max(0, tokens))
 

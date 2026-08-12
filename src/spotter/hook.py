@@ -122,14 +122,16 @@ def _maybe_spawn_shadow_review(
     # Reserve before spawning, not after reviewing: checking a ceiling and
     # then spending against it in a later process is not a ceiling, because
     # concurrent sessions all read the same remaining budget (PR #58 review).
-    allowed, refusal = reserve(
-        session, config.reviewer.max_per_session, config.reviewer.max_per_day
-    )
-    if not allowed:
+    token, refusal = reserve(session, config.reviewer.max_per_session, config.reviewer.max_per_day)
+    if token is None:
         # Journal it: a reviewer that stopped because it ran out of budget must
         # not look like a reviewer with nothing to say (issues #52, #41).
+        # An unreadable ledger is a different condition from a reached ceiling
+        # and is recorded as an error, not as a cap.
+        kind = "reviewer_error" if "unreadable" in refusal else "reviewer_capped"
+        key = "error" if kind == "reviewer_error" else "reason"
         with suppress(SnapshotError, OSError):
-            StepJournal(journal_file).record(TraceEvent("reviewer_capped", {"reason": refusal}))
+            StepJournal(journal_file).record(TraceEvent(kind, {key: refusal}))
         return
     args = [
         sys.executable,
@@ -141,7 +143,8 @@ def _maybe_spawn_shadow_review(
         "--model",
         config.reviewer.model,
         # The slot is already taken; the child settles the cost against it.
-        "--reserved",
+        "--reservation",
+        token,
     ]
     if config_path is not None:
         # Without this the child builds a default config, so the constraints
@@ -161,7 +164,7 @@ def _maybe_spawn_shadow_review(
         except OSError as error:
             # The slot was taken before the spawn; a spawn that never happened
             # must not consume budget (PR #58 review, P1).
-            cancel(session)
+            cancel(session, token)
             StepJournal(journal_file).record(
                 TraceEvent("reviewer_error", {"error": f"review process failed: {error}"[:300]})
             )

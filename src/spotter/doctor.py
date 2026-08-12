@@ -19,6 +19,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from spotter.budget import LedgerCorrupt, spend_totals
 from spotter.paths import spotter_home
 
 OK = "ok"
@@ -144,6 +145,22 @@ def check_roundtrip(config_path: Path | None) -> Check:
     return Check("round-trip", OK, "synthetic payload recorded and cleaned up")
 
 
+def check_ledger() -> Check:
+    """A corrupt ledger silently refuses every review.
+
+    Without this, doctor reports healthy supervision while the reviewer is
+    declining to run — the same class of invisible failure this command
+    exists to end.
+    """
+    try:
+        totals = spend_totals()
+    except LedgerCorrupt as error:
+        return Check("spend ledger", FAIL, f"{error}; every review is being refused")
+    if totals is None:
+        return Check("spend ledger", OK, "no spend recorded yet")
+    return Check("spend ledger", OK, f"{totals['day']} reviews today, {totals['tokens']} tokens")
+
+
 def check_freshness(max_idle_hours: float = 24.0) -> Check:
     sessions = spotter_home() / "sessions"
     journals = sorted(sessions.glob("*.jsonl")) if sessions.exists() else []
@@ -160,6 +177,7 @@ def run(config_path: Path | None = None) -> list[Check]:
     checks.extend(check_registration())
     checks.extend(check_storage())
     checks.append(check_roundtrip(config_path))
+    checks.append(check_ledger())
     checks.append(check_freshness())
     return checks
 
