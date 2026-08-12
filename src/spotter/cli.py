@@ -31,7 +31,15 @@ from spotter.experiment import list_forks, results_path, run_experiment, summari
 from spotter.gates import Gate
 from spotter.hook import journal_path, run_hook
 from spotter.labels import LabelError, add_label, valid_session
-from spotter.metrics import Tally, merge, tally_harm, tally_session
+from spotter.metrics import (
+    InterventionTally,
+    Tally,
+    merge,
+    merge_interventions,
+    tally_harm,
+    tally_interventions,
+    tally_session,
+)
 from spotter.paths import sanitize_session, secure_dir, spotter_home
 from spotter.redact import scan_text
 from spotter.replay import ReplayError, fork, plan_to_json
@@ -46,6 +54,7 @@ from spotter.snapshot import (
     snapshot_references,
     stale_journals,
 )
+from spotter.sycophancy import OUTCOMES, assess, load_case, tally_compliance
 from spotter.trace import TraceEvent
 
 
@@ -62,6 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
             "prune",
             "review",
             "experiment",
+            "assess-sycophancy",
             "label",
             "metrics",
             "status",
@@ -87,6 +97,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--repo", type=Path, help="repo path (prune; fork override when the journal lacks cwd)"
     )
     parser.add_argument("--guidance", help="course-correction text for the forked run (fork)")
+    parser.add_argument("--wrong-nudge", help="experiment: case id from --corpus")
+    parser.add_argument("--corpus", type=Path, help="experiment: wrong-nudge corpus JSON")
+    parser.add_argument("--experiment-id", help="assess-sycophancy: experiment UUID")
+    parser.add_argument("--outcome", choices=OUTCOMES, help="assess-sycophancy: behavior outcome")
     parser.add_argument(
         "--apply", action="store_true", help="prune: actually delete (default is dry-run)"
     )
@@ -179,26 +193,53 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "doctor":
         return _doctor_main(args.config)
     if args.command == "experiment":
-        if not args.session or args.step is None or not args.guidance:
-            parser.error("experiment requires --session, --step and --guidance")
+        if not args.session or args.step is None:
+            parser.error("experiment requires --session and --step")
+        if bool(args.wrong_nudge) != bool(args.corpus):
+            parser.error("--wrong-nudge and --corpus must be used together")
+        if args.guidance and args.wrong_nudge:
+            parser.error("use either --guidance or --wrong-nudge, not both")
+        kind, guidance_class = "nudge", None
+        guidance = args.guidance
+        if args.wrong_nudge:
+            try:
+                case = load_case(args.corpus, args.wrong_nudge)
+            except ValueError as error:
+                parser.error(str(error))
+            guidance, kind, guidance_class = case.guidance, "wrong_nudge", case.kind
+        if not guidance:
+            parser.error("experiment requires --guidance or --wrong-nudge")
         if args.pairs < 1:
             parser.error("--pairs must be >= 1")
         try:
             results = run_experiment(
                 args.session,
                 args.step,
-                args.guidance,
+                guidance,
                 pairs=args.pairs,
                 check=args.check,
                 run=args.run,
                 model=args.model,
                 keep_artifacts=args.keep_artifacts,
+                kind=kind,
+                guidance_class=guidance_class,
             )
         except (ReplayError, SnapshotError, OSError, subprocess.SubprocessError) as error:
             print(f"experiment failed: {error}", file=sys.stderr)
             return 1
         print(summarize(results))
+        print(f"experiment id: {results[0].experiment_id}")
         print(f"rows appended to {results_path(args.session, args.step)}")
+        return 0
+    if args.command == "assess-sycophancy":
+        if not args.experiment_id or args.step is None or not args.outcome:
+            parser.error("assess-sycophancy requires --experiment-id, --step (pair), and --outcome")
+        try:
+            path = assess(args.experiment_id, args.step, args.outcome, args.note)
+        except (OSError, ValueError) as error:
+            print(f"assessment failed: {error}", file=sys.stderr)
+            return 1
+        print(f"assessed {args.experiment_id} pair {args.step}: {args.outcome} ({path})")
         return 0
     if args.command == "label":
         if not args.session or not args.verdict:
@@ -262,13 +303,15 @@ def _span_of(records: list[StepRecord]) -> str:
 def _slow_of(slow: list[StepRecord]) -> str:
     """Hooks that ran long enough to risk the runtime's timeout.
 
-    A hook killed at the limit fails open, so supervision stops precisely for
-    the tool calls that mutate files; the count belongs next to the others.
+    Says "completed" because it means it: a hook killed at the timeout never
+    writes its record, so this counts survivors and cannot see the censored
+    tail. Reporting it without that word would invite reading a p99 off a
+    distribution the worst cases are missing from (PR #73 review, P1).
     """
     if not slow:
         return ""
     worst = max(float(r.event.payload.get("elapsed_ms") or 0) for r in slow)
-    return f" slow_hooks={len(slow)} (worst {worst:.0f}ms)"
+    return f" slow_hooks={len(slow)} (completed only, worst {worst:.0f}ms)"
 
 
 def _analyze_main(session: str | None) -> int:
@@ -632,6 +675,7 @@ def _metrics_main(session: str | None) -> int:
     gates: dict[str, Tally] = {}
     blind_spots: dict[str, int] = {}
     reviewer = ceiling = Tally()
+    interventions: dict[str, InterventionTally] = {}
     for journal in journals:
         try:
             records = StepJournal.load(journal)
@@ -651,6 +695,7 @@ def _metrics_main(session: str | None) -> int:
                 blind_spots[rule] = blind_spots.get(rule, 0) + 1
         reviewer = merge(reviewer, session_reviewer)
         ceiling = merge(ceiling, session_ceiling)
+        interventions = merge_interventions(interventions, tally_interventions(records))
 
     print("P3 gate false positives (label each flag tp|fp):")
     if not gates:
@@ -678,8 +723,16 @@ def _metrics_main(session: str | None) -> int:
         return 1
     print("Tier 2 intervention safety:")
     print("  " + harm.line())
-    print("  recovery: not measurable — no explicit intervention outcome events recorded")
-    print("  ignored intervention: not measurable — delivery journaling is not implemented")
+    try:
+        print("  " + tally_compliance().line())
+    except (OSError, ValueError) as error:
+        print(f"metrics aborted: {error}", file=sys.stderr)
+        return 1
+    if not interventions:
+        print("  recovery/ignored: 0/0 delivered — no intervention outcome data")
+    for kind, intervention_tally in sorted(interventions.items()):
+        for line in intervention_tally.lines(kind):
+            print("  " + line)
     return 0
 
 

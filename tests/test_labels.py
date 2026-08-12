@@ -12,7 +12,7 @@ from spotter.labels import (
     matches,
     valid_session,
 )
-from spotter.metrics import MIN_SAMPLES, Tally, merge, tally_session
+from spotter.metrics import MIN_SAMPLES, Tally, merge, tally_interventions, tally_session
 from spotter.paths import sanitize_session
 from spotter.snapshot import StepJournal, StepRecord
 from spotter.trace import TraceEvent
@@ -239,3 +239,55 @@ def test_session_validation_rejects_trailing_newline() -> None:
     assert not valid_session("a\nb")
     assert valid_session("a_") and valid_session("019fee58-ab26-72f2")
     assert sanitize_session("a\n") == "a_"  # why the bypass mattered
+
+
+def test_intervention_metrics_require_explicit_outcomes() -> None:
+    records = [
+        StepRecord(
+            i,
+            event,
+            None,
+        )
+        for i, event in enumerate(
+            [
+                TraceEvent(
+                    "reviewer_injected", {"intervention_id": "a", "intervention_type": "nudge"}
+                ),
+                TraceEvent(
+                    "reviewer_injected", {"intervention_id": "b", "intervention_type": "nudge"}
+                ),
+                TraceEvent("intervention_outcome", {"intervention_id": "a", "outcome": "ignored"}),
+            ]
+        )
+    ]
+    tally = tally_interventions(records)["nudge"]
+    assert (tally.delivered, tally.assessed, tally.ignored) == (2, 1, 1)
+    assert "1/2 outcomes recorded" in tally.lines("nudge")[1]
+
+
+def test_intervention_recovery_is_per_type() -> None:
+    records: list[StepRecord] = []
+    for i in range(MIN_SAMPLES):
+        records.append(
+            StepRecord(
+                len(records),
+                TraceEvent(
+                    "reviewer_injected",
+                    {"intervention_id": f"n{i}", "intervention_type": "nudge"},
+                ),
+                None,
+            )
+        )
+        records.append(
+            StepRecord(
+                len(records),
+                TraceEvent(
+                    "intervention_outcome",
+                    {"intervention_id": f"n{i}", "outcome": "recovered" if i else "degraded"},
+                ),
+                None,
+            )
+        )
+    recovery, ignored = tally_interventions(records)["nudge"].lines("nudge")
+    assert "recovery: 80%" in recovery
+    assert "ignored: 0%" in ignored

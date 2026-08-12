@@ -96,6 +96,8 @@ def run_experiment(
     codex_home: Path | None = None,
     model: str | None = None,
     keep_artifacts: bool = False,
+    kind: str = "nudge",
+    guidance_class: str | None = None,
 ) -> list[ArmResult]:
     """Build (and with run=True, execute) n counterfactual pairs."""
     if pairs < 1:
@@ -111,6 +113,8 @@ def run_experiment(
         "source_session": session_id,
         "step": step,
         "guidance": guidance,
+        "kind": kind,
+        "guidance_class": guidance_class,
         "control_prompt": CONTROL_PROMPT,
         "check": check,
         "sandbox": sandbox,

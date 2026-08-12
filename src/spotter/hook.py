@@ -171,10 +171,15 @@ def _maybe_spawn_shadow_review(
             )
 
 
-# Hooks are registered with a 10s timeout that nobody measured. A hook killed
-# at that limit fails open, so supervision stops silently for exactly the tool
-# calls that mutate files — the one case where it matters most. Recording the
+# Hooks are registered with a 10s timeout that nobody measured. Recording the
 # slow ones turns a guessed budget into an observed distribution (issue #49).
+#
+# Known limit, stated because it bounds what the number can be used for: this
+# records *completed* hooks only. A hook killed at the runtime's timeout never
+# reaches the line that writes the record, so the censored tail — the case that
+# actually stops supervision — is absent from the distribution. A p99 computed
+# from this is a p99 of the survivors. Observing the kills needs the runtime's
+# own view or a start-record reconciliation, and is not attempted here.
 SLOW_HOOK_MS = 1000.0
 
 
@@ -184,7 +189,8 @@ def _record_if_slow(journal_file: Path, kind: str, elapsed_ms: float) -> None:
     Only the slow ones: stamping every record with its own duration would
     double the journal to describe the common case, which is uninteresting by
     construction. The threshold is a fraction of the configured hook timeout,
-    so the record arrives before the kill, not after.
+    so a hook heading for trouble is recorded before it gets there — but a
+    hook that is actually killed leaves nothing at all. See SLOW_HOOK_MS.
     """
     if elapsed_ms < SLOW_HOOK_MS:
         return
