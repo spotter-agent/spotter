@@ -13,7 +13,8 @@ Spotter is an experimental runtime supervision layer for coding agents, starting
 - [How it works](#the-idea)
 - [Installation](#installation)
 - [First run](#first-run)
-- [Connect Spotter to Codex](#connect-spotter-to-codex)
+- [Install the agent plugins](#install-the-agent-plugins)
+- [Manual hook setup](#manual-hook-setup)
 - [Documentation](#documentation)
 - [Development](#development)
 
@@ -180,10 +181,55 @@ auth rejects some ids (observed: `gpt-5.3-spark`) with a slow retry loop rather 
 fast error. Which reviewer model works best is an open experimental question (see
 docs/research.md RQ3), not a constant.
 
-## Connect Spotter to Codex
+## Install the agent plugins
 
-To record Codex tool calls, add the bridge to `.codex/hooks.json` and review it with
-`/hooks` in Codex:
+The repository is a native plugin for both Codex and Claude Code. The plugin bundles the
+hook bridge, so installing the Python package separately is not required; Python 3.11 or
+newer must still be available as `python3`.
+
+### Codex
+
+Clone the repository, add its bundled local marketplace, and install Spotter:
+
+```bash
+git clone https://github.com/bogyie/spotter.git
+codex plugin marketplace add "$(pwd)/spotter/.agents/plugins"
+codex plugin install spotter
+```
+
+Restart Codex after installation. Codex discovers `.codex-plugin/plugin.json` and the
+bundled `hooks/hooks.json` configuration.
+
+### Claude Code
+
+Add the repository as a marketplace and install its plugin:
+
+```bash
+git clone https://github.com/bogyie/spotter.git
+claude plugin marketplace add ./spotter
+claude plugin install spotter@spotter
+```
+
+Restart Claude Code after installation. Claude Code discovers `.claude-plugin/plugin.json`
+and the same bundled hooks.
+
+By default, plugin hooks observe only and write journals under `~/.spotter/sessions`. To
+customize gates, copy `spotter.example.toml` to `spotter.toml` in the project being
+supervised. For Claude Code, change `main_agent.adapter` to `"claude-code"`. A config path
+in `SPOTTER_CONFIG` takes precedence over the project-local file:
+
+```bash
+export SPOTTER_CONFIG=/absolute/path/to/spotter.toml
+```
+
+The wrapper resolves Spotter from the plugin checkout and therefore keeps working when the
+marketplace caches the plugin in another directory.
+
+## Manual hook setup
+
+If the plugin manager is unavailable, install the Python package as described above and add
+the bridge to the agent's hook configuration manually. For Codex, add this to
+`.codex/hooks.json`; for Claude Code, use `.claude/settings.json`:
 
 ```json
 {

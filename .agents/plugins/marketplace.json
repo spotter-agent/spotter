@@ -1,0 +1,20 @@
+{
+  "name": "spotter",
+  "interface": {
+    "displayName": "Spotter"
+  },
+  "plugins": [
+    {
+      "name": "spotter",
+      "source": {
+        "source": "local",
+        "path": "./plugins/spotter"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

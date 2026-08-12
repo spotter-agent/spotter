@@ -1,0 +1,14 @@
+{
+  "name": "spotter",
+  "owner": {
+    "name": "Spotter contributors"
+  },
+  "plugins": [
+    {
+      "name": "spotter",
+      "description": "Runtime trajectory supervision for coding agents",
+      "version": "0.1.0",
+      "source": "./"
+    }
+  ]
+}
