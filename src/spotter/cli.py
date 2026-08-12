@@ -2,7 +2,6 @@
 
 import argparse
 import json
-import shutil
 import subprocess
 import sys
 import time
@@ -10,10 +9,10 @@ import tomllib
 from collections.abc import Sequence
 from contextlib import suppress
 from dataclasses import replace
-from fcntl import LOCK_EX, LOCK_NB, flock
+from fcntl import LOCK_EX, LOCK_NB, LOCK_UN, flock
 from pathlib import Path
 
-from spotter.budget import charge
+from spotter.budget import LedgerCorrupt, charge, settle, spend_totals
 from spotter.codex import CodexAdapter
 from spotter.config import ConfigurationError, MainAgentConfig, ReviewerConfig, SpotterConfig
 from spotter.core import SpotterRuntime
@@ -102,6 +101,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--pairs", type=int, default=1, help="experiment: counterfactual pairs")
     parser.add_argument("--model", help="review/experiment: pin the Codex model")
+    parser.add_argument(
+        "--reserved",
+        action="store_true",
+        help="review: a budget slot was already reserved by the caller",
+    )
     parser.add_argument(
         "--check", help="experiment: success command run in each fork worktree (exit 0 = pass)"
     )
@@ -194,7 +198,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             config = SpotterConfig(MainAgentConfig("codex"), ReviewerConfig())
         if args.model:
             config = replace(config, reviewer=replace(config.reviewer, model=args.model))
-        return _review_main(args.session, config, window=args.window)
+        return _review_main(args.session, config, window=args.window, reserved=args.reserved)
     if args.command == "fork":
         if not args.session or args.step is None:
             parser.error("fork requires --session and --step")
@@ -306,7 +310,9 @@ def _constraints_of(config: SpotterConfig) -> list[str]:
     return constraints
 
 
-def _review_main(session: str, config: SpotterConfig, *, window: int) -> int:
+def _review_main(
+    session: str, config: SpotterConfig, *, window: int, reserved: bool = False
+) -> int:
     """Shadow reviewer: judge the trajectory tail, journal the verdict, inject
     nothing. Injection rights are earned later via labeling + fork pairs."""
     journal_file = journal_path({"session_id": session})
@@ -342,7 +348,9 @@ def _review_main(session: str, config: SpotterConfig, *, window: int) -> int:
                 TraceEvent("reviewer_error", {"error": str(error)[:300]})
             )
         return 1
-    spend = charge(session, last_usage())
+    # A reserved slot was already counted by the caller; charging again would
+    # double-count it against both ceilings.
+    spend = settle(session, last_usage()) if reserved else charge(session, last_usage())
     StepJournal(journal_file).record(
         TraceEvent(
             "reviewer_decision",
@@ -378,6 +386,32 @@ def _review_main(session: str, config: SpotterConfig, *, window: int) -> int:
     return 0
 
 
+def _delete_journal(journal: Path) -> None:
+    """Remove a journal and its sidecars, holding its own lock first.
+
+    The global lock keeps other prune runs out; this one keeps a hook from
+    appending to the file mid-deletion. Deleting the lock file itself last
+    matters: a hook that acquires it afterwards creates a fresh inode, and two
+    writers holding different locks are not serialised at all.
+    """
+    lock_path = journal.with_suffix(journal.suffix + ".lock")
+    handle = None
+    try:
+        handle = lock_path.open("a")
+        flock(handle, LOCK_EX)
+    except OSError:
+        handle = None
+    try:
+        journal.unlink(missing_ok=True)
+        for suffix in (".state", ".review.lock"):
+            journal.with_suffix(journal.suffix + suffix).unlink(missing_ok=True)
+    finally:
+        if handle is not None:
+            flock(handle, LOCK_UN)
+            handle.close()
+    lock_path.unlink(missing_ok=True)
+
+
 def _remove_worktree(worktree: Path) -> None:
     """Remove a fork worktree through git so its administrative entry goes too.
 
@@ -387,9 +421,16 @@ def _remove_worktree(worktree: Path) -> None:
     result = subprocess.run(
         ["git", "-C", str(worktree), "worktree", "remove", "--force", str(worktree)],
         capture_output=True,
+        text=True,
     )
-    if result.returncode != 0 and worktree.exists():
-        shutil.rmtree(worktree, ignore_errors=True)
+    if result.returncode != 0:
+        # Deleting the directory anyway would leave the parent repository
+        # registering a worktree that no longer exists — precisely the defect
+        # this command exists to fix (PR #58 review, P1).
+        print(
+            f"  could not remove {worktree.name}: {result.stderr.strip()[:160]}",
+            file=sys.stderr,
+        )
 
 
 def _doctor_main(config_path: Path | None) -> int:
@@ -460,16 +501,14 @@ def _status_main() -> int:
         )
     if errors:
         print(f"reviewer errors recorded: {errors} (see {home / 'logs'})")
-    ledger = home / "review-spend.json"
-    if ledger.exists():
-        spent = json.loads(ledger.read_text())
-        day = spent.get("day", {})
-        tokens = sum(
-            int(e.get("tokens", 0))
-            for e in spent.get("sessions", {}).values()
-            if isinstance(e, dict)
-        )
-        print(f"reviews today: {day.get('reviews', 0)}  |  tokens recorded: {tokens}")
+    try:
+        totals = spend_totals()
+    except LedgerCorrupt as error:
+        # The diagnostic command must survive the corruption it is diagnosing.
+        print(f"WARNING: spend ledger unreadable ({error}); ceilings are refusing to spend")
+    else:
+        if totals is not None:
+            print(f"reviews today: {totals['day']}  |  tokens recorded: {totals['tokens']}")
     if exposed:
         print(
             f"WARNING: {exposed} pre-redaction lines match credential patterns; "
@@ -561,32 +600,36 @@ def _prune_main(
     journaled it.
     """
     sessions_dir = journal_path({"session_id": "probe"}).parent
+    verb = "deleted" if apply else "would delete (pass --apply)"
+    if journals and max_age_days is None:
+        print("--journals requires --max-age-days", file=sys.stderr)
+        return 1
     try:
+        # Everything that reads or removes journals and refs happens under one
+        # lock: selecting stale journals, deleting them, recomputing what is
+        # still referenced, and pruning. Releasing between those steps lets a
+        # hook append to a journal being deleted, or pin a ref this pass has
+        # already decided is unreferenced (PR #58 review, P0).
         with global_lock():
+            doomed = (
+                stale_journals(sessions_dir, max_age_days)
+                if journals and max_age_days is not None
+                else []
+            )
+            for journal in doomed:
+                print(f"journal {verb}: {journal.stem}")
+                if apply:
+                    _delete_journal(journal)
+            # Reference computation happens after deletion, so a journal that
+            # is going away cannot keep its snapshots alive — and, crucially,
+            # snapshots are pruned exactly once, after that. The previous
+            # version pruned before deleting and then again after, which is
+            # the opposite of what its own comment claimed.
             references = snapshot_references(sessions_dir, repo)
             pruned = prune_snapshots(repo, set(references), apply=apply, max_age_days=max_age_days)
     except SnapshotError as error:
         print(f"prune aborted: {error}", file=sys.stderr)
         return 1
-    verb = "deleted" if apply else "would delete (pass --apply)"
-    if journals:
-        if max_age_days is None:
-            print("--journals requires --max-age-days", file=sys.stderr)
-            return 1
-        # Order matters: journals must go first, because deleting one is what
-        # makes its snapshots unreferenced. Doing it the other way round would
-        # delete snapshots a surviving journal still points at.
-        doomed = stale_journals(sessions_dir, max_age_days)
-        for journal in doomed:
-            print(f"journal {verb}: {journal.stem}")
-            if apply:
-                journal.unlink(missing_ok=True)
-                for suffix in (".state", ".lock", ".review.lock"):
-                    journal.with_suffix(journal.suffix + suffix).unlink(missing_ok=True)
-        if doomed and apply:
-            # Recompute: the references those journals held are gone now.
-            references = snapshot_references(sessions_dir, repo)
-            pruned = prune_snapshots(repo, set(references), apply=apply, max_age_days=max_age_days)
     if forks:
         for worktree in list_forks():
             print(f"fork worktree {verb}: {worktree.name}")

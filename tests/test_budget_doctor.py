@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from spotter.budget import charge, exhausted, read
+from spotter.budget import LedgerCorrupt, charge, exhausted, read, reserve, settle
 from spotter.cli import main
 from spotter.config import GatesConfig, MainAgentConfig, ReviewerConfig, SpotterConfig
 from spotter.doctor import FAIL, OK, WARN, check_freshness, check_roundtrip, run, worst
@@ -79,11 +79,28 @@ def test_hook_stops_spawning_at_the_cap_and_says_so(monkeypatch: pytest.MonkeyPa
     assert "session cap" in str(capped[0].event.payload["reason"])
 
 
-def test_ledger_survives_corruption(home: Path) -> None:
-    home.mkdir(parents=True, exist_ok=True)
+def test_corrupt_ledger_fails_closed_on_the_spending_path(home: Path) -> None:
+    """PR #58 review, P0: treating corruption as zero spend lifts every
+    ceiling at once and lets the next write erase the proof they were hit."""
+    for _ in range(5):
+        charge("a")
     (home / "review-spend.json").write_text("{not json")
-    assert read("a").session == 0  # unreadable ledger must not crash the hook
-    assert charge("a").session == 1
+
+    with pytest.raises(LedgerCorrupt):
+        read("a")
+    assert "refusing to spend" in (exhausted("a", 3, 100) or "")
+    allowed, refusal = reserve("a", 3, 100)
+    assert not allowed and "refusing to spend" in refusal
+
+
+def test_ledger_writes_are_atomic(home: Path) -> None:
+    """A torn write is what makes a ledger unreadable, so the writer must not
+    be the thing that creates the state the reader now refuses."""
+    charge("a", tokens=5)
+    ledger = home / "review-spend.json"
+    assert ledger.exists()
+    assert not list(home.glob("review-spend.json.tmp"))
+    assert json.loads(ledger.read_text())["sessions"]["a"]["tokens"] == 5
 
 
 # --- #41: a dead spotter must not look like a quiet one ----------------------
@@ -149,3 +166,45 @@ def test_status_reports_spend(home: Path, capsys: pytest.CaptureFixture[str]) ->
     out = capsys.readouterr().out
     assert "reviews today: 1" in out and "1234" in out
     assert json.loads((home / "review-spend.json").read_text())["sessions"]["s"]["tokens"] == 1234
+
+
+def test_reserve_is_atomic_across_processes(home: Path) -> None:
+    """PR #58 review, P0: check-then-charge lets concurrent sessions all see
+    the same remaining budget. Only one process may take the last slot."""
+    import subprocess
+    import sys as _sys
+
+    script = (
+        "import os, sys\n"
+        "from spotter.budget import reserve\n"
+        "allowed, _ = reserve(sys.argv[1], 0, 3)\n"  # daily cap of 3
+        "sys.exit(0 if allowed else 7)\n"
+    )
+    workers = [
+        subprocess.Popen(
+            [_sys.executable, "-c", script, f"s{i}"],
+            cwd=Path(__file__).parent.parent,
+            env={"PYTHONPATH": "src", "PATH": "/usr/bin:/bin", "SPOTTER_HOME": str(home)},
+        )
+        for i in range(10)
+    ]
+    granted = sum(1 for w in workers if w.wait() == 0)
+    assert granted == 3, f"daily cap of 3 granted {granted} slots"
+
+
+def test_reserve_then_settle_counts_the_review_once(home: Path) -> None:
+    allowed, _ = reserve("a", 5, 100)
+    assert allowed
+    assert read("a").session == 1  # the slot is already counted
+    settle("a", tokens=250)
+    spend = read("a")
+    assert (spend.session, spend.tokens) == (1, 250)  # cost added, count unchanged
+
+
+def test_status_survives_a_corrupt_ledger(home: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """PR #58 review, P1: the diagnostic command must outlive the corruption
+    it exists to diagnose."""
+    StepJournal(journal_path({"session_id": "s"})).record(TraceEvent("x"))
+    (home / "review-spend.json").write_text("{torn")
+    assert main(["status"]) == 0
+    assert "spend ledger unreadable" in capsys.readouterr().out

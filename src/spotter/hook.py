@@ -14,7 +14,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from spotter.budget import exhausted
+from spotter.budget import reserve
 from spotter.config import SpotterConfig
 from spotter.core import SpotterRuntime
 from spotter.gates import Gate
@@ -100,6 +100,7 @@ def _maybe_spawn_shadow_review(
     payload: dict[str, Any],
     journal_file: Path,
     proposal_number: int,
+    config_path: Path | None = None,
 ) -> None:
     """Fire-and-forget shadow review every N *proposals* (Wink-style cadence).
 
@@ -118,12 +119,17 @@ def _maybe_spawn_shadow_review(
     session = str(payload.get("session_id") or "")
     if not session:
         return
-    capped = exhausted(session, config.reviewer.max_per_session, config.reviewer.max_per_day)
-    if capped:
+    # Reserve before spawning, not after reviewing: checking a ceiling and
+    # then spending against it in a later process is not a ceiling, because
+    # concurrent sessions all read the same remaining budget (PR #58 review).
+    allowed, refusal = reserve(
+        session, config.reviewer.max_per_session, config.reviewer.max_per_day
+    )
+    if not allowed:
         # Journal it: a reviewer that stopped because it ran out of budget must
         # not look like a reviewer with nothing to say (issues #52, #41).
         with suppress(SnapshotError, OSError):
-            StepJournal(journal_file).record(TraceEvent("reviewer_capped", {"reason": capped}))
+            StepJournal(journal_file).record(TraceEvent("reviewer_capped", {"reason": refusal}))
         return
     args = [
         sys.executable,
@@ -134,7 +140,13 @@ def _maybe_spawn_shadow_review(
         session,
         "--model",
         config.reviewer.model,
+        # The slot is already taken; the child settles the cost against it.
+        "--reserved",
     ]
+    if config_path is not None:
+        # Without this the child builds a default config, so the constraints
+        # the user configured never reach the reviewer (PR #58 review, P1).
+        args += ["--config", str(config_path)]
     logs = spotter_home() / "logs"
     logs.mkdir(parents=True, exist_ok=True)
     with (logs / f"review-{sanitize_session(session)}.log").open("ab") as log:
@@ -188,7 +200,9 @@ def run_hook(
     else:
         decision = runtime.observe(event)
     if event.kind == "tool_proposal":
-        _maybe_spawn_shadow_review(config, payload, journal_file, adapter.last_proposal_number)
+        _maybe_spawn_shadow_review(
+            config, payload, journal_file, adapter.last_proposal_number, config_path
+        )
     if decision.allowed:
         return None  # implicit allow; stay silent on the happy path
     return json.dumps(

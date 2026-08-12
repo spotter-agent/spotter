@@ -131,3 +131,77 @@ def test_status_warns_about_pre_redaction_credentials(
     journal.write_text(json.dumps(record) + "\n")
     assert main(["status"]) == 0
     assert "match credential patterns" in capsys.readouterr().out
+
+
+def test_snapshots_are_pruned_once_after_journals_go(
+    repo: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #58 review, P0: the previous version pruned snapshots before
+    deleting journals and again after — the opposite of its own comment."""
+    import os
+
+    from spotter import cli
+
+    sha = snapshot_worktree(repo)
+    journal = journal_path({"session_id": "old"})
+    StepJournal(journal).record(TraceEvent("tool_proposal", {"cwd": str(repo)}), snapshot=sha)
+    old = 40 * 86400
+    os.utime(journal, (journal.stat().st_atime - old, journal.stat().st_mtime - old))
+
+    calls: list[set[str]] = []
+    from spotter.snapshot import prune_snapshots as real_prune
+
+    def counted(repo_path: Path, referenced: set[str], **kwargs: object) -> object:
+        calls.append(set(referenced))
+        return real_prune(repo_path, referenced, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(cli, "prune_snapshots", counted)
+    assert (
+        main(["prune", "--repo", str(repo), "--journals", "--max-age-days", "30", "--apply"]) == 0
+    )
+
+    assert len(calls) == 1, "snapshots were pruned more than once"
+    assert calls[0] == set(), "the deleted journal's references were still counted"
+
+
+def test_journal_deletion_holds_the_journal_lock(repo: Path, home: Path) -> None:
+    """A hook appending under the session lock must not have the file deleted
+    from under it (PR #58 review, P0)."""
+    import os
+    from fcntl import LOCK_EX, LOCK_NB, flock
+
+    journal = journal_path({"session_id": "busy"})
+    StepJournal(journal).record(TraceEvent("x"))
+    old = 40 * 86400
+    os.utime(journal, (journal.stat().st_atime - old, journal.stat().st_mtime - old))
+
+    lock_path = journal.with_suffix(journal.suffix + ".lock")
+    with lock_path.open("a") as held:
+        flock(held, LOCK_EX)
+        # The deleter must block on this lock; prove it cannot take it now.
+        with lock_path.open("a") as probe, pytest.raises(OSError):
+            flock(probe, LOCK_EX | LOCK_NB)
+
+    # Once released, deletion proceeds and removes the lock file last.
+    assert (
+        main(["prune", "--repo", str(repo), "--journals", "--max-age-days", "30", "--apply"]) == 0
+    )
+    assert not journal.exists() and not lock_path.exists()
+
+
+def test_worktree_removal_failure_does_not_orphan_git_metadata(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """PR #58 review, P1: deleting the directory anyway leaves the parent
+    repository registering a worktree that is gone — the original defect."""
+    from spotter.cli import _remove_worktree
+    from spotter.experiment import forks_dir
+
+    orphan = forks_dir() / "not-a-worktree"
+    orphan.mkdir(parents=True)
+    (orphan / "keep.txt").write_text("still here")
+
+    _remove_worktree(orphan)
+
+    assert orphan.exists(), "directory was deleted despite git refusing"
+    assert "could not remove" in capsys.readouterr().err

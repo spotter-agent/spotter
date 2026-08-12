@@ -167,7 +167,13 @@ def test_cadence_forwards_user_config(monkeypatch: pytest.MonkeyPatch, tmp_path:
     )
     config_path = tmp_path / "spotter.toml"
     run_hook(_cadence_payload("PreToolUse", 0), config, config_path)
-    assert spawned and spawned[0][-2:] == ["--model", "custom-model"]
+    assert spawned
+    argv = spawned[0]
+    assert "--model" in argv and "custom-model" in argv
+    # Without --config the child builds a default config, so the constraints
+    # the user configured never reach the reviewer (PR #58 review, P1).
+    assert "--config" in argv and str(config_path) in argv
+    assert "--reserved" in argv  # the slot was taken before spawning
 
 
 def test_failed_agent_is_not_checked_or_counted_as_success(
