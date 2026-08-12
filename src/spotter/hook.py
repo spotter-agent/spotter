@@ -210,7 +210,27 @@ def run_hook(
     adapter = JournalAdapter(journal)
     runtime = SpotterRuntime(config, adapter, gate)
     event = event_from_hook(payload)
-    if (
+    # A fork needs a snapshot at or before its branch point, and snapshots only
+    # happened at apply_patch. Measured on this machine's journals, 286 of 331
+    # proposals were forkable (86%) — and the missing 14% is everything before
+    # the session's first patch: the exploration phase, where a weak hypothesis
+    # forms and scope quietly expands. That is precisely the phase the project
+    # claims intervention is most valuable in, so the instrument could not
+    # branch where the thesis says it matters most (issue #43).
+    #
+    # The tree does not change during exploration, so dedup (#7) makes this one
+    # ref per session rather than one per step.
+    # Keyed on "no proposal recorded yet", not "no snapshot yet": in a
+    # directory that is not a git repository the snapshot always fails, and
+    # keying on its absence would retry git on every single tool call instead
+    # of once per session. Unknown counts as already-done for the same reason.
+    first_of_session = (
+        config.snapshot_at_start
+        and event.kind == "tool_proposal"
+        and isinstance(cwd, str)
+        and journal.proposals_recorded() == 0
+    )
+    if first_of_session or (
         config.snapshot_on_patch
         and event.kind in ("tool_proposal", "tool_result")
         and event.payload.get("tool") == "apply_patch"
@@ -221,11 +241,12 @@ def run_hook(
         # The repository lock closes the ref-created-but-not-yet-journaled
         # window a concurrent prune --apply could otherwise exploit — scoped to
         # this repository, because a session elsewhere has no stake in it.
-        with repo_lock(Path(cwd)):
+        repo = Path(str(cwd))
+        with repo_lock(repo):
             try:
                 # Reuse the previous snapshot when the tree is unchanged, so a
                 # tool call that touched nothing does not mint a ref (#7).
-                adapter.next_snapshot = snapshot_worktree(Path(cwd), journal.last_snapshot())
+                adapter.next_snapshot = snapshot_worktree(repo, journal.last_snapshot())
             except SnapshotError:
                 adapter.next_snapshot = None
             decision = runtime.observe(event)

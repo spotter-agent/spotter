@@ -266,12 +266,22 @@ class StepJournal:
             finally:
                 flock(lock, LOCK_UN)
 
-    def last_snapshot(self) -> str | None:
-        """Most recent snapshot sha, from the sidecar when it is fresh.
+    def proposals_recorded(self) -> int | None:
+        """Tool proposals journaled so far, from the sidecar when it is fresh.
 
-        Best-effort: a missing or stale sidecar returns None, which costs a
-        redundant snapshot, never a wrong one.
+        A journal that does not exist has recorded nothing — that is knowledge,
+        not uncertainty, and it is how a session's very first call is
+        recognised. None is reserved for the genuinely unknown case: the file
+        exists but its sidecar cannot be trusted. Callers doing once-per-session
+        work must treat unknown as "already done", or an unreadable sidecar
+        turns a once-per-session cost into a per-call one.
         """
+        if not self.path.exists():
+            return 0
+        state = self._fresh_state()
+        return int(state["proposals"]) if state and "proposals" in state else None
+
+    def _fresh_state(self) -> dict[str, Any] | None:
         state_path = self.path.with_suffix(self.path.suffix + ".state")
         if not (state_path.exists() and self.path.exists()):
             return None
@@ -281,7 +291,16 @@ class StepJournal:
                 return None
         except (json.JSONDecodeError, OSError):
             return None
-        sha = state.get("last_snapshot")
+        return state if isinstance(state, dict) else None
+
+    def last_snapshot(self) -> str | None:
+        """Most recent snapshot sha, from the sidecar when it is fresh.
+
+        Best-effort: a missing or stale sidecar returns None, which costs a
+        redundant snapshot, never a wrong one.
+        """
+        state = self._fresh_state()
+        sha = state.get("last_snapshot") if state else None
         return str(sha) if sha else None
 
     @staticmethod

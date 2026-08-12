@@ -56,6 +56,7 @@ def test_hook_stops_spawning_at_the_cap_and_says_so(monkeypatch: pytest.MonkeyPa
         MainAgentConfig("codex"),
         ReviewerConfig(every_steps=1, max_per_session=2, max_per_day=100),
         GatesConfig(),
+        snapshot_at_start=False,
     )
 
     def payload(n: int) -> dict[str, object]:

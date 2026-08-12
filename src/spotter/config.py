@@ -48,6 +48,10 @@ class SpotterConfig:
     gates: GatesConfig = GatesConfig()
     observation_only: bool = True
     snapshot_on_patch: bool = True
+    # Snapshot once at the first tool call too, so the exploration phase before
+    # any edit is forkable. Costs one ref per session: the tree is unchanged
+    # during exploration, so dedup returns the same snapshot (issue #43).
+    snapshot_at_start: bool = True
 
     @classmethod
     def from_toml(cls, path: Path) -> "SpotterConfig":
@@ -77,6 +81,7 @@ class SpotterConfig:
             ),
             observation_only=observation_only,
             snapshot_on_patch=_bool(raw, "snapshot_on_patch", True),
+            snapshot_at_start=_bool(raw, "snapshot_at_start", True),
         )
 
 

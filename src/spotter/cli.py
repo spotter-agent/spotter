@@ -259,6 +259,26 @@ def _span_of(records: list[StepRecord]) -> str:
     return f" span={span / 60:.1f}m{suffix}"
 
 
+def _forkable_of(records: list[StepRecord]) -> str:
+    """How much of the session an experiment can actually branch from.
+
+    A fork needs both a preceding snapshot and the tool_use_id that locates the
+    branch point in the rollout. Reporting the ratio keeps the instrument's
+    reach visible instead of assumed (issue #43).
+    """
+    proposals = [r for r in records if r.event.kind == "tool_proposal"]
+    if not proposals:
+        return "forkable=0/0"
+    snapshot_steps = [r.step for r in records if r.snapshot]
+    earliest = min(snapshot_steps) if snapshot_steps else None
+    forkable = sum(
+        1
+        for r in proposals
+        if earliest is not None and r.step >= earliest and r.event.payload.get("tool_use_id")
+    )
+    return f"forkable={forkable}/{len(proposals)}"
+
+
 def _slow_of(slow: list[StepRecord]) -> str:
     """Hooks that ran long enough to risk the runtime's timeout.
 
@@ -300,7 +320,7 @@ def _analyze_main(session: str | None) -> int:
         print(
             f"{journal.stem}: steps={len(records)} proposals={len(proposals)} "
             f"snapshots={snapshots} flagged={len(flagged)} reviews={len(verdicts)}"
-            f"{_span_of(records)}{_slow_of(slow)}"
+            f"{_span_of(records)}{_slow_of(slow)} {_forkable_of(records)}"
         )
         for record in verdicts:
             payload = record.event.payload

@@ -137,7 +137,12 @@ def test_cadence_counts_proposals_not_journal_steps(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(
         "spotter.hook.subprocess.Popen", lambda cmd, **kw: spawned.append(list(cmd))
     )
-    config = SpotterConfig(MainAgentConfig("codex"), ReviewerConfig(every_steps=2), GatesConfig())
+    config = SpotterConfig(
+        MainAgentConfig("codex"),
+        ReviewerConfig(every_steps=2),
+        GatesConfig(),
+        snapshot_at_start=False,
+    )
     for n in range(4):
         run_hook(_cadence_payload("PreToolUse", n), config)  # proposals 1..4
         run_hook(_cadence_payload("PostToolUse", n), config)  # results consume steps too
@@ -151,7 +156,12 @@ def test_cadence_is_atomic_under_concurrent_proposals(monkeypatch: pytest.Monkey
     monkeypatch.setattr(
         "spotter.hook.subprocess.Popen", lambda cmd, **kw: spawned.append(list(cmd))
     )
-    config = SpotterConfig(MainAgentConfig("codex"), ReviewerConfig(every_steps=2), GatesConfig())
+    config = SpotterConfig(
+        MainAgentConfig("codex"),
+        ReviewerConfig(every_steps=2),
+        GatesConfig(),
+        snapshot_at_start=False,
+    )
     with ThreadPoolExecutor(max_workers=2) as pool:
         list(pool.map(lambda n: run_hook(_cadence_payload("PreToolUse", n), config), range(2)))
     assert len(spawned) == 1
@@ -164,7 +174,10 @@ def test_cadence_forwards_user_config(monkeypatch: pytest.MonkeyPatch, tmp_path:
         "spotter.hook.subprocess.Popen", lambda cmd, **kw: spawned.append(list(cmd))
     )
     config = SpotterConfig(
-        MainAgentConfig("codex"), ReviewerConfig("custom-model", every_steps=1), GatesConfig()
+        MainAgentConfig("codex"),
+        ReviewerConfig("custom-model", every_steps=1),
+        GatesConfig(),
+        snapshot_at_start=False,
     )
     config_path = tmp_path / "spotter.toml"
     run_hook(_cadence_payload("PreToolUse", 0), config, config_path)
@@ -314,6 +327,11 @@ def test_cadence_recursion_guard(monkeypatch: pytest.MonkeyPatch) -> None:
         "spotter.hook.subprocess.Popen", lambda cmd, **kw: spawned.append(list(cmd))
     )
     monkeypatch.setenv("SPOTTER_DISABLE", "1")
-    config = SpotterConfig(MainAgentConfig("codex"), ReviewerConfig(every_steps=1), GatesConfig())
+    config = SpotterConfig(
+        MainAgentConfig("codex"),
+        ReviewerConfig(every_steps=1),
+        GatesConfig(),
+        snapshot_at_start=False,
+    )
     run_hook(_cadence_payload("PreToolUse", 0), config)
     assert spawned == []
