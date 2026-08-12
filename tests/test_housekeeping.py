@@ -259,3 +259,81 @@ def test_a_blocked_writer_keeps_the_same_lock_inode(repo: Path, home: Path) -> N
     # writer arriving now contends with it rather than beside it.
     assert lock_path.exists()
     assert lock_path.stat().st_ino == inode_before == waiter_inode
+
+
+def test_a_journal_written_while_prune_waits_is_kept(repo: Path, home: Path) -> None:
+    """PR #58 review, P0: holding the session lock proves nobody is writing
+    now; it does not prove the staleness decision taken before the wait is
+    still true."""
+    import os
+    import sys as _sys
+
+    journal = journal_path({"session_id": "revived"})
+    StepJournal(journal).record(TraceEvent("x"))
+    old = 40 * 86400
+    os.utime(journal, (journal.stat().st_atime - old, journal.stat().st_mtime - old))
+
+    # A writer that takes the session lock, appends, and only then releases —
+    # exactly the window the deleter blocks in.
+    writer = subprocess.Popen(
+        [
+            _sys.executable,
+            "-c",
+            (
+                "import sys, time\n"
+                "from pathlib import Path\n"
+                "from fcntl import LOCK_EX, LOCK_UN, flock\n"
+                "from spotter.snapshot import StepJournal\n"
+                "from spotter.trace import TraceEvent\n"
+                "lock = open(sys.argv[1] + '.lock', 'a')\n"
+                "flock(lock, LOCK_EX)\n"
+                "print('locked', flush=True)\n"
+                "time.sleep(1.0)\n"
+                'Path(sys.argv[1]).write_text(\'{"step": 0, "kind": "live",'
+                ' "payload": {}, "snapshot": null}\\n\')\n'
+                "flock(lock, LOCK_UN)\n"
+            ),
+            str(journal),
+        ],
+        cwd=Path(__file__).parent.parent,
+        stdout=subprocess.PIPE,
+        text=True,
+        env={"PYTHONPATH": "src", "PATH": "/usr/bin:/bin", "SPOTTER_HOME": str(home)},
+    )
+    assert writer.stdout is not None
+    writer.stdout.readline()  # the writer now holds the lock
+
+    assert (
+        main(["prune", "--repo", str(repo), "--journals", "--max-age-days", "30", "--apply"]) == 0
+    )
+    writer.wait(timeout=20)
+
+    assert journal.exists(), "a journal written during the wait was deleted anyway"
+    assert [r.event.kind for r in StepJournal.load(journal)] == ["live"]
+
+
+def test_a_surviving_journal_keeps_its_snapshots(
+    repo: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the staleness re-check spares a journal, excluding it from the
+    reference set would prune snapshots it still points at."""
+    import os
+
+    sha = snapshot_worktree(repo)
+    journal = journal_path({"session_id": "revived"})
+    StepJournal(journal).record(TraceEvent("tool_proposal", {"cwd": str(repo)}), snapshot=sha)
+    old = 40 * 86400
+    os.utime(journal, (journal.stat().st_atime - old, journal.stat().st_mtime - old))
+
+    def refuse(target: Path, cutoff: float) -> bool:
+        os.utime(target, None)  # someone wrote to it while we waited
+        return False
+
+    monkeypatch.setattr("spotter.cli._delete_journal", refuse)
+    assert (
+        main(["prune", "--repo", str(repo), "--journals", "--max-age-days", "30", "--apply"]) == 0
+    )
+
+    assert journal.exists()
+    assert sha in snapshot_references(journal.parent, repo)
+    assert prune_snapshots(repo, {sha}) == []

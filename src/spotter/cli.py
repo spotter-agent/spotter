@@ -409,8 +409,18 @@ def _review_main(
     return 0
 
 
-def _delete_journal(journal: Path) -> None:
+def _delete_journal(journal: Path, cutoff: float) -> bool:
     """Remove a journal and its sidecars, holding its own lock first.
+
+    Staleness is re-checked *after* the lock is acquired. Holding the lock
+    proves no one is writing right now; it says nothing about whether the
+    journal was still stale by the time the wait ended. A writer that appended
+    while this call was blocked has made the file current, and deleting it
+    then would destroy a live session's record (PR #58 review, P0).
+
+    Returns whether the journal was actually removed, because the caller must
+    exclude exactly the deleted set from reference computation — excluding a
+    journal that survived would prune snapshots it still points at.
 
     The lock file itself is deliberately left behind. Removing it — even last —
     does not remove the writers already blocked on the old inode: one wakes on
@@ -427,9 +437,12 @@ def _delete_journal(journal: Path) -> None:
     except OSError:
         handle = None
     try:
+        if not journal.exists() or journal.stat().st_mtime >= cutoff:
+            return False  # became current while we waited
         journal.unlink(missing_ok=True)
         for suffix in (".state", ".review.lock"):
             journal.with_suffix(journal.suffix + suffix).unlink(missing_ok=True)
+        return True
     finally:
         if handle is not None:
             flock(handle, LOCK_UN)
@@ -635,15 +648,22 @@ def _prune_main(
         # hook append to a journal being deleted, or pin a ref this pass has
         # already decided is unreferenced (PR #58 review, P0).
         with global_lock():
+            cutoff = time.time() - (max_age_days or 0) * 86400
             doomed = (
                 stale_journals(sessions_dir, max_age_days)
                 if journals and max_age_days is not None
                 else []
             )
+            removed: list[Path] = []
             for journal in doomed:
-                print(f"journal {verb}: {journal.stem}")
                 if apply:
-                    _delete_journal(journal)
+                    if _delete_journal(journal, cutoff):
+                        removed.append(journal)
+                        print(f"journal {verb}: {journal.stem}")
+                    else:
+                        print(f"journal kept (written while pruning): {journal.stem}")
+                else:
+                    print(f"journal {verb}: {journal.stem}")
             # Reference computation happens after deletion, so a journal that
             # is going away cannot keep its snapshots alive — and, crucially,
             # snapshots are pruned exactly once, after that. The previous
@@ -652,8 +672,12 @@ def _prune_main(
             #
             # In dry-run the journals are still on disk, so they are excluded
             # logically instead: a preview that omits the snapshots an apply
-            # would orphan is a preview of a different operation.
-            references = snapshot_references(sessions_dir, repo, exclude=doomed)
+            # would orphan is a preview of a different operation. Under --apply
+            # the exclusion is the set actually removed, so a journal that
+            # survived the staleness re-check keeps its snapshots.
+            references = snapshot_references(
+                sessions_dir, repo, exclude=removed if apply else doomed
+            )
             pruned = prune_snapshots(repo, set(references), apply=apply, max_age_days=max_age_days)
     except SnapshotError as error:
         print(f"prune aborted: {error}", file=sys.stderr)

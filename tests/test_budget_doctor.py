@@ -343,3 +343,14 @@ def test_reclaimed_slot_cannot_be_settled_later(home: Path) -> None:
     assert token
     reserve("a", 5, 100, now=start + SLOT_TTL_SECONDS + 1)  # triggers reclaim
     assert settle("a", token, 10) is None
+
+
+def test_a_manual_charge_does_not_erase_open_reservations(home: Path) -> None:
+    """PR #58 review, P1: every ledger write must carry outstanding
+    reservations through, or one manual review erases the identity of every
+    automatic one still running and each is then charged twice."""
+    token, _ = reserve("A", 99, 100)
+    assert token
+    charge("B")  # a manual review lands while A is still running
+    assert settle("A", token, 10) is not None, "A's reservation was erased by B"
+    assert read("A").day == 2, "two reviews were counted as more"

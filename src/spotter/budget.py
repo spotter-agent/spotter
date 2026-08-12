@@ -165,13 +165,19 @@ def _write(
     tokens: int,
     day_reviews: int,
     now: float | None,
-    open_slots: dict[str, dict[str, object]] | None = None,
+    open_slots: dict[str, dict[str, object]],
 ) -> None:
     """Replace the ledger atomically.
 
     A torn write is what makes a ledger unreadable, and an unreadable ledger
     is now refused rather than treated as zero — so the write must not be the
     thing that creates that state.
+
+    ``open_slots`` is required rather than optional. As a default it was a
+    trap: charge() omitted it and every write therefore erased the identity of
+    reservations other processes were still holding, so their settle() failed
+    and the fallback charged a second time for one review (PR #58 review, P1).
+    A caller that must think about outstanding reservations cannot forget to.
     """
     sessions[sanitize_session(session)] = {"reviews": reviews, "tokens": tokens}
     payload: dict[str, object] = {
@@ -335,6 +341,7 @@ def charge(session: str, tokens: int = 0, now: float | None = None) -> Spend:
             spend.tokens + max(0, tokens),
             spend.day + 1,
             now,
+            _open_slots(data),  # other processes' reservations are not ours to drop
         )
         return Spend(spend.session + 1, spend.day + 1, spend.tokens + max(0, tokens))
 
