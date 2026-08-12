@@ -1,0 +1,17 @@
+name: Documentation
+description: Report unclear, missing, inconsistent, or outdated documentation.
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is unclear or outdated?
+      description: Point to the page/section when possible and describe the confusion or mismatch.
+    validations:
+      required: true
+  - type: textarea
+    id: desired
+    attributes:
+      label: Desired outcome
+      description: What should a reader understand or find more easily after this is fixed?
+    validations:
+      required: true
