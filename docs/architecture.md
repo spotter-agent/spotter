@@ -362,6 +362,29 @@ many hook processes the runtime spawns.
   prints the exact `session`/`step` pairs each expired snapshot takes down, and
   the flag is never the default.
 
+### Audit ledger (claim/evidence)
+
+The reviewer does not treat the agent's own account as fact. A ledger is
+rebuilt from the journal before every review:
+
+- **Evidence** comes only from observable outcomes of tool calls. A reasoning
+  summary can never become evidence — `EvidenceSource` has no member for it,
+  so mypy rejects the call site.
+- **Hypotheses** come from the reviewer's own flagged assumptions and enter as
+  `unverified`.
+- **Retraction is mechanical**: when the same command later produces a
+  different outcome, the earlier outcome is retracted and every hypothesis
+  resting solely on it goes stale, transitively. Stale premises are listed in
+  the next review prompt so a killed assumption cannot quietly stay in view.
+
+**Measured limit.** Only 33 of 340 real Codex tool results (10%) carry an
+observable outcome at all — Codex reports an exit code for `apply_patch` and
+nothing for shell commands. The ledger records outcomes where they exist and
+stays silent where they do not; inferring pass/fail from output text would
+retract evidence every time `git status` changed. This is an
+observability-ceiling fact (P1), not a parser gap, and it bounds how much
+stale-premise detection can do on Codex today.
+
 ### Gate ambiguity policy
 
 Deterministic gates judge a parsed token stream. Where the parse cannot support

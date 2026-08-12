@@ -177,8 +177,10 @@ model = "default"
 
 `"default"` delegates reviewer model choice to the codex account, so the `[reviewer]`
 table may be omitted. Pin a specific id only if your auth supports it: ChatGPT-account
-auth rejects some ids (observed: `gpt-5.3-spark`) with a slow retry loop rather than a
-fast error. Which reviewer model works best is an open experimental question (see
+auth rejects unknown or unavailable ids with a slow retry loop rather than a fast error —
+and the message ("not supported when using Codex with a ChatGPT account") does not
+distinguish a wrong slug from a restricted one. Check `codex` for the slugs your account
+actually has. Which reviewer model works best is an open experimental question (see
 docs/research.md RQ3), not a constant.
 
 ## Install the agent plugins

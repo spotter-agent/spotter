@@ -5,8 +5,12 @@ The type system is the enforcement mechanism: ``EvidenceSource`` has no
 mypy rejecting the call site. Summaries enter only as unverified hypotheses.
 """
 
+import re
 from dataclasses import dataclass, field
-from typing import Literal, get_args
+from typing import TYPE_CHECKING, Literal, get_args
+
+if TYPE_CHECKING:
+    from spotter.snapshot import StepRecord
 
 EvidenceSource = Literal["tool_result", "diff", "test_output", "repo_state"]
 HypothesisStatus = Literal["unverified", "supported", "stale"]
@@ -86,3 +90,93 @@ class AuditState:
         for hypothesis_id in stale:
             self.hypotheses[hypothesis_id].status = "stale"
         return stale
+
+
+def build_state(records: list["StepRecord"]) -> AuditState:
+    """Reconstruct the ledger from a journal (plan P2, wired).
+
+    Evidence comes only from observable outcomes — a tool result, never a
+    summary the agent wrote about itself. Hypotheses come from the reviewer's
+    own VERIFY/NUDGE claims, which is why they enter as ``unverified``.
+
+    Retraction is mechanical, not a judgment call: when the same command later
+    produces a different exit code, the earlier outcome is no longer true, so
+    it is retracted and anything resting solely on it goes stale.
+    """
+    state = AuditState()
+    outcomes: dict[str, str] = {}  # command -> evidence id of its last result
+    for record in records:
+        payload = record.event.payload
+        if record.event.kind == "tool_result":
+            command = _command_of(payload)
+            exit_code = _exit_code_of(payload)
+            if command is None or exit_code is None:
+                continue
+            evidence_id = f"e{record.step}"
+            state.add_evidence(
+                Evidence(evidence_id, "tool_result", f"{command} -> exit {exit_code}")
+            )
+            previous = outcomes.get(command)
+            if previous is not None and state.evidence[previous].description.rsplit(" ", 1)[
+                -1
+            ] != str(exit_code):
+                state.retract(previous)  # same command, different outcome
+            outcomes[command] = evidence_id
+        elif record.event.kind == "reviewer_decision":
+            claim = payload.get("hypothesis")
+            if isinstance(claim, str) and claim.strip():
+                state.add_hypothesis(
+                    Hypothesis(
+                        f"h{record.step}",
+                        claim.strip(),
+                        supported_by=set(state.evidence) - state.retracted,
+                    )
+                )
+    return state
+
+
+def _command_of(payload: dict[str, object]) -> str | None:
+    tool_input = payload.get("tool_input")
+    if isinstance(tool_input, dict):
+        command = tool_input.get("command")
+        if isinstance(command, str) and command.strip():
+            return " ".join(command.split())
+    return None
+
+
+_EXIT_CODE_TEXT = re.compile(r"(?im)^Exit code: (-?\d+)\s*$")
+
+
+def _exit_code_of(payload: dict[str, object]) -> int | None:
+    """Outcome of a tool call, where one is observable at all.
+
+    Two shapes exist in the wild: a structured ``{"exit_code": n}`` response,
+    and Codex's raw text with an ``Exit code: n`` line. Measured on real
+    journals, only 33 of 301 Codex tool results carry an outcome at all (all
+    of them apply_patch) — shell results carry none. So the ledger records
+    outcomes where they exist and stays silent where they do not, rather than
+    inventing pass/fail from output text that legitimately differs run to run.
+    That gap is an observability-ceiling fact (plan P1), not a parser bug.
+    """
+    response = payload.get("tool_response")
+    if isinstance(response, dict):
+        exit_code = response.get("exit_code")
+        if isinstance(exit_code, int):
+            return exit_code
+    if isinstance(response, str):
+        match = _EXIT_CODE_TEXT.search(response)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def stale_summary(state: AuditState) -> list[str]:
+    """Lines for the reviewer digest: what stopped being true, and what that
+    invalidated. An empty list means nothing was retracted."""
+    lines: list[str] = []
+    for evidence_id in sorted(state.retracted):
+        lines.append(f"RETRACTED {state.evidence[evidence_id].description}")
+    for hypothesis in state.hypotheses.values():
+        if hypothesis.status == "stale":
+            lines.append(f"STALE hypothesis: {hypothesis.claim}")
+    return lines
