@@ -1,11 +1,19 @@
 Maintained by [@bogyie / Bogyoeng Kim](https://github.com/Bogyie) and [@zerone / Youngjin Jung](https://github.com/YoungJinJung)
 
+<div align="center">
+
 # Spotter
+
+<picture>
+  <img alt="Multica" src="docs/assets/main-ts.png" width="40%" style="max-width: 250;"/>
+</picture>
 
 > **A runtime spotter for coding agents.**  
 > Your coding agent drives. Spotter watches the trajectory, challenges bad assumptions, and steps in before wasted work compounds.
 
 Spotter is an experimental **runtime supervision system for coding agents**, starting with Codex.
+
+</div>
 
 ---
 
