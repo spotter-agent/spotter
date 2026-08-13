@@ -372,6 +372,113 @@ def test_fork_rollout_matches_event_msg_item_ids(codex_home: Path) -> None:
     assert len(forked.read_text().splitlines()) == 4  # cut before the event_msg
 
 
+def test_code_mode_correlates_hook_ids_to_exact_pre_call_cut(repo: Path, codex_home: Path) -> None:
+    sha = snapshot_worktree(repo)
+    _journal(
+        OLD_ID,
+        [
+            (TraceEvent("sessionstart"), sha),
+            (
+                TraceEvent(
+                    "tool_proposal",
+                    {
+                        "tool_use_id": "exec-read",
+                        "proposal_number": 1,
+                        "cwd": str(repo),
+                        "reversibility_class": "A",
+                    },
+                ),
+                None,
+            ),
+            (
+                TraceEvent(
+                    "tool_proposal",
+                    {
+                        "tool_use_id": "exec-patch",
+                        "proposal_number": 2,
+                        "cwd": str(repo),
+                        "reversibility_class": "B",
+                    },
+                ),
+                None,
+            ),
+        ],
+    )
+    rollout = next((codex_home / "sessions").rglob("*.jsonl"))
+    metadata = json.loads(rollout.read_text().splitlines()[0])
+    calls = [
+        {
+            "type": "response_item",
+            "payload": {"type": "custom_tool_call", "call_id": call_id, "name": "exec"},
+        }
+        for call_id in ("call-read", "call-patch")
+    ]
+    rollout.write_text("\n".join(json.dumps(line) for line in [metadata, *calls]) + "\n")
+
+    report = branch_coverage(OLD_ID, codex_home)
+    assert [point.status for point in report.points] == [
+        BranchCoverageStatus.FORKABLE_EXACT,
+        BranchCoverageStatus.FORKABLE_EXACT,
+    ]
+    assert report.pre_mutation_forkable == 1
+
+    plan = fork(OLD_ID, 1, codex_home=codex_home)
+    assert len(Path(plan.rollout).read_text().splitlines()) == 1
+    assert load_fork_manifest(Path(plan.manifest or "")).prefix.tool_use_id == "call-read"
+
+
+def test_code_mode_rejects_incomplete_sequence_correlation(repo: Path, codex_home: Path) -> None:
+    sha = snapshot_worktree(repo)
+    _journal(
+        OLD_ID,
+        [
+            (
+                TraceEvent(
+                    "tool_proposal",
+                    {
+                        "tool_use_id": "exec-read",
+                        "proposal_number": 1,
+                        "cwd": str(repo),
+                        "reversibility_class": "A",
+                    },
+                ),
+                sha,
+            )
+        ],
+    )
+    rollout = next((codex_home / "sessions").rglob("*.jsonl"))
+    with rollout.open("a") as stream:
+        for call_id in ("call-observed", "call-unobserved"):
+            stream.write(
+                json.dumps(
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "custom_tool_call",
+                            "call_id": call_id,
+                            "name": "exec",
+                        },
+                    }
+                )
+                + "\n"
+            )
+        stream.write(
+            json.dumps(
+                {
+                    "type": "event_msg",
+                    "payload": {"type": "item_completed", "item": {"id": "exec-read"}},
+                }
+            )
+            + "\n"
+        )
+
+    assert branch_coverage(OLD_ID, codex_home).points[0].status == (
+        BranchCoverageStatus.NOT_FORKABLE_CONTEXT
+    )
+    with pytest.raises(ReplayError, match="no exact rollout call correlation"):
+        fork(OLD_ID, 0, codex_home=codex_home)
+
+
 def test_two_forks_share_prefix_and_equivalent_captured_environments(
     repo: Path, codex_home: Path
 ) -> None:

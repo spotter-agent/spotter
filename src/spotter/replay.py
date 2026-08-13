@@ -185,14 +185,17 @@ def branch_coverage(session_id: str, codex_home: Path | None = None) -> BranchCo
     records = StepJournal.load(journal_path({"session_id": session_id}))
     try:
         rollout = find_rollout(session_id, codex_home)
+        rollout_records = _read_rollout(rollout)
         rollout_ids = {
             identifier
-            for number, line in enumerate(rollout.read_text(encoding="utf-8").splitlines(), 1)
-            for identifier in _record_ids(_rollout_record(line, number))
+            for record in rollout_records
+            for identifier in _record_ids(record)
             if isinstance(identifier, str)
         }
+        code_mode_ids = _code_mode_call_ids(records, rollout_records)
     except (OSError, ReplayError):
         rollout_ids = set()
+        code_mode_ids = None
     mutation_steps = [
         record.step
         for record in records
@@ -221,7 +224,11 @@ def branch_coverage(session_id: str, codex_home: Path | None = None) -> BranchCo
             status = BranchCoverageStatus.OBSERVATION_GAP
         elif external_effect_seen:
             status = BranchCoverageStatus.UNSAFE_EXTERNAL_EFFECT
-        elif tool_use_id is None or tool_use_id not in rollout_ids:
+        elif tool_use_id is None or (
+            record.step not in code_mode_ids
+            if code_mode_ids is not None
+            else tool_use_id not in rollout_ids
+        ):
             status = BranchCoverageStatus.NOT_FORKABLE_CONTEXT
         elif snapshot is None or repo is None or not _snapshot_exists(repo, snapshot, object_cache):
             status = BranchCoverageStatus.NOT_FORKABLE_STATE
@@ -390,8 +397,8 @@ def fork(
     target = records[step]
     if target.event.kind != "tool_proposal":
         raise ReplayError(f"step {step} is {target.event.kind}; fork at a tool_proposal")
-    call_id = target.event.payload.get("tool_use_id")
-    if not isinstance(call_id, str) or not call_id:
+    tool_use_id = target.event.payload.get("tool_use_id")
+    if not isinstance(tool_use_id, str) or not tool_use_id:
         raise ReplayError(f"step {step} has no tool_use_id (journaled before it was recorded)")
 
     snapshot = _nearest_snapshot(records, step)
@@ -405,6 +412,19 @@ def fork(
         raise ReplayError("journal has no cwd for this step; pass repo explicitly")
 
     source_rollout = find_rollout(session_id, codex_home)
+    rollout_records = _read_rollout(source_rollout)
+    rollout_ids = {
+        identifier
+        for record in rollout_records
+        for identifier in _record_ids(record)
+        if isinstance(identifier, str)
+    }
+    code_mode_ids = _code_mode_call_ids(records, rollout_records)
+    call_id = code_mode_ids.get(step) if code_mode_ids is not None else tool_use_id
+    if call_id is None:
+        raise ReplayError(f"tool_use_id {tool_use_id} has no exact rollout call correlation")
+    if call_id not in rollout_ids:
+        raise ReplayError(f"tool_use_id {tool_use_id} has no exact rollout call correlation")
     prefix = _build_prefix_manifest(
         session_id,
         step,
@@ -694,17 +714,51 @@ def _rollout_record(line: str, number: int) -> dict[str, object]:
     return record
 
 
+def _read_rollout(path: Path) -> list[dict[str, object]]:
+    return [
+        _rollout_record(line, number)
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+    ]
+
+
+def _code_mode_call_ids(
+    records: list[StepRecord], rollout: list[dict[str, object]]
+) -> dict[int, str] | None:
+    """Map current Code Mode Hook execution ids to model call ids conservatively.
+
+    Codex 0.147 gives Hooks an ``exec-...`` execution id while the persisted
+    ``custom_tool_call`` uses a different ``call_...`` id. The two streams are
+    ordered, so a complete one-to-one sequence is sufficient to recover the
+    exact pre-call cut. Any missing/extra event rejects the mapping instead of
+    overstating branch coverage.
+    """
+
+    proposals = [record for record in records if record.event.kind == "tool_proposal"]
+    call_ids = []
+    for record in rollout:
+        payload = record.get("payload")
+        if (
+            isinstance(payload, dict)
+            and payload.get("type") == "custom_tool_call"
+            and isinstance(payload.get("call_id"), str)
+        ):
+            call_ids.append(payload["call_id"])
+    if not call_ids:
+        return None
+    if len(proposals) != len(call_ids) or any(
+        record.event.payload.get("proposal_number") != number
+        for number, record in enumerate(proposals, 1)
+    ):
+        return {}
+    return {record.step: call_id for record, call_id in zip(proposals, call_ids, strict=True)}
+
+
 def _record_ids(record: dict[str, object]) -> set[object]:
     """Ids under which a tool call appears in a rollout record.
 
-    The hook's tool_use_id surfaces as event_msg payload.item.id (harness id),
-    while response_item records carry the model-level payload.call_id — the
-    branch cut happens at whichever mentions the id first.
-
-    ponytail: cutting at the first *mention* can leave the proposal of the
-    branch call in history when only a completion event carries the id.
-    Good enough for the resume-compat experiment; tighten to turn boundaries
-    if resumed agents visibly double-apply the branch step.
+    Older Codex versions surfaced the Hook tool_use_id as event_msg
+    payload.item.id. Current Code Mode uses distinct execution/model ids; its
+    strict sequence correlation is handled by ``_code_mode_call_ids``.
     """
     payload = record.get("payload")
     if not isinstance(payload, dict):
