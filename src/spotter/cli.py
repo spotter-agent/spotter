@@ -26,13 +26,19 @@ from spotter.budget import (
 from spotter.codex import CodexAdapter
 from spotter.config import ConfigurationError, MainAgentConfig, ReviewerConfig, SpotterConfig
 from spotter.core import SpotterRuntime
-from spotter.daemon import DaemonStatus, ManualServiceManager, RuntimeHealth, ServiceManager
+from spotter.daemon import (
+    DaemonStatus,
+    ManagedServiceManager,
+    ManualServiceManager,
+    RuntimeHealth,
+    ServiceManager,
+)
 from spotter.doctor import FAIL, OK, WARN, worst
 from spotter.doctor import run as run_doctor
 from spotter.experiment import list_forks, results_path, run_experiment, summarize
 from spotter.gates import Gate
 from spotter.hook import journal_path, run_hook
-from spotter.integration import IntegrationError, IntegrationManager
+from spotter.integration import IntegrationError, IntegrationManager, IntegrationManifest
 from spotter.labels import LabelError, add_label, valid_session
 from spotter.metrics import Tally, merge, tally_session
 from spotter.paths import secure_dir, spotter_home
@@ -185,8 +191,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command in {"setup", "teardown"}:
         if args.target != "codex":
             parser.error(f"{args.command} requires the codex target")
-        if args.command == "teardown" and args.dry_run:
-            parser.error("--dry-run is only supported by setup")
+        if args.command == "teardown" and (args.dry_run or args.portable):
+            parser.error("--dry-run and --portable are only supported by setup")
         return _integration_main(
             args.command,
             config_path=args.config,
@@ -567,7 +573,19 @@ def _doctor_main(config_path: Path | None) -> int:
 
 
 def _daemon_main(action: str, manager: ServiceManager | None = None) -> int:
-    service = manager or ManualServiceManager()
+    if manager is not None:
+        service = manager
+    else:
+        try:
+            manifest = IntegrationManifest.load(spotter_home() / "integrations" / "codex.json")
+        except IntegrationError as error:
+            print(f"spotterd: unavailable ({error})", file=sys.stderr)
+            return 1
+        service = (
+            ManagedServiceManager()
+            if manifest is not None and manifest.runtime_mode == "managed"
+            else ManualServiceManager()
+        )
 
     async def run() -> DaemonStatus:
         operations = {
@@ -613,10 +631,7 @@ def _integration_main(
                 return 0
             manifest = integration.setup()
             print(f"Codex integration: {manifest.state} ({integration.manifest_path})")
-            print(
-                "launch with the selected external App Server: "
-                f"codex --remote {manifest.app_server_endpoint}"
-            )
+            print("App Server endpoint: pending runtime integration (#85/#87)")
             return 0
         removed = integration.teardown()
         print("Codex integration removed" if removed else "Codex integration not configured")

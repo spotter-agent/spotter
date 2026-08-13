@@ -947,8 +947,8 @@ PreToolUse:  possibly available
   standalone installer layout.
 - A provisional concurrent thread identity registry exists from #81 but is not wired into production;
   App Server event routing in #85 must validate it, while reconnect reconciliation remains #87.
-- Transactional Codex setup now owns only its recorded Hook/plugin/service mutations. It records the
-  explicit remote endpoint but neither owns nor stops a shared Codex App Server.
+- Transactional Codex setup now owns only its recorded Hook/plugin/service mutations. App Server
+  endpoint selection remains explicitly pending; setup neither owns nor stops a shared App Server.
 
 ---
 

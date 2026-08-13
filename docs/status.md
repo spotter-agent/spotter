@@ -71,8 +71,8 @@ The remaining implementation boundaries are split into native GitHub issues:
 The assumption that merely starting the external server would make plain `codex` reuse it was
 rejected by the [2026-08-13 validation](app-server-validation.md). The explicit `--remote` path
 subsequently passed the same-thread/same-turn PoC. Multi-TUI concurrency, reconnect, and the
-embedded-server degraded baseline remain unresolved productization boundaries. Setup records
-and prints the explicit remote endpoint; it does not claim ownership of or stop a shared App Server.
+embedded-server degraded baseline remain unresolved productization boundaries. Setup records the
+App Server strategy as pending; it does not invent an endpoint or claim ownership of a shared server.
 
 In parallel, the highest-value evidence foundations remain:
 

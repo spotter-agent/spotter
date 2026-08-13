@@ -424,9 +424,9 @@ Spotter ↔ App Server initialized
 Hook IPC reachable
 ```
 
-The current #83 implementation verifies Codex's `app-server --listen` and `--remote` capability and
-records the selected explicit endpoint, but does not create or stop a shared App Server. Live
-App Server initialize/event verification joins the ingestion and diagnostic work in #85/#84.
+The current #83 implementation verifies Codex's `app-server --listen` and `--remote` capability but
+records endpoint selection as pending because it does not create or own a shared App Server. Live
+endpoint selection and App Server initialize/event verification join #85/#87 and #84 diagnostics.
 
 ## 4.7 VERIFY
 
@@ -457,7 +457,8 @@ Example manifest:
   "setup_by": "0.6.0",
   "agent_path": "/opt/homebrew/bin/codex",
   "agent_version": "...",
-  "app_server_strategy": "codex-managed-external",
+  "app_server_strategy": "pending-external",
+  "app_server_endpoint": null,
   "runtime_mode": "managed",
   "service_owned": true,
   "owned_hook": {"event": "PreToolUse", "matcher": ".*", "hook": {"type": "command"}},
@@ -478,7 +479,9 @@ Example manifest:
 | START/CONNECT | either roll back or leave an explicit incomplete/degraded manifest |
 | VERIFY | do not report READY; preserve actionable diagnostics |
 
-A second `spotter setup codex` must reconcile safely from any interrupted setup state.
+A second `spotter setup codex` heals an interruption after inspectable changes were written. A
+process crash before the manifest commit can leave the owned Hook without an ownership record;
+re-running setup heals forward, while teardown cannot remove an unrecorded mutation automatically.
 
 ---
 
@@ -1327,7 +1330,7 @@ The target lifecycle is not complete until all of these work end-to-end:
 
 - [ ] clean package install does not modify Codex;
 - [x] `spotter setup codex` is idempotent;
-- [x] interrupted setup can be resumed/reconciled;
+- [x] interrupted setup can heal forward when setup is re-run (pre-manifest teardown cannot infer ownership);
 - [ ] ordinary `codex` requires no manual Spotter/App Server startup in managed mode;
 - [ ] `status` distinguishes daemon, observation, control, enforcement, storage health;
 - [ ] `doctor` performs a real synthetic round-trip;

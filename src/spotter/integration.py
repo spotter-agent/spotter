@@ -25,7 +25,6 @@ from spotter.daemon import (
     ManualServiceManager,
     RuntimeHealth,
     ServiceManager,
-    runtime_socket,
 )
 from spotter.doctor import OK, check_roundtrip
 from spotter.paths import secure_dir, spotter_home
@@ -144,7 +143,7 @@ class IntegrationManifest:
     agent_version: str
     codex_home: str
     app_server_strategy: str
-    app_server_endpoint: str
+    app_server_endpoint: str | None
     runtime_mode: str
     service_registration: str | None
     service_owned: bool
@@ -191,7 +190,7 @@ class IntegrationPlan:
     legacy_plugins: tuple[str, ...]
     runtime_mode: str
     service_registration: str | None
-    app_server_endpoint: str
+    app_server_endpoint: str | None
 
     def lines(self) -> list[str]:
         return [
@@ -200,7 +199,7 @@ class IntegrationPlan:
             f"Legacy Spotter hooks to migrate: {self.legacy_hooks}",
             f"Legacy Spotter plugins to remove: {len(self.legacy_plugins)}",
             f"Runtime: {self.runtime_mode}",
-            f"App Server: explicit remote ({self.app_server_endpoint})",
+            "App Server: pending external endpoint (#85/#87)",
         ]
 
 
@@ -219,7 +218,7 @@ class IntegrationManager:
         verifier: Callable[[Path | None], bool] | None = None,
     ) -> None:
         self.codex_home = codex_home or Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
-        self.codex = codex or CodexInstall.detect()
+        self.codex = codex
         self._service_explicit = service is not None
         self.service = service or (ManualServiceManager() if portable else ManagedServiceManager())
         self.portable = portable
@@ -232,6 +231,11 @@ class IntegrationManager:
         self.lock_path = integrations / "codex.lock"
         self.hooks_path = self.codex_home / "hooks.json"
         self.codex_config_path = self.codex_home / "config.toml"
+
+    def _codex_install(self) -> CodexInstall:
+        if self.codex is None:
+            self.codex = CodexInstall.detect()
+        return self.codex
 
     def _hook_command(self) -> str:
         if self.spotter_executable:
@@ -341,7 +345,8 @@ class IntegrationManager:
     def inspect(
         self,
     ) -> tuple[IntegrationPlan, dict[str, Any], bytes | None, list[dict[str, Any]]]:
-        if not self.codex.supports_remote or not self.codex.supports_app_server:
+        codex = self._codex_install()
+        if not codex.supports_remote or not codex.supports_app_server:
             raise IntegrationError("Codex lacks the required app-server/--remote capability")
         if self.config_path is not None:
             try:
@@ -351,7 +356,6 @@ class IntegrationManager:
         hooks, before = self._read_hooks()
         migrated, removed = self._migrate_hooks(hooks)
         after = (json.dumps(migrated, indent=2, sort_keys=True) + "\n").encode()
-        endpoint = f"unix://{runtime_socket().with_name('codex-app-server.sock')}"
         plan = IntegrationPlan(
             hooks_file=self.hooks_path,
             hooks_changed=before != after,
@@ -359,7 +363,7 @@ class IntegrationManager:
             legacy_plugins=self._legacy_plugins(),
             runtime_mode="portable" if self.portable else "managed",
             service_registration=self._service_registration(),
-            app_server_endpoint=endpoint,
+            app_server_endpoint=None,
         )
         return plan, migrated, before, removed
 
@@ -407,6 +411,7 @@ class IntegrationManager:
         try:
             existing = IntegrationManifest.load(self.manifest_path)
             plan, hooks, hooks_before, removed_hooks = self.inspect()
+            codex = self._codex_install()
             hooks_after = (json.dumps(hooks, indent=2, sort_keys=True) + "\n").encode()
             config_before = (
                 self.codex_config_path.read_bytes() if self.codex_config_path.exists() else None
@@ -431,7 +436,7 @@ class IntegrationManager:
                     _atomic_write(self.hooks_path, hooks_before)
                 for selector in reversed(removed_plugins):
                     with suppress(Exception):
-                        self.codex.add_plugin(selector, self.codex_home)
+                        codex.add_plugin(selector, self.codex_home)
                 if config_before is not None:
                     _atomic_write(self.codex_config_path, config_before)
                 if not service_preexisting and not service_was_running:
@@ -442,7 +447,7 @@ class IntegrationManager:
                 if hooks_before != hooks_after:
                     self._write_hooks(hooks)
                 for selector in plan.legacy_plugins:
-                    self.codex.remove_plugin(selector, self.codex_home)
+                    codex.remove_plugin(selector, self.codex_home)
                     removed_plugins.append(selector)
                 config_after = (
                     self.codex_config_path.read_bytes() if self.codex_config_path.exists() else None
@@ -465,10 +470,10 @@ class IntegrationManager:
                 state="ready",
                 agent="codex",
                 setup_by=_package_version(),
-                agent_path=self.codex.path,
-                agent_version=self.codex.version,
+                agent_path=codex.path,
+                agent_version=codex.version,
                 codex_home=str(self.codex_home),
-                app_server_strategy="explicit-remote",
+                app_server_strategy="pending-external",
                 app_server_endpoint=plan.app_server_endpoint,
                 runtime_mode=plan.runtime_mode,
                 service_registration=plan.service_registration,

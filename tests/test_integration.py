@@ -20,6 +20,7 @@ class FakeService:
         self.registration_path = registration_path
         self.health = RuntimeHealth.UNAVAILABLE
         self.starts = 0
+        self.stops = 0
         self.uninstalls = 0
 
     async def start(self) -> DaemonStatus:
@@ -28,6 +29,7 @@ class FakeService:
         return await self.status()
 
     async def stop(self) -> DaemonStatus:
+        self.stops += 1
         self.health = RuntimeHealth.UNAVAILABLE
         return await self.status()
 
@@ -140,6 +142,17 @@ def test_setup_and_teardown_remove_a_hooks_file_created_by_spotter(
     assert manager.hooks_path.exists()
     assert manager.teardown()
     assert not manager.hooks_path.exists()
+
+
+def test_setup_records_app_server_endpoint_as_pending(
+    homes: tuple[Path, Path],
+) -> None:
+    manager, _ = _manager(homes)
+
+    manifest = manager.setup()
+
+    assert manifest.app_server_strategy == "pending-external"
+    assert manifest.app_server_endpoint is None
 
 
 def test_failed_verification_rolls_back_hooks_service_and_manifest(
@@ -291,6 +304,27 @@ def test_teardown_failure_restores_the_owned_hook_and_manifest(
     assert manager.manifest_path.exists()
 
 
+def test_teardown_does_not_require_codex_to_still_be_installed(
+    homes: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager, service = _manager(homes)
+    manager.setup()
+
+    def missing() -> CodexInstall:
+        raise IntegrationError("Codex is not installed")
+
+    monkeypatch.setattr(CodexInstall, "detect", missing)
+    teardown = IntegrationManager(
+        codex_home=homes[1],
+        service=service,
+        spotter_executable="/bin/spotter",
+        verifier=lambda _: True,
+    )
+
+    assert teardown.teardown()
+    assert not teardown.manifest_path.exists()
+
+
 def test_newer_manifest_schema_is_refused(homes: tuple[Path, Path]) -> None:
     manager, _ = _manager(homes)
     manager.manifest_path.parent.mkdir(parents=True)
@@ -339,6 +373,17 @@ def test_managed_service_definition_is_private_and_idempotent(
     assert not service._install_definition()  # noqa: SLF001
     assert path.stat().st_mode & 0o777 == 0o600
     assert b"spotterd" in path.read_bytes()
+
+
+def test_systemd_definition_escapes_percent_specifiers(homes: tuple[Path, Path]) -> None:
+    spotter_home, _ = homes
+    service = ManagedServiceManager(
+        platform="linux",
+        registration_path=spotter_home / "service",
+        executable="/opt/100%/spotterd",
+    )
+
+    assert b"/opt/100%%/spotterd" in service._definition()  # noqa: SLF001
 
 
 @pytest.mark.parametrize(
@@ -418,3 +463,36 @@ def test_setup_dry_run_makes_no_external_changes(
     assert "dry-run: no changes made" in capsys.readouterr().out
     assert not (codex_home / "hooks.json").exists()
     assert not (spotter_home / "integrations").exists()
+
+
+def test_setup_cli_does_not_print_an_unverified_remote_command(
+    homes: tuple[Path, Path],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, _ = _manager(homes)
+    monkeypatch.setattr("spotter.cli.IntegrationManager", lambda **_: manager)
+
+    assert main(["setup", "codex"]) == 0
+
+    output = capsys.readouterr().out
+    assert "endpoint: pending" in output
+    assert "codex --remote" not in output
+
+
+def test_managed_manifest_routes_daemon_stop_through_the_service_manager(
+    homes: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager, _ = _manager(homes)
+    manager.setup()
+    managed = FakeService(homes[0] / "service")
+    managed.health = RuntimeHealth.HEALTHY
+    monkeypatch.setattr("spotter.cli.ManagedServiceManager", lambda: managed)
+
+    assert main(["daemon", "stop"]) == 0
+    assert managed.stops == 1
+
+
+def test_portable_is_rejected_for_teardown() -> None:
+    with pytest.raises(SystemExit, match="2"):
+        main(["teardown", "codex", "--portable"])

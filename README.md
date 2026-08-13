@@ -322,8 +322,8 @@ spotter setup codex
 spotter teardown codex
 ```
 
-The explicit external App Server still has to be selected with the launch command printed by setup
-until the remaining App Server ingestion/lifecycle work lands.
+App Server endpoint selection remains pending until the remaining ingestion/lifecycle work lands;
+setup does not print or claim an endpoint that it has not verified.
 
 Useful commands:
 

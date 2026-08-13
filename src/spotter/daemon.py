@@ -473,12 +473,15 @@ class ManagedServiceManager:
                     "StandardErrorPath": str(logs / "spotterd.log"),
                 }
             )
-        command = " ".join(json.dumps(part) for part in self._program())
+        # ponytail: this handles systemd specifier expansion for ordinary paths; use a
+        # dedicated systemd escaping helper if arbitrary control characters are supported.
+        command = " ".join(json.dumps(part.replace("%", "%%")) for part in self._program())
+        environment = json.dumps(f"SPOTTER_HOME={home}".replace("%", "%%"))
         return (
             "[Unit]\nDescription=Spotter supervision runtime\n\n"
             "[Service]\nType=simple\n"
             f"ExecStart={command}\n"
-            f"Environment={json.dumps(f'SPOTTER_HOME={home}')}\n"
+            f"Environment={environment}\n"
             "Restart=on-failure\n\n"
             "[Install]\nWantedBy=default.target\n"
         ).encode()
