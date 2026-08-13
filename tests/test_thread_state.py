@@ -336,6 +336,18 @@ def test_validation_and_unknown_coverage_never_infer_missing_outcomes() -> None:
     assert edited_after_validation.execution.validation == ValidationStatus.STALE
 
 
+def test_nested_hook_outcome_uses_shared_failure_classification() -> None:
+    state = ThreadStateStore().observe(
+        _event(
+            "tool_result",
+            {"tool_response": {"exit_code": 1}},
+            event_id="hook-failure",
+        )
+    )
+
+    assert state.execution.recent_failures[-1].provenance.event_id == "hook-failure"
+
+
 def test_hydration_skips_legacy_records_without_inventing_thread_identity() -> None:
     app_event = _event("thread_started", event_id="thread")
     records = [

@@ -99,8 +99,10 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
 
     rendered = render_runtime_costs(report)
     assert "turn coverage 1/1" in rendered
-    assert "hook: actions=1/2 correlated, outcomes=1/1 correlated" in rendered
-    assert "app_server: actions=1/2 correlated, outcomes=1/1 correlated" in rendered
+    assert "hook: actions=1 (from 2 observations), outcomes=1 (from 1 observation)" in rendered
+    assert (
+        "app_server: actions=1 (from 2 observations), outcomes=1 (from 1 observation)" in rendered
+    )
 
 
 def test_unavailable_runtime_metrics_render_unknown_not_zero() -> None:

@@ -15,6 +15,7 @@ from fcntl import LOCK_EX, LOCK_UN, flock
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from spotter.outcomes import outcome_failure
 from spotter.snapshot import StepRecord
 from spotter.trace import TraceEvent
 
@@ -616,10 +617,7 @@ def _trace_status(event: TraceEvent) -> CoverageStatus:
 
 
 def _hook_outcome_visible(payload: Mapping[str, Any]) -> bool:
-    response = payload.get("tool_response")
-    if isinstance(response, Mapping):
-        return isinstance(response.get("exit_code"), int)
-    return isinstance(response, str) and "Exit code:" in response
+    return outcome_failure(payload) is not None
 
 
 def state_coverage_status(event: TraceEvent, state: ThreadState) -> CoverageStatus:

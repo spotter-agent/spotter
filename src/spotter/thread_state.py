@@ -6,6 +6,7 @@ from enum import StrEnum
 from typing import Any
 
 from spotter.identity import RuntimeIdentity, ThreadId, TurnId
+from spotter.outcomes import outcome_failure
 from spotter.snapshot import StepRecord
 from spotter.trace import TraceEvent
 
@@ -675,31 +676,14 @@ def _outcome_text(event: TraceEvent) -> str:
 
 
 def _failed(payload: Mapping[str, Any]) -> bool:
-    status = payload.get("status")
-    exit_code = payload.get("exitCode", payload.get("exit_code"))
-    success = payload.get("success")
-    return (
-        status in {"failed", "error", "declined"}
-        or (isinstance(exit_code, int) and not isinstance(exit_code, bool) and exit_code != 0)
-        or success is False
-    )
+    return outcome_failure(payload) is True
 
 
 def _validation_status(payload: Mapping[str, Any]) -> ValidationStatus:
-    status = payload.get("status")
-    success = payload.get("success")
-    exit_code = payload.get("exitCode", payload.get("exit_code"))
-    if (
-        status in {"failed", "error"}
-        or success is False
-        or (isinstance(exit_code, int) and not isinstance(exit_code, bool) and exit_code != 0)
-    ):
+    failure = outcome_failure(payload)
+    if failure is True:
         return ValidationStatus.FAILED
-    if (
-        status in {"passed", "completed"}
-        or success is True
-        or (isinstance(exit_code, int) and not isinstance(exit_code, bool) and exit_code == 0)
-    ):
+    if failure is False:
         return ValidationStatus.PASSED
     return ValidationStatus.UNKNOWN
 

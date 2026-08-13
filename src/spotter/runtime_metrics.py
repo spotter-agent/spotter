@@ -5,6 +5,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from statistics import mean
 
+from spotter.outcomes import outcome_failure
 from spotter.snapshot import StepRecord
 
 _START_KINDS = {"tool_proposal", "command_started", "tool_started", "file_change_started"}
@@ -83,7 +84,7 @@ def measure_runtime_costs(
                 outcome_observations += 1
                 if key is not None:
                     outcomes.add(key)
-                    failure = _outcome_failure(event.payload)
+                    failure = outcome_failure(event.payload)
                     if failure is not None:
                         classified.add(key)
                     if failure is True:
@@ -125,6 +126,8 @@ def measure_runtime_costs(
         completed_turns += len(completed)
         token_turns += len(completed & token_covered)
         if latest_main_tokens is not None:
+            # Each journal represents one session; use only its latest cumulative
+            # observation so repeated token updates are not double-counted.
             main_tokens_known = True
             cumulative_main_tokens += latest_main_tokens
         if latest_reviewer_tokens is not None:
@@ -156,8 +159,9 @@ def render_runtime_costs(report: RuntimeCostReport) -> str:
     lines = ["Runtime cost / efficiency (coverage-aware):", "  Main semantic actions:"]
     for surface, cost in report.surfaces.items():
         lines.append(
-            f"    {surface}: actions={cost.actions}/{cost.action_observations} correlated, "
-            f"outcomes={cost.outcomes}/{cost.outcome_observations} correlated, "
+            f"    {surface}: actions={cost.actions} "
+            f"(from {_observations(cost.action_observations)}), outcomes={cost.outcomes} "
+            f"(from {_observations(cost.outcome_observations)}), "
             f"failed={cost.failed_outcomes}/{cost.classified_outcomes} classified"
         )
     tokens = (
@@ -230,24 +234,6 @@ def _total_tokens(payload: Mapping[str, object]) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
 
 
-def _outcome_failure(payload: Mapping[str, object]) -> bool | None:
-    response = payload.get("tool_response")
-    exit_code = payload.get("exitCode")
-    if isinstance(response, Mapping):
-        exit_code = response.get("exit_code", exit_code)
-        ok = response.get("ok")
-        if isinstance(ok, bool):
-            return not ok
-    if isinstance(exit_code, int) and not isinstance(exit_code, bool):
-        return exit_code != 0
-    status = payload.get("status")
-    if status in {"failed", "error", "interrupted", "cancelled"}:
-        return True
-    if status in {"completed", "succeeded", "success", "passed"}:
-        return False
-    return None
-
-
 def _number(value: object) -> float | None:
     if not isinstance(value, int | float) or isinstance(value, bool):
         return None
@@ -265,3 +251,7 @@ def _sample(values: tuple[float, ...], eligible: int) -> str:
     if not values:
         return f"unknown (0/{eligible})"
     return f"avg={mean(values):.2f}ms max={max(values):.2f}ms ({len(values)}/{eligible})"
+
+
+def _observations(count: int) -> str:
+    return f"{count} observation{'s' if count != 1 else ''}"
