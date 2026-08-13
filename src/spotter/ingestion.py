@@ -16,6 +16,8 @@ from spotter.identity import (
     TurnStatus,
 )
 from spotter.observability import (
+    APP_SERVER_ITEM_FIELDS,
+    APP_SERVER_METHOD_FIELDS,
     SOURCE_AUDIT_RELATIVE_PATH,
     CoverageStatus,
     SourceAuditStore,
@@ -58,7 +60,7 @@ class CodexTraceNormalizer:
             identity = self._identity(started_thread_id)
             return TraceEvent(
                 "thread_started",
-                _known(thread, "cwd", "sessionId", "status", "name"),
+                _known(thread, *APP_SERVER_METHOD_FIELDS["thread/started"].values()),
                 event_id,
                 _seconds(thread.get("createdAt")),
                 identity,
@@ -80,7 +82,7 @@ class CodexTraceNormalizer:
             identity, observed_start = self._finish_turn(
                 external_thread_id, external_turn_id, status
             )
-            payload = _known(completed_turn, "status", "durationMs", "error")
+            payload = _known(completed_turn, *APP_SERVER_METHOD_FIELDS["turn/completed"].values())
             payload["observed_start"] = observed_start
             return TraceEvent(
                 "turn_completed",
@@ -102,7 +104,7 @@ class CodexTraceNormalizer:
                 raise IngestionError("turn/started omitted turn")
             return TraceEvent(
                 "turn_started",
-                _known(turn_raw, "status"),
+                _known(turn_raw, *APP_SERVER_METHOD_FIELDS["turn/started"].values()),
                 event_id,
                 _seconds(turn_raw.get("startedAt")),
                 identity,
@@ -111,7 +113,7 @@ class CodexTraceNormalizer:
         if event.method == "thread/status/changed":
             return TraceEvent(
                 "thread_status",
-                _known(params, "status"),
+                _known(params, *APP_SERVER_METHOD_FIELDS["thread/status/changed"].values()),
                 event_id,
                 identity=identity,
                 provenance=provenance,
@@ -151,7 +153,7 @@ class CodexTraceNormalizer:
         if event.method == "turn/diff/updated":
             return TraceEvent(
                 "diff_updated",
-                _known(params, "diff"),
+                _known(params, *APP_SERVER_METHOD_FIELDS["turn/diff/updated"].values()),
                 event_id,
                 identity=identity,
                 provenance=provenance,
@@ -391,23 +393,14 @@ def _normalize_item(item: Mapping[str, Any], completed: bool) -> tuple[str, dict
     if item_type == "agentMessage":
         return "agent_message", _known(item, "text", "phase")
     if item_type == "plan":
-        return "plan", _known(item, "text")
+        return "plan", _known(item, *APP_SERVER_ITEM_FIELDS["plan"])
     if item_type == "reasoning":
         # App Server exposes both summary and raw reasoning content. Only the summary is Trace IR.
         summary = item.get("summary")
         return "reasoning_summary", {"summary": summary if isinstance(summary, list) else []}
     if item_type == "commandExecution":
         kind = "command_result" if completed else "command_started"
-        return kind, _known(
-            item,
-            "command",
-            "cwd",
-            "status",
-            "aggregatedOutput",
-            "exitCode",
-            "durationMs",
-            "source",
-        )
+        return kind, _known(item, *APP_SERVER_ITEM_FIELDS["commandExecution"])
     if item_type == "fileChange":
         changes = item.get("changes")
         normalized = (
@@ -426,24 +419,13 @@ def _normalize_item(item: Mapping[str, Any], completed: bool) -> tuple[str, dict
         }
     if item_type == "mcpToolCall":
         kind = "tool_result" if completed else "tool_started"
-        return kind, _known(
-            item, "server", "tool", "arguments", "status", "result", "error", "durationMs"
-        )
+        return kind, _known(item, *APP_SERVER_ITEM_FIELDS["mcpToolCall"])
     if item_type == "dynamicToolCall":
         kind = "tool_result" if completed else "tool_started"
-        return kind, _known(
-            item,
-            "namespace",
-            "tool",
-            "arguments",
-            "status",
-            "success",
-            "contentItems",
-            "durationMs",
-        )
+        return kind, _known(item, *APP_SERVER_ITEM_FIELDS["dynamicToolCall"])
     if item_type == "webSearch":
         return ("search" if completed else "search_started"), _known(
-            item, "query", "action", "results"
+            item, *APP_SERVER_ITEM_FIELDS["webSearch"]
         )
     return ("item_completed" if completed else "item_started"), {"item_type": item_type}
 

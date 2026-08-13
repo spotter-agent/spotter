@@ -10,6 +10,7 @@ from spotter.cli import main
 from spotter.identity import IdentityProvenance, RuntimeIdentity, ThreadId
 from spotter.ingestion import AppServerTraceIngestor, CodexTraceNormalizer
 from spotter.observability import (
+    APP_SERVER_ITEM_FIELDS,
     CoverageStatus,
     EvidenceFamily,
     EvidenceTiming,
@@ -82,6 +83,43 @@ def test_source_field_present_but_trace_drops_it_is_adapter_loss() -> None:
     dropped = replace(normalized, payload={"command": "pytest", "status": "completed"})
 
     assert source_audit_sample(raw, dropped).status == CoverageStatus.ADAPTER_DROPPED
+
+
+def test_normalizer_and_audit_share_the_item_field_whitelist() -> None:
+    for item_type, fields in APP_SERVER_ITEM_FIELDS.items():
+        raw = _raw(
+            "item/completed",
+            {
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "item": {
+                    "id": f"{item_type}-1",
+                    "type": item_type,
+                    **dict.fromkeys(fields, "synthetic"),
+                },
+            },
+        )
+        event = CodexTraceNormalizer().normalize(raw)
+
+        assert source_audit_sample(raw, event).status == CoverageStatus.OBSERVED_EXACT
+
+
+def test_unencrypted_field_name_is_not_classified_as_ciphertext() -> None:
+    raw = _raw(
+        "item/completed",
+        {
+            "threadId": "thread-1",
+            "turnId": "turn-1",
+            "item": {
+                "id": "future-1",
+                "type": "futureItem",
+                "unencryptedContent": "synthetic",
+            },
+        },
+    )
+    event = CodexTraceNormalizer().normalize(raw)
+
+    assert source_audit_sample(raw, event).status == CoverageStatus.UNKNOWN
 
 
 @pytest.mark.parametrize(
@@ -158,6 +196,7 @@ def test_shape_audit_is_bounded_private_and_rejects_corruption(tmp_path: Path) -
     assert store.path.stat().st_mode & 0o777 == 0o600
     with store.path.open("ab") as sink:
         sink.write(b'{"torn":')
+    assert len(store.load()) == 2
     store.record(raw, event, disposition="ingested")
     assert len(store.load()) == 3
     store.path.write_text("not-json\n")

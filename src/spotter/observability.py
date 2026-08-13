@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import time
 from collections import Counter
 from collections.abc import Iterable, Mapping
@@ -144,41 +145,36 @@ _ITEM_FAMILY: dict[str, tuple[EvidenceFamily, ...]] = {
     "webSearch": (EvidenceFamily.REPOSITORY_EXPLORATION,),
 }
 
-# Source fields intentionally preserved by the normalizer. Fields not listed here are either
-# identity/lifecycle metadata or deliberately excluded content (for example raw reasoning).
-_PRESERVED_FIELDS: dict[str, dict[str, str]] = {
-    "commandExecution": {
-        "params.item.command": "command",
-        "params.item.cwd": "cwd",
-        "params.item.status": "status",
-        "params.item.aggregatedOutput": "aggregatedOutput",
-        "params.item.exitCode": "exitCode",
-        "params.item.durationMs": "durationMs",
-        "params.item.source": "source",
-    },
-    "fileChange": {"params.item.changes": "changes", "params.item.status": "status"},
-    "mcpToolCall": {
-        "params.item.server": "server",
-        "params.item.tool": "tool",
-        "params.item.arguments": "arguments",
-        "params.item.status": "status",
-        "params.item.result": "result",
-        "params.item.error": "error",
-    },
-    "dynamicToolCall": {
-        "params.item.namespace": "namespace",
-        "params.item.tool": "tool",
-        "params.item.arguments": "arguments",
-        "params.item.status": "status",
-        "params.item.success": "success",
-        "params.item.contentItems": "contentItems",
-    },
-    "reasoning": {"params.item.summary": "summary"},
-    "plan": {"params.item.text": "text"},
-    "userMessage": {"params.item.content": "content"},
+# Shared with CodexTraceNormalizer so adding a normalized field cannot silently
+# leave source-vs-adapter audit sensitivity behind.
+APP_SERVER_ITEM_FIELDS: dict[str, tuple[str, ...]] = {
+    "commandExecution": (
+        "command",
+        "cwd",
+        "status",
+        "aggregatedOutput",
+        "exitCode",
+        "durationMs",
+        "source",
+    ),
+    "fileChange": ("changes", "status"),
+    "mcpToolCall": ("server", "tool", "arguments", "status", "result", "error", "durationMs"),
+    "dynamicToolCall": (
+        "namespace",
+        "tool",
+        "arguments",
+        "status",
+        "success",
+        "contentItems",
+        "durationMs",
+    ),
+    "reasoning": ("summary",),
+    "plan": ("text",),
+    "userMessage": ("content",),
+    "webSearch": ("query", "action", "results"),
 }
 
-_PRESERVED_METHOD_FIELDS: dict[str, dict[str, str]] = {
+APP_SERVER_METHOD_FIELDS: dict[str, dict[str, str]] = {
     "thread/started": {
         "params.thread.cwd": "cwd",
         "params.thread.sessionId": "sessionId",
@@ -202,6 +198,11 @@ _PRESERVED_METHOD_FIELDS: dict[str, dict[str, str]] = {
         "params.tokenUsage.total": "total",
         "params.tokenUsage.modelContextWindow": "modelContextWindow",
     },
+}
+
+_PRESERVED_FIELDS = {
+    item_type: {f"params.item.{field}": field for field in fields}
+    for item_type, fields in APP_SERVER_ITEM_FIELDS.items()
 }
 
 
@@ -296,7 +297,10 @@ class SourceAuditStore:
         with lock_path.open("a") as lock:
             flock(lock, LOCK_EX)
             try:
-                lines = self.path.read_text(encoding="utf-8").splitlines()
+                content = self.path.read_text(encoding="utf-8")
+                if content and not content.endswith("\n"):
+                    content = content.rsplit("\n", 1)[0]
+                lines = content.splitlines()
             finally:
                 flock(lock, LOCK_UN)
         samples = []
@@ -533,13 +537,13 @@ def _source_status(
     source_fields: tuple[str, ...],
     event: TraceEvent,
 ) -> CoverageStatus:
-    if any("encrypted" in field.lower() for field in source_fields):
+    if any(re.search(r"(?:^|[._-])encrypted(?:$|[._-]|[A-Z])", field) for field in source_fields):
         return CoverageStatus.OBSERVED_ENCRYPTED
     families = _families_for(raw_event.method, item_type)
     if not families or event.kind == "runtime_event_unknown":
         return CoverageStatus.UNKNOWN
     preservation = _PRESERVED_FIELDS.get(
-        item_type or "", _PRESERVED_METHOD_FIELDS.get(raw_event.method, {})
+        item_type or "", APP_SERVER_METHOD_FIELDS.get(raw_event.method, {})
     )
     lost = [
         target
