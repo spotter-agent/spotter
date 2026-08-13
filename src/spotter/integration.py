@@ -29,7 +29,7 @@ from spotter.daemon import (
 from spotter.doctor import OK, check_roundtrip
 from spotter.paths import secure_dir, spotter_home
 
-MANIFEST_SCHEMA = 2
+MANIFEST_SCHEMA = 3
 
 
 class IntegrationError(RuntimeError):
@@ -190,13 +190,28 @@ class IntegrationManifest:
         if not isinstance(raw, dict):
             raise IntegrationError("integration manifest must be a JSON object")
         schema = raw.get("schema")
-        if schema == 1:
-            owned = raw.pop("owned_hook", None)
-            raw["owned_hooks"] = [owned]
-            if isinstance(owned, dict) and isinstance(owned.get("hook"), dict):
-                raw["owned_hooks"].append(
-                    {"event": "SessionStart", "matcher": None, "hook": owned["hook"]}
+        if schema in {1, 2}:
+            if schema == 1:
+                raw["owned_hooks"] = [raw.pop("owned_hook", None)]
+            owned = raw.get("owned_hooks")
+            if isinstance(owned, list):
+                hook = next(
+                    (
+                        entry.get("hook")
+                        for entry in owned
+                        if isinstance(entry, dict) and isinstance(entry.get("hook"), dict)
+                    ),
+                    None,
                 )
+                if hook is not None:
+                    for event, matcher in (
+                        ("SessionStart", None),
+                        ("UserPromptSubmit", None),
+                        ("PostToolUse", ".*"),
+                    ):
+                        entry = {"event": event, "matcher": matcher, "hook": hook}
+                        if entry not in owned:
+                            owned.append(entry)
             raw["schema"] = MANIFEST_SCHEMA
         elif schema != MANIFEST_SCHEMA:
             raise IntegrationError(f"unsupported integration manifest schema {raw.get('schema')!r}")
@@ -280,6 +295,8 @@ class IntegrationManager:
         return [
             {"event": "PreToolUse", "matcher": ".*", "hook": hook},
             {"event": "SessionStart", "matcher": None, "hook": hook},
+            {"event": "UserPromptSubmit", "matcher": None, "hook": hook},
+            {"event": "PostToolUse", "matcher": ".*", "hook": hook},
         ]
 
     @staticmethod

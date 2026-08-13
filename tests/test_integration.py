@@ -115,7 +115,12 @@ def test_setup_is_idempotent_and_teardown_preserves_unowned_config(
     assert first.state == second.state == "ready"
     assert first.created_at == second.created_at
     assert len(second.legacy_hooks_removed) == 3
-    assert [event for event, _ in _spotter_hooks(hooks_path)] == ["PreToolUse", "SessionStart"]
+    assert {event for event, _ in _spotter_hooks(hooks_path)} == {
+        "PostToolUse",
+        "PreToolUse",
+        "SessionStart",
+        "UserPromptSubmit",
+    }
     assert service.starts == 2
     assert hooks_path.read_bytes() == first_hooks
 
@@ -129,7 +134,12 @@ def test_setup_is_idempotent_and_teardown_preserves_unowned_config(
     assert not manager.manifest_path.exists()
 
     manager.setup()
-    assert [event for event, _ in _spotter_hooks(hooks_path)] == ["PreToolUse", "SessionStart"]
+    assert {event for event, _ in _spotter_hooks(hooks_path)} == {
+        "SessionStart",
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PostToolUse",
+    }
 
 
 def test_setup_and_teardown_remove_a_hooks_file_created_by_spotter(
@@ -346,7 +356,7 @@ def test_newer_manifest_schema_is_refused(homes: tuple[Path, Path]) -> None:
         IntegrationManifest.load(manager.manifest_path)
 
 
-def test_schema_one_manifest_is_reconciled_with_session_start(
+def test_schema_one_manifest_is_reconciled_with_observation_hooks(
     homes: tuple[Path, Path],
 ) -> None:
     manager, _ = _manager(homes)
@@ -361,11 +371,38 @@ def test_schema_one_manifest_is_reconciled_with_session_start(
 
     upgraded = manager.setup()
 
-    assert upgraded.schema == 2
-    assert [event for event, _ in _spotter_hooks(manager.hooks_path)] == [
-        "PreToolUse",
+    assert upgraded.schema == 3
+    assert {event for event, _ in _spotter_hooks(manager.hooks_path)} == {
         "SessionStart",
-    ]
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PostToolUse",
+    }
+
+
+def test_schema_two_manifest_is_reconciled_with_observation_hooks(
+    homes: tuple[Path, Path],
+) -> None:
+    manager, _ = _manager(homes)
+    manager.setup()
+    manifest = json.loads(manager.manifest_path.read_text())
+    manifest["schema"] = 2
+    manifest["owned_hooks"] = manifest["owned_hooks"][:2]
+    manager.manifest_path.write_text(json.dumps(manifest))
+    hooks = json.loads(manager.hooks_path.read_text())
+    hooks["hooks"].pop("UserPromptSubmit")
+    hooks["hooks"].pop("PostToolUse")
+    manager.hooks_path.write_text(json.dumps(hooks))
+
+    upgraded = manager.setup()
+
+    assert upgraded.schema == 3
+    assert {event for event, _ in _spotter_hooks(manager.hooks_path)} == {
+        "SessionStart",
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PostToolUse",
+    }
 
 
 def test_invalid_spotter_config_fails_before_external_mutation(

@@ -388,9 +388,9 @@ Plan
   Runtime mode: managed/login-scoped
   Hooks:
     add SessionStart
+    add UserPromptSubmit
     add PreToolUse
-    remove legacy PostToolUse
-    remove legacy UserPromptSubmit
+    add PostToolUse
   Legacy plugin: migrate
   Existing data: preserve
   Agent config backup/fingerprint: required
@@ -463,7 +463,7 @@ Example manifest:
 
 ```json
 {
-  "schema": 2,
+  "schema": 3,
   "agent": "codex",
   "setup_by": "0.6.0",
   "agent_path": "/opt/homebrew/bin/codex",
@@ -474,7 +474,9 @@ Example manifest:
   "service_owned": true,
   "owned_hooks": [
     {"event": "PreToolUse", "matcher": ".*", "hook": {"type": "command"}},
-    {"event": "SessionStart", "matcher": null, "hook": {"type": "command"}}
+    {"event": "SessionStart", "matcher": null, "hook": {"type": "command"}},
+    {"event": "UserPromptSubmit", "matcher": null, "hook": {"type": "command"}},
+    {"event": "PostToolUse", "matcher": ".*", "hook": {"type": "command"}}
   ],
   "legacy_hooks_removed": [{"event": "PostToolUse"}],
   "config_fingerprint_before": "...",
@@ -1284,15 +1286,15 @@ preserve current data/config
       ↓
 install standalone runtime integration
       ↓
-remove observation hooks replaced by App Server
+retain observation hooks until App Server responsibility parity is measured
       ↓
-retain SessionStart baseline plus required PreToolUse gate until #86 proves lifecycle parity
+remove SessionStart, UserPromptSubmit, and PostToolUse under #86; retain PreToolUse
 ```
 
 Migration rules:
 
 - never register duplicate Spotter Hooks;
-- migrate schema 1 manifests to the owned-Hook list and reconcile the missing `SessionStart` Hook;
+- migrate schema 1/2 manifests to the complete owned-Hook list and reconcile all observation Hooks;
 - preserve existing `~/.spotter` data;
 - record which legacy mutations were removed;
 - keep rollback information until verification succeeds;

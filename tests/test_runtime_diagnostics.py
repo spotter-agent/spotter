@@ -34,6 +34,8 @@ def _ready_manifest(homes: tuple[Path, Path]) -> IntegrationManifest:
         "hooks": {
             "PreToolUse": [{"matcher": owned["matcher"], "hooks": [owned["hook"]]}],
             "SessionStart": [{"hooks": [owned["hook"]]}],
+            "UserPromptSubmit": [{"hooks": [owned["hook"]]}],
+            "PostToolUse": [{"matcher": ".*", "hooks": [owned["hook"]]}],
         }
     }
     hooks_path = codex / "hooks.json"
@@ -59,6 +61,8 @@ def _ready_manifest(homes: tuple[Path, Path]) -> IntegrationManifest:
         owned_hooks=[
             owned,
             {"event": "SessionStart", "matcher": None, "hook": owned["hook"]},
+            {"event": "UserPromptSubmit", "matcher": None, "hook": owned["hook"]},
+            {"event": "PostToolUse", "matcher": ".*", "hook": owned["hook"]},
         ],
     )
     manifest.save(spotter / "integrations/codex.json")

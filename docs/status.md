@@ -107,7 +107,7 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 | Standalone runtime | 🟡 | Long-lived process, IPC, lifecycle, isolated per-thread state, and App Server recovery ownership | Select and verify the shared endpoint during setup |
 | Runtime identity | ✅ | Logical threads/turns remain separate from per-connection attachment IDs and monotonically recovered epochs | Propagate the identity into future reviewer jobs |
 | App Server primary observation | 🟡 | Configured endpoints route through `spotterd` into normalized durable Trace IR and incremental ThreadState; a bounded value-free source audit and conformance corpus measure projection coverage | Collect labeled App Server failures to finish #37, then reduce Hooks in #86 |
-| Managed Codex lifecycle | 🟡 | Transactional setup/teardown, managed service, diagnostics, configured-endpoint recovery, and a temporary `SessionStart` baseline Hook until #86 parity | Add verified endpoint selection without claiming shared-process ownership |
+| Managed Codex lifecycle | 🟡 | Transactional setup/teardown, managed service, diagnostics, configured-endpoint recovery, and temporary observation Hooks until #86 parity | Add verified endpoint selection without claiming shared-process ownership |
 | Runtime reconnect/recovery | ✅ | Explicit connect/reconcile/backoff states, restart hydration, durable gaps, capability/server fingerprints, and stale-control fencing | Add retention/checkpoints in #89 |
 | Event-driven detection | ❌ | Reviewer is still cadence-based | #28 after Runtime/Observe |
 | Live `VERIFY` / `NUDGE` | ❌ | Reviewer decisions stop at the journal | #22 via `turn/steer` |
