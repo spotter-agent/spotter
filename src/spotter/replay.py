@@ -25,9 +25,10 @@ Honest limits, stated rather than papered over:
 import json
 import shlex
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from spotter.effects import external_effects
 from spotter.hook import journal_path
 from spotter.snapshot import StepJournal, StepRecord, restore_snapshot
 
@@ -43,6 +44,8 @@ class ForkPlan:
     worktree: str
     rollout: str
     command: str  # suggested invocation; the human runs it
+    # Kept backward-compatible for callers constructing plans directly.
+    external_effects: list[dict[str, object]] = field(default_factory=list)
 
 
 def find_rollout(session_id: str, codex_home: Path | None = None) -> Path:
@@ -142,6 +145,7 @@ def fork(
         worktree=str(worktree),
         rollout=str(forked_rollout),
         command=command,
+        external_effects=external_effects(records, through_step=step),
     )
 
 

@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 
 from spotter.adapters import AgentAdapter
 from spotter.config import SpotterConfig
+from spotter.effects import effect_event
 from spotter.gates import ALLOW, Gate, GateDecision
 from spotter.trace import TraceEvent
 
@@ -24,6 +25,9 @@ class SpotterRuntime:
     def observe(self, event: TraceEvent) -> GateDecision:
         decision = self.gate.check(event)
         self.adapter.record(event)
+        effect = effect_event(event)
+        if effect is not None:
+            self.adapter.record(effect)
         # Concurrent hook processes can interleave records between the proposal
         # and its gate event, so gate events carry the trigger identity instead
         # of relying on journal adjacency (PR #12 review, P1).

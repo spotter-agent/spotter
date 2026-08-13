@@ -1,6 +1,6 @@
 # Lifecycle and Operations
 
-> **Status:** target design tracked by [#66](https://github.com/Bogyie/spotter/issues/66).  
+> **Status:** target design. Active implementation is tracked by the [Roadmap](roadmap.md) and native GitHub Milestones.
 > The current prototype is still hook/plugin-centered. Commands such as Homebrew installation, managed `spotterd`, and full App Server integration described here are the **intended product lifecycle**, not current shipping behavior.
 
 ---
@@ -52,9 +52,12 @@ journals / snapshots / labels / experiments
 
 The most important lifecycle constraint is this:
 
-> **If full Codex mode requires an external App Server, that server must be available before ordinary `codex` chooses its App Server target.**
+> **If full Codex mode requires an external App Server, it must be available and selected
+> explicitly when the TUI starts (currently with `--remote`).**
 
-That can conflict with a completely lazy “wake Spotter on the first Hook” design. P0 must determine the canonical startup strategy before the service lifecycle is finalized.
+That conflicts with a completely lazy “wake Spotter on the first Hook” design. #78 proved a
+Spotter-managed external path; #79 and #83 must now make its service ownership and startup strategy
+explicit before the lifecycle is finalized.
 
 ---
 
@@ -396,7 +399,7 @@ Do **not** plan teardown as “restore the entire old file”. The user may legi
 
 ## 4.5 APPLY
 
-The exact changes depend on the P0-selected App Server strategy. Conceptually:
+The exact changes depend on the App Server strategy selected by the Runtime gate. Conceptually:
 
 1. register/prepare the Spotter runtime service if managed mode requires it;
 2. ensure the external App Server path or attach strategy;
@@ -475,7 +478,10 @@ This is the largest open lifecycle dependency in the target design.
 
 ## 5.1 Why startup order matters
 
-Plain `codex` may choose an embedded App Server when no reusable external daemon is present:
+Plain `codex` does not auto-discover a separately started App Server in the current
+documented/source interface. An external endpoint is selected explicitly with
+`codex --remote <endpoint>`; without that option the external Spotter control plane is
+not selected. See [App Server connection validation](app-server-validation.md).
 
 ```text
 codex starts
@@ -491,25 +497,25 @@ If Codex has already selected an embedded server, waking Spotter later at the fi
 
 ## 5.2 Candidate canonical strategies
 
-### Strategy A — Codex-managed daemon
+### Strategy A — explicit remote TUI
 
 ```text
-ensure Codex App Server daemon
+ensure external Codex App Server
       ↓
-plain `codex` reuses default daemon
+`codex --remote <endpoint>` selects it
       ↓
 Spotter attaches as client B
 ```
 
 Advantages:
 
-- follows Codex's own lifecycle tooling;
-- plain `codex` can remain unchanged if default-daemon reuse works reliably.
+- uses Codex's documented external-TUI interface;
+- makes the selected endpoint explicit and diagnosable.
 
 Risks:
 
-- daemon lifecycle is currently experimental;
-- some CLI/config overrides may disable daemon reuse;
+- App Server/WebSocket lifecycle remains experimental;
+- preserving the plain-command UX requires a separately validated launcher/alias/wrapper;
 - Spotter must not assume exclusive ownership.
 
 ### Strategy B — Spotter-managed App Server process
@@ -575,9 +581,10 @@ The original daemon idea was fully lazy: start on the first Hook, exit when idle
 
 The requirement is mechanism-independent:
 
-> **In managed mode, whatever runtime is required for full observation/control must be ready before ordinary `codex` chooses its App Server target.**
+> **In managed mode, whatever runtime is required for full observation/control must be
+> ready and explicitly selected before the Codex TUI starts.**
 
-If P0 confirms that an external App Server must already exist, a likely default is a login-scoped user service:
+If the Runtime gate confirms that an external App Server must already exist, a likely default is a login-scoped user service:
 
 ```text
 user login

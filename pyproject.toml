@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Spotter contributors" }]
-dependencies = []
+dependencies = ["websockets>=17,<18"]
 
 [project.optional-dependencies]
 dev = [
@@ -40,4 +40,3 @@ files = ["src", "tests"]
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
-
