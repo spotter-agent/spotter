@@ -1025,8 +1025,8 @@ PreToolUse:  possibly available
   explicit per-capability degradation used by later runtime components.
 - Path A remains unavailable for the tested Homebrew Cask because the managed daemon expects the
   standalone installer layout.
-- A provisional concurrent thread identity registry exists from #81 but is not wired into production;
-  App Server event routing in #85 must validate it, while reconnect reconciliation remains #87.
+- The concurrent thread identity registry from #81 is consumed by normalized App Server event
+  routing. The daemon connection loop reconciles identities and live state across reconnect epochs.
 - Transactional Codex setup now owns only its recorded Hook/plugin/service mutations. App Server
   endpoint selection remains explicitly pending; setup neither owns nor stops a shared App Server.
 
@@ -1064,7 +1064,7 @@ The migration should not throw away hardening already earned by real use.
 - ambiguous/unsupported cases fail open;
 - blind spots are measured separately from false positives.
 
-The hook-era corpus exposed directly usable outcomes in only 33 of 340 real tool results (10%). That is a measurement of the **current observation surface**, not a permanent architectural ceiling. P4 must re-measure it after App Server migration.
+The hook-era corpus exposed directly usable outcomes in only 33 of 340 real tool results (10%). That is a measurement of the **current observation surface**, not a permanent architectural ceiling. The Observe stage must re-measure it after App Server migration.
 
 ---
 

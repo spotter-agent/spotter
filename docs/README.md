@@ -87,7 +87,7 @@ spotterd
 PreToolUse Hook only for deterministic blocking
 ```
 
-The initial validation found that plain `codex` does not auto-discover a separately started App Server. [#78](https://github.com/spotter-agent/spotter/issues/78) subsequently proved the explicit remote path: the user's Codex TUI and Spotter can share a Spotter-managed external App Server, and `turn/steer` reaches the real active turn. A provisional identity registry and production App Server client now exist; normalized event consumption, identity reconciliation, reconnect, and remaining daemon/runtime ownership work are tracked separately. See [App Server connection validation](app-server-validation.md) and [Status](status.md).
+The initial validation found that plain `codex` does not auto-discover a separately started App Server. [#78](https://github.com/spotter-agent/spotter/issues/78) subsequently proved the explicit remote path: the user's Codex TUI and Spotter can share a Spotter-managed external App Server, and `turn/steer` reaches the real active turn. The production client, normalized event consumption, identity reconciliation, reconnect loop, and daemon-owned live state now exist; setup endpoint selection remains. See [App Server connection validation](app-server-validation.md) and [Status](status.md).
 
 ## Roadmap vocabulary
 

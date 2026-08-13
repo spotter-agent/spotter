@@ -936,8 +936,9 @@ The implemented command reports manifest/Hook ownership, daemon RPC, observation
 enforcement consequences, storage, reviewer errors, and spend-ledger health. Exit `0` is healthy,
 `1` is degraded/warn, and `2` is broken. Expected unavailable surfaces are informational and do not
 affect the verdict; once a configured surface becomes unavailable it warns or fails according to
-its consequence. Until #85 supplies live identity state, active/dormant thread counts remain
-explicitly unknown rather than inferred from Hook sessions.
+its consequence. App Server ingestion now supplies daemon-owned live identity state, but the status
+command does not yet project active/dormant counts; it reports them as unknown rather than inferring
+them from Hook sessions.
 
 Target output shape (not current CLI output):
 

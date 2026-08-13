@@ -55,7 +55,7 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 needs experiment · ❌ m
 | live `VERIFY / NUDGE` delivery | ❌ | target: `turn/steer` |
 | `INTERRUPT / RESTART` | ❌ | target only |
 | App Server observation/control viability | ✅ PoC | #78 proved a Spotter-managed external App Server can be shared by the real TUI and Spotter and can steer the active turn |
-| production App Server observation path | 🟡 | async client/control surface exists; normalized event routing, identity reconciliation, and reconnect remain |
+| production App Server observation path | 🟡 | configured endpoints have normalized event routing, identity reconciliation, reconnect, durable Trace IR, and incremental ThreadState; setup endpoint selection and representative labeled-failure evidence remain |
 | speculative supervision | ❌ | no measured lookahead/prediction/intervention pipeline yet |
 
 The first [dev-v2 multi-task run](experiments/dev-v2-first-run.md) completed all six arms and produced

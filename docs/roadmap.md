@@ -63,9 +63,10 @@ PreToolUse Hook only where synchronous deterministic enforcement is required
 [#78](https://github.com/spotter-agent/spotter/issues/78) demonstrated that a TUI and Spotter can
 attach to one Spotter-managed external App Server, observe the same thread/turn, and steer the real
 user-visible turn. The Codex-managed daemon path was unavailable to the tested Homebrew Cask install.
-A provisional concurrent identity registry is now explicit but unconsumed. The standalone daemon
-and local control foundation exist; managed registration, event routing, and reconnect remain
-Runtime work rather than assumed properties.
+The concurrent identity registry is consumed by normalized App Server ingestion, and the standalone
+daemon owns incremental per-thread state plus reconnect/reconciliation. Managed registration and the
+local control foundation also exist; endpoint selection during setup remains Runtime work rather
+than an assumed property.
 
 ## Implementation after the gate
 
@@ -75,7 +76,7 @@ The Runtime milestone is now decomposed into concrete boundaries rather than one
 | --- | --- |
 | [#79](https://github.com/spotter-agent/spotter/issues/79) | `spotterd`, versioned local control, manual lifecycle, and platform-neutral service boundary (implemented) |
 | [#80](https://github.com/spotter-agent/spotter/issues/80) | production App Server client and capability negotiation |
-| [#81](https://github.com/spotter-agent/spotter/issues/81) | Thread / Turn / Runtime Attachment identity lifecycle (provisional foundation; integration in #85) |
+| [#81](https://github.com/spotter-agent/spotter/issues/81) | Thread / Turn / Runtime Attachment identity lifecycle (implemented and consumed by normalized ingestion) |
 | [#82](https://github.com/spotter-agent/spotter/issues/82) | bounded Hook ↔ daemon IPC for deterministic `PreToolUse` enforcement (implemented) |
 | [#31](https://github.com/spotter-agent/spotter/issues/31) | independent live supervision state owned by `spotterd` |
 | [#83](https://github.com/spotter-agent/spotter/issues/83) | transactional `setup|teardown codex`, Integration Manifest, legacy migration (implemented) |
@@ -118,8 +119,8 @@ The journal remains durable history and recovery input; it is not the normal hot
 
 ## Work
 
-- normalize App Server events into identity-rich Trace IR and durable history ([#85](https://github.com/spotter-agent/spotter/issues/85));
-- maintain live state from that stream ([#31](https://github.com/spotter-agent/spotter/issues/31));
+- normalize App Server events into identity-rich Trace IR and durable history ([#85](https://github.com/spotter-agent/spotter/issues/85), implemented);
+- maintain live state from that stream ([#31](https://github.com/spotter-agent/spotter/issues/31), implemented);
 - record runtime cost/timing/provenance ([#33](https://github.com/spotter-agent/spotter/issues/33)); durable records now project Main actions/token coverage, reviewer cost, gate latency, source/receipt timing coverage, and storage without treating unavailable values as zero, while resource sampling and delivery/outcome joins remain;
 - measure the actual observability ceiling after migration ([#37](https://github.com/spotter-agent/spotter/issues/37)); the [measurement instrument and current zero-sample baseline](observability-baseline.md) are documented, but labeled App Server failures are still required;
 - remove `SessionStart`, `UserPromptSubmit`, and `PostToolUse` only after parity is demonstrated, leaving the minimal enforcement bridge ([#86](https://github.com/spotter-agent/spotter/issues/86)).

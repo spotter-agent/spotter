@@ -75,7 +75,7 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 | Fork / continuation replay | ✅ | Same-prefix continuation machinery |
 | Shadow reviewer | ✅ | Produces `CONTINUE / VERIFY / NUDGE`; no live delivery |
 | Claim/evidence audit ledger | 🟡 | Works where observable outcomes exist |
-| Evaluation labels / metrics | ✅ | Coverage-aware evaluation and precision/FP metrics |
+| Evaluation labels / metrics | 🟡 | Coverage-aware labels and durable action/token/timing, reviewer, gate-latency, and storage metrics; live resource, delivery, and outcome joins remain |
 | Counterfactual experiment harness | ✅ | Control/guidance same-prefix pairs |
 | Standalone `spotterd` runtime | 🟡 | Process, gate IPC, per-thread immutable state, and App Server recovery ownership implemented; setup endpoint selection remains |
 | Packaging / release | 🟡 | Tags publish verified sdist/wheel/checksum metadata; the dedicated Homebrew tap installs immutable releases and opens repeatable Formula-update PRs; stable package paths, mutable-state boundaries, Hook generation fencing, and old-daemon build detection exist; cross-environment smoke remains |
