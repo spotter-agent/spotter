@@ -8,19 +8,21 @@ const usage = `usage:
   node scripts/app_server_poc.mjs observe --endpoint URL [--cwd PATH] [--steer TEXT]
        [--expect TEXT] [--timeout SECONDS] [--out FILE]
   node scripts/app_server_poc.mjs --self-test`;
+const optionKeys = new Set(["endpoint", "cwd", "steer", "expect", "timeout", "out"]);
 
 function parseArgs(argv) {
   if (argv[0] === "--self-test") return { mode: "self-test" };
   const options = { mode: argv[0], timeout: 120 };
   for (let i = 1; i < argv.length; i += 2) {
     const key = argv[i]?.replace(/^--/, "");
-    if (!key || argv[i + 1] === undefined) throw new Error(usage);
+    if (!optionKeys.has(key) || argv[i + 1] === undefined) throw new Error(usage);
     options[key] = key === "timeout" ? Number(argv[i + 1]) : argv[i + 1];
   }
   if (!["probe", "observe"].includes(options.mode) || !options.endpoint) {
     throw new Error(usage);
   }
   if (!Number.isFinite(options.timeout) || options.timeout <= 0) throw new Error(usage);
+  if (options.expect && !options.steer) throw new Error("--expect requires --steer");
   return options;
 }
 
@@ -50,6 +52,8 @@ if (options.mode === "self-test") {
   assert.equal(event.threadId, "t");
   assert.equal(event.cwd, "/tmp");
   assert.equal(activeTurn({ turns: [{ id: "u", status: "inProgress" }] }).id, "u");
+  assert.throws(() => parseArgs(["observe", "--endpoint", "ws://test", "--expct", "ok"]));
+  assert.throws(() => parseArgs(["observe", "--endpoint", "ws://test", "--expect", "ok"]));
   console.log("ok");
   process.exit(0);
 }
@@ -189,6 +193,7 @@ socket.onmessage = (event) => {
       joined.add(context.threadId);
       const turn = activeTurn(message.result?.thread);
       if (turn) {
+        // ponytail: The resume snapshot can race a newer turn; retry it in the concurrent-TUI work.
         targetTurnId = turn.id;
         steer(context.threadId, turn.id);
       }
@@ -198,7 +203,12 @@ socket.onmessage = (event) => {
     if (context.method === "turn/steer") {
       report.steer.response = message.error ?? message.result;
       if (message.error) finish(1);
-      else if (targetCompleted) finish(steerSucceeded() ? 0 : 1);
+      else if (targetCompleted) {
+        if (!steerSucceeded() && options.expect) {
+          report.error = `agent response did not contain: ${options.expect}`;
+        }
+        finish(steerSucceeded() ? 0 : 1);
+      }
     }
     return;
   }
