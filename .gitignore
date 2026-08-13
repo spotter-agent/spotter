@@ -8,4 +8,4 @@ __pycache__/
 .venv/
 build/
 dist/
-
+src/spotter/_version.py

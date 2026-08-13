@@ -1,0 +1,38 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --upgrade build
+      - name: Build from the immutable tag
+        run: python -m build
+      - name: Verify tag-derived package identity
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          python -m venv verify
+          verify/bin/pip install dist/*.whl
+          test "$(verify/bin/spotter --version)" = "spotter ${RELEASE_VERSION#v}"
+          test "$(verify/bin/spotterd --version)" = "spotterd ${RELEASE_VERSION#v}"
+          verify/bin/spotter-hook --help >/dev/null
+      - name: Create portable checksums
+        run: cd dist && sha256sum * > SHA256SUMS
+      - name: Publish immutable release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" dist/* --verify-tag --generate-notes

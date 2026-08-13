@@ -22,6 +22,7 @@ from spotter.budget import (
 from spotter.budget import (
     read as read_spend,
 )
+from spotter.build import version_string
 from spotter.codex import CodexAdapter
 from spotter.config import ConfigurationError, MainAgentConfig, ReviewerConfig, SpotterConfig
 from spotter.core import SpotterRuntime
@@ -50,6 +51,7 @@ from spotter.trace import TraceEvent
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Observe a coding-agent trajectory")
+    parser.add_argument("--version", action="version", version=version_string("spotter"))
     parser.add_argument(
         "command",
         nargs="?",
