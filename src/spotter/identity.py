@@ -165,7 +165,11 @@ class RuntimeIdentityRegistry:
             key = (thread_id, agent_attachment_id)
             attachment_id = self._attachments_by_agent_id.get(key)
             if attachment_id is not None:
-                return self._attachments[attachment_id]
+                attachment = self._attachments[attachment_id]
+                if attachment.status == AttachmentStatus.CLOSED:
+                    attachment = replace(attachment, status=AttachmentStatus.ACTIVE)
+                    self._attachments[attachment_id] = attachment
+                return attachment
             attachment_id = AttachmentId(
                 _stable_id("attachment", thread_id.value, agent_attachment_id)
             )

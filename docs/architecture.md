@@ -614,20 +614,22 @@ State scope:
 | durable journal lineage | Thread |
 | fork branch point | Thread + Turn/Step |
 
-## Implemented identity foundation
+## Provisional identity foundation
 
-`RuntimeIdentityRegistry` implements this transport-independent boundary:
+`RuntimeIdentityRegistry` sketches this transport-independent boundary:
 
-- agent-scoped external thread and turn IDs are retained as provenance and mapped to stable opaque
-  Spotter IDs, so restart/reconciliation finds the same durable lineage;
-- each attachment period has its own identity, and concurrent attachments do not merge;
+- agent-scoped external thread and turn IDs are retained as provenance and mapped deterministically
+  to Spotter IDs;
+- explicit attachment records track active/closed state, and concurrent external attachment IDs do
+  not merge;
 - duplicate lifecycle events are idempotent, while conflicting terminal states fail explicitly;
 - a terminal event observed before its start creates a terminal turn marked `observed_start=False`;
 - Hook-era `session_id` becomes a `RuntimeIdentity` with unknown thread/turn/attachment fields rather
   than being promoted into an identity it cannot prove.
 
-The registry owns identity and lifecycle only. Semantic `ThreadState` remains #31, and App Server
-event normalization/routing into this registry remains #85.
+The registry owns identity and lifecycle only and has no production consumer yet. Semantic
+`ThreadState` remains #31; App Server event normalization/routing in #85 must validate and may
+reshape this interface.
 
 ---
 
@@ -918,8 +920,9 @@ PreToolUse:  possibly available
   explicit per-capability degradation used by later runtime components.
 - Path A remains unavailable for the tested Homebrew Cask because the managed daemon expects the
   standalone installer layout.
-- The concurrent thread identity foundation is implemented in #81; App Server event routing uses it
-  in #85, daemon/service ownership remains #79/#83, and reconnect reconciliation remains #87.
+- A provisional concurrent thread identity registry exists from #81 but is not wired into production;
+  App Server event routing in #85 must validate it, daemon/service ownership remains #79/#83, and
+  reconnect reconciliation remains #87.
 
 ---
 

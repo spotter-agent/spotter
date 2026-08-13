@@ -38,8 +38,9 @@ Runtime → Observe → Detect → Intervene → Recover → Harden
 ```
 
 The shared-server gate in [#78](https://github.com/spotter-agent/spotter/issues/78) passed for the
-Spotter-managed external App Server path. Spotter now has a production WebSocket client and an
-explicit Thread/Turn/Runtime Attachment identity registry; the standalone daemon remains next.
+Spotter-managed external App Server path. Spotter now has a production WebSocket client and a
+provisional Thread/Turn/Runtime Attachment registry with no production event consumer yet; the
+standalone daemon remains next.
 
 ---
 
@@ -94,7 +95,7 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 | Evaluation labels / metrics | ✅ | Coverage-aware labeling and precision/FP metrics | Broader cost/miss/harm metrics (#33, #38, #34) |
 | Counterfactual harness | ✅ | Control/guidance same-prefix pairs can be prepared/run | Add mechanically scored tasks (#21) |
 | Standalone runtime | ❌ | No long-lived owner, service boundary, or runtime RPC | Build `spotterd` in #79 |
-| Runtime identity | ✅ | Agent-scoped stable Thread/Turn IDs, attachment periods, lifecycle routing, explicit legacy unknowns | Feed normalized App Server events through it in #85 |
+| Runtime identity | 🟡 | Provisional lifecycle registry and explicit legacy unknowns; no production consumer | Validate and refine it while routing normalized App Server events in #85 |
 | App Server primary observation | 🟡 | Async client, raw events, thread queries, controls, capability degradation | Normalize, identity-route, and journal events in #85 |
 | Managed Codex lifecycle | ❌ | Current path is source/plugin installation | transactional setup/teardown in #83; diagnostics in #84 |
 | Runtime reconnect/recovery | ❌ | No long-lived App Server connection to recover | #87 after runtime/state boundaries exist |

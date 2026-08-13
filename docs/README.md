@@ -85,8 +85,8 @@ prove that an explicitly remote-connected TUI and Spotter can share the server a
 `turn/steer` reaches the real active user turn.
 [#78](https://github.com/spotter-agent/spotter/issues/78) proved that the user's Codex TUI and
 Spotter can share a Spotter-managed external App Server and that `turn/steer` reaches the real
-active turn. The identity foundation is implemented; daemon ownership, event routing, and reconnect
-remain explicit Runtime work.
+active turn. A provisional identity registry exists but has no production event consumer yet;
+daemon ownership, event routing, and reconnect remain explicit Runtime work.
 
 ## Roadmap vocabulary
 

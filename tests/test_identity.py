@@ -70,7 +70,7 @@ def test_out_of_order_completion_preserves_missing_start_observation() -> None:
         registry.finish_turn(thread.id, "turn-1", TurnStatus.COMPLETED)
 
 
-def test_detach_and_resume_keep_durable_thread_identity() -> None:
+def test_detach_and_resume_keep_thread_identity() -> None:
     registry = RuntimeIdentityRegistry()
     thread = registry.observe_thread("codex", "thread-1")
     first = registry.attach(thread.id)
@@ -87,7 +87,20 @@ def test_detach_and_resume_keep_durable_thread_identity() -> None:
     assert registry.thread(thread.id).status == ThreadStatus.ACTIVE
 
 
-def test_fresh_registry_reconciles_the_same_external_lineage() -> None:
+def test_attach_reopens_a_closed_external_attachment() -> None:
+    registry = RuntimeIdentityRegistry()
+    thread = registry.observe_thread("codex", "thread-1")
+    first = registry.attach(thread.id, agent_attachment_id="window-1")
+    registry.detach(first.id)
+
+    resumed = registry.attach(thread.id, agent_attachment_id="window-1")
+
+    assert resumed.id == first.id
+    assert resumed.status == AttachmentStatus.ACTIVE
+    assert registry.thread(thread.id).status == ThreadStatus.ACTIVE
+
+
+def test_new_registry_derives_the_same_external_identity() -> None:
     first_registry = RuntimeIdentityRegistry()
     first_thread = first_registry.observe_thread("codex", "thread-1")
     first_turn = first_registry.start_turn(first_thread.id, "turn-1")
