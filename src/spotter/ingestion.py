@@ -1,0 +1,470 @@
+"""Normalize Codex App Server notifications into durable, runtime-neutral traces."""
+
+import hashlib
+import json
+from collections.abc import Mapping
+from dataclasses import replace
+from pathlib import Path
+from typing import Any
+
+from spotter.app_server import AppServerEvent
+from spotter.identity import (
+    IdentityProvenance,
+    RuntimeIdentity,
+    RuntimeIdentityRegistry,
+    TurnStatus,
+)
+from spotter.snapshot import StepJournal, StepRecord
+from spotter.trace import TraceEvent, TraceProvenance
+
+_AGENT = "codex"
+_SOURCE = "codex_app_server"
+
+
+class IngestionError(ValueError):
+    """An App Server event cannot be normalized without guessing or conflicts with history."""
+
+
+class CodexTraceNormalizer:
+    """The only layer allowed to know Codex notification and ThreadItem shapes."""
+
+    def __init__(self, identities: RuntimeIdentityRegistry | None = None) -> None:
+        self.identities = identities or RuntimeIdentityRegistry()
+
+    def normalize(self, event: AppServerEvent) -> TraceEvent:
+        params = event.raw.get("params")
+        if not isinstance(params, Mapping):
+            raise IngestionError(f"{event.method} notification has no object params")
+        params = dict(params)
+        event_id = _event_id(event.method, params)
+        provenance = TraceProvenance(_SOURCE, event.method)
+
+        if event.method == "thread/started":
+            thread = _object(params.get("thread"), "thread")
+            started_thread_id = _string(thread.get("id"), "thread.id")
+            identity = self._identity(started_thread_id)
+            return TraceEvent(
+                "thread_started",
+                _known(thread, "cwd", "sessionId", "status", "name"),
+                event_id,
+                _seconds(thread.get("createdAt")),
+                identity,
+                provenance=provenance,
+            )
+
+        external_thread_id = _optional_string(params.get("threadId"))
+        turn_raw = params.get("turn")
+        external_turn_id = _optional_string(params.get("turnId"))
+        if isinstance(turn_raw, Mapping):
+            external_turn_id = _optional_string(turn_raw.get("id")) or external_turn_id
+
+        if event.method == "turn/completed":
+            if external_thread_id is None or external_turn_id is None:
+                raise IngestionError("turn/completed omitted thread or turn identity")
+            completed_turn = _object(turn_raw, "turn")
+            outcome = _optional_string(completed_turn.get("status"))
+            status = TurnStatus.INTERRUPTED if outcome == "interrupted" else TurnStatus.COMPLETED
+            identity, observed_start = self._finish_turn(
+                external_thread_id, external_turn_id, status
+            )
+            payload = _known(completed_turn, "status", "durationMs", "error")
+            payload["observed_start"] = observed_start
+            return TraceEvent(
+                "turn_completed",
+                payload,
+                event_id,
+                _seconds(completed_turn.get("completedAt")),
+                identity,
+                provenance=provenance,
+            )
+
+        identity = self._identity(
+            external_thread_id,
+            external_turn_id,
+            observed_turn_start=event.method == "turn/started",
+        )
+
+        if event.method == "turn/started":
+            if not isinstance(turn_raw, Mapping):
+                raise IngestionError("turn/started omitted turn")
+            return TraceEvent(
+                "turn_started",
+                _known(turn_raw, "status"),
+                event_id,
+                _seconds(turn_raw.get("startedAt")),
+                identity,
+                provenance=provenance,
+            )
+        if event.method == "thread/status/changed":
+            return TraceEvent(
+                "thread_status",
+                _known(params, "status"),
+                event_id,
+                identity=identity,
+                provenance=provenance,
+            )
+        if event.method in {
+            "thread/archived",
+            "thread/unarchived",
+            "thread/closed",
+            "thread/deleted",
+        }:
+            return TraceEvent(
+                event.method.replace("/", "_"),
+                {},
+                event_id,
+                identity=identity,
+                provenance=provenance,
+            )
+        if event.method in {"item/started", "item/completed"}:
+            item = _object(params.get("item"), "item")
+            item_id = _string(item.get("id"), "item.id")
+            completed = event.method == "item/completed"
+            kind, payload = _normalize_item(item, completed)
+            payload["lifecycle"] = "completed" if completed else "started"
+            timestamp = _milliseconds(
+                params.get("completedAtMs") if completed else params.get("startedAtMs")
+            )
+            return TraceEvent(
+                kind,
+                payload,
+                event_id,
+                timestamp,
+                identity,
+                operation_id=item_id,
+                item_id=item_id,
+                provenance=provenance,
+            )
+        if event.method == "turn/diff/updated":
+            return TraceEvent(
+                "diff_updated",
+                _known(params, "diff"),
+                event_id,
+                identity=identity,
+                provenance=provenance,
+            )
+        if event.method == "turn/plan/updated":
+            plan = params.get("plan")
+            plan_payload: dict[str, Any] = {}
+            if isinstance(plan, list):
+                plan_payload["steps"] = [
+                    _known(step, "step", "status") for step in plan if isinstance(step, Mapping)
+                ]
+            if isinstance(params.get("explanation"), str):
+                plan_payload["explanation"] = params["explanation"]
+            return TraceEvent(
+                "plan",
+                plan_payload,
+                event_id,
+                identity=identity,
+                provenance=provenance,
+            )
+        if event.method == "thread/tokenUsage/updated":
+            return TraceEvent(
+                "token_usage",
+                _token_usage(params.get("tokenUsage")),
+                event_id,
+                identity=identity,
+                provenance=provenance,
+            )
+        if event.method == "error":
+            return TraceEvent(
+                "runtime_error",
+                _known(params, "error", "willRetry"),
+                event_id,
+                identity=identity,
+                provenance=provenance,
+            )
+
+        # Unknown notifications remain visible without copying an unstable wire payload into IR.
+        return TraceEvent(
+            "runtime_event_unknown",
+            {"method": event.method},
+            event_id,
+            identity=identity,
+            item_id=_optional_string(params.get("itemId")),
+            provenance=provenance,
+        )
+
+    def _identity(
+        self,
+        external_thread_id: str | None,
+        external_turn_id: str | None = None,
+        *,
+        observed_turn_start: bool = False,
+    ) -> RuntimeIdentity:
+        if external_thread_id is None:
+            return RuntimeIdentity(None, None, None, IdentityProvenance(agent=_AGENT))
+        thread = self.identities.observe_thread(_AGENT, external_thread_id)
+        if external_turn_id is None:
+            return RuntimeIdentity(thread.id, None, None, thread.provenance)
+        turn = self.identities.start_turn(
+            thread.id, external_turn_id, observed_start=observed_turn_start
+        )
+        return self.identities.address_turn(turn.id)
+
+    def _finish_turn(
+        self, external_thread_id: str, external_turn_id: str, status: TurnStatus
+    ) -> tuple[RuntimeIdentity, bool]:
+        thread = self.identities.observe_thread(_AGENT, external_thread_id)
+        turn = self.identities.finish_turn(thread.id, external_turn_id, status)
+        return self.identities.address_turn(turn.id), turn.observed_start
+
+
+class AppServerTraceIngestor:
+    """Append normalized events once, with restart-safe lifecycle reconciliation."""
+
+    def __init__(self, journals_dir: Path) -> None:
+        self.journals_dir = journals_dir
+        self.journals_dir.mkdir(parents=True, exist_ok=True)
+        self.normalizer = CodexTraceNormalizer()
+        self._seen: set[str] = set()
+        self._operations: dict[tuple[str, str, str], tuple[str, str | None]] = {}
+        self._terminal_turns: set[str] = set()
+        self._last_at: dict[tuple[str, str], float] = {}
+        self._recover()
+
+    def ingest(self, raw_event: AppServerEvent) -> StepRecord | None:
+        event = self.normalizer.normalize(raw_event)
+        if event.event_id is not None and event.event_id in self._seen:
+            return None
+        route = _route(event)
+        turn_key = (
+            event.identity.turn_id.value if event.identity and event.identity.turn_id else None
+        )
+        if event.kind == "turn_started" and turn_key in self._terminal_turns:
+            return None
+
+        if event.operation_id is not None:
+            operation_key = _operation_key(event, route)
+            lifecycle = _optional_string(event.payload.get("lifecycle"))
+            previous = self._operations.get(operation_key)
+            if lifecycle == "started" and previous and previous[0] == "completed":
+                return None
+            if lifecycle == "completed":
+                outcome = _optional_string(event.payload.get("status"))
+                if previous and previous[0] == "completed":
+                    if previous[1] != outcome:
+                        raise IngestionError(
+                            f"operation {event.operation_id} changed terminal outcome "
+                            f"from {previous[1]!r} to {outcome!r}"
+                        )
+                    return None
+                payload = dict(event.payload)
+                payload["observed_start"] = previous is not None
+                event = replace(event, payload=payload)
+
+        if event.occurred_at is not None:
+            ordering_key = _ordering_key(event, route)
+            last_at = self._last_at.get(ordering_key)
+            if last_at is not None and event.occurred_at < last_at:
+                event = replace(event, payload={**event.payload, "out_of_order": True})
+
+        record = StepJournal(self.journals_dir / route).record(event)
+        self._remember(record.event, route)
+        return record
+
+    def _recover(self) -> None:
+        for path in sorted(self.journals_dir.glob("app-server-*.jsonl")):
+            for record in StepJournal.load(path, strict=True):
+                event = record.event
+                self._restore_identity(event)
+                self._remember(event, path.name)
+
+    def _restore_identity(self, event: TraceEvent) -> None:
+        identity = event.identity
+        if identity is None or identity.provenance.agent_thread_id is None:
+            return
+        thread = self.normalizer.identities.observe_thread(
+            identity.provenance.agent, identity.provenance.agent_thread_id
+        )
+        external_turn_id = identity.provenance.agent_turn_id
+        if external_turn_id is None:
+            return
+        if event.kind == "turn_completed":
+            outcome = event.payload.get("status")
+            status = TurnStatus.INTERRUPTED if outcome == "interrupted" else TurnStatus.COMPLETED
+            self.normalizer.identities.finish_turn(thread.id, external_turn_id, status)
+        else:
+            self.normalizer.identities.start_turn(
+                thread.id,
+                external_turn_id,
+                observed_start=event.kind == "turn_started",
+            )
+
+    def _remember(self, event: TraceEvent, route: str) -> None:
+        if event.event_id is not None:
+            self._seen.add(event.event_id)
+        if event.operation_id is not None:
+            lifecycle = _optional_string(event.payload.get("lifecycle"))
+            if lifecycle is not None:
+                self._operations[_operation_key(event, route)] = (
+                    lifecycle,
+                    _optional_string(event.payload.get("status")),
+                )
+        if event.kind == "turn_completed" and event.identity and event.identity.turn_id:
+            self._terminal_turns.add(event.identity.turn_id.value)
+        if event.occurred_at is not None:
+            ordering_key = _ordering_key(event, route)
+            self._last_at[ordering_key] = max(
+                self._last_at.get(ordering_key, event.occurred_at), event.occurred_at
+            )
+
+
+def _normalize_item(item: Mapping[str, Any], completed: bool) -> tuple[str, dict[str, Any]]:
+    item_type = _optional_string(item.get("type")) or "unknown"
+    if item_type == "userMessage":
+        return "user_prompt", {"content": _user_content(item.get("content"))}
+    if item_type == "agentMessage":
+        return "agent_message", _known(item, "text", "phase")
+    if item_type == "plan":
+        return "plan", _known(item, "text")
+    if item_type == "reasoning":
+        # App Server exposes both summary and raw reasoning content. Only the summary is Trace IR.
+        summary = item.get("summary")
+        return "reasoning_summary", {"summary": summary if isinstance(summary, list) else []}
+    if item_type == "commandExecution":
+        kind = "command_result" if completed else "command_started"
+        return kind, _known(
+            item,
+            "command",
+            "cwd",
+            "status",
+            "aggregatedOutput",
+            "exitCode",
+            "durationMs",
+            "source",
+        )
+    if item_type == "fileChange":
+        changes = item.get("changes")
+        normalized = (
+            [
+                _known(change, "path", "kind", "diff")
+                for change in changes
+                if isinstance(change, Mapping)
+            ]
+            if isinstance(changes, list)
+            else []
+        )
+        return ("file_edit" if completed else "file_change_started"), {
+            "status": item.get("status"),
+            "files": [change["path"] for change in normalized if "path" in change],
+            "changes": normalized,
+        }
+    if item_type == "mcpToolCall":
+        kind = "tool_result" if completed else "tool_started"
+        return kind, _known(
+            item, "server", "tool", "arguments", "status", "result", "error", "durationMs"
+        )
+    if item_type == "dynamicToolCall":
+        kind = "tool_result" if completed else "tool_started"
+        return kind, _known(
+            item,
+            "namespace",
+            "tool",
+            "arguments",
+            "status",
+            "success",
+            "contentItems",
+            "durationMs",
+        )
+    if item_type == "webSearch":
+        return ("search" if completed else "search_started"), _known(
+            item, "query", "action", "results"
+        )
+    return ("item_completed" if completed else "item_started"), {"item_type": item_type}
+
+
+def _event_id(method: str, params: Mapping[str, Any]) -> str:
+    encoded = json.dumps(
+        {"method": method, "params": params},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode()
+    return f"codex:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def _route(event: TraceEvent) -> str:
+    if event.identity is not None and event.identity.thread_id is not None:
+        return f"app-server-{event.identity.thread_id.value}.jsonl"
+    return "app-server-unscoped.jsonl"
+
+
+def _operation_key(event: TraceEvent, route: str) -> tuple[str, str, str]:
+    turn_id = (
+        event.identity.turn_id.value
+        if event.identity is not None and event.identity.turn_id is not None
+        else ""
+    )
+    assert event.operation_id is not None
+    return route, turn_id, event.operation_id
+
+
+def _ordering_key(event: TraceEvent, route: str) -> tuple[str, str]:
+    turn_id = (
+        event.identity.turn_id.value
+        if event.identity is not None and event.identity.turn_id is not None
+        else ""
+    )
+    return route, turn_id
+
+
+def _token_usage(value: object) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    payload: dict[str, Any] = {}
+    for group in ("last", "total"):
+        raw_group = value.get(group)
+        if isinstance(raw_group, Mapping):
+            payload[group] = _known(
+                raw_group,
+                "inputTokens",
+                "cachedInputTokens",
+                "cacheWriteInputTokens",
+                "outputTokens",
+                "reasoningOutputTokens",
+                "totalTokens",
+            )
+    if isinstance(value.get("modelContextWindow"), int):
+        payload["modelContextWindow"] = value["modelContextWindow"]
+    return payload
+
+
+def _user_content(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [
+        _known(part, "type", "text", "url", "path") for part in value if isinstance(part, Mapping)
+    ]
+
+
+def _known(value: object, *keys: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {key: value[key] for key in keys if key in value and value[key] is not None}
+
+
+def _object(value: object, name: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise IngestionError(f"{name} must be an object")
+    return value
+
+
+def _string(value: object, name: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise IngestionError(f"{name} must be a non-empty string")
+    return value
+
+
+def _optional_string(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _seconds(value: object) -> float | None:
+    return float(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
+
+
+def _milliseconds(value: object) -> float | None:
+    seconds = _seconds(value)
+    return seconds / 1000 if seconds is not None else None

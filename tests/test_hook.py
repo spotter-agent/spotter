@@ -227,6 +227,11 @@ def test_unknown_events_still_journal(spotter_home: Path) -> None:
     assert run_hook(payload, _config(observation_only=True)) is None
     records = StepJournal.load(journal_path(payload))
     assert records[0].event.kind == "sessionstart"
+    assert records[0].event.identity is not None
+    assert records[0].event.identity.thread_id is None
+    assert records[0].event.identity.provenance.legacy_session_id == "s2"
+    assert records[0].event.provenance is not None
+    assert records[0].event.provenance.source == "codex_hook"
 
 
 def test_apply_patch_takes_snapshot_for_fork(

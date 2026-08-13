@@ -20,9 +20,16 @@ from fcntl import LOCK_EX, LOCK_UN, flock
 from pathlib import Path
 from typing import Any
 
+from spotter.identity import (
+    AttachmentId,
+    IdentityProvenance,
+    RuntimeIdentity,
+    ThreadId,
+    TurnId,
+)
 from spotter.paths import secure_dir, spotter_home
 from spotter.redact import redact
-from spotter.trace import TraceEvent
+from spotter.trace import TraceEvent, TraceProvenance
 
 
 class SnapshotError(RuntimeError):
@@ -206,7 +213,16 @@ class StepJournal:
                 if event.kind == "tool_proposal":
                     state["proposals"] = int(state["proposals"]) + 1
                     payload["proposal_number"] = state["proposals"]
-                stored_event = TraceEvent(event.kind, payload)
+                stored_event = TraceEvent(
+                    event.kind,
+                    payload,
+                    event_id=event.event_id,
+                    occurred_at=event.occurred_at,
+                    identity=event.identity,
+                    operation_id=event.operation_id,
+                    item_id=event.item_id,
+                    provenance=event.provenance,
+                )
                 record = StepRecord(step, stored_event, snapshot, time.time(), SCHEMA_VERSION)
                 line = json.dumps(
                     {
@@ -215,6 +231,7 @@ class StepJournal:
                         "at": record.at,
                         "kind": stored_event.kind,
                         "payload": stored_event.payload,
+                        "trace": _trace_metadata(stored_event),
                         "snapshot": snapshot,
                     },
                     ensure_ascii=False,
@@ -293,7 +310,7 @@ class StepJournal:
                 records.append(
                     StepRecord(
                         step=step,
-                        event=TraceEvent(str(raw["kind"]), dict(raw.get("payload") or {})),
+                        event=_trace_event(raw),
                         snapshot=raw.get("snapshot"),
                         at=float(at) if isinstance(at, int | float) else None,
                         version=version,
@@ -305,6 +322,88 @@ class StepJournal:
     def prefix(records: list[StepRecord], upto: int) -> list[StepRecord]:
         """Events before step ``upto`` — the branch point for a future replay."""
         return [r for r in records if r.step < upto]
+
+
+def _trace_metadata(event: TraceEvent) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    for name in ("event_id", "occurred_at", "operation_id", "item_id"):
+        value = getattr(event, name)
+        if value is not None:
+            metadata[name] = value
+    if event.provenance is not None:
+        metadata["provenance"] = {
+            "source": event.provenance.source,
+            "method": event.provenance.method,
+        }
+    if event.identity is not None:
+        provenance = event.identity.provenance
+        metadata["identity"] = {
+            "thread_id": event.identity.thread_id.value if event.identity.thread_id else None,
+            "turn_id": event.identity.turn_id.value if event.identity.turn_id else None,
+            "attachment_id": (
+                event.identity.attachment_id.value if event.identity.attachment_id else None
+            ),
+            "agent": provenance.agent,
+            "agent_thread_id": provenance.agent_thread_id,
+            "agent_turn_id": provenance.agent_turn_id,
+            "agent_attachment_id": provenance.agent_attachment_id,
+            "legacy_session_id": provenance.legacy_session_id,
+        }
+    return metadata
+
+
+def _trace_event(raw: dict[str, Any]) -> TraceEvent:
+    metadata = raw.get("trace")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    identity_raw = metadata.get("identity")
+    identity = None
+    if isinstance(identity_raw, dict) and isinstance(identity_raw.get("agent"), str):
+        identity = RuntimeIdentity(
+            thread_id=(
+                ThreadId(identity_raw["thread_id"])
+                if isinstance(identity_raw.get("thread_id"), str)
+                else None
+            ),
+            turn_id=(
+                TurnId(identity_raw["turn_id"])
+                if isinstance(identity_raw.get("turn_id"), str)
+                else None
+            ),
+            attachment_id=(
+                AttachmentId(identity_raw["attachment_id"])
+                if isinstance(identity_raw.get("attachment_id"), str)
+                else None
+            ),
+            provenance=IdentityProvenance(
+                agent=identity_raw["agent"],
+                agent_thread_id=_optional_string(identity_raw.get("agent_thread_id")),
+                agent_turn_id=_optional_string(identity_raw.get("agent_turn_id")),
+                agent_attachment_id=_optional_string(identity_raw.get("agent_attachment_id")),
+                legacy_session_id=_optional_string(identity_raw.get("legacy_session_id")),
+            ),
+        )
+    provenance_raw = metadata.get("provenance")
+    provenance = None
+    if isinstance(provenance_raw, dict) and isinstance(provenance_raw.get("source"), str):
+        provenance = TraceProvenance(
+            provenance_raw["source"], _optional_string(provenance_raw.get("method"))
+        )
+    occurred_at = metadata.get("occurred_at")
+    return TraceEvent(
+        str(raw["kind"]),
+        dict(raw.get("payload") or {}),
+        event_id=_optional_string(metadata.get("event_id")),
+        occurred_at=float(occurred_at) if isinstance(occurred_at, int | float) else None,
+        identity=identity,
+        operation_id=_optional_string(metadata.get("operation_id")),
+        item_id=_optional_string(metadata.get("item_id")),
+        provenance=provenance,
+    )
+
+
+def _optional_string(value: object) -> str | None:
+    return value if isinstance(value, str) else None
 
 
 def snapshot_references(

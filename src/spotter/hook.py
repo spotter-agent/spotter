@@ -13,6 +13,7 @@ import subprocess
 import sys
 import time
 from contextlib import suppress
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -29,20 +30,30 @@ from spotter.daemon import (
 )
 from spotter.effects import classify
 from spotter.gates import Gate, GateDecision
+from spotter.identity import RuntimeIdentity
 from spotter.paths import sanitize_session, secure_dir, spotter_home
 from spotter.snapshot import SnapshotError, StepJournal, global_lock, snapshot_worktree
-from spotter.trace import TraceEvent
+from spotter.trace import TraceEvent, TraceProvenance
 
 _PATCH_PATH = re.compile(r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$", re.MULTILINE)
 
 
 class JournalAdapter:
-    def __init__(self, journal: StepJournal) -> None:
+    def __init__(
+        self,
+        journal: StepJournal,
+        identity: RuntimeIdentity | None = None,
+        provenance: TraceProvenance | None = None,
+    ) -> None:
         self.journal = journal
+        self.identity = identity
+        self.provenance = provenance
         self.next_snapshot: str | None = None
         self.last_proposal_number = 0
 
     def record(self, event: TraceEvent) -> None:
+        if event.identity is None:
+            event = replace(event, identity=self.identity, provenance=self.provenance)
         record = self.journal.record(event, snapshot=self.next_snapshot)
         if event.kind == "tool_proposal":
             self.last_proposal_number = int(record.event.payload["proposal_number"])
@@ -207,7 +218,17 @@ def run_hook(
     )
     journal_file = journal_path(payload)
     journal = StepJournal(journal_file)
-    adapter = JournalAdapter(journal)
+    session_id = payload.get("session_id")
+    identity = RuntimeIdentity.legacy_hook(
+        config.main_agent.adapter,
+        session_id if isinstance(session_id, str) else None,
+    )
+    method = payload.get("hook_event_name")
+    adapter = JournalAdapter(
+        journal,
+        identity,
+        TraceProvenance("codex_hook", method if isinstance(method, str) else None),
+    )
     runtime = SpotterRuntime(config, adapter, gate)
     event = event_from_hook(payload)
     gate_decision: GateDecision | None = None

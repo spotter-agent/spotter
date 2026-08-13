@@ -4,11 +4,27 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from spotter.identity import RuntimeIdentity
+
+
+@dataclass(frozen=True)
+class TraceProvenance:
+    """Reference to the transport event without leaking its wire shape into core policy."""
+
+    source: str
+    method: str | None = None
+
 
 @dataclass(frozen=True)
 class TraceEvent:
     kind: str
     payload: dict[str, Any] = field(default_factory=dict)
+    event_id: str | None = None
+    occurred_at: float | None = None
+    identity: RuntimeIdentity | None = None
+    operation_id: str | None = None
+    item_id: str | None = None
+    provenance: TraceProvenance | None = None
 
 
 # Judgment happens on semantic segments, enforcement on tool boundaries (plan Q8).

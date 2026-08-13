@@ -205,6 +205,7 @@ class RuntimeIdentityRegistry:
         agent_turn_id: str,
         *,
         attachment_id: AttachmentId | None = None,
+        observed_start: bool = True,
     ) -> Turn:
         thread = self.thread(thread_id)
         agent_turn_id = _required(agent_turn_id, "agent turn id")
@@ -228,7 +229,7 @@ class RuntimeIdentityRegistry:
             turn = replace(
                 turn,
                 attachment_id=turn.attachment_id or attachment_id,
-                observed_start=True,
+                observed_start=turn.observed_start or observed_start,
             )
             self._turns[turn_id] = turn
             return turn
@@ -239,7 +240,7 @@ class RuntimeIdentityRegistry:
             thread_id=thread_id,
             attachment_id=attachment_id,
             status=TurnStatus.ACTIVE,
-            observed_start=True,
+            observed_start=observed_start,
             provenance=IdentityProvenance(
                 agent=thread.provenance.agent,
                 agent_thread_id=thread.provenance.agent_thread_id,

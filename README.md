@@ -78,7 +78,7 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 | Evaluation labels / metrics | ✅ | Coverage-aware evaluation and precision/FP metrics |
 | Counterfactual experiment harness | ✅ | Control/guidance same-prefix pairs |
 | Standalone `spotterd` runtime | 🟡 | Process, versioned gate/control IPC, and managed user-service startup implemented; runtime consumers remain |
-| App Server primary observation | 🟡 | Client/capabilities implemented; Trace IR ingestion remains (#85) |
+| App Server primary observation | 🟡 | Client, identity-rich Trace IR normalization, and durable ingestion implemented; daemon routing remains |
 | Event-driven signal engine | ❌ | Current reviewer trigger is periodic |
 | Live `VERIFY / NUDGE` | ❌ | Target: `turn/steer` |
 | `INTERRUPT` | ❌ | Target: `turn/interrupt` |
@@ -91,8 +91,11 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 App Server can share the TUI's real thread and steer its active turn. The production client in
 [#80](https://github.com/spotter-agent/spotter/issues/80) now exposes events, thread queries,
 control methods, and per-capability degraded state. [#81](https://github.com/spotter-agent/spotter/issues/81)
-adds a provisional thread/turn/attachment registry; it remains unconsumed until App Server event
-routing in [#85](https://github.com/spotter-agent/spotter/issues/85). [#79](https://github.com/spotter-agent/spotter/issues/79)
+adds a thread/turn/attachment registry. [#85](https://github.com/spotter-agent/spotter/issues/85)
+uses it to normalize authoritative lifecycle, message, plan, reasoning-summary, command, file-change,
+MCP, search, diff, and token events into durable Trace IR. Exact replays are deduplicated across
+restarts, operation outcomes correlate by item ID, and unknown notification families remain explicit.
+[#79](https://github.com/spotter-agent/spotter/issues/79)
 adds the `spotterd` process, versioned local control handshake, manual lifecycle commands, and a
 platform-neutral service boundary. [#83](https://github.com/spotter-agent/spotter/issues/83) adds
 transactional Codex setup/teardown, managed user-service registration, and integration ownership.

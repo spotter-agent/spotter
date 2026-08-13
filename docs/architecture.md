@@ -1,7 +1,7 @@
 # Architecture
 
 > **Status:** this document describes both the current hook-based prototype and the target architecture. Active implementation is tracked by the [Roadmap](roadmap.md) and native GitHub Milestones.
-> The `spotterd` process/control foundation, bounded Hook gate IPC, shared-server PoC, and production App Server transport are implemented. App Server primary Trace IR observation and live supervision delivery remain **target behavior**.
+> The `spotterd` process/control foundation, bounded Hook gate IPC, shared-server PoC, production App Server transport, and durable Trace IR ingestion are implemented. Daemon event routing and live supervision delivery remain **target behavior**.
 
 ---
 
@@ -467,6 +467,23 @@ side-effect class
 
 Normalization must not discard provenance. Live control, replay, and causal analysis must be able to reconnect normalized records to the underlying runtime item/turn.
 
+## Implemented App Server ingestion
+
+`CodexTraceNormalizer` is the transport boundary. It maps App Server lifecycle and authoritative
+completed-item records into the runtime-neutral fields above. Raw reasoning content is not copied;
+only the App Server's exposed reasoning summary enters Trace IR. Unknown notification methods become
+`runtime_event_unknown` records containing the method and any proven identity, rather than silently
+disappearing or leaking a new wire shape into core consumers.
+
+`AppServerTraceIngestor` writes one journal per Spotter thread identity, separately named from
+Hook-era session journals. Its recovery scan rebuilds deduplication and lifecycle state after a
+restart. Item starts and outcomes correlate by App Server item ID, not journal adjacency. A terminal
+event seen before its start is retained with `observed_start=false`; a later start cannot regress it.
+Timestamp regressions are accepted but marked `out_of_order`, and conflicting terminal outcomes fail
+explicitly. Hook records carry legacy-session provenance with unknown thread, turn, and attachment
+dimensions, so consumers never need Codex transport objects and never infer that a Hook session is an
+App Server thread.
+
 ---
 
 # 7. Reviewer jobs and freshness
@@ -647,9 +664,9 @@ State scope:
 - Hook-era `session_id` becomes a `RuntimeIdentity` with unknown thread/turn/attachment fields rather
   than being promoted into an identity it cannot prove.
 
-The registry owns identity and lifecycle only and has no production consumer yet. Semantic
-`ThreadState` remains #31; App Server event normalization/routing in #85 must validate and may
-reshape this interface.
+The registry owns identity and lifecycle only; App Server Trace normalization and journal recovery
+consume it without promoting it into semantic state. Semantic `ThreadState` remains #31, and daemon
+connection reconciliation remains #87.
 
 ---
 
