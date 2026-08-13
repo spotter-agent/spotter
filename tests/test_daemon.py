@@ -21,6 +21,8 @@ from spotter.daemon import (
     runtime_socket,
 )
 from spotter.gates import Gate
+from spotter.identity import IdentityProvenance, RuntimeIdentity, ThreadId, TurnId
+from spotter.snapshot import StepRecord
 from spotter.trace import TraceEvent
 
 
@@ -57,6 +59,40 @@ def test_control_socket_handles_concurrent_clients_and_health_states(socket_path
         assert not socket_path.exists()
 
     asyncio.run(scenario())
+
+
+def test_daemon_owns_incremental_thread_state_and_conservative_hydration(
+    socket_path: Path,
+) -> None:
+    identity = RuntimeIdentity(
+        ThreadId("thread-1"),
+        TurnId("turn-1"),
+        None,
+        IdentityProvenance("codex", "external-thread", "external-turn"),
+    )
+    events = [
+        TraceEvent("thread_started", event_id="thread", identity=identity),
+        TraceEvent("turn_started", event_id="turn", identity=identity),
+        TraceEvent("runtime_reconciled", event_id="ready", identity=identity),
+    ]
+    server = DaemonServer(socket_path)
+
+    for event in events:
+        server.observe_trace(event)
+    assert identity.thread_id is not None
+    live = server.thread_state(identity.thread_id)
+
+    recovered = DaemonServer(socket_path)
+    hydrated = recovered.hydrate_thread_state(
+        [StepRecord(index, event, None) for index, event in enumerate(events)]
+    )[0]
+
+    assert live.version == 3
+    assert live.active_turn_id == TurnId("turn-1")
+    assert live.control_ready is True
+    assert hydrated.version == live.version
+    assert hydrated.active_turn_id is None
+    assert hydrated.control_ready is False
 
 
 def test_bad_protocol_does_not_break_later_clients(socket_path: Path) -> None:

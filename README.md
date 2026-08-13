@@ -77,8 +77,8 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 | Claim/evidence audit ledger | 🟡 | Works where observable outcomes exist |
 | Evaluation labels / metrics | ✅ | Coverage-aware evaluation and precision/FP metrics |
 | Counterfactual experiment harness | ✅ | Control/guidance same-prefix pairs |
-| Standalone `spotterd` runtime | 🟡 | Process, versioned gate/control IPC, and managed user-service startup implemented; runtime consumers remain |
-| App Server primary observation | 🟡 | Client, identity-rich Trace IR normalization, and durable ingestion implemented; daemon routing remains |
+| Standalone `spotterd` runtime | 🟡 | Process, gate/control IPC, managed startup, and per-thread immutable live state implemented; App Server connection ownership remains |
+| App Server primary observation | 🟡 | Client, identity-rich Trace IR, durable ingestion, and incremental ThreadState reducer implemented; daemon connection routing remains |
 | Event-driven signal engine | ❌ | Current reviewer trigger is periodic |
 | Live `VERIFY / NUDGE` | ❌ | Target: `turn/steer` |
 | `INTERRUPT` | ❌ | Target: `turn/interrupt` |
@@ -95,6 +95,9 @@ adds a thread/turn/attachment registry. [#85](https://github.com/spotter-agent/s
 uses it to normalize authoritative lifecycle, message, plan, reasoning-summary, command, file-change,
 MCP, search, diff, and token events into durable Trace IR. Exact replays are deduplicated across
 restarts, operation outcomes correlate by item ID, and unknown notification families remain explicit.
+[#31](https://github.com/spotter-agent/spotter/issues/31) reduces that Trace IR into isolated,
+immutable, versioned ThreadState snapshots owned by `spotterd`; restart hydration deliberately
+requires live turn reconciliation before control becomes ready again.
 [#79](https://github.com/spotter-agent/spotter/issues/79)
 adds the `spotterd` process, versioned local control handshake, manual lifecycle commands, and a
 platform-neutral service boundary. [#83](https://github.com/spotter-agent/spotter/issues/83) adds

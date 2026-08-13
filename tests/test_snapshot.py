@@ -84,6 +84,13 @@ def test_journal_roundtrip_prefix_and_resume(tmp_path: Path) -> None:
     assert [r.step for r in StepJournal.load(path)] == [0, 1, 2]
 
 
+def test_journal_roundtrips_connection_epoch(tmp_path: Path) -> None:
+    path = tmp_path / "journal.jsonl"
+    StepJournal(path).record(TraceEvent("thread_started", connection_epoch=7))
+
+    assert StepJournal.load(path)[0].event.connection_epoch == 7
+
+
 def test_proposal_number_does_not_mutate_input_event(tmp_path: Path) -> None:
     journal = StepJournal(tmp_path / "journal.jsonl")
     event = TraceEvent("tool_proposal", {"tool": "Bash"})

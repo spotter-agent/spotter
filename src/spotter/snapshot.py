@@ -222,6 +222,7 @@ class StepJournal:
                     operation_id=event.operation_id,
                     item_id=event.item_id,
                     provenance=event.provenance,
+                    connection_epoch=event.connection_epoch,
                 )
                 record = StepRecord(step, stored_event, snapshot, time.time(), SCHEMA_VERSION)
                 line = json.dumps(
@@ -326,7 +327,7 @@ class StepJournal:
 
 def _trace_metadata(event: TraceEvent) -> dict[str, Any]:
     metadata: dict[str, Any] = {}
-    for name in ("event_id", "occurred_at", "operation_id", "item_id"):
+    for name in ("event_id", "occurred_at", "operation_id", "item_id", "connection_epoch"):
         value = getattr(event, name)
         if value is not None:
             metadata[name] = value
@@ -399,6 +400,12 @@ def _trace_event(raw: dict[str, Any]) -> TraceEvent:
         operation_id=_optional_string(metadata.get("operation_id")),
         item_id=_optional_string(metadata.get("item_id")),
         provenance=provenance,
+        connection_epoch=(
+            metadata["connection_epoch"]
+            if isinstance(metadata.get("connection_epoch"), int)
+            and not isinstance(metadata.get("connection_epoch"), bool)
+            else None
+        ),
     )
 
 

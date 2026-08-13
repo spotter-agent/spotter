@@ -115,8 +115,8 @@ concurrent clients, reports `healthy` / `degraded` / `recovering`, and makes abs
 
 Manual process management implements the `ServiceManager` boundary used by the CLI. Managed
 `launchd` / `systemd --user` registration belongs to setup lifecycle work. This daemon currently
-owns no App Server, semantic `ThreadState`, Hook IPC, or event routing, so stopping it cannot stop a
-shared Codex App Server and existing Hook behavior remains independent.
+owns semantic `ThreadState` and bounded Hook gate IPC, but no App Server connection or event routing,
+so stopping it cannot stop a shared Codex App Server and existing Hook behavior remains independent.
 
 ## 1.3 Target runtime
 
@@ -582,6 +582,17 @@ ThreadState
   connection/capability state
 ```
 
+The implemented `ThreadStateStore` is the daemon-owned, single-event-loop hot-state boundary.
+`ThreadStateReducer` consumes only normalized `TraceEvent` values and returns deeply immutable,
+versioned snapshots. It keeps task, evidence/verification, workspace, execution, supervision, and
+coverage as distinct typed sub-state; reasoning summaries remain hypotheses, and verified facts can
+only be created by an explicit verification-satisfied event. Duplicate event IDs are idempotent,
+out-of-order lifecycle is recorded as partial coverage, and thread identities remain isolated.
+
+Journal hydration deterministically replays Trace IR but clears active-turn/control readiness. A
+recovered daemon must receive a live `runtime_reconciled` event before control can be considered
+safe; #87 owns that connection and reconciliation loop.
+
 ## 8.2 Durable journal
 
 The journal exists for:
@@ -664,8 +675,8 @@ State scope:
 - Hook-era `session_id` becomes a `RuntimeIdentity` with unknown thread/turn/attachment fields rather
   than being promoted into an identity it cannot prove.
 
-The registry owns identity and lifecycle only; App Server Trace normalization and journal recovery
-consume it without promoting it into semantic state. Semantic `ThreadState` remains #31, and daemon
+The registry owns identity and lifecycle only. App Server Trace normalization and the daemon's
+semantic `ThreadState` consume those identities without importing Codex wire shapes. Daemon
 connection reconciliation remains #87.
 
 ---

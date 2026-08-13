@@ -7,7 +7,7 @@
 
 ## 30-second summary
 
-Spotter is currently a **Hook-based research prototype** with a standalone runtime foundation. It already has real trajectory journals, daemon-backed deterministic gates, Git snapshots, fork/replay, a shadow reviewer, an audit ledger, labeling/metrics, a counterfactual experiment harness, and a manually managed `spotterd` process with versioned local IPC.
+Spotter is currently a **Hook-based research prototype** with a standalone runtime foundation. It already has real trajectory journals, daemon-backed deterministic gates, Git snapshots, fork/replay, a shadow reviewer, an audit ledger, labeling/metrics, a counterfactual experiment harness, identity-rich App Server ingestion, and daemon-owned per-thread live state.
 
 The target product is a standalone runtime:
 
@@ -30,7 +30,7 @@ PreToolUse Hook only
 (deterministic synchronous enforcement)
 ```
 
-The shared App Server gate is resolved: an explicitly connected TUI and Spotter can observe and steer the same real turn. The Hook now uses bounded daemon IPC for deterministic enforcement. The immediate work is wiring the remaining process foundations into a managed lifecycle: App Server event routing, setup registration, and reconnect behavior remain separate issues. See [App Server connection validation](app-server-validation.md).
+The shared App Server gate is resolved: an explicitly connected TUI and Spotter can observe and steer the same real turn. The Hook now uses bounded daemon IPC for deterministic enforcement. The immediate work is long-lived App Server event routing and reconnect/reconciliation in #87. See [App Server connection validation](app-server-validation.md).
 The roadmap no longer uses `P0–P9` / `E0–E5`. It is organized by named outcomes:
 
 ```text
@@ -39,9 +39,9 @@ Runtime → Observe → Detect → Intervene → Recover → Harden
 
 The shared-server gate in [#78](https://github.com/spotter-agent/spotter/issues/78) passed for the
 Spotter-managed external App Server path. Spotter now has a production WebSocket client and a
-provisional Thread/Turn/Runtime Attachment registry with no production event consumer yet. It also
-has a standalone daemon process and versioned local control/gate handshake; managed startup and
-runtime consumers remain next.
+Thread/Turn/Runtime Attachment registry, durable normalized ingestion, and an incremental immutable
+ThreadState reducer. The standalone daemon owns isolated state snapshots and a versioned local
+control/gate handshake; App Server connection ownership and reconnect remain next.
 
 ---
 
@@ -64,11 +64,14 @@ transactional Codex Hook/plugin migration, and managed `launchd`/`systemd --user
 manifest and Hook ownership checks, App Server probing when an endpoint exists, and explicit
 degraded consequences when observation/control are unavailable but Hook enforcement remains.
 
-The remaining implementation boundaries are split into native GitHub issues:
+The remaining runtime boundary is tracked in:
 
 - [#87](https://github.com/spotter-agent/spotter/issues/87) — daemon/App Server reconnect and identity reconciliation.
 
-[#31](https://github.com/spotter-agent/spotter/issues/31) then moves independent supervision state into that runtime, fed by the App Server ingestion path in [#85](https://github.com/spotter-agent/spotter/issues/85).
+[#31](https://github.com/spotter-agent/spotter/issues/31) adds daemon-owned immutable ThreadState,
+deterministic Trace IR reduction, durable replay hydration, explicit coverage gaps, and conservative
+control readiness after restart. [#87](https://github.com/spotter-agent/spotter/issues/87) will connect
+that state owner to the long-lived App Server recovery loop.
 
 The assumption that merely starting the external server would make plain `codex` reuse it was
 rejected by the [2026-08-13 validation](app-server-validation.md). The explicit `--remote` path
@@ -91,20 +94,20 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 
 | Area | Status | What exists now | Next concrete step |
 | --- | --- | --- | --- |
-| Hook ingestion | ✅ | `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse` are journaled | App Server ingestion #85, then remove redundant Hooks in #86 |
+| Hook ingestion | ✅ | `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse` are journaled | Measure App Server parity in #37, then remove redundant Hooks in #86 |
 | Deterministic gate | ✅ | Shell-aware daemon evaluation over bounded local IPC; unavailable/timeout uses the local Gate, while incompatible responses fail open | Continue policy precision/miss-rate measurement |
-| Journal | ✅ | Crash-tolerant JSONL, locking, fsync, torn-tail recovery | Feed it from identity-rich App Server Trace IR in #85 |
+| Journal | ✅ | Crash-tolerant JSONL stores identity-rich App Server Trace IR with locking, fsync, and torn-tail recovery | Add bounded retention/checkpoint lifecycle in #87/#89 |
 | Snapshot | ✅ | Git-backed snapshots, deduplication, pruning, detached restore | Preserve lineage through runtime/retention migration (#89) |
 | Fork / replay | ✅ | Continue Codex from a shared prefix in a detached worktree | Measure fidelity/noise floor in #42 |
 | Shadow reviewer | ✅ | Produces `CONTINUE`, `VERIFY`, `NUDGE`; verdicts are recorded only | Move to event-driven candidates, then live delivery |
-| Audit ledger | 🟡 | Claim/evidence state and stale propagation where outcomes are observable | Move independent state into `spotterd` (#31) |
+| Audit / live state | 🟡 | Daemon-owned typed ThreadState distinguishes constraints, hypotheses, observations, verified facts, summaries, interventions, and coverage | Feed reviewer jobs and signals from immutable snapshots |
 | Evaluation labels / metrics | ✅ | Coverage-aware labeling and precision/FP metrics | Broader cost/miss/harm metrics (#33, #38, #34) |
 | Counterfactual harness | ✅ | Control/guidance same-prefix pairs can be prepared/run | Add mechanically scored tasks (#21) |
-| Standalone runtime | 🟡 | Long-lived process, versioned control/gate IPC, health states, manual and managed user-service lifecycle | Add runtime consumers in #31/#85 |
-| Runtime identity | 🟡 | Provisional lifecycle registry and explicit legacy unknowns; no production consumer | Validate and refine it while routing normalized App Server events in #85 |
-| App Server primary observation | 🟡 | Async client, raw events, thread queries, controls, capability degradation | Normalize, identity-route, and journal events in #85 |
-| Managed Codex lifecycle | 🟡 | Transactional setup/teardown, versioned ownership manifest, legacy migration, launchd/systemd-user service, runtime diagnostics | Connect and ingest the external App Server in #85/#87 |
-| Runtime reconnect/recovery | ❌ | No long-lived App Server connection to recover | #87 after runtime/state boundaries exist |
+| Standalone runtime | 🟡 | Long-lived process, IPC, lifecycle, and isolated per-thread hot-state ownership | Add App Server connection/reconciliation in #87 |
+| Runtime identity | 🟡 | Lifecycle registry feeds normalized journals and ThreadState while legacy dimensions remain explicit unknowns | Add connection epochs and attachment reconciliation in #87 |
+| App Server primary observation | 🟡 | Async client, normalized durable Trace IR, and incremental ThreadState reduction | Route the long-lived connection through `spotterd` in #87 |
+| Managed Codex lifecycle | 🟡 | Transactional setup/teardown, versioned ownership manifest, legacy migration, launchd/systemd-user service, runtime diagnostics | Connect and reconcile the external App Server in #87 |
+| Runtime reconnect/recovery | ❌ | Durable hydration is conservative, but no long-lived App Server reconnect owner exists | Implement #87 on the daemon/state boundaries |
 | Event-driven detection | ❌ | Reviewer is still cadence-based | #28 after Runtime/Observe |
 | Live `VERIFY` / `NUDGE` | ❌ | Reviewer decisions stop at the journal | #22 via `turn/steer` |
 | `INTERRUPT` / `RESTART` | ❌ | No live recovery path | #26 + #30 after soft intervention is understood |

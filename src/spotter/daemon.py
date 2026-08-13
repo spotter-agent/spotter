@@ -21,7 +21,10 @@ from typing import Any, Protocol, cast
 
 from spotter.config import GatesConfig
 from spotter.gates import Gate, GateDecision
+from spotter.identity import ThreadId
 from spotter.paths import secure_dir, spotter_home
+from spotter.snapshot import StepRecord
+from spotter.thread_state import ThreadState, ThreadStateStore
 from spotter.trace import TraceEvent
 
 PROTOCOL_VERSION = 1
@@ -190,6 +193,22 @@ class DaemonServer:
         self._shutdown = asyncio.Event()
         self._socket_inode: int | None = None
         self._lock: TextIOWrapper | None = None
+        self.thread_states = ThreadStateStore()
+
+    def observe_trace(self, event: TraceEvent) -> ThreadState:
+        """Increment daemon-owned hot state after adapter normalization and journaling."""
+
+        return self.thread_states.observe(event)
+
+    def thread_state(self, thread_id: ThreadId) -> ThreadState:
+        """Immutable reviewer/signal snapshot for one logical thread."""
+
+        return self.thread_states.snapshot(thread_id)
+
+    def hydrate_thread_state(self, records: list[StepRecord]) -> tuple[ThreadState, ...]:
+        """Restore history without claiming the old active turn is control-ready."""
+
+        return self.thread_states.hydrate(records)
 
     async def start(self) -> None:
         _secure_runtime_dir(self.socket_path.parent)
