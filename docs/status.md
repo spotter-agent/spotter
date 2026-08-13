@@ -1,15 +1,15 @@
 # Spotter Status
 
-> **Purpose:** the fastest way to answer three questions: **What works today? What architecture are we moving to? What should be built next?**  
-> Direction: [#66](https://github.com/Bogyie/spotter/issues/66) · Implementation order: [Roadmap](roadmap.md) · Runtime details: [Architecture](architecture.md)
+> **Purpose:** the fastest way to answer three questions: **What works today? What blocks the project now? What comes next?**  
+> Runtime details: [Architecture](architecture.md) · Sequence and evidence gates: [Roadmap](roadmap.md)
 
 ---
 
 ## 30-second summary
 
-Spotter is currently a **hook-based research prototype**. It already has real trajectory journals, deterministic gates, Git snapshots, fork/replay, a shadow reviewer, an audit ledger, labeling/metrics, and a counterfactual experiment harness.
+Spotter is currently a **Hook-based research prototype**. It already has real trajectory journals, deterministic gates, Git snapshots, fork/replay, a shadow reviewer, an audit ledger, labeling/metrics, and a counterfactual experiment harness.
 
-The target product is different:
+The target product is a standalone runtime:
 
 ```text
 CURRENT
@@ -31,180 +31,148 @@ PreToolUse Hook only
 ```
 
 The **immediate blocker** is not writing `spotterd`. Current Codex documentation and CLI source show that a separately started App Server is **not auto-discovered by plain `codex`**; the TUI must select it with `codex --remote <endpoint>`. The remaining PoC must prove that an explicitly connected TUI and Spotter can observe and steer the same real turn, then select an acceptable launch UX. See [App Server connection validation](app-server-validation.md).
+The roadmap no longer uses `P0–P9` / `E0–E5`. It is organized by named outcomes:
 
-### Read next
+```text
+Runtime → Observe → Detect → Intervene → Recover → Harden
+```
 
-- Implementing runtime internals → [Architecture](architecture.md)
-- Implementing install/setup/update/remove → [Lifecycle](lifecycle.md)
-- Deciding what to build first → [Roadmap](roadmap.md)
-- Evaluating whether the idea actually works → [Research](research.md)
-
----
-
-## Quick status
-
-Legend: ✅ implemented · 🟡 partial/shadow · 🧪 PoC required · 🎯 target · ❌ not implemented
-
-| Area | Status | What exists now | Next concrete step |
-| --- | --- | --- | --- |
-| Hook ingestion | ✅ | `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse` are journaled | Replace broad observation with App Server events |
-| Deterministic gate | ✅ | Shell-aware checks for destructive commands, path/dependency constraints, fail-open ambiguity handling | Move gate behind daemon IPC and re-measure latency |
-| Journal | ✅ | Crash-tolerant JSONL, cross-process locking, fsync, torn-tail recovery | Make it durable history, not the hot state store |
-| Snapshot | ✅ | Git-backed snapshots, deduplication, pruning, detached restore | Integrate into runtime resource lifecycle |
-| Fork / replay | ✅ | Continue Codex from a shared prefix in a detached worktree | Measure replay fidelity/noise floor |
-| Shadow reviewer | ✅ | Produces `CONTINUE`, `VERIFY`, `NUDGE`; verdicts are recorded only | Trigger from signals, then deliver live |
-| Audit ledger | 🟡 | Claim/evidence state and stale propagation where outcomes are observable | Rebuild around richer App Server observations |
-| Labels / metrics | ✅ | Coverage-aware labeling and precision/FP metrics | Add miss-rate, timing, cost, harm/recovery metrics |
-| Counterfactual experiment harness | ✅ | Control/guidance same-prefix pairs can be prepared/run | Add a mechanically scored task set and execute real experiments |
-| Standalone runtime | ❌ | No long-lived owner of live supervision state | Implement `spotterd`, IPC, service abstraction |
-| App Server primary observation | 🧪 | Design only | Complete P0 lifecycle/attach PoC |
-| Event-driven signal engine | ❌ | Reviewer is still cadence-based | Cheap signal → reviewer dispatch |
-| Live `VERIFY` / `NUDGE` | ❌ | Reviewer decisions stop at the journal | Deliver via `turn/steer` |
-| `INTERRUPT` | ❌ | No control path | Add `turn/interrupt` after evidence gate |
-| `RESTART` | ❌ | Fork/replay is research machinery, not live recovery | Define verified-state + side-effect-aware recovery |
-| Homebrew / setup lifecycle | 🎯 | Current paths are source/plugin installs | `brew install spotter`, `spotter setup codex`, `doctor`, `teardown` |
+The shared-server gate in [#78](https://github.com/spotter-agent/spotter/issues/78) passed for the
+Spotter-managed external App Server path. Spotter now has a production WebSocket client with
+explicit observation/control capabilities; the standalone daemon and identity model remain next.
 
 ---
 
-## The one thing to build first
+## Current focus
 
-### P0 — Codex App Server lifecycle / attach PoC
+### Runtime
 
-The question is intentionally narrow:
+[#78](https://github.com/spotter-agent/spotter/issues/78) demonstrated same-thread observation and
+same-turn steering through a Spotter-managed external App Server. [#80](https://github.com/spotter-agent/spotter/issues/80)
+turns that PoC into an async client with initialize/disconnect, raw event delivery, thread queries,
+typed steer/interrupt methods, and explicit supported/unknown/unavailable capability state.
+
+The remaining implementation boundaries are split into native GitHub issues:
+
+- [#79](https://github.com/spotter-agent/spotter/issues/79) — `spotterd`, local control RPC, and per-user service lifecycle;
+- [#81](https://github.com/spotter-agent/spotter/issues/81) — Thread / Turn / Runtime Attachment identity;
+- [#82](https://github.com/spotter-agent/spotter/issues/82) — bounded fail-open `PreToolUse` ↔ daemon enforcement IPC;
+- [#83](https://github.com/spotter-agent/spotter/issues/83) — transactional Codex setup/teardown and integration ownership;
+- [#84](https://github.com/spotter-agent/spotter/issues/84) — runtime-aware status/doctor;
+- [#87](https://github.com/spotter-agent/spotter/issues/87) — daemon/App Server reconnect and identity reconciliation.
+
+[#31](https://github.com/spotter-agent/spotter/issues/31) then moves independent supervision state into that runtime, fed by the App Server ingestion path in [#85](https://github.com/spotter-agent/spotter/issues/85).
 
 > **Can Spotter provide an acceptable explicit launch path in which the Codex TUI and Spotter use the same external App Server, and can Spotter steer that exact active turn?**
 
 The former assumption that merely starting the external server would make plain `codex`
 reuse it was rejected by the [2026-08-13 validation](app-server-validation.md).
+In parallel, the highest-value evidence foundations remain:
 
-Test three paths:
+- [#21](https://github.com/spotter-agent/spotter/issues/21) — mechanically scored task set;
+- [#42](https://github.com/spotter-agent/spotter/issues/42) — replay/fork fidelity and noise floor;
+- [#37](https://github.com/spotter-agent/spotter/issues/37) — observability ceiling baseline/post-migration measurement;
+- [#33](https://github.com/spotter-agent/spotter/issues/33) — runtime cost/timing/outcome telemetry.
 
 1. **Explicit remote TUI** — start an external App Server, launch `codex --remote <endpoint>`, and verify Spotter can attach as a second client.
 2. **Spotter launch UX** — validate a launcher/alias/wrapper that supplies the endpoint without claiming unsupported automatic discovery.
 3. **Embedded baseline** — document exactly which Spotter capabilities remain when Codex chooses an embedded App Server that Spotter cannot attach to.
+---
 
-PoC exit criteria:
+## Quick capability status
 
-- TUI and Spotter observe the same thread id.
-- Spotter receives live events for the same active turn.
-- Active `turn_id` tracking remains correct across multiple tool calls.
-- `turn/steer` changes the actual user-visible Codex turn.
-- Multiple concurrent Codex sessions are distinguishable.
-- Reconnect behavior is understood.
-- `status` / `doctor` can distinguish healthy, degraded, and disconnected states.
+Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 target · ❌ not implemented
 
-**Do not proceed to the daemon migration if these properties are not proven.**
+| Area | Status | What exists now | Next concrete step |
+| --- | --- | --- | --- |
+| Hook ingestion | ✅ | `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse` are journaled | App Server ingestion #85, then remove redundant Hooks in #86 |
+| Deterministic gate | ✅ | Shell-aware checks for destructive commands, path/dependency constraints, fail-open ambiguity handling | Move bounded enforcement behind daemon IPC in #82 |
+| Journal | ✅ | Crash-tolerant JSONL, locking, fsync, torn-tail recovery | Feed it from identity-rich App Server Trace IR in #85 |
+| Snapshot | ✅ | Git-backed snapshots, deduplication, pruning, detached restore | Preserve lineage through runtime/retention migration (#89) |
+| Fork / replay | ✅ | Continue Codex from a shared prefix in a detached worktree | Measure fidelity/noise floor in #42 |
+| Shadow reviewer | ✅ | Produces `CONTINUE`, `VERIFY`, `NUDGE`; verdicts are recorded only | Move to event-driven candidates, then live delivery |
+| Audit ledger | 🟡 | Claim/evidence state and stale propagation where outcomes are observable | Move independent state into `spotterd` (#31) |
+| Evaluation labels / metrics | ✅ | Coverage-aware labeling and precision/FP metrics | Broader cost/miss/harm metrics (#33, #38, #34) |
+| Counterfactual harness | ✅ | Control/guidance same-prefix pairs can be prepared/run | Add mechanically scored tasks (#21) |
+| Standalone runtime | ❌ | No long-lived owner, service boundary, or runtime RPC | Build `spotterd` in #79 |
+| Runtime identity | ❌ | Hook-era `session_id` is the dominant identity | Thread/Turn/Attachment model in #81 |
+| App Server primary observation | 🟡 | Async client, raw events, thread queries, controls, capability degradation | Normalize and journal events in #85 after identity #81 |
+| Managed Codex lifecycle | ❌ | Current path is source/plugin installation | transactional setup/teardown in #83; diagnostics in #84 |
+| Runtime reconnect/recovery | ❌ | No long-lived App Server connection to recover | #87 after runtime/state boundaries exist |
+| Event-driven detection | ❌ | Reviewer is still cadence-based | #28 after Runtime/Observe |
+| Live `VERIFY` / `NUDGE` | ❌ | Reviewer decisions stop at the journal | #22 via `turn/steer` |
+| `INTERRUPT` / `RESTART` | ❌ | No live recovery path | #26 + #30 after soft intervention is understood |
+| Packaging / long-term operations | 🎯 | Current paths are source/plugin installs; local `prune` exists | #88 packaging, #89 purge/retention, #90 upgrade/config lifecycle |
 
 ---
 
-## Current user path
+## Roadmap at a glance
 
-The current prototype can still be used from source:
+### Runtime
 
-```bash
-git clone https://github.com/Bogyie/spotter.git
-cd spotter
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install -e .
-```
+Prove and establish the standalone App Server/`spotterd` boundary.
 
-Current Codex plugin compatibility path:
+### Observe
 
-```bash
-codex plugin marketplace add bogyie/spotter
-codex plugin add spotter@spotter
-```
+Use App Server events as the primary trajectory source and maintain live supervision state. Measure what is actually observable early enough to act on.
 
-Useful current commands:
+### Detect
 
-```bash
-spotter analyze
-spotter review --session <id>
-spotter label --session <id> --step <n> --verdict fp
-spotter metrics
-spotter fork --session <id> --step <n>
-spotter experiment --session <id> --step <n> --guidance "..." --check "..."
-```
+Trigger semantic review from cheap candidate signals. Measure precision, miss rate, and detection delay together.
 
----
+### Intervene
 
-## Target user path
+Deliver `VERIFY` / `NUDGE` to the correct active turn. Measure benefit, harm, recovery, ignored guidance, and wrong-nudge susceptibility.
 
-After the standalone runtime migration, ordinary setup should look like this:
+### Recover
 
-```bash
-brew install spotter
-spotter setup codex
-spotter doctor
+Add `INTERRUPT` / `RESTART` only with stronger evidence and explicit side-effect/reversibility handling.
 
-# normal use afterwards
-codex
-```
+### Harden
 
-Operational/debug commands remain available, but should not be required for normal use:
+Make setup, upgrades, schemas, retention, cleanup, recovery, and long-term operation predictable.
 
-```bash
-spotter status
-spotter sessions
-spotter daemon status
-spotter daemon restart
-spotter doctor
-spotter teardown codex
-```
-
-The user should **not** need to run either command before every Codex session:
-
-```bash
-spotter daemon start
-codex app-server daemon start
-```
-
----
-
-## Implementation sequence
-
-```text
-P0  App Server lifecycle / attach PoC
- ↓
-P1  spotterd + App Server client + IPC + thread/turn identity
- ↓
-P2  install/setup/status/doctor/teardown/package lifecycle
- ↓
-P3  move journal/gate/audit/reviewer/snapshot behind the runtime boundary
- ↓
-P4  App Server primary observation + Hook minimization
- ↓
-P5  cheap signals → event-driven reviewer
- ↓
-P6  live VERIFY / NUDGE via turn/steer
- ↓
-P7  INTERRUPT / RESTART / side-effect-aware recovery
- ↓
-P8  upgrade/migration/retention/purge/multi-agent hardening
- ↓
-P9  experience / adaptation
-```
-
-Each phase has explicit dependencies and exit criteria in [Roadmap](roadmap.md).
+See [Roadmap](roadmap.md) for detailed exit criteria and linked issues.
 
 ---
 
 ## Evidence status
 
-Implementation progress and research evidence are separate.
+Implementation progress and research evidence remain separate.
 
 | Question | Evidence today |
 | --- | --- |
 | Can Spotter collect real coding-agent trajectories? | Yes |
-| Can deterministic gates catch concrete policy violations? | Yes, with measured false-positive/blind-spot work still ongoing |
+| Can deterministic gates catch concrete policy violations? | Yes, with precision/miss-rate work still ongoing |
 | Can Spotter produce plausible semantic reviewer verdicts? | Yes, in shadow mode |
 | Can Spotter branch a shared prefix for counterfactual experiments? | Yes |
-| Has live Spotter guidance been shown to improve task outcomes? | **No** |
-| Is intervention advantage positive on a ground-truth task set? | **Not measured yet** |
-| Is the App Server target architecture operationally viable? | **PoC required** |
+| Is the fork instrument's causal noise floor known? | **No — #42** |
+| Is there a reproducible mechanically scored task corpus? | **No — #21** |
+| Has live Spotter guidance been shown to improve outcomes? | **No** |
+| Is the App Server control boundary operationally viable? | **Yes for the Spotter-managed external path; daemon lifecycle and reconnect remain** |
 
 A mechanism being implemented does not prove it improves outcomes. Null and negative results are first-class outcomes for this project.
+
+---
+
+## Issue triage
+
+Repository issues use GitHub native metadata rather than label namespaces:
+
+- **Type** — work nature (`Task`, `Bug`, `Feature`, `Architecture`, `Experiment`);
+- **Priority** — current sequencing pressure (`Urgent`, `High`, `Medium`, `Low`);
+- **Effort** — change surface / validation burden (`XS`–`XL`);
+- **Area** — primary product/problem domain;
+- **Milestone** — roadmap stage owning completion;
+- **Dependencies** — actual `blocked by` / `blocking` relationships.
+
+The Milestones are the named roadmap outcomes:
+
+```text
+Runtime → Observe → Detect → Intervene → Recover → Harden
+```
+
+Labels are exceptional contributor signals only (`good first issue`, `help wanted` today). Detailed semantics live in [Repository Conventions](conventions.md#13-issue-metadata-and-triage).
 
 ---
 
@@ -217,15 +185,5 @@ A mechanism being implemented does not prove it improves outcomes. Null and nega
 | Exact process/data/control boundaries | [Architecture](architecture.md) |
 | Install → setup → run → recover → upgrade → remove | [Lifecycle](lifecycle.md) |
 | What should be built in what order | [Roadmap](roadmap.md) |
-| Prior work, borrowed mechanisms, and open research questions | [Research](research.md) |
-| The umbrella design decision | [#66](https://github.com/Bogyie/spotter/issues/66) |
-
----
-
-## Status terminology
-
-- ✅ **Implemented** — code exists and has at least tests or real-use evidence.
-- 🟡 **Partial / shadow** — only part of the behavior exists, or it intentionally cannot affect Main yet.
-- 🧪 **PoC required** — a design dependency that must be proven end-to-end before becoming an architectural assumption.
-- 🎯 **Target** — agreed direction, not yet implemented.
-- ❌ **Not implemented** — no production path exists yet.
+| Prior work, hypotheses, and evidence | [Research](research.md) |
+| Repository/issue conventions | [Conventions](conventions.md) |

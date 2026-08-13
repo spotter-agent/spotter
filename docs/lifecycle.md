@@ -1,6 +1,6 @@
 # Lifecycle and Operations
 
-> **Status:** target design tracked by [#66](https://github.com/Bogyie/spotter/issues/66).  
+> **Status:** target design. Active implementation is tracked by the [Roadmap](roadmap.md) and native GitHub Milestones.
 > The current prototype is still hook/plugin-centered. Commands such as Homebrew installation, managed `spotterd`, and full App Server integration described here are the **intended product lifecycle**, not current shipping behavior.
 
 ---
@@ -55,7 +55,9 @@ The most important lifecycle constraint is this:
 > **If full Codex mode requires an external App Server, it must be available and selected
 > explicitly when the TUI starts (currently with `--remote`).**
 
-That can conflict with a completely lazy “wake Spotter on the first Hook” design. P0 must determine the canonical startup strategy before the service lifecycle is finalized.
+That conflicts with a completely lazy “wake Spotter on the first Hook” design. #78 proved a
+Spotter-managed external path; #79 and #83 must now make its service ownership and startup strategy
+explicit before the lifecycle is finalized.
 
 ---
 
@@ -397,7 +399,7 @@ Do **not** plan teardown as “restore the entire old file”. The user may legi
 
 ## 4.5 APPLY
 
-The exact changes depend on the P0-selected App Server strategy. Conceptually:
+The exact changes depend on the App Server strategy selected by the Runtime gate. Conceptually:
 
 1. register/prepare the Spotter runtime service if managed mode requires it;
 2. ensure the external App Server path or attach strategy;
@@ -582,7 +584,7 @@ The requirement is mechanism-independent:
 > **In managed mode, whatever runtime is required for full observation/control must be
 > ready and explicitly selected before the Codex TUI starts.**
 
-If P0 confirms that an external App Server must already exist, a likely default is a login-scoped user service:
+If the Runtime gate confirms that an external App Server must already exist, a likely default is a login-scoped user service:
 
 ```text
 user login

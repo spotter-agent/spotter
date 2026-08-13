@@ -1,7 +1,7 @@
 # Architecture
 
-> **Status:** this document describes both the current hook-based prototype and the target architecture tracked in [#66](https://github.com/Bogyie/spotter/issues/66).  
-> `spotterd`, App Server primary observation, and live `turn/steer` delivery are **target behavior**, not current shipping behavior.
+> **Status:** this document describes both the current hook-based prototype and the target architecture. Active implementation is tracked by the [Roadmap](roadmap.md) and native GitHub Milestones.
+> `spotterd`, App Server primary Trace IR observation, and live supervision delivery are **target behavior**. The shared-server PoC and production App Server transport are implemented foundations.
 
 ---
 
@@ -69,7 +69,7 @@ Six decisions define the design:
 | Disconnect / crash behavior | [11. Failure and degraded mode](#11-failure-and-degraded-mode) |
 | Runtime files/sockets/resources | [12. Runtime resources](#12-runtime-resources) |
 | Agent adapter interface | [14. Agent adapter contract](#14-agent-adapter-contract) |
-| First architecture PoC | [15. P0 App Server lifecycle / attach PoC](#15-p0-app-server-lifecycle--attach-poc) |
+| Runtime architecture gate | [15. Runtime gate: App Server lifecycle / attach PoC](#15-runtime-gate-app-server-lifecycle--attach-poc) |
 
 ---
 
@@ -240,7 +240,7 @@ Important constraint: plain `codex` does not auto-discover a separately started 
 App Server in the current interface; the external endpoint requires `--remote`. Starting
 Spotter only at the first `PreToolUse` is therefore too late for full observation/control.
 
-That is why P0 comes before the daemon migration.
+That is why the Runtime App Server gate (#78) comes before the daemon migration.
 
 ## 4.2 Normal observation event
 
@@ -836,10 +836,10 @@ Every adapter exposes capabilities explicitly.
 
 ```text
 CodexAdapter
-  observation: rich
-  steer: target PoC
-  interrupt: target
-  pre-action veto: Hook
+  observation: available after thread query probe
+  steer: unknown until a successful call; unavailable on method-not-found
+  interrupt: unknown until a successful call; unavailable on method-not-found
+  pre-action veto: unavailable through App Server; Hook boundary remains
 
 FutureAgentAdapter
   observation: maybe partial
@@ -851,9 +851,10 @@ When a capability is missing, Spotter should hide/disable the feature or report 
 
 ---
 
-# 15. P0 App Server lifecycle / attach PoC
+# 15. Runtime gate result: App Server lifecycle / attach PoC
 
-The target architecture is gated by this experiment.
+The experiment proved the control premise for Path B. Its harness and recorded result live in
+[App Server lifecycle / attach PoC](app-server-poc.md).
 
 ## Path A — Explicit remote TUI
 
@@ -895,18 +896,15 @@ Interrupt:   unavailable
 PreToolUse:  possibly available
 ```
 
-## Exit criteria
+## Result and remaining lifecycle work
 
-- ordinary `codex` UX is preserved;
-- TUI and Spotter prove they share the same App Server/thread;
-- live event subscription works;
-- active turn identity remains correct;
-- real `turn/steer` delivery is demonstrated;
-- concurrent sessions are distinguishable;
-- reconnect/degraded behavior is understood;
-- App Server ownership/lifecycle strategy is selected.
-
-**If a core property fails, revisit the architecture before P1.**
+- Path B proved a shared App Server/thread, live event delivery, and real `turn/steer` delivery.
+- `CodexAppServerClient` provides the initialized transport, raw events, thread/control methods, and
+  explicit per-capability degradation used by later runtime components.
+- Path A remains unavailable for the tested Homebrew Cask because the managed daemon expects the
+  standalone installer layout.
+- Concurrent thread identity is owned by #81, daemon/service ownership by #79/#83, and reconnect
+  reconciliation by #87.
 
 ---
 

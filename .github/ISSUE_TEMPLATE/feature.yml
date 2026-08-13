@@ -1,0 +1,21 @@
+name: Feature request
+description: Propose a new capability or user/developer-facing behavior.
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / outcome
+      description: What should become possible, easier, safer, or more observable?
+      placeholder: Describe the problem before the implementation idea.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed direction
+      description: Optional. Sketch an approach, API, UX, or runtime behavior if you have one.
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints / tradeoffs
+      description: Optional. Latency, compatibility, lifecycle, safety, or scope constraints that matter.

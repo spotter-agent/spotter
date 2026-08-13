@@ -27,9 +27,9 @@ def test_plugin_manifests_and_hooks_are_well_formed() -> None:
 def test_readme_uses_remote_marketplace_install_commands() -> None:
     readme = Path("README.md").read_text()
 
-    assert "codex plugin marketplace add bogyie/spotter" in readme
+    assert "codex plugin marketplace add spotter-agent/spotter" in readme
     assert "codex plugin add spotter@spotter" in readme
-    assert "claude plugin marketplace add bogyie/spotter" in readme
+    assert "claude plugin marketplace add spotter-agent/spotter" in readme
     assert "claude plugin install spotter@spotter" in readme
 
 

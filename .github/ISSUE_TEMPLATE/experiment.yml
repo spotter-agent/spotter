@@ -1,0 +1,29 @@
+name: Research / experiment
+description: Define an experiment whose main output is evidence for a Spotter decision.
+body:
+  - type: textarea
+    id: hypothesis
+    attributes:
+      label: Question / hypothesis
+      description: What are we trying to learn? State the decision this evidence should inform.
+    validations:
+      required: true
+  - type: textarea
+    id: design
+    attributes:
+      label: Experiment design
+      description: Baseline/comparison, task or trajectory source, controls, and execution budget.
+    validations:
+      required: true
+  - type: textarea
+    id: measurement
+    attributes:
+      label: Measurement / decision rule
+      description: What metric or mechanical check will be used, and what result would change the decision?
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Optional. Known confounders, related papers/issues, expected artifacts, or negative-result handling.

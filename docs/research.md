@@ -8,7 +8,7 @@ The central Spotter claim remains unproven:
 
 > **Runtime intervention improves coding-agent outcomes more than it harms them, at an acceptable cost.**
 
-The standalone-runtime direction in [#66](https://github.com/Bogyie/spotter/issues/66) changes the observation/control substrate used to test that claim. It does not count as evidence for the claim by itself.
+The standalone-runtime direction described in [Architecture](architecture.md) and tracked through the [Roadmap](roadmap.md) changes the observation/control substrate used to test that claim. It does not count as evidence for the claim by itself.
 
 ---
 
@@ -46,7 +46,7 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 needs experiment · ❌ m
 | event-driven reviewer dispatch | ❌ | current reviewer trigger is cadence-based |
 | live `VERIFY / NUDGE` delivery | ❌ | target: `turn/steer` |
 | `INTERRUPT / RESTART` | ❌ | target only |
-| App Server observation/control | 🧪 | P0 architecture PoC required |
+| App Server observation/control | 🧪 | Runtime App Server PoC required (#78) |
 
 The hook-collected corpus exposed a concrete observation limit for the audit ledger: directly usable outcomes were present in only a small fraction of real tool results. The App Server migration must **re-measure** that ceiling instead of assuming it is permanent.
 
@@ -70,8 +70,8 @@ This project should use research questions to make engineering decisions, not ju
 
 # 1. Wink — asynchronous course correction for coding agents
 
-**Wink: Recovering from Misbehaviors in Coding Agents**  
-Rahul Nanda et al., 2026  
+**Wink: Recovering from Misbehaviors in Coding Agents**
+Rahul Nanda et al., 2026
 https://arxiv.org/abs/2602.17037
 
 ## Why it matters
@@ -122,8 +122,8 @@ This is one reason to move semantic supervision out of per-hook processes.
 
 # 2. SWE-PRM — process reward models for SWE trajectory correction
 
-**When Agents go Astray: Course-Correcting SWE Agents with PRMs**  
-Shubham Gandhi et al., 2025  
+**When Agents go Astray: Course-Correcting SWE Agents with PRMs**
+Shubham Gandhi et al., 2025
 https://arxiv.org/abs/2509.02360
 
 ## Why it matters
@@ -161,8 +161,8 @@ Structured categories make it possible to measure precision, misses, harm, laten
 
 # 3. AgentForesight — online auditing and early failure prediction
 
-**AgentForesight: Online Auditing for Early Failure Prediction in Multi-Agent Systems**  
-Boxuan Zhang et al., 2026  
+**AgentForesight: Online Auditing for Early Failure Prediction in Multi-Agent Systems**
+Boxuan Zhang et al., 2026
 https://arxiv.org/abs/2605.08715
 
 ## Why it matters
@@ -201,8 +201,8 @@ A reviewer that is correct twenty actions late may be useless as a controller.
 
 # 4. FailFast-RestartSmart — stop bad trajectories and restart cleanly
 
-**Fail-Fast, Restart-Smart: Early Failure Prediction and Restart for SWE Agentic Tasks**  
-Chenyu Wang et al., 2026  
+**Fail-Fast, Restart-Smart: Early Failure Prediction and Restart for SWE Agentic Tasks**
+Chenyu Wang et al., 2026
 https://arxiv.org/abs/2608.03222
 
 ## Why it matters
@@ -249,8 +249,8 @@ RESTART should not exist simply because it is technically possible.
 
 # 5. Calibration Is Not Control — intervention advantage
 
-**Calibration Is Not Control: Why LLM-Agent Oversight Needs Intervention**  
-Chubin Zhang et al., 2026  
+**Calibration Is Not Control: Why LLM-Agent Oversight Needs Intervention**
+Chubin Zhang et al., 2026
 https://arxiv.org/abs/2606.21399
 
 ## Why it matters
@@ -298,9 +298,9 @@ This is one of the largest gaps between “implemented system” and “proven p
 
 # 6. interwhen — verifier-first runtime supervision
 
-**interwhen: A Generalizable Framework for Verifiable Reasoning with Test-time Monitors**  
-Vishak K. Bhat et al., 2026  
-https://arxiv.org/abs/2602.11202  
+**interwhen: A Generalizable Framework for Verifiable Reasoning with Test-time Monitors**
+Vishak K. Bhat et al., 2026
+https://arxiv.org/abs/2602.11202
 Code: https://github.com/microsoft/interwhen
 
 ## Why it matters
@@ -338,8 +338,8 @@ That directly affects latency and cost.
 
 # 7. Grounded Continuation — claim/evidence dependency tracking
 
-**Grounded Continuation: A Linear-Time Runtime Verifier for LLM Conversations**  
-Qisong He, Yi Dong, Xiaowei Huang, 2026  
+**Grounded Continuation: A Linear-Time Runtime Verifier for LLM Conversations**
+Qisong He, Yi Dong, Xiaowei Huang, 2026
 https://arxiv.org/abs/2605.14175
 
 ## Why it matters
@@ -374,15 +374,15 @@ The App Server migration creates a measurable question:
 
 > Does richer event/result visibility materially increase the fraction of useful claims that can be grounded and invalidated mechanically?
 
-That must be measured after P4.
+That must be measured after the Observe stage.
 
 ---
 
 # 8. AgentProcessBench — neutral exploration is not failure
 
-**AgentProcessBench: Diagnosing Step-Level Process Quality in Tool-Using Agents**  
-Shengda Fan et al., 2026  
-https://arxiv.org/abs/2603.14465  
+**AgentProcessBench: Diagnosing Step-Level Process Quality in Tool-Using Agents**
+Shengda Fan et al., 2026
+https://arxiv.org/abs/2603.14465
 Code/data: https://github.com/RUCBM/AgentProcessBench
 
 ## Why it matters
@@ -415,14 +415,14 @@ same semantic read repeated
 → reviewer decides whether intervention is warranted
 ```
 
-This is why P5 separates cheap signal generation from semantic verdicts.
+This is why the Detect stage separates cheap signal generation from semantic verdicts.
 
 ---
 
 # 9. HarnessFix — normalize traces and diagnose the harness too
 
-**From Failed Trajectories to Reliable LLM Agents: Diagnosing and Repairing Harness Flaws**  
-Mengzhuo Chen et al., 2026  
+**From Failed Trajectories to Reliable LLM Agents: Diagnosing and Repairing Harness Flaws**
+Mengzhuo Chen et al., 2026
 https://arxiv.org/abs/2606.06324
 
 ## Why it matters
@@ -465,8 +465,8 @@ This keeps another coding-agent adapter possible later.
 
 # 10. Refute-or-Promote — falsification and empirical gates
 
-**Refute-or-Promote: An Adversarial Stage-Gated Multi-Agent Review Methodology for High-Precision LLM-Assisted Defect Discovery**  
-Abhinav Agarwal, 2026  
+**Refute-or-Promote: An Adversarial Stage-Gated Multi-Agent Review Methodology for High-Precision LLM-Assisted Defect Discovery**
+Abhinav Agarwal, 2026
 https://arxiv.org/abs/2604.19049
 
 ## Why it matters
@@ -589,7 +589,7 @@ sampled miss rate
 reviewer tokens
 ```
 
-**Decision affected:** P5 signal policy.
+**Decision affected:** Detect-stage signal policy.
 
 ## RQ4 — Intervention policy
 
