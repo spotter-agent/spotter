@@ -360,7 +360,8 @@ spotter tasks run path/to/task-set.toml --guidance "..." --run
 # --resume ~/.spotter/experiments/task-batches/<batch>.jsonl
 spotter experiment --session <id> --step <n> --guidance "..." --check "..."
 # repeat the same neutral continuation to measure replay/model outcome noise:
-spotter experiment --session <id> --step <n> --neutral --pairs 3 --check "..." --run
+spotter experiment --session <id> --step <n> --neutral --pairs 3 --check "..." \
+  --model gpt-5.6 --reasoning-effort low --run
 ```
 
 When snapshotting is enabled, `SessionStart` pins one baseline Git snapshot so read-only exploration
@@ -369,7 +370,8 @@ snapshots. `spotter fork` writes a durable manifest under `~/.spotter/fork-manif
 source event, snapshot, rollout-prefix digest, external-effect warnings, and captured environment
 fingerprint. Counterfactual pairs are fully prepared and must pass shared-prefix and captured-
 environment parity checks before either agent arm runs. Ignored files, environment variables, and
-agent configuration are explicitly marked as not captured rather than assumed equal.
+agent configuration are explicitly marked as not captured rather than assumed equal. Experiments
+can pin both the Codex model and reasoning effort, and persist both values in result provenance.
 Neutral mode gives both arms the exact control prompt and reports mechanically judgeable outcome
 disagreement, environment-preflight mismatch, and infrastructure-failure rates separately. The
 command provides the measurement path; a representative executed corpus is still required before

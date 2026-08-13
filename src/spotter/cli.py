@@ -171,6 +171,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--model", help="review/experiment: pin the Codex model")
     parser.add_argument(
+        "--reasoning-effort", help="experiment: pin the Codex model reasoning effort"
+    )
+    parser.add_argument(
         "--reservation",
         help="review: token for a budget slot the caller already reserved (internal)",
     )
@@ -338,6 +341,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 check=args.check,
                 run=args.run,
                 model=args.model,
+                reasoning_effort=args.reasoning_effort,
                 keep_artifacts=args.keep_artifacts,
                 neutral=args.neutral,
             )

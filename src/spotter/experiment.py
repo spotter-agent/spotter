@@ -82,11 +82,14 @@ def _run_arm(
     sandbox: str,
     timeout: int,
     model: str | None = None,
+    reasoning_effort: str | None = None,
     codex_home: Path | None = None,
 ) -> int:
     args = ["codex", "exec", "-C", worktree]
     if model:
         args += ["--model", model]
+    if reasoning_effort:
+        args += ["--config", f'model_reasoning_effort="{reasoning_effort}"']
     args += [
         "--skip-git-repo-check",
         "--sandbox",
@@ -138,6 +141,7 @@ def _execute_arm(
     sandbox: str,
     timeout: int,
     model: str | None,
+    reasoning_effort: str | None,
     codex_home: Path | None,
 ) -> tuple[int | None, int | None, ArmClassification, str, str, str | None]:
     if environment_preflight != "MATCHED":
@@ -150,6 +154,7 @@ def _execute_arm(
             sandbox=sandbox,
             timeout=timeout,
             model=model,
+            reasoning_effort=reasoning_effort,
             codex_home=codex_home,
         )
     except subprocess.TimeoutExpired as error:
@@ -205,6 +210,7 @@ def run_experiment(
     timeout: int = 1800,
     codex_home: Path | None = None,
     model: str | None = None,
+    reasoning_effort: str | None = None,
     keep_artifacts: bool = False,
     neutral: bool = False,
 ) -> list[ArmResult]:
@@ -236,6 +242,7 @@ def run_experiment(
         "run": run,
         "pairs": pairs,
         "model": model or "codex-config-default",
+        "reasoning_effort": reasoning_effort or "codex-config-default",
         "codex_version": _codex_version(),
         "codex_home": str(codex_home or os.environ.get("CODEX_HOME") or Path.home() / ".codex"),
         "source_snapshot": source_snapshot,
@@ -266,6 +273,7 @@ def run_experiment(
                     sandbox=sandbox,
                     timeout=timeout,
                     model=model,
+                    reasoning_effort=reasoning_effort,
                     codex_home=codex_home,
                 )
             else:

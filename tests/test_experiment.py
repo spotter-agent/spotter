@@ -57,7 +57,9 @@ def test_experiment_without_run_only_prepares(monkeypatch: pytest.MonkeyPatch) -
 def test_results_carry_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
     """PR #15 review P1: rows without conditions are not measurements."""
     monkeypatch.setattr(experiment, "fork", _fake_fork({}))
-    results = run_experiment("s1", 5, "look at the trace", check="pytest -q")
+    results = run_experiment(
+        "s1", 5, "look at the trace", check="pytest -q", reasoning_effort="low"
+    )
     rows = [json.loads(line) for line in results_path("s1", 5).read_text().splitlines()]
     meta = rows[0]
     assert meta["meta"] is True
@@ -65,6 +67,7 @@ def test_results_carry_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
     assert meta["check"] == "pytest -q"
     assert meta["sandbox"] and meta["timeout"] and meta["started_at"]
     assert meta["pairs"] == 1
+    assert meta["reasoning_effort"] == "low"
     assert meta["result_schema_version"] == 2
     assert rows[-1]["complete"] is True and rows[-1]["finished_at"]
     # every row is linked to its conditions via the experiment id
@@ -235,9 +238,24 @@ def test_cli_accepts_neutral_mode_without_guidance(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr("spotter.cli.run_experiment", record_run)
     monkeypatch.setattr("spotter.cli.summarize", lambda results: "neutral summary")
 
-    assert main(["experiment", "--session", "s1", "--step", "5", "--neutral"]) == 0
+    assert (
+        main(
+            [
+                "experiment",
+                "--session",
+                "s1",
+                "--step",
+                "5",
+                "--neutral",
+                "--reasoning-effort",
+                "low",
+            ]
+        )
+        == 0
+    )
     assert captured["guidance"] is None
     assert captured["neutral"] is True
+    assert captured["reasoning_effort"] == "low"
 
 
 def test_cli_rejects_neutral_mode_with_guidance() -> None:
@@ -459,7 +477,7 @@ def test_summary_compares_complete_pairs() -> None:
     assert "n=1/2 complete; guidance better=1" in summarize(rows)
 
 
-def test_run_arm_forwards_model_and_codex_home(
+def test_run_arm_forwards_model_reasoning_effort_and_codex_home(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     calls: list[tuple[list[str], dict[str, object]]] = []
@@ -479,9 +497,11 @@ def test_run_arm_forwards_model_and_codex_home(
         sandbox="workspace-write",
         timeout=1,
         model="gpt-test",
+        reasoning_effort="low",
         codex_home=tmp_path,
     )
     assert calls[0][0][4:6] == ["--model", "gpt-test"]
+    assert calls[0][0][6:8] == ["--config", 'model_reasoning_effort="low"']
     assert calls[0][1]["env"]["CODEX_HOME"] == str(tmp_path)  # type: ignore[index]
 
 
