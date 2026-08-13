@@ -10,6 +10,8 @@ Start here if you are reading the repository for the first time.
 | What problem is Spotter trying to solve? | [Concept](concept.md) | mental model, principles, intervention semantics |
 | What processes/components/state should exist? | [Architecture](architecture.md) | component, state, IPC, and failure contracts |
 | What happens from install through uninstall/reinstall? | [Lifecycle](lifecycle.md) | command-by-command operational lifecycle |
+| What did the App Server proof of concept establish? | [App Server PoC](app-server-poc.md) | exploratory protocol and transport findings |
+| Was shared TUI control validated end to end? | [App Server validation](app-server-validation.md) | historical validation evidence and limitations |
 | What should become trustworthy next? | [Roadmap](roadmap.md) | Runtime → Observe → Detect → Intervene → Recover → Harden, with evidence gates |
 | What prior papers/systems should I study, and what does Spotter borrow from them? | [Reference](reference.md) | literature + implementation precedents, boundaries, and implementation hints |
 | What hypotheses remain unproven, and how will Spotter evaluate them? | [Research](research.md) | evidence posture, research questions, experiments, and metrics |

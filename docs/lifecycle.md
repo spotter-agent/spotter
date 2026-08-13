@@ -1,13 +1,21 @@
 # Lifecycle and Operations
 
-> **Status:** target design with an implemented transactional Codex setup slice. Active implementation is tracked by the [Roadmap](roadmap.md) and native GitHub Milestones.
-> `spotter setup|teardown codex`, versioned ownership manifests, managed `launchd`/`systemd --user` registration, portable startup, legacy Hook/plugin migration, and runtime-aware diagnostics exist. Homebrew installation, App Server event ingestion, and transparent plain-`codex` launch remain target behavior.
+> **Status:** primarily a target contract with an implemented transactional Codex setup slice. For
+> commands that work today, see [Use the current prototype](../README.md#use-the-current-prototype);
+> for current
+> implementation state, see [Status](status.md). `spotter setup|teardown codex`, versioned ownership
+> manifests, managed `launchd`/`systemd --user` registration, portable startup, legacy Hook/plugin
+> migration, and runtime-aware diagnostics exist. App Server event ingestion also exists, but daemon
+> connection ownership, reconnect/reconciliation, Homebrew distribution, `spotter version`,
+> `spotter purge`, and transparent plain-`codex` launch remain target behavior.
 
 ---
 
-## 30-second summary
+## 30-second target lifecycle
 
-The user-facing lifecycle should be understandable as four operations:
+The intended packaged lifecycle should be understandable as four operations. Homebrew distribution
+is not available yet; source installation and the currently implemented commands are documented in
+the [README](../README.md#use-the-current-prototype):
 
 ```bash
 # 1. Install the product
@@ -25,7 +33,8 @@ spotter teardown codex
 brew uninstall spotter
 ```
 
-Persistent Spotter data is removed only by an explicit purge:
+The target contract reserves persistent-data removal for an explicit purge. This command is not
+implemented yet:
 
 ```bash
 spotter purge --all
@@ -65,7 +74,7 @@ Spotter-managed external path, and #79 provides the daemon/control and `ServiceM
 
 | Task | Command / section |
 | --- | --- |
-| Install Spotter | `brew install spotter` → [3. Install](#3-install-package-only) |
+| Target package installation | `brew install spotter` → [3. Install](#3-install-package-only) |
 | Connect Codex | `spotter setup codex` → [4. Setup](#4-spotter-setup-codex) |
 | Understand App Server ownership | [5. App Server lifecycle](#5-app-server-lifecycle) |
 | Understand background service startup | [6. Managed runtime startup](#6-managed-runtime-startup) |
@@ -78,7 +87,7 @@ Spotter-managed external path, and #79 provides the daemon/control and `ServiceM
 | Change config | [13. Configuration lifecycle](#13-configuration-lifecycle) |
 | Disconnect Codex | `spotter teardown codex` → [14. Teardown](#14-spotter-teardown-codex) |
 | Uninstall Spotter | `brew uninstall spotter` → [15. Uninstall](#15-brew-uninstall-spotter) |
-| Remove data too | `spotter purge --all` → [16. Purge](#16-purge) |
+| Target data removal | `spotter purge --all` → [16. Purge](#16-purge) |
 | Reinstall safely | [17. Reinstall](#17-reinstall) |
 | Migrate current plugin users | [18. Legacy plugin migration](#18-legacy-plugin-migration) |
 
@@ -826,7 +835,7 @@ affect the verdict; once a configured surface becomes unavailable it warns or fa
 its consequence. Until #85 supplies live identity state, active/dormant thread counts remain
 explicitly unknown rather than inferred from Hook sessions.
 
-Example:
+Target output shape (not current CLI output):
 
 ```text
 Spotter
@@ -841,10 +850,15 @@ Codex
   live steer:     available
   PreToolUse:     active
 
-Sessions
+Threads
   active:         2
   dormant:        7
 ```
+
+Today the command prints the Spotter home and storage size, runtime diagnostic checks, journaled
+session count and last-observation age, fork count when present, reviewer/ledger warnings, and
+review-token totals when available. It does not report package version or active/dormant thread
+counts. The target shape depends on the remaining runtime identity and packaging work.
 
 ## 9.2 `spotter doctor`
 
@@ -1137,7 +1151,9 @@ If package-manager uninstall cannot run lifecycle cleanup reliably, `spotter tea
 
 # 16. Purge
 
-Purge is the destructive data-cleanup operation.
+Purge is the target destructive data-cleanup operation. No `spotter purge` command exists today;
+repository-aware implementation and retention behavior are tracked by
+[#89](https://github.com/spotter-agent/spotter/issues/89).
 
 Examples:
 
