@@ -22,6 +22,7 @@ import uuid
 from contextlib import suppress
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 
 from spotter.hook import journal_path
@@ -30,6 +31,19 @@ from spotter.replay import fork
 from spotter.snapshot import StepJournal
 
 CONTROL_PROMPT = "Continue the task."
+EXPERIMENT_RESULT_SCHEMA_VERSION = 1
+_OUTPUT_LIMIT = 4000
+
+
+class ArmClassification(StrEnum):
+    PASS = "PASS"
+    TASK_FAIL = "TASK_FAIL"
+    SETUP_FAIL = "SETUP_FAIL"
+    INFRA_FAIL = "INFRA_FAIL"
+    TIMEOUT_AGENT = "TIMEOUT_AGENT"
+    TIMEOUT_CHECK = "TIMEOUT_CHECK"
+    CHECK_ERROR = "CHECK_ERROR"
+    UNJUDGEABLE = "UNJUDGEABLE"
 
 
 @dataclass(frozen=True)
@@ -41,6 +55,11 @@ class ArmResult:
     worktree: str
     agent_exit: int | None  # None = not run
     check_exit: int | None  # None = no check command
+    classification: ArmClassification
+    check_stdout: str = ""
+    check_stderr: str = ""
+    infra_diagnostic: str | None = None
+    result_schema_version: int = EXPERIMENT_RESULT_SCHEMA_VERSION
 
 
 def results_path(session_id: str, step: int) -> Path:
@@ -107,6 +126,7 @@ def run_experiment(
     # conditions that produced them can be recovered and compared.
     meta = {
         "meta": True,
+        "result_schema_version": EXPERIMENT_RESULT_SCHEMA_VERSION,
         "experiment_id": experiment_id,
         "source_session": session_id,
         "step": step,
@@ -137,6 +157,10 @@ def run_experiment(
             plan = fork(session_id, step, codex_home=codex_home)
             agent_exit: int | None = None
             check_exit: int | None = None
+            classification = ArmClassification.UNJUDGEABLE
+            check_stdout = ""
+            check_stderr = ""
+            infra_diagnostic: str | None = None
             if run:
                 try:
                     agent_exit = _run_arm(
@@ -148,21 +172,52 @@ def run_experiment(
                         model=model,
                         codex_home=codex_home,
                     )
-                except subprocess.TimeoutExpired:
-                    agent_exit = 124
-                if check and agent_exit == 0:
+                except subprocess.TimeoutExpired as error:
+                    classification = ArmClassification.TIMEOUT_AGENT
+                    infra_diagnostic = str(error)
+                except OSError as error:
+                    classification = ArmClassification.INFRA_FAIL
+                    infra_diagnostic = str(error)
+                if agent_exit is not None and agent_exit != 0:
+                    classification = ArmClassification.INFRA_FAIL
+                    infra_diagnostic = f"agent exited {agent_exit}"
+                elif check and agent_exit == 0:
                     try:
-                        check_exit = subprocess.run(
+                        completed = subprocess.run(
                             check,
                             shell=True,
                             cwd=plan.worktree,
                             capture_output=True,
+                            text=True,
                             timeout=timeout,
-                        ).returncode
-                    except subprocess.TimeoutExpired:
-                        check_exit = 124
+                        )
+                        check_exit = completed.returncode
+                        check_stdout = _bounded_output(completed.stdout)
+                        check_stderr = _bounded_output(completed.stderr)
+                        classification = (
+                            ArmClassification.PASS
+                            if check_exit == 0
+                            else ArmClassification.TASK_FAIL
+                        )
+                    except subprocess.TimeoutExpired as error:
+                        classification = ArmClassification.TIMEOUT_CHECK
+                        check_stdout = _bounded_output(error.stdout)
+                        check_stderr = _bounded_output(error.stderr)
+                    except OSError as error:
+                        classification = ArmClassification.CHECK_ERROR
+                        infra_diagnostic = str(error)
             result = ArmResult(
-                experiment_id, pair, arm, plan.session_id, plan.worktree, agent_exit, check_exit
+                experiment_id,
+                pair,
+                arm,
+                plan.session_id,
+                plan.worktree,
+                agent_exit,
+                check_exit,
+                classification,
+                check_stdout,
+                check_stderr,
+                infra_diagnostic,
             )
             results.append(result)
             with out.open("a", encoding="utf-8") as sink:  # one row per run, crash-safe
@@ -224,37 +279,65 @@ def _source_snapshot(session_id: str, step: int) -> str | None:
     return next((r.snapshot for r in reversed(records[: step + 1]) if r.snapshot), None)
 
 
+def _bounded_output(value: str | bytes | None) -> str:
+    if isinstance(value, bytes):
+        value = value.decode(errors="replace")
+    return (value or "")[-_OUTPUT_LIMIT:]
+
+
 def summarize(results: list[ArmResult]) -> str:
     lines = []
     for arm in ("control", "guidance"):
         rows = [r for r in results if r.arm == arm]
-        ran = [r for r in rows if r.agent_exit is not None]
-        valid = [r for r in ran if r.agent_exit == 0]
-        invalid = len(ran) - len(valid)
-        passed = [r for r in valid if r.check_exit == 0]
-        checked = [r for r in valid if r.check_exit is not None]
-        if not ran:
+        attempted = [
+            r
+            for r in rows
+            if r.agent_exit is not None or r.classification != ArmClassification.UNJUDGEABLE
+        ]
+        judged = [
+            r
+            for r in rows
+            if r.classification in {ArmClassification.PASS, ArmClassification.TASK_FAIL}
+        ]
+        passed = [r for r in judged if r.classification == ArmClassification.PASS]
+        invalid = [
+            r
+            for r in rows
+            if r.classification
+            not in {
+                ArmClassification.PASS,
+                ArmClassification.TASK_FAIL,
+                ArmClassification.UNJUDGEABLE,
+            }
+        ]
+        if not attempted:
             lines.append(f"{arm}: {len(rows)} fork(s) prepared, not run")
-        elif not valid:
-            lines.append(f"{arm}: {invalid} invalid agent run(s), no result")
-        elif not checked:
+        elif not judged and not invalid:
             lines.append(
-                f"{arm}: {len(valid)} run(s), no --check given — completion is not success"
+                f"{arm}: {len(attempted)} run(s), no --check given — completion is not success"
             )
+        elif not judged:
+            counts = ", ".join(
+                f"{classification}={sum(r.classification == classification for r in invalid)}"
+                for classification in ArmClassification
+                if any(r.classification == classification for r in invalid)
+            )
+            lines.append(f"{arm}: {len(invalid)} invalid run(s), no result ({counts})")
         else:
-            suffix = f", {invalid} invalid agent run(s)" if invalid else ""
-            lines.append(f"{arm}: {len(passed)}/{len(checked)} passed check{suffix}")
+            suffix = f", {len(invalid)} invalid run(s)" if invalid else ""
+            lines.append(f"{arm}: {len(passed)}/{len(judged)} passed check{suffix}")
     pairs = {result.pair for result in results}
     guidance_better = control_better = tied = complete = 0
     for pair in pairs:
         pair_rows = {result.arm: result for result in results if result.pair == pair}
         if set(pair_rows) != {"control", "guidance"} or any(
-            row.agent_exit != 0 or row.check_exit is None for row in pair_rows.values()
+            row.classification not in {ArmClassification.PASS, ArmClassification.TASK_FAIL}
+            for row in pair_rows.values()
         ):
             continue
         complete += 1
-        control_passed = pair_rows["control"].check_exit == 0
-        guidance_passed = pair_rows["guidance"].check_exit == 0
+        control_passed = pair_rows["control"].classification == ArmClassification.PASS
+        guidance_passed = pair_rows["guidance"].classification == ArmClassification.PASS
         guidance_better += guidance_passed and not control_passed
         control_better += control_passed and not guidance_passed
         tied += control_passed == guidance_passed

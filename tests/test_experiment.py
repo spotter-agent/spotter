@@ -8,7 +8,13 @@ import pytest
 
 import spotter.experiment as experiment
 from spotter.config import GatesConfig, MainAgentConfig, ReviewerConfig, SpotterConfig
-from spotter.experiment import ArmResult, results_path, run_experiment, summarize
+from spotter.experiment import (
+    ArmClassification,
+    ArmResult,
+    results_path,
+    run_experiment,
+    summarize,
+)
 from spotter.hook import journal_path, run_hook
 from spotter.paths import spotter_home
 from spotter.replay import ForkPlan
@@ -49,9 +55,11 @@ def test_results_carry_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
     assert meta["check"] == "pytest -q"
     assert meta["sandbox"] and meta["timeout"] and meta["started_at"]
     assert meta["pairs"] == 1
+    assert meta["result_schema_version"] == 1
     assert rows[-1]["complete"] is True and rows[-1]["finished_at"]
     # every row is linked to its conditions via the experiment id
     assert all(row["experiment_id"] == meta["experiment_id"] for row in rows[1:])
+    assert all(row.get("classification") == "UNJUDGEABLE" for row in rows[1:-1])
     assert all(r.experiment_id == meta["experiment_id"] for r in results)
     # a rerun with different conditions is distinguishable
     monkeypatch.setattr(experiment, "fork", _fake_fork({}))
@@ -100,6 +108,8 @@ def test_check_runs_in_each_fork_worktree(monkeypatch: pytest.MonkeyPatch) -> No
 
     class FakeCompleted:
         returncode = 0
+        stdout = "check output"
+        stderr = ""
 
     def fake_subprocess_run(cmd: object, **kwargs: object) -> FakeCompleted:
         if kwargs.get("cwd"):
@@ -110,12 +120,18 @@ def test_check_runs_in_each_fork_worktree(monkeypatch: pytest.MonkeyPatch) -> No
     results = run_experiment("s1", 5, "hint", run=True, check="pytest -q")
     assert checks == ["/wt/1", "/wt/2"]
     assert all(r.check_exit == 0 for r in results)
+    assert all(r.classification == ArmClassification.PASS for r in results)
+    assert all(r.check_stdout == "check output" for r in results)
 
 
 def test_summarize_refuses_to_call_completion_success() -> None:
-    ran_no_check = [ArmResult("e", 0, "control", "s", "/wt", 0, None)]
+    ran_no_check = [
+        ArmResult("e", 0, "control", "s", "/wt", 0, None, ArmClassification.UNJUDGEABLE)
+    ]
     assert "completion is not success" in summarize(ran_no_check)
-    prepared = [ArmResult("e", 0, "guidance", "s", "/wt", None, None)]
+    prepared = [
+        ArmResult("e", 0, "guidance", "s", "/wt", None, None, ArmClassification.UNJUDGEABLE)
+    ]
     assert "not run" in summarize(prepared)
 
 
@@ -196,7 +212,8 @@ def test_failed_agent_is_not_checked_or_counted_as_success(
     monkeypatch.setattr("spotter.experiment.subprocess.run", record_check)
     results = run_experiment("s1", 5, "hint", run=True, check="pytest -q")
     assert all(result.check_exit is None for result in results)
-    assert "invalid agent run" in summarize(results)
+    assert all(result.classification == ArmClassification.INFRA_FAIL for result in results)
+    assert "INFRA_FAIL=1" in summarize(results)
     assert not any(args and args[0] == "pytest -q" for args in checks)
 
 
@@ -215,7 +232,51 @@ def test_timeout_does_not_abort_experiment(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(experiment, "_cleanup", lambda worktree: None)
     results = run_experiment("s1", 5, "hint", pairs=3, run=True)
     assert len(results) == 6
-    assert [result.agent_exit for result in results].count(124) == 1
+    assert [result.classification for result in results].count(ArmClassification.TIMEOUT_AGENT) == 1
+    assert "TIMEOUT_AGENT=1" in summarize(results)
+
+
+def test_failed_check_is_task_failure_with_bounded_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(experiment, "fork", _fake_fork({}))
+    monkeypatch.setattr(experiment, "_run_arm", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(experiment, "_codex_version", lambda: None)
+
+    def fail_check(*args: object, **kwargs: object) -> object:
+        return type(
+            "Completed",
+            (),
+            {"returncode": 1, "stdout": "x" * 5000, "stderr": "assertion failed"},
+        )()
+
+    monkeypatch.setattr("spotter.experiment.subprocess.run", fail_check)
+
+    results = run_experiment("s1", 5, "hint", run=True, check="python3 check.py")
+
+    assert all(result.classification == ArmClassification.TASK_FAIL for result in results)
+    assert all(result.check_exit == 1 for result in results)
+    assert all(len(result.check_stdout) == 4000 for result in results)
+    assert all(result.check_stderr == "assertion failed" for result in results)
+
+
+def test_check_timeout_is_not_counted_as_task_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(experiment, "fork", _fake_fork({}))
+    monkeypatch.setattr(experiment, "_run_arm", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(experiment, "_codex_version", lambda: None)
+
+    def timeout_check(*args: object, **kwargs: object) -> object:
+        raise subprocess.TimeoutExpired("check", 1, output="partial", stderr="hung")
+
+    monkeypatch.setattr("spotter.experiment.subprocess.run", timeout_check)
+
+    results = run_experiment("s1", 5, "hint", run=True, check="python3 check.py")
+
+    assert all(result.classification == ArmClassification.TIMEOUT_CHECK for result in results)
+    assert all(result.check_exit is None for result in results)
+    assert all(result.check_stdout == "partial" for result in results)
 
 
 def test_cleanup_is_best_effort_and_preserves_rollout(
@@ -235,10 +296,10 @@ def test_cleanup_is_best_effort_and_preserves_rollout(
 
 def test_summary_compares_complete_pairs() -> None:
     rows = [
-        ArmResult("e", 0, "control", "s", "/wt", 0, 1),
-        ArmResult("e", 0, "guidance", "s", "/wt", 0, 0),
-        ArmResult("e", 1, "control", "s", "/wt", 124, None),
-        ArmResult("e", 1, "guidance", "s", "/wt", 0, 0),
+        ArmResult("e", 0, "control", "s", "/wt", 0, 1, ArmClassification.TASK_FAIL),
+        ArmResult("e", 0, "guidance", "s", "/wt", 0, 0, ArmClassification.PASS),
+        ArmResult("e", 1, "control", "s", "/wt", None, None, ArmClassification.TIMEOUT_AGENT),
+        ArmResult("e", 1, "guidance", "s", "/wt", 0, 0, ArmClassification.PASS),
     ]
     assert "n=1/2 complete; guidance better=1" in summarize(rows)
 

@@ -1,6 +1,6 @@
 # Spotter task corpus
 
-`dev-v1.toml` is for harness and supervision tuning. `validation-v1.toml` is the frozen held-out split for the first decision-quality measurements. Changing a fixture or task manifest requires a new set version and new hashes; do not rewrite an observed validation set in place.
+`dev-v1.toml` is for harness and supervision tuning. `validation-v1.toml` is the frozen held-out split for the first decision-quality measurements. Changing a fixture or task manifest requires a new set version and new hashes; do not rewrite an observed validation set in place. In-place re-freezing is allowed only before the set has been used in a recorded run.
 
 Static freeze validation is safe for untrusted input:
 
