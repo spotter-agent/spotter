@@ -78,6 +78,7 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 | Evaluation labels / metrics | ✅ | Coverage-aware evaluation and precision/FP metrics |
 | Counterfactual experiment harness | ✅ | Control/guidance same-prefix pairs |
 | Standalone `spotterd` runtime | 🟡 | Process, gate IPC, per-thread immutable state, and App Server recovery ownership implemented; setup endpoint selection remains |
+| Versioned release artifacts | 🟡 | Tag-only sdist/wheel builds, SHA256 sums, and CLI/daemon/bridge build identity exist; GitHub Release/Homebrew publication remains |
 | App Server primary observation | 🟡 | Configured endpoints route through daemon-owned epoch/reconciliation into durable Trace IR and ThreadState; setup does not select an endpoint yet |
 | Event-driven signal engine | ❌ | Current reviewer trigger is periodic |
 | Live `VERIFY / NUDGE` | ❌ | Target: `turn/steer` |
@@ -301,8 +302,9 @@ python -m pip install -e '.[dev]'
 ```
 
 The package has one runtime dependency, `websockets`, which pip installs automatically. The `dev`
-extra adds only the repository's test, type-checking, and formatting tools; use `pip install -e .`
-when those tools are not needed.
+extra adds the repository's test, type-checking, formatting, and release-build tools; use
+`pip install -e .` when those tools are not needed. Tagged artifact production is documented in
+[Release artifacts and build identity](docs/releasing.md).
 
 Configuration:
 

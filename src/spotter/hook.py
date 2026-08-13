@@ -300,7 +300,9 @@ def _gate_over_ipc(
     error_detail: str | None = None
     try:
         decision, evaluation_ms, runtime_sample = asyncio.run(
-            DaemonClient(timeout=GATE_TIMEOUT).gate(event, config.gates, root)
+            DaemonClient(timeout=GATE_TIMEOUT, component="hook_bridge").gate(
+                event, config.gates, root
+            )
         )
     except DaemonTimeout as error:
         status = "timeout"

@@ -22,10 +22,12 @@ from io import TextIOWrapper
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
+from spotter.build_identity import RuntimeComponent, current_build_identity, version_line
 from spotter.config import GatesConfig
 from spotter.gates import Gate, GateDecision
 from spotter.identity import ThreadId
 from spotter.paths import secure_dir, spotter_home
+from spotter.protocol import CONTROL_PROTOCOL_VERSION
 from spotter.snapshot import StepRecord
 from spotter.thread_state import ThreadState, ThreadStateStore
 from spotter.trace import TraceEvent
@@ -33,7 +35,7 @@ from spotter.trace import TraceEvent
 if TYPE_CHECKING:
     from spotter.runtime_connection import RecoveryState
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = CONTROL_PROTOCOL_VERSION
 CONTROL_TIMEOUT = 1.0
 GATE_TIMEOUT = 0.2
 START_TIMEOUT = 5.0
@@ -55,6 +57,8 @@ class DaemonStatus:
     health: RuntimeHealth
     pid: int | None = None
     protocol: int | None = None
+    version: str | None = None
+    build_id: str | None = None
     detail: str | None = None
 
     @property
@@ -101,10 +105,15 @@ class DaemonClient:
     """One-request-per-connection client for the local control protocol."""
 
     def __init__(
-        self, socket_path: Path | None = None, *, timeout: float = CONTROL_TIMEOUT
+        self,
+        socket_path: Path | None = None,
+        *,
+        timeout: float = CONTROL_TIMEOUT,
+        component: RuntimeComponent = "cli",
     ) -> None:
         self.socket_path = socket_path or runtime_socket()
         self.timeout = timeout
+        self.component = component
 
     async def request(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         writer: asyncio.StreamWriter | None = None
@@ -113,7 +122,11 @@ class DaemonClient:
                 reader, writer = await asyncio.open_unix_connection(
                     self.socket_path, limit=_MAX_REQUEST_BYTES
                 )
-                payload: dict[str, Any] = {"protocol": PROTOCOL_VERSION, "method": method}
+                payload: dict[str, Any] = {
+                    "protocol": PROTOCOL_VERSION,
+                    "method": method,
+                    "peer": current_build_identity().peer_metadata(self.component),
+                }
                 if params is not None:
                     payload["params"] = params
                 request = json.dumps(payload, separators=(",", ":"))
@@ -154,6 +167,14 @@ class DaemonClient:
                 health=health,
                 pid=pid,
                 protocol=PROTOCOL_VERSION,
+                version=(
+                    response.get("spotter_version")
+                    if isinstance(response.get("spotter_version"), str)
+                    else None
+                ),
+                build_id=(
+                    response.get("build_id") if isinstance(response.get("build_id"), str) else None
+                ),
                 detail=(
                     response.get("detail") if isinstance(response.get("detail"), str) else None
                 ),
@@ -347,6 +368,7 @@ class DaemonServer:
                 "ok": True,
                 "health": self.health.value,
                 "pid": os.getpid(),
+                **current_build_identity().peer_metadata("daemon"),
             }
             if self.health_detail is not None:
                 response["detail"] = self.health_detail
@@ -733,6 +755,7 @@ def _secure_runtime_dir(path: Path) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the Spotter supervision daemon")
+    parser.add_argument("--version", action="version", version=version_line("spotterd"))
     parser.parse_args(argv)
     try:
         asyncio.run(DaemonServer(app_server_endpoint=_configured_app_server_endpoint()).serve())

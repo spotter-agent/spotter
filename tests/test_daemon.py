@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from spotter.build_identity import current_build_identity
 from spotter.cli import main
 from spotter.config import GatesConfig
 from spotter.daemon import (
@@ -45,6 +46,8 @@ def test_control_socket_handles_concurrent_clients_and_health_states(socket_path
             )
             assert {status.health for status in statuses} == {RuntimeHealth.HEALTHY}
             assert len({status.pid for status in statuses}) == 1
+            assert {status.version for status in statuses} == {current_build_identity().version}
+            assert {status.build_id for status in statuses} == {current_build_identity().build_id}
             assert socket_path.stat().st_mode & 0o777 == 0o600
 
             server.set_health(RuntimeHealth.DEGRADED)

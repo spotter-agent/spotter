@@ -15,10 +15,10 @@ from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from fcntl import LOCK_EX, LOCK_UN, flock
-from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, cast
 
+from spotter.build_identity import current_build_identity
 from spotter.config import ConfigurationError, SpotterConfig
 from spotter.daemon import (
     ManagedServiceManager,
@@ -45,10 +45,7 @@ def _fingerprint(content: bytes) -> str:
 
 
 def _package_version() -> str:
-    try:
-        return version("spotter-agent")
-    except PackageNotFoundError:
-        return "0+source"
+    return current_build_identity().version
 
 
 def _atomic_write(path: Path, content: bytes) -> None:

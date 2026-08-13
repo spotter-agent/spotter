@@ -5,9 +5,10 @@
 > for current
 > implementation state, see [Status](status.md). `spotter setup|teardown codex`, versioned ownership
 > manifests, managed `launchd`/`systemd --user` registration, portable startup, legacy Hook/plugin
-> migration, and runtime-aware diagnostics exist. App Server event ingestion also exists, but daemon
-> connection ownership, reconnect/reconciliation, Homebrew distribution, `spotter version`,
-> `spotter purge`, and transparent plain-`codex` launch remain target behavior.
+> migration, runtime-aware diagnostics, tag-derived release artifacts, and packaged `--version`
+> identity exist. App Server event ingestion also exists, but Homebrew publication,
+> package-vs-running-daemon upgrade policy, `spotter purge`, and transparent plain-`codex` launch
+> remain target behavior.
 
 ---
 
@@ -190,7 +191,7 @@ Installed by the package manager:
 ```text
 spotter
 spotterd
-spotter-hook
+spotter hook  # minimal Hook bridge within the packaged CLI
 package metadata
 ```
 
@@ -288,7 +289,8 @@ Package installation and agent integration are separate transactions.
 ### Success check
 
 ```bash
-spotter version
+spotter --version
+spotterd --version
 spotter status
 ```
 
@@ -306,7 +308,7 @@ Integration:  not configured
 - Homebrew formula and release artifacts;
 - stable executable paths;
 - package provenance detection (`homebrew`, source, standalone, etc.);
-- `spotter version`;
+- `spotter --version` and `spotterd --version`;
 - package-vs-running-daemon version comparison.
 
 ---
@@ -1362,6 +1364,14 @@ GitHub Release
   ↓
 Homebrew formula update
 ```
+
+The repository now implements the package/build portion of this pipeline. An exact
+`vMAJOR.MINOR.PATCH` tag produces a source distribution, universal wheel, machine-readable release
+manifest, and versioned SHA256 file. Both installed entry points expose the embedded tag+commit build
+identity, while the Hook bridge identifies itself independently on daemon requests. See
+[Release artifacts and build identity](releasing.md) for the authoritative artifact and identity
+contract. GitHub Release publication remains tracked by #105, and Homebrew-specific layout remains
+outside the core artifacts.
 
 Release verification should include fixtures for:
 

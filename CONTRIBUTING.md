@@ -82,6 +82,9 @@ mypy src tests
 pytest
 ```
 
+Release artifacts are built only from an exact version tag. See
+[`docs/releasing.md`](docs/releasing.md) for the artifact, checksum, and build-identity contract.
+
 Use focused tests during iteration, but run the relevant full checks before requesting review whenever practical.
 
 ## Pull requests

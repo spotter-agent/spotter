@@ -112,7 +112,7 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 | Event-driven detection | ❌ | Reviewer is still cadence-based | #28 after Runtime/Observe |
 | Live `VERIFY` / `NUDGE` | ❌ | Reviewer decisions stop at the journal | #22 via `turn/steer` |
 | `INTERRUPT` / `RESTART` | ❌ | No live recovery path | #26 + #30 after soft intervention is understood |
-| Packaging / long-term operations | 🎯 | Current paths are source/plugin installs; local `prune` exists | #88 packaging, #89 purge/retention, #90 upgrade/config lifecycle |
+| Packaging / long-term operations | 🟡 | Exact version tags build validated sdist/wheel artifacts, release metadata, SHA256 sums, and shared CLI/daemon/bridge build identity; Homebrew publication is not yet implemented | #105 release automation, #106–#108 packaged layout/tap/smoke, #89 retention, #90 upgrade compatibility |
 
 ---
 
@@ -195,6 +195,7 @@ Labels are exceptional contributor signals only (`good first issue`, `help wante
 | What is implemented right now | **This document** |
 | Exact process/data/control boundaries | [Architecture](architecture.md) |
 | Install → setup → run → recover → upgrade → remove | [Lifecycle](lifecycle.md) |
+| Build immutable package artifacts from a version tag | [Releasing](releasing.md) |
 | What should be built in what order | [Roadmap](roadmap.md) |
 | Prior work, hypotheses, and evidence | [Research](research.md) |
 | Repository/issue conventions | [Conventions](conventions.md) |

@@ -23,6 +23,7 @@ from spotter.budget import (
 from spotter.budget import (
     read as read_spend,
 )
+from spotter.build_identity import version_line
 from spotter.codex import CodexAdapter
 from spotter.config import ConfigurationError, MainAgentConfig, ReviewerConfig, SpotterConfig
 from spotter.core import SpotterRuntime
@@ -82,6 +83,7 @@ from spotter.trace import TraceEvent
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Observe a coding-agent trajectory")
+    parser.add_argument("--version", action="version", version=version_line("spotter"))
     parser.add_argument(
         "command",
         nargs="?",
@@ -741,6 +743,10 @@ def _daemon_main(action: str, manager: ServiceManager | None = None) -> int:
         details.append(f"pid={status.pid}")
     if status.protocol is not None:
         details.append(f"protocol={status.protocol}")
+    if status.version is not None:
+        details.append(f"version={status.version}")
+    if status.build_id is not None:
+        details.append(f"build={status.build_id}")
     if status.detail:
         details.append(status.detail)
     suffix = f" ({', '.join(details)})" if details else ""
