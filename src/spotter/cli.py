@@ -50,7 +50,13 @@ from spotter.observability import (
 )
 from spotter.paths import secure_dir, spotter_home
 from spotter.redact import scan_text
-from spotter.replay import ReplayError, fork, plan_to_json
+from spotter.replay import (
+    ReplayError,
+    branch_coverage,
+    branch_coverage_to_json,
+    fork,
+    plan_to_json,
+)
 from spotter.reviewer import last_usage, review
 from spotter.runtime_metrics import measure_runtime_costs, render_runtime_costs
 from spotter.snapshot import (
@@ -84,6 +90,7 @@ def build_parser() -> argparse.ArgumentParser:
             "hook",
             "analyze",
             "fork",
+            "fork-coverage",
             "prune",
             "review",
             "experiment",
@@ -101,6 +108,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "observe: validate config and start; hook: Codex hook bridge (JSON on stdin); "
             "analyze: summarize journaled sessions; fork: branch a session at a step; "
+            "fork-coverage: classify each session proposal for replay eligibility; "
             "prune: drop unreferenced refs/spotter snapshots (dry-run without --apply); "
             "review: run the shadow reviewer on a session (records only, injects nothing); "
             "experiment: guidance or identical-neutral fork pairs (needs --run to execute); "
@@ -289,6 +297,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(f"--session {args.session!r} is not a valid session id")
     if args.command == "analyze":
         return _analyze_main(args.session)
+    if args.command == "fork-coverage":
+        if not args.session:
+            parser.error("fork-coverage requires --session")
+        try:
+            print(branch_coverage_to_json(branch_coverage(args.session)))
+        except (OSError, SnapshotError) as error:
+            print(f"fork coverage failed: {error}", file=sys.stderr)
+            return 1
+        return 0
     if args.command == "prune":
         if args.max_age_days is not None and args.max_age_days < 1:
             parser.error("--max-age-days must be >= 1")

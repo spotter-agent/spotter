@@ -61,6 +61,34 @@ class EnvironmentDrift(StrEnum):
     UNKNOWN_ENVIRONMENT_DRIFT = "UNKNOWN_ENVIRONMENT_DRIFT"
 
 
+class BranchCoverageStatus(StrEnum):
+    FORKABLE_EXACT = "FORKABLE_EXACT"
+    NOT_FORKABLE_STATE = "NOT_FORKABLE_STATE"
+    NOT_FORKABLE_CONTEXT = "NOT_FORKABLE_CONTEXT"
+    UNSAFE_EXTERNAL_EFFECT = "UNSAFE_EXTERNAL_EFFECT"
+    OBSERVATION_GAP = "OBSERVATION_GAP"
+
+
+@dataclass(frozen=True)
+class BranchPointCoverage:
+    step: int
+    tool_use_id: str | None
+    status: BranchCoverageStatus
+    snapshot: str | None
+    before_first_mutation: bool
+
+
+@dataclass(frozen=True)
+class BranchCoverageReport:
+    session_id: str
+    candidates: int
+    counts: dict[str, int]
+    earliest_forkable_step: int | None
+    pre_mutation_candidates: int
+    pre_mutation_forkable: int
+    points: tuple[BranchPointCoverage, ...]
+
+
 @dataclass(frozen=True)
 class EnvironmentFingerprint:
     worktree: str
@@ -149,6 +177,91 @@ def find_rollout(session_id: str, codex_home: Path | None = None) -> Path:
     if not matches:
         raise ReplayError(f"no rollout found for session {session_id} under {home}/sessions")
     return matches[-1]
+
+
+def branch_coverage(session_id: str, codex_home: Path | None = None) -> BranchCoverageReport:
+    """Classify every journaled proposal using currently available replay artifacts."""
+
+    records = StepJournal.load(journal_path({"session_id": session_id}))
+    try:
+        rollout = find_rollout(session_id, codex_home)
+        rollout_ids = {
+            identifier
+            for number, line in enumerate(rollout.read_text(encoding="utf-8").splitlines(), 1)
+            for identifier in _record_ids(_rollout_record(line, number))
+            if isinstance(identifier, str)
+        }
+    except (OSError, ReplayError):
+        rollout_ids = set()
+    mutation_steps = [
+        record.step
+        for record in records
+        if record.event.kind == "tool_proposal"
+        and (
+            record.event.payload.get("reversibility_class") == "B"
+            or record.event.payload.get("tool") == "apply_patch"
+        )
+    ]
+    first_mutation = min(mutation_steps, default=None)
+    snapshot: str | None = None
+    gap_seen = False
+    external_effect_seen = False
+    object_cache: dict[tuple[Path, str], bool] = {}
+    points: list[BranchPointCoverage] = []
+    for record in records:
+        snapshot = record.snapshot or snapshot
+        gap_seen = gap_seen or record.event.kind == "observation_gap"
+        external_effect_seen = external_effect_seen or record.event.kind == "external_effect"
+        if record.event.kind != "tool_proposal":
+            continue
+        tool_use = record.event.payload.get("tool_use_id")
+        tool_use_id = tool_use if isinstance(tool_use, str) and tool_use else None
+        repo = _recorded_repo(records, record.step)
+        if gap_seen:
+            status = BranchCoverageStatus.OBSERVATION_GAP
+        elif external_effect_seen:
+            status = BranchCoverageStatus.UNSAFE_EXTERNAL_EFFECT
+        elif tool_use_id is None or tool_use_id not in rollout_ids:
+            status = BranchCoverageStatus.NOT_FORKABLE_CONTEXT
+        elif snapshot is None or repo is None or not _snapshot_exists(repo, snapshot, object_cache):
+            status = BranchCoverageStatus.NOT_FORKABLE_STATE
+        else:
+            status = BranchCoverageStatus.FORKABLE_EXACT
+        points.append(
+            BranchPointCoverage(
+                record.step,
+                tool_use_id,
+                status,
+                snapshot,
+                first_mutation is None or record.step < first_mutation,
+            )
+        )
+        # The branch is immediately before this proposal, so the proposal's
+        # possible effect contaminates later points, not its own branch point.
+        # Current Class C results create explicit external_effect records;
+        # legacy proposals without a class cannot prove that they were local.
+        external_effect_seen = (
+            external_effect_seen or record.event.payload.get("reversibility_class") is None
+        )
+    counts = {
+        status.value: sum(point.status == status for point in points)
+        for status in BranchCoverageStatus
+    }
+    pre_mutation = [point for point in points if point.before_first_mutation]
+    forkable = [point for point in points if point.status == BranchCoverageStatus.FORKABLE_EXACT]
+    return BranchCoverageReport(
+        session_id,
+        len(points),
+        counts,
+        forkable[0].step if forkable else None,
+        len(pre_mutation),
+        sum(point.status == BranchCoverageStatus.FORKABLE_EXACT for point in pre_mutation),
+        tuple(points),
+    )
+
+
+def branch_coverage_to_json(report: BranchCoverageReport) -> str:
+    return json.dumps(asdict(report), indent=2)
 
 
 def fingerprint_environment(worktree: Path) -> EnvironmentFingerprint:
@@ -535,6 +648,22 @@ def _git_output(repo: Path, *args: str, allow_failure: bool = False) -> str:
             return f"unavailable:{result.returncode}"
         raise ReplayError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
     return result.stdout.strip()
+
+
+def _snapshot_exists(repo: Path, snapshot: str, cache: dict[tuple[Path, str], bool]) -> bool:
+    key = (repo.resolve(), snapshot)
+    if key not in cache:
+        try:
+            result = subprocess.run(
+                ["git", "cat-file", "-e", f"{snapshot}^{{commit}}"],
+                cwd=repo,
+                capture_output=True,
+                timeout=30,
+            )
+            cache[key] = result.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            cache[key] = False
+    return cache[key]
 
 
 def _command_version(args: list[str]) -> str:

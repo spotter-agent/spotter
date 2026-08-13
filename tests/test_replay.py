@@ -8,9 +8,12 @@ import pytest
 
 from spotter.hook import journal_path
 from spotter.replay import (
+    BranchCoverageStatus,
     EnvironmentDrift,
     ForkStatus,
     ReplayError,
+    branch_coverage,
+    branch_coverage_to_json,
     compare_environments,
     fingerprint_environment,
     fork,
@@ -78,6 +81,127 @@ def test_fork_rollout_truncates_and_renames(codex_home: Path) -> None:
     assert OLD_ID not in forked.name and "new-id-1234" in forked.name
     assert all(OLD_ID not in line for line in lines)
     assert rollout.read_text().count("call_B") == 1  # original untouched
+
+
+def test_branch_coverage_classifies_state_context_effects_and_gaps(
+    repo: Path, codex_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sha = snapshot_worktree(repo)
+    _journal(
+        OLD_ID,
+        [
+            (
+                TraceEvent(
+                    "tool_proposal",
+                    {
+                        "tool_use_id": "call_A",
+                        "cwd": str(repo),
+                        "reversibility_class": "A",
+                    },
+                ),
+                None,
+            ),
+            (TraceEvent("sessionstart"), sha),
+            (
+                TraceEvent(
+                    "tool_proposal",
+                    {
+                        "tool_use_id": "missing-call",
+                        "cwd": str(repo),
+                        "reversibility_class": "A",
+                    },
+                ),
+                None,
+            ),
+            (
+                TraceEvent(
+                    "tool_proposal",
+                    {
+                        "tool_use_id": "call_A",
+                        "cwd": str(repo),
+                        "reversibility_class": "A",
+                    },
+                ),
+                None,
+            ),
+            (TraceEvent("external_effect", {"result": "succeeded"}), None),
+            (
+                TraceEvent(
+                    "tool_proposal",
+                    {
+                        "tool_use_id": "call_B",
+                        "cwd": str(repo),
+                        "reversibility_class": "B",
+                    },
+                ),
+                None,
+            ),
+            (TraceEvent("observation_gap"), None),
+            (
+                TraceEvent(
+                    "tool_proposal",
+                    {
+                        "tool_use_id": "call_B",
+                        "cwd": str(repo),
+                        "reversibility_class": "A",
+                    },
+                ),
+                None,
+            ),
+        ],
+    )
+
+    report = branch_coverage(OLD_ID, codex_home)
+
+    assert [point.status for point in report.points] == [
+        BranchCoverageStatus.NOT_FORKABLE_STATE,
+        BranchCoverageStatus.NOT_FORKABLE_CONTEXT,
+        BranchCoverageStatus.FORKABLE_EXACT,
+        BranchCoverageStatus.UNSAFE_EXTERNAL_EFFECT,
+        BranchCoverageStatus.OBSERVATION_GAP,
+    ]
+    assert report.earliest_forkable_step == 3
+    assert (report.pre_mutation_forkable, report.pre_mutation_candidates) == (1, 3)
+    assert report.counts["FORKABLE_EXACT"] == 1
+    assert json.loads(branch_coverage_to_json(report))["points"][2]["status"] == "FORKABLE_EXACT"
+
+    from spotter.cli import main
+
+    assert main(["fork-coverage", "--session", OLD_ID]) == 0
+    cli_report = json.loads(capsys.readouterr().out)
+    assert cli_report["candidates"] == 5
+
+
+def test_branch_coverage_does_not_treat_legacy_effects_as_clean(
+    repo: Path, codex_home: Path
+) -> None:
+    sha = snapshot_worktree(repo)
+    _journal(
+        OLD_ID,
+        [
+            (TraceEvent("sessionstart"), sha),
+            (
+                TraceEvent("tool_proposal", {"tool_use_id": "call_A", "cwd": str(repo)}),
+                None,
+            ),
+            (
+                TraceEvent(
+                    "tool_proposal",
+                    {
+                        "tool_use_id": "call_B",
+                        "cwd": str(repo),
+                        "reversibility_class": "A",
+                    },
+                ),
+                None,
+            ),
+        ],
+    )
+
+    report = branch_coverage(OLD_ID, codex_home)
+
+    assert report.points[0].status == BranchCoverageStatus.FORKABLE_EXACT
+    assert report.points[1].status == BranchCoverageStatus.UNSAFE_EXTERNAL_EFFECT
 
 
 def test_fork_rollout_only_rewrites_session_metadata(codex_home: Path) -> None:

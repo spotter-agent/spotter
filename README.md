@@ -349,6 +349,7 @@ spotter label --session <id> --step <n> --verdict fp
 spotter metrics
 spotter observability [--session <id>]
 spotter fork --session <id> --step <n>
+spotter fork-coverage --session <id>
 spotter prune --repo /path/to/repo  # dry-run unless --apply is supplied
 spotter tasks validate path/to/task-set.toml
 spotter tasks preflight path/to/task-set.toml
@@ -371,6 +372,12 @@ Neutral mode gives both arms the exact control prompt and reports mechanically j
 disagreement, environment-preflight mismatch, and infrastructure-failure rates separately. The
 command provides the measurement path; a representative executed corpus is still required before
 claiming a replay noise bound.
+
+`fork-coverage` is read-only. It classifies every journaled proposal against the currently available
+rollout and Git snapshot objects, reports the earliest exact fork, and separates pre-mutation
+coverage from missing state/context, external-effect contamination, and observation gaps. Because
+the command checks object availability now, pruned or moved historical repositories remain visible
+as `NOT_FORKABLE_STATE` rather than being counted as covered.
 
 Task-set validation freezes task and fixture hashes and checks the versioned scorer/budget contract without executing commands. Preflight runs setup, the broken-state scorer, a declared known-good transform, and the positive scorer in a temporary fixture copy; it never runs agent arms. Because preflight and batch execution run corpus-declared shell commands, use `validate` only for untrusted task sets. `tasks run` requires an explicit paid-run opt-in, starts each control/guidance arm from a clean fixture copy, journals bounded mechanical results with `fsync`, and resumes only when the frozen set, environment, and run conditions still match. The Codex backend enforces the wall-time budget; it records the declared max-turn budget for parity/provenance because `codex exec` does not expose a hard turn-limit flag. The existence of the experiment harness does **not** mean positive intervention advantage has been established. Enough executed multi-task runs remain an evidence gap.
 

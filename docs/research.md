@@ -266,6 +266,11 @@ disagreement from environment mismatch and infrastructure failure. No representa
 run has established the rate yet. New Hook-observed sessions pin a baseline snapshot at
 `SessionStart`, removing the previous pre-mutation read-only blind region without snapshotting every
 observation; historical sessions whose snapshot objects were pruned remain non-recoverable.
+The read-only `fork-coverage` report now quantifies that distinction per proposal, including earliest
+exact and pre-mutation coverage, without mistaking missing historical Git objects for valid anchors.
+The first [historical coverage baseline](experiments/fork-coverage-baseline.md) found 0/1,246 clean
+exact proposals (including 0/120 pre-mutation), so neutral execution on that legacy sample is a
+documented no-go rather than a fabricated zero-noise result.
 
 Intervention deltas smaller than the instrument noise floor should not be overinterpreted.
 

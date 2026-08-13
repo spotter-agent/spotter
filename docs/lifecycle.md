@@ -842,6 +842,12 @@ reports mechanical outcome disagreement separately from environment-preflight mi
 infrastructure failures. This avoids treating stochastic continuation variance as snapshot failure;
 the resulting rate becomes evidence only after representative real prefixes are executed.
 
+`spotter fork-coverage --session <id>` derives a point-by-point coverage map without creating a
+fork. It verifies rollout correlation and current Git object availability, then classifies exact
+forks, missing state/context, external-effect contamination, and observation gaps. The report also
+names the earliest exact point and coverage before the first known mutation. Controlled fixture
+bootstrap is not inferred when no bootstrap contract exists.
+
 Do not treat experiment machinery as evidence of positive intervention advantage until enough mechanically scored runs exist.
 
 Frozen task-set batches run control/guidance arms from separate clean fixture copies. Each arm row
