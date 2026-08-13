@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "measured_at": "2026-08-13",
+  "source_session": "019ffb20-aa92-7f32-857d-e3bcf7f3ebb2",
+  "branch_step": 2,
+  "prefix_id": "2f8575d9fcf973dba581328681129677c0afc08b81747bb6b6d9d3e62b248b8f",
+  "source_snapshot": "406d113ee4920bc07b45b6e8f96776c34f9f31b4",
+  "model": "gpt-5.6-sol",
+  "scorer": "python3 check.py",
+  "raw_result_sha256": "ed49358b6b36d280e1252901e60cf12658955959e03db1eb4f081c4f6d39378e",
+  "coverage": {
+    "candidates": 5,
+    "forkable_exact": 4,
+    "pre_mutation_candidates": 2,
+    "pre_mutation_forkable": 2,
+    "earliest_forkable_step": 2
+  },
+  "outcomes": {
+    "pairs": 3,
+    "judgeable_pairs": 3,
+    "mechanical_disagreements": 0,
+    "environment_mismatches": 0,
+    "infrastructure_failures": 0,
+    "passing_arms": 6
+  },
+  "continuations": [
+    {
+      "pair": 0,
+      "arm": "neutral_b",
+      "session_id": "c09c367a-cf8d-4c25-948f-a761996f7ff1",
+      "elapsed_seconds": 24.687,
+      "tool_calls": 4,
+      "reported_tokens": 108118
+    },
+    {
+      "pair": 0,
+      "arm": "neutral_a",
+      "session_id": "99418b16-4973-42d8-95d6-8efb85da2f69",
+      "elapsed_seconds": 28.076,
+      "tool_calls": 4,
+      "reported_tokens": 108200
+    },
+    {
+      "pair": 1,
+      "arm": "neutral_a",
+      "session_id": "2083571b-57b2-477b-a58a-32b708a6af94",
+      "elapsed_seconds": 22.497,
+      "tool_calls": 4,
+      "reported_tokens": 107753
+    },
+    {
+      "pair": 1,
+      "arm": "neutral_b",
+      "session_id": "b5964029-1967-4cfd-bded-d84a636b344d",
+      "elapsed_seconds": 24.514,
+      "tool_calls": 4,
+      "reported_tokens": 107489
+    },
+    {
+      "pair": 2,
+      "arm": "neutral_b",
+      "session_id": "a10070c1-5f05-42fd-b19e-d354f223cc9b",
+      "elapsed_seconds": 27.153,
+      "tool_calls": 4,
+      "reported_tokens": 108453
+    },
+    {
+      "pair": 2,
+      "arm": "neutral_a",
+      "session_id": "c6319c8e-fd77-4b53-b0d9-e288a7fc32bc",
+      "elapsed_seconds": 31.72,
+      "tool_calls": 6,
+      "reported_tokens": 154155
+    }
+  ]
+}

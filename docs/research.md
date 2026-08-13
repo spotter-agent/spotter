@@ -273,7 +273,11 @@ exact proposals (including 0/120 pre-mutation), so neutral execution on that leg
 documented no-go rather than a fabricated zero-noise result.
 The first [fresh identical-arm run](experiments/fork-neutral-first-run.md) then observed 0/3
 mechanical disagreements, 0/3 environment mismatches, and 0/6 infrastructure failures at one exact
-prefix. This validates the path but is too narrow to establish the representative noise bound.
+prefix. A second [early-prefix run](experiments/fork-neutral-early-prefix.md) observed the same rates
+at the earliest pre-mutation point of a different frozen task, after baseline capture and Code Mode
+correlation made both pre-mutation proposals exact. Together the fresh runs observed 0/6 mechanical
+disagreements, 0/6 environment mismatches, and 0/12 infrastructure failures, but remain too narrow
+to establish the representative noise bound.
 
 Intervention deltas smaller than the instrument noise floor should not be overinterpreted.
 
