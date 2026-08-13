@@ -1,7 +1,7 @@
 # Architecture
 
 > **Status:** this document describes both the current hook-based prototype and the target architecture. Active implementation is tracked by the [Roadmap](roadmap.md) and native GitHub Milestones.
-> `spotterd`, App Server primary observation, and live `turn/steer` delivery are **target behavior**, not current shipping behavior.
+> `spotterd`, App Server primary Trace IR observation, and live supervision delivery are **target behavior**. The shared-server PoC and production App Server transport are implemented foundations.
 
 ---
 
@@ -834,10 +834,10 @@ Every adapter exposes capabilities explicitly.
 
 ```text
 CodexAdapter
-  observation: rich
-  steer: target PoC
-  interrupt: target
-  pre-action veto: Hook
+  observation: available after thread query probe
+  steer: unknown until a successful call; unavailable on method-not-found
+  interrupt: unknown until a successful call; unavailable on method-not-found
+  pre-action veto: unavailable through App Server; Hook boundary remains
 
 FutureAgentAdapter
   observation: maybe partial
@@ -849,9 +849,10 @@ When a capability is missing, Spotter should hide/disable the feature or report 
 
 ---
 
-# 15. Runtime gate: App Server lifecycle / attach PoC
+# 15. Runtime gate result: App Server lifecycle / attach PoC
 
-The target architecture is gated by this experiment.
+The experiment proved the control premise for Path B. Its harness and recorded result live in
+[App Server lifecycle / attach PoC](app-server-poc.md).
 
 ## Path A — Codex-managed daemon
 
@@ -890,18 +891,15 @@ Interrupt:   unavailable
 PreToolUse:  possibly available
 ```
 
-## Exit criteria
+## Result and remaining lifecycle work
 
-- ordinary `codex` UX is preserved;
-- TUI and Spotter prove they share the same App Server/thread;
-- live event subscription works;
-- active turn identity remains correct;
-- real `turn/steer` delivery is demonstrated;
-- concurrent sessions are distinguishable;
-- reconnect/degraded behavior is understood;
-- App Server ownership/lifecycle strategy is selected.
-
-**If a core property fails, revisit the architecture before P1.**
+- Path B proved a shared App Server/thread, live event delivery, and real `turn/steer` delivery.
+- `CodexAppServerClient` provides the initialized transport, raw events, thread/control methods, and
+  explicit per-capability degradation used by later runtime components.
+- Path A remains unavailable for the tested Homebrew Cask because the managed daemon expects the
+  standalone installer layout.
+- Concurrent thread identity is owned by #81, daemon/service ownership by #79/#83, and reconnect
+  reconciliation by #87.
 
 ---
 

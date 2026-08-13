@@ -79,9 +79,10 @@ spotterd
 PreToolUse Hook only for deterministic blocking
 ```
 
-The target is conditional on [#78](https://github.com/spotter-agent/spotter/issues/78): Spotter must prove that the user's ordinary Codex TUI and Spotter can share the same external App Server and that `turn/steer` reaches the real active user turn.
-
-If that does not work reliably, the target architecture is revisited before the daemon migration continues.
+[#78](https://github.com/spotter-agent/spotter/issues/78) proved that the user's Codex TUI and
+Spotter can share a Spotter-managed external App Server and that `turn/steer` reaches the real
+active turn. The managed daemon, concurrent identity, and reconnect lifecycle remain explicit
+Runtime work.
 
 ## Roadmap vocabulary
 

@@ -54,7 +54,9 @@ The most important lifecycle constraint is this:
 
 > **If full Codex mode requires an external App Server, that server must be available before ordinary `codex` chooses its App Server target.**
 
-That can conflict with a completely lazy “wake Spotter on the first Hook” design. The Runtime App Server gate (#78) must determine the canonical startup strategy before the service lifecycle is finalized.
+That conflicts with a completely lazy “wake Spotter on the first Hook” design. #78 proved a
+Spotter-managed external path; #79 and #83 must now make its service ownership and startup strategy
+explicit before the lifecycle is finalized.
 
 ---
 

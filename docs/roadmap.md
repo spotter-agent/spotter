@@ -25,9 +25,9 @@ Harden
 
 The stages are not release versions and they are not strict single-threaded sprints. Work can overlap when dependencies allow.
 
-The current blocker is [#78](https://github.com/spotter-agent/spotter/issues/78): prove that ordinary Codex and Spotter can share the same external App Server, observe the same thread/turn, and steer the real active turn.
-
-If that PoC fails, revise the runtime architecture before building further on the App Server assumption.
+[#78](https://github.com/spotter-agent/spotter/issues/78) proved the shared-server control premise for
+the Spotter-managed external path. Runtime work now productizes that path through the App Server
+client, `spotterd`, explicit identity, lifecycle, and recovery boundaries.
 
 | Stage | Product outcome | Evidence gate |
 | --- | --- | --- |
@@ -58,18 +58,13 @@ spotterd
 PreToolUse Hook only where synchronous deterministic enforcement is required
 ```
 
-## Current gate
+## Gate result
 
-[#78](https://github.com/spotter-agent/spotter/issues/78) must establish that:
-
-- ordinary `codex` can use an externally reachable App Server without a special per-session ritual;
-- Spotter can attach to the same real thread and active turn;
-- required live events are visible;
-- `turn/steer` affects the user-visible turn;
-- concurrent sessions remain distinguishable;
-- embedded/disconnected cases can be surfaced as degraded rather than silently healthy.
-
-Do not treat the App Server architecture as settled until this is proven end to end.
+[#78](https://github.com/spotter-agent/spotter/issues/78) demonstrated that a TUI and Spotter can
+attach to one Spotter-managed external App Server, observe the same thread/turn, and steer the real
+user-visible turn. The Codex-managed daemon path was unavailable to the tested Homebrew Cask install.
+Concurrent identity, daemon ownership, and reconnect remain explicit Runtime work rather than
+assumed properties.
 
 ## Implementation after the gate
 

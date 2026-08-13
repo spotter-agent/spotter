@@ -36,7 +36,9 @@ The roadmap no longer uses `P0–P9` / `E0–E5`. It is organized by named outco
 Runtime → Observe → Detect → Intervene → Recover → Harden
 ```
 
-The **current blocker** is [#78](https://github.com/spotter-agent/spotter/issues/78): prove that ordinary `codex` and Spotter can use the same external App Server, observe the same thread/turn, and that `turn/steer` reaches the real active user turn.
+The shared-server gate in [#78](https://github.com/spotter-agent/spotter/issues/78) passed for the
+Spotter-managed external App Server path. Spotter now has a production WebSocket client with
+explicit observation/control capabilities; the standalone daemon and identity model remain next.
 
 ---
 
@@ -44,23 +46,14 @@ The **current blocker** is [#78](https://github.com/spotter-agent/spotter/issues
 
 ### Runtime
 
-Before building the standalone daemon around App Server assumptions, prove the control boundary itself.
+[#78](https://github.com/spotter-agent/spotter/issues/78) demonstrated same-thread observation and
+same-turn steering through a Spotter-managed external App Server. [#80](https://github.com/spotter-agent/spotter/issues/80)
+turns that PoC into an async client with initialize/disconnect, raw event delivery, thread queries,
+typed steer/interrupt methods, and explicit supported/unknown/unavailable capability state.
 
-[#78](https://github.com/spotter-agent/spotter/issues/78) must establish:
-
-- TUI and Spotter see the same thread id;
-- Spotter sees the same active turn id over multiple actions;
-- the needed runtime events are available;
-- `turn/steer` affects the real user-visible turn;
-- concurrent Codex sessions can be distinguished;
-- embedded/disconnected modes are diagnosable as degraded.
-
-If no viable path passes, revise the architecture before proceeding.
-
-If the gate passes, the immediate implementation boundaries are already split into native GitHub issues:
+The remaining implementation boundaries are split into native GitHub issues:
 
 - [#79](https://github.com/spotter-agent/spotter/issues/79) — `spotterd`, local control RPC, and per-user service lifecycle;
-- [#80](https://github.com/spotter-agent/spotter/issues/80) — production App Server client and capability negotiation;
 - [#81](https://github.com/spotter-agent/spotter/issues/81) — Thread / Turn / Runtime Attachment identity;
 - [#82](https://github.com/spotter-agent/spotter/issues/82) — bounded fail-open `PreToolUse` ↔ daemon enforcement IPC;
 - [#83](https://github.com/spotter-agent/spotter/issues/83) — transactional Codex setup/teardown and integration ownership;
@@ -93,9 +86,9 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 | Audit ledger | 🟡 | Claim/evidence state and stale propagation where outcomes are observable | Move independent state into `spotterd` (#31) |
 | Evaluation labels / metrics | ✅ | Coverage-aware labeling and precision/FP metrics | Broader cost/miss/harm metrics (#33, #38, #34) |
 | Counterfactual harness | ✅ | Control/guidance same-prefix pairs can be prepared/run | Add mechanically scored tasks (#21) |
-| Standalone runtime | ❌ | No long-lived owner, service boundary, or runtime RPC | #79 after #78; App Server transport in #80 |
+| Standalone runtime | ❌ | No long-lived owner, service boundary, or runtime RPC | Build `spotterd` in #79 |
 | Runtime identity | ❌ | Hook-era `session_id` is the dominant identity | Thread/Turn/Attachment model in #81 |
-| App Server primary observation | 🧪 | Target design only | Prove #78, then implement #80 + #85 |
+| App Server primary observation | 🟡 | Async client, raw events, thread queries, controls, capability degradation | Normalize and journal events in #85 after identity #81 |
 | Managed Codex lifecycle | ❌ | Current path is source/plugin installation | transactional setup/teardown in #83; diagnostics in #84 |
 | Runtime reconnect/recovery | ❌ | No long-lived App Server connection to recover | #87 after runtime/state boundaries exist |
 | Event-driven detection | ❌ | Reviewer is still cadence-based | #28 after Runtime/Observe |
@@ -148,7 +141,7 @@ Implementation progress and research evidence remain separate.
 | Is the fork instrument's causal noise floor known? | **No — #42** |
 | Is there a reproducible mechanically scored task corpus? | **No — #21** |
 | Has live Spotter guidance been shown to improve outcomes? | **No** |
-| Is the App Server target architecture operationally viable? | **Not yet — #78 is the blocker** |
+| Is the App Server control boundary operationally viable? | **Yes for the Spotter-managed external path; daemon lifecycle and reconnect remain** |
 
 A mechanism being implemented does not prove it improves outcomes. Null and negative results are first-class outcomes for this project.
 

@@ -54,7 +54,9 @@ External Codex App Server
        (deterministic synchronous enforcement only)
 ```
 
-The immediate next step is **not** to blindly build the daemon. [#78](https://github.com/spotter-agent/spotter/issues/78) must first prove that ordinary Codex and Spotter can share the same external App Server, observe the same thread/turn, and that Spotter can steer the real active turn.
+[#78](https://github.com/spotter-agent/spotter/issues/78) proved shared observation and steering for a
+Spotter-managed external App Server. Current Runtime work turns that viable control boundary into
+the daemon, identity, lifecycle, and recovery components required for ordinary use.
 
 For the fastest project snapshot, read [Status](docs/status.md). For sequence and evidence gates, read [Roadmap](docs/roadmap.md).
 
@@ -76,25 +78,21 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 | Evaluation labels / metrics | ✅ | Coverage-aware evaluation and precision/FP metrics |
 | Counterfactual experiment harness | ✅ | Control/guidance same-prefix pairs |
 | Standalone `spotterd` runtime | ❌ | Target runtime boundary |
-| App Server primary observation | 🧪 | Shared-server/control PoC first (#78) |
+| App Server primary observation | 🟡 | Client/capabilities implemented; Trace IR ingestion remains (#85) |
 | Event-driven signal engine | ❌ | Current reviewer trigger is periodic |
 | Live `VERIFY / NUDGE` | ❌ | Target: `turn/steer` |
 | `INTERRUPT` | ❌ | Target: `turn/interrupt` |
 | `RESTART` | ❌ | Requires verified-state + side-effect-aware recovery |
 | Homebrew / setup lifecycle | 🎯 | Target product path |
 
-### Current blocker
+### Current runtime work
 
-[#78](https://github.com/spotter-agent/spotter/issues/78) must establish that:
-
-1. TUI and Spotter see the same thread id;
-2. Spotter sees the same active turn across multiple actions;
-3. the needed runtime events are available;
-4. `turn/steer` affects the real user-visible session;
-5. concurrent Codex sessions remain distinguishable;
-6. embedded/disconnected modes can be reported as degraded rather than silently healthy.
-
-If no viable path passes, the App Server/daemon direction must be revised before more runtime work is built on it.
+[#78](https://github.com/spotter-agent/spotter/issues/78) proved that a Spotter-managed external
+App Server can share the TUI's real thread and steer its active turn. The production client in
+[#80](https://github.com/spotter-agent/spotter/issues/80) now exposes events, thread queries,
+control methods, and per-capability degraded state. The remaining Runtime work establishes
+`spotterd` ([#79](https://github.com/spotter-agent/spotter/issues/79)), explicit thread/turn identity
+([#81](https://github.com/spotter-agent/spotter/issues/81)), and lifecycle/recovery boundaries.
 
 ---
 
