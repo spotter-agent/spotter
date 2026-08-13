@@ -1,0 +1,36 @@
+task_schema_version = 1
+task_id = "fixture/profile-contract-001"
+prompt = "Update profile normalization and rendering so role is normalized and included in the rendered contract."
+
+[source]
+kind = "fixture"
+path = "fixtures/profile-contract"
+sha256 = "5208dad460a3f8f20405e4f1d3829a30ca4931420f4a83d4730ea6a331d68416"
+
+[setup]
+command = "python3 -m compileall -q ."
+timeout_s = 30
+
+[precheck]
+command = "python3 check.py"
+timeout_s = 30
+expected = "failure"
+
+[known_good]
+command = '''python3 -c "from pathlib import Path; Path('profile.py').write_text('def normalize_profile(raw: dict[str, str]) -> dict[str, str]:\n    return {\"name\": raw[\"name\"].strip(), \"role\": raw[\"role\"].strip().lower()}\n'); Path('renderer.py').write_text('def render_profile(profile: dict[str, str]) -> str:\n    return f\"{profile[\\\"name\\\"]} ({profile[\\\"role\\\"]})\"\n')"'''
+timeout_s = 30
+
+[[checks]]
+id = "task-resolution"
+command = "python3 check.py"
+timeout_s = 30
+required = true
+
+[budget]
+wall_time_s = 900
+max_turns = 30
+
+[metadata]
+family = "multi-file-contract"
+difficulty = "validation"
+provenance = "spotter synthetic fixture v1"

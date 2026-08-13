@@ -1,0 +1,9 @@
+task_set_schema_version = 1
+task_set_id = "spotter-validation"
+version = 1
+split = "validation"
+
+[[tasks]]
+task_id = "fixture/profile-contract-001"
+manifest = "tasks/profile-contract.toml"
+sha256 = "32bf56a59420ab881d07d66fc0e0ff299a677120058c4609f6fdb088ca1a286e"

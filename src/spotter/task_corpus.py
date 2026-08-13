@@ -307,10 +307,25 @@ def _run_command(phase: str, spec: CommandSpec, workspace: Path) -> CommandResul
         return CommandResult(phase, None, "", str(error)[:_OUTPUT_LIMIT])
     try:
         stdout, stderr = process.communicate(timeout=spec.timeout_s)
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as initial_timeout:
         with suppress(ProcessLookupError):
             os.killpg(process.pid, signal.SIGKILL)
-        stdout, stderr = process.communicate()
+        try:
+            stdout, stderr = process.communicate(timeout=1)
+        except subprocess.TimeoutExpired as escaped_child:
+            if process.stdout is not None:
+                process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()
+            with suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=1)
+            return CommandResult(
+                phase,
+                None,
+                _bounded_output(escaped_child.stdout or initial_timeout.stdout),
+                _bounded_output(escaped_child.stderr or initial_timeout.stderr),
+                timed_out=True,
+            )
         return CommandResult(
             phase,
             None,

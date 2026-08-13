@@ -1,0 +1,9 @@
+task_set_schema_version = 1
+task_set_id = "spotter-dev"
+version = 1
+split = "dev"
+
+[[tasks]]
+task_id = "fixture/query-parser-001"
+manifest = "tasks/query-parser.toml"
+sha256 = "e8f725c3d476c02c2a56580dbbacf238f700e1deed14b9ddd8e9ce9ec4b2d92f"

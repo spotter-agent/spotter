@@ -1,0 +1,36 @@
+task_schema_version = 1
+task_id = "fixture/query-parser-001"
+prompt = "Fix the query parser so values may contain equals signs without changing its key/value API."
+
+[source]
+kind = "fixture"
+path = "fixtures/query-parser"
+sha256 = "c7ff67882112f07c7aa16cfea3e08b97ad857f2c33a7d1e52f95ed3bd0d46b37"
+
+[setup]
+command = "python3 -m compileall -q ."
+timeout_s = 30
+
+[precheck]
+command = "python3 check.py"
+timeout_s = 30
+expected = "failure"
+
+[known_good]
+command = '''python3 -c "from pathlib import Path; Path('query.py').write_text('def parse(text: str) -> tuple[str, str]:\n    key, value = text.split(\"=\", 1)\n    return key, value\n')"'''
+timeout_s = 30
+
+[[checks]]
+id = "task-resolution"
+command = "python3 check.py"
+timeout_s = 30
+required = true
+
+[budget]
+wall_time_s = 600
+max_turns = 20
+
+[metadata]
+family = "localized-bug-fix"
+difficulty = "dev"
+provenance = "spotter synthetic fixture v1"

@@ -193,3 +193,13 @@ def test_preflight_classifies_required_check_timeout(tmp_path: Path) -> None:
 
     assert results[0].classification == PreflightClassification.TIMEOUT_CHECK
     assert results[0].commands[-1].timed_out is True
+
+
+@pytest.mark.parametrize("name", ["dev-v1.toml", "validation-v1.toml"])
+def test_repo_corpus_is_frozen_and_preflight_ready(name: str) -> None:
+    path = Path(__file__).parents[1] / "corpus" / name
+
+    task_set, results = preflight_task_set(path)
+
+    assert task_set.tasks
+    assert all(result.classification == PreflightClassification.READY for result in results)

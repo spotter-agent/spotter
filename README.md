@@ -355,7 +355,7 @@ spotter tasks preflight path/to/task-set.toml
 spotter experiment --session <id> --step <n> --guidance "..." --check "..."
 ```
 
-Task-set validation freezes task and fixture hashes and checks the versioned scorer/budget contract without executing commands. Preflight runs setup, the broken-state scorer, a declared known-good transform, and the positive scorer in a temporary fixture copy; it never runs agent arms. The experiment harness existing does **not** mean positive intervention advantage has been established. A frozen multi-task corpus and enough executed runs remain evidence gaps.
+Task-set validation freezes task and fixture hashes and checks the versioned scorer/budget contract without executing commands. Preflight runs setup, the broken-state scorer, a declared known-good transform, and the positive scorer in a temporary fixture copy; it never runs agent arms. Because preflight executes corpus-declared shell commands, use `validate` only for untrusted task sets. The experiment harness existing does **not** mean positive intervention advantage has been established. A frozen multi-task corpus and enough executed runs remain evidence gaps.
 
 ---
 
