@@ -78,7 +78,7 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 | Evaluation labels / metrics | ✅ | Coverage-aware evaluation and precision/FP metrics |
 | Counterfactual experiment harness | ✅ | Control/guidance same-prefix pairs |
 | Standalone `spotterd` runtime | 🟡 | Process, gate IPC, per-thread immutable state, and App Server recovery ownership implemented; setup endpoint selection remains |
-| Packaging / release | 🟡 | Tags publish verified sdist/wheel/checksum metadata; stable package entry points, mutable-state boundaries, Hook generation fencing, and old-daemon build detection exist; Homebrew tap publication remains |
+| Packaging / release | 🟡 | Tags publish verified sdist/wheel/checksum metadata; the dedicated Homebrew tap installs immutable releases and opens repeatable Formula-update PRs; stable package paths, mutable-state boundaries, Hook generation fencing, and old-daemon build detection exist; cross-environment smoke remains |
 | App Server primary observation | 🟡 | Configured endpoints route through daemon-owned epoch/reconciliation into durable Trace IR and ThreadState; setup does not select an endpoint yet |
 | Event-driven signal engine | ❌ | Current reviewer trigger is periodic |
 | Live `VERIFY / NUDGE` | ❌ | Target: `turn/steer` |
@@ -387,12 +387,14 @@ Task-set validation freezes task and fixture hashes and checks the versioned sco
 
 ---
 
-## Target installation and operations UX
+## Homebrew installation and operations UX
 
-The target first-run experience is intentionally small:
+Install the standalone runtime from the official
+[`spotter-agent/homebrew-spotter`](https://github.com/spotter-agent/homebrew-spotter) tap. The
+qualified form is intentional: it taps only the Formula needed for this install.
 
 ```bash
-brew install spotter
+brew install spotter-agent/spotter/spotter
 spotter setup codex
 spotter doctor
 
@@ -400,7 +402,10 @@ spotter doctor
 codex
 ```
 
-The user should not need to manually run `spotter daemon start` or `codex app-server daemon start` before each session.
+The Formula exposes both `spotter` and `spotterd`. Package installation itself does not edit Codex
+configuration or register the integration; `spotter setup codex` remains the explicit integration
+transaction. The user should not need to manually run `spotter daemon start` or
+`codex app-server daemon start` before each session.
 
 Detailed ownership, rollback, upgrades, uninstall, purge, and reinstall behavior are specified in [Lifecycle](docs/lifecycle.md).
 

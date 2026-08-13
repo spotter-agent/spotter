@@ -1,8 +1,8 @@
 # Release artifacts and build identity
 
 Spotter's repository-owned release workflow produces package-manager-neutral Python artifacts from
-an exact tag and publishes them to a GitHub Release. Homebrew Formula layout remains owned by the
-dedicated tap.
+an exact tag and publishes them to a GitHub Release. Homebrew Formula layout is owned by the
+dedicated [`spotter-agent/homebrew-spotter`](https://github.com/spotter-agent/homebrew-spotter) tap.
 
 ## Artifact contract
 
@@ -65,6 +65,28 @@ on an existing draft, but the workflow refuses to alter an already-published rel
 The published release exposes both the versioned source-distribution URL and its SHA256 in
 `spotter-agent-X.Y.Z-SHA256SUMS` and `spotter-agent-X.Y.Z-release.json`. The tap update flow can use
 those values directly; it does not need to rebuild or inspect a moving branch.
+
+## Publish through Homebrew
+
+The tap's hourly and manually dispatchable `Update Spotter Formula` workflow reads the latest
+published release and validates its tag, manifest identity, sdist filename, size, and SHA-256 against
+the GitHub Release assets. If the release is newer than the Formula, it opens a version-specific tap
+pull request updating the immutable source URL and checksum. It refuses drafts, prereleases,
+downgrades, malformed manifests, and same-version artifact changes.
+
+The Formula separately pins the supported Homebrew Python and every Python runtime dependency as an
+immutable resource. A release that changes runtime dependencies therefore requires those resource
+changes to be reviewed in the same tap PR rather than allowing package installation to resolve new
+dependencies from the network implicitly.
+
+After the Formula PR passes macOS and Linux `brew test-bot`, users install it with:
+
+```bash
+brew install spotter-agent/spotter/spotter
+```
+
+The Formula install exposes `spotter`, `spotterd`, and the `spotter hook` bridge but never invokes
+`spotter setup codex`; package installation and Codex integration remain separate transactions.
 
 ## Runtime identity contract
 

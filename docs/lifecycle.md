@@ -6,21 +6,20 @@
 > implementation state, see [Status](status.md). `spotter setup|teardown codex`, versioned ownership
 > manifests, managed `launchd`/`systemd --user` registration, portable startup, legacy Hook/plugin
 > migration, runtime-aware diagnostics, tag-derived release artifacts, stable packaged runtime
-> layout, and packaged `--version` identity exist. App Server event ingestion also exists, but Homebrew publication,
-> package-vs-running-daemon upgrade policy, `spotter purge`, and transparent plain-`codex` launch
-> remain target behavior.
+> layout, official Homebrew tap, and packaged `--version` identity exist. App Server event ingestion
+> also exists, but package-vs-running-daemon upgrade policy, `spotter purge`, and transparent
+> plain-`codex` launch remain target behavior.
 
 ---
 
 ## 30-second target lifecycle
 
-The intended packaged lifecycle should be understandable as four operations. Homebrew distribution
-is not available yet; source installation and the currently implemented commands are documented in
-the [README](../README.md#use-the-current-prototype):
+The packaged lifecycle is four operations. The qualified install command selects the official
+`spotter-agent/homebrew-spotter` tap without trusting unrelated third-party Formulae:
 
 ```bash
 # 1. Install the product
-brew install spotter
+brew install spotter-agent/spotter/spotter
 
 # 2. Integrate an agent once
 spotter setup codex
@@ -75,7 +74,7 @@ Spotter-managed external path, and #79 provides the daemon/control and `ServiceM
 
 | Task | Command / section |
 | --- | --- |
-| Target package installation | `brew install spotter` → [3. Install](#3-install-package-only) |
+| Package installation | `brew install spotter-agent/spotter/spotter` → [3. Install](#3-install-package-only) |
 | Connect Codex | `spotter setup codex` → [4. Setup](#4-spotter-setup-codex) |
 | Understand App Server ownership | [5. App Server lifecycle](#5-app-server-lifecycle) |
 | Understand background service startup | [6. Managed runtime startup](#6-managed-runtime-startup) |
@@ -101,7 +100,7 @@ Spotter-managed external path, and #79 provides the daemon/control and `ServiceM
 ```text
 UNINSTALLED
     │
-    │ brew install spotter
+    │ brew install spotter-agent/spotter/spotter
     ▼
 INSTALLED
     │ package exists
@@ -291,11 +290,17 @@ That is why a true `purge --all` needs a repository registry and Git-aware clean
 
 # 3. Install: package only
 
-Target command:
+Qualified command:
 
 ```bash
-brew install spotter
+brew install spotter-agent/spotter/spotter
 ```
+
+The `homebrew-spotter` repository name surfaces as the Homebrew tap `spotter-agent/spotter`; the
+final `/spotter` names its Formula. Installation consumes the immutable sdist and SHA-256 from a
+published Spotter tag, installs the declared Python runtime plus pinned Python resources, and exposes
+both `spotter` and `spotterd`. Its `brew services` metadata runs `opt_bin/spotterd`, so the service
+reference remains stable when Homebrew moves the active keg during an upgrade.
 
 ### Preconditions
 
@@ -341,12 +346,11 @@ Integration:  not configured
 
 ### Remaining implementation
 
-- Homebrew Formula/tap publication;
 - package provenance detection (`homebrew`, source, standalone, etc.);
 
-Release artifacts, shared `spotter`/`spotterd` build identity, stable runtime path discovery, and the
-package-vs-running-daemon build comparison are implemented. Full Formula install/remove smoke
-coverage remains in #107/#108.
+Release artifacts, the dedicated tap and Formula, shared `spotter`/`spotterd` build identity, stable
+runtime path discovery, and the package-vs-running-daemon build comparison are implemented. Full
+cross-environment install/upgrade/remove smoke coverage remains in #108.
 
 ---
 
@@ -1303,7 +1307,7 @@ Never remove non-Spotter refs/worktrees based on path guessing.
 A normal reinstall may encounter durable data from an earlier Spotter version.
 
 ```text
-brew install spotter
+brew install spotter-agent/spotter/spotter
       ↓
 existing Spotter data found
       ↓

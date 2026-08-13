@@ -112,7 +112,7 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 | Event-driven detection | ❌ | Reviewer is still cadence-based | #28 after Runtime/Observe |
 | Live `VERIFY` / `NUDGE` | ❌ | Reviewer decisions stop at the journal | #22 via `turn/steer` |
 | `INTERRUPT` / `RESTART` | ❌ | No live recovery path | #26 + #30 after soft intervention is understood |
-| Packaging / long-term operations | 🟡 | Exact version tags publish verified release artifacts; a central runtime layout gives CLI/daemon/bridge stable package entry points, explicit mutable ownership roots, integration-generation fencing, and old-daemon build detection without Cellar assumptions; Homebrew publication is not yet implemented | #107–#108 tap/smoke, #89 retention, #90 upgrade compatibility |
+| Packaging / long-term operations | 🟡 | Exact version tags publish verified release artifacts; the dedicated Homebrew tap installs the CLI/daemon/bridge from immutable releases and opens repeatable Formula-update PRs; stable package paths, mutable ownership roots, integration-generation fencing, and old-daemon build detection avoid Cellar assumptions | #108 cross-environment smoke, #89 retention, #90 upgrade compatibility |
 
 ---
 

@@ -509,7 +509,7 @@ A runtime supervisor is not complete if the user must manually orchestrate sever
 Target experience:
 
 ```bash
-brew install spotter
+brew install spotter-agent/spotter/spotter
 spotter setup codex
 spotter doctor
 
