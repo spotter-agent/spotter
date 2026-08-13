@@ -387,6 +387,7 @@ Plan
   App Server strategy: codex-managed-external
   Runtime mode: managed/login-scoped
   Hooks:
+    add SessionStart
     add PreToolUse
     remove legacy PostToolUse
     remove legacy UserPromptSubmit
@@ -462,7 +463,7 @@ Example manifest:
 
 ```json
 {
-  "schema": 1,
+  "schema": 2,
   "agent": "codex",
   "setup_by": "0.6.0",
   "agent_path": "/opt/homebrew/bin/codex",
@@ -471,7 +472,10 @@ Example manifest:
   "app_server_endpoint": null,
   "runtime_mode": "managed",
   "service_owned": true,
-  "owned_hook": {"event": "PreToolUse", "matcher": ".*", "hook": {"type": "command"}},
+  "owned_hooks": [
+    {"event": "PreToolUse", "matcher": ".*", "hook": {"type": "command"}},
+    {"event": "SessionStart", "matcher": null, "hook": {"type": "command"}}
+  ],
   "legacy_hooks_removed": [{"event": "PostToolUse"}],
   "config_fingerprint_before": "...",
   "created_at": "..."
@@ -1282,12 +1286,13 @@ install standalone runtime integration
       ↓
 remove observation hooks replaced by App Server
       ↓
-retain only required PreToolUse gate
+retain SessionStart baseline plus required PreToolUse gate until #86 proves lifecycle parity
 ```
 
 Migration rules:
 
 - never register duplicate Spotter Hooks;
+- migrate schema 1 manifests to the owned-Hook list and reconcile the missing `SessionStart` Hook;
 - preserve existing `~/.spotter` data;
 - record which legacy mutations were removed;
 - keep rollback information until verification succeeds;

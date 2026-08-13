@@ -29,7 +29,7 @@ from spotter.daemon import (
 from spotter.doctor import OK, check_roundtrip
 from spotter.paths import secure_dir, spotter_home
 
-MANIFEST_SCHEMA = 1
+MANIFEST_SCHEMA = 2
 
 
 class IntegrationError(RuntimeError):
@@ -167,7 +167,7 @@ class IntegrationManifest:
     service_owned: bool
     hooks_file: str
     hooks_file_created: bool
-    owned_hook: dict[str, Any]
+    owned_hooks: list[dict[str, Any]]
     legacy_hooks_removed: list[dict[str, Any]] = field(default_factory=list)
     legacy_plugins_removed: list[str] = field(default_factory=list)
     config_fingerprint_before: str | None = None
@@ -189,7 +189,16 @@ class IntegrationManifest:
             raise IntegrationError(f"integration manifest is unreadable: {error}") from error
         if not isinstance(raw, dict):
             raise IntegrationError("integration manifest must be a JSON object")
-        if raw.get("schema") != MANIFEST_SCHEMA:
+        schema = raw.get("schema")
+        if schema == 1:
+            owned = raw.pop("owned_hook", None)
+            raw["owned_hooks"] = [owned]
+            if isinstance(owned, dict) and isinstance(owned.get("hook"), dict):
+                raw["owned_hooks"].append(
+                    {"event": "SessionStart", "matcher": None, "hook": owned["hook"]}
+                )
+            raw["schema"] = MANIFEST_SCHEMA
+        elif schema != MANIFEST_SCHEMA:
             raise IntegrationError(f"unsupported integration manifest schema {raw.get('schema')!r}")
         try:
             return cls(**raw)
@@ -266,12 +275,12 @@ class IntegrationManager:
             command += f" --config {shlex.quote(str(self.config_path))}"
         return command + " || true"
 
-    def _owned_hook(self) -> dict[str, Any]:
-        return {
-            "event": "PreToolUse",
-            "matcher": ".*",
-            "hook": {"type": "command", "command": self._hook_command()},
-        }
+    def _owned_hooks(self) -> list[dict[str, Any]]:
+        hook = {"type": "command", "command": self._hook_command()}
+        return [
+            {"event": "PreToolUse", "matcher": ".*", "hook": hook},
+            {"event": "SessionStart", "matcher": None, "hook": hook},
+        ]
 
     @staticmethod
     def _is_spotter_hook(hook: object) -> bool:
@@ -299,17 +308,17 @@ class IntegrationManager:
         updated = copy.deepcopy(raw)
         events = cast(dict[str, list[dict[str, Any]]], updated.setdefault("hooks", {}))
         removed: list[dict[str, Any]] = []
-        owned = self._owned_hook()
+        owned = self._owned_hooks()
         for event, groups in list(events.items()):
             kept_groups: list[dict[str, Any]] = []
             for group in groups:
                 kept_hooks = []
                 for hook in cast(list[dict[str, Any]], group["hooks"]):
                     if self._is_spotter_hook(hook):
-                        if (event, group.get("matcher"), hook) != (
-                            owned["event"],
-                            owned["matcher"],
-                            owned["hook"],
+                        if not any(
+                            (event, group.get("matcher"), hook)
+                            == (entry["event"], entry["matcher"], entry["hook"])
+                            for entry in owned
                         ):
                             removed.append(
                                 {"event": event, "matcher": group.get("matcher"), "hook": hook}
@@ -324,9 +333,11 @@ class IntegrationManager:
             else:
                 events.pop(event, None)
 
-        events.setdefault("PreToolUse", []).append(
-            {"matcher": owned["matcher"], "hooks": [owned["hook"]]}
-        )
+        for entry in owned:
+            group = {"hooks": [entry["hook"]]}
+            if entry["matcher"] is not None:
+                group["matcher"] = entry["matcher"]
+            events.setdefault(entry["event"], []).append(group)
         return updated, removed
 
     def _legacy_plugins(self) -> tuple[str, ...]:
@@ -389,7 +400,7 @@ class IntegrationManager:
         _atomic_write(self.hooks_path, content)
         return content
 
-    def _verify(self, owned: dict[str, Any]) -> None:
+    def _verify(self, owned: list[dict[str, Any]]) -> None:
         status = asyncio.run(self.service.status())
         if status.health != RuntimeHealth.HEALTHY:
             raise IntegrationError(
@@ -402,7 +413,8 @@ class IntegrationManager:
                 for hook in cast(list[dict[str, Any]], group["hooks"]):
                     if self._is_spotter_hook(hook):
                         matches.append((event, group.get("matcher"), hook))
-        if matches != [(owned["event"], owned["matcher"], owned["hook"])]:
+        expected = [(entry["event"], entry["matcher"], entry["hook"]) for entry in owned]
+        if matches != expected:
             raise IntegrationError(
                 "Codex Hook verification found duplicate or drifted Spotter hooks"
             )
@@ -462,7 +474,7 @@ class IntegrationManager:
                     raise IntegrationError(
                         f"spotterd failed to start: {started.detail or started.health}"
                     )
-                owned = self._owned_hook()
+                owned = self._owned_hooks()
                 self._verify(owned)
             except Exception as error:
                 rollback()
@@ -491,7 +503,7 @@ class IntegrationManager:
                 hooks_file_created=(
                     hooks_before is None if existing is None else existing.hooks_file_created
                 ),
-                owned_hook=self._owned_hook(),
+                owned_hooks=self._owned_hooks(),
                 legacy_hooks_removed=previous_hooks + removed_hooks,
                 legacy_plugins_removed=list(
                     dict.fromkeys([*previous_plugins, *plan.legacy_plugins])
@@ -548,19 +560,20 @@ class IntegrationManager:
                     else ManagedServiceManager()
                 )
             hooks, before = self._read_hooks()
-            owned = manifest.owned_hook
             events = cast(dict[str, list[dict[str, Any]]], hooks["hooks"])
-            groups = events.get(cast(str, owned["event"]), [])
-            kept_groups = []
-            for group in groups:
-                kept = [hook for hook in group["hooks"] if hook != owned["hook"]]
-                if kept:
-                    group["hooks"] = kept
-                    kept_groups.append(group)
-            if kept_groups:
-                events[cast(str, owned["event"])] = kept_groups
-            else:
-                events.pop(cast(str, owned["event"]), None)
+            for owned in manifest.owned_hooks:
+                event = cast(str, owned["event"])
+                groups = events.get(event, [])
+                kept_groups = []
+                for group in groups:
+                    kept = [hook for hook in group["hooks"] if hook != owned["hook"]]
+                    if kept:
+                        group["hooks"] = kept
+                        kept_groups.append(group)
+                if kept_groups:
+                    events[event] = kept_groups
+                else:
+                    events.pop(event, None)
             try:
                 if manifest.hooks_file_created and hooks == {"hooks": {}}:
                     self.hooks_path.unlink(missing_ok=True)

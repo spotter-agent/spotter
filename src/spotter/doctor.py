@@ -277,21 +277,23 @@ def check_integration() -> IntegrationInspection:
             Check("Codex integration", FAIL, f"manifest state is {manifest.state!r}"),
             False,
         )
-    owned = manifest.owned_hook
-    if not isinstance(owned, dict) or not isinstance(owned.get("hook"), dict):
+    owned = manifest.owned_hooks
+    if not isinstance(owned, list) or not all(
+        isinstance(entry, dict) and isinstance(entry.get("hook"), dict) for entry in owned
+    ):
         return IntegrationInspection(
             manifest,
-            Check("Codex integration", FAIL, "manifest owned Hook is invalid"),
+            Check("Codex integration", FAIL, "manifest owned Hooks are invalid"),
             False,
         )
-    expected = (owned.get("event"), owned.get("matcher"), owned.get("hook"))
-    if spotter_hooks != [expected]:
+    expected = [(entry.get("event"), entry.get("matcher"), entry.get("hook")) for entry in owned]
+    if spotter_hooks != expected:
         return IntegrationInspection(
             manifest,
             Check(
                 "Codex integration",
                 FAIL,
-                "owned Hook is missing, user-modified, or duplicated "
+                "owned Hooks are missing, user-modified, or duplicated "
                 f"({len(spotter_hooks)} found); run `spotter setup codex` to reconcile",
             ),
             False,

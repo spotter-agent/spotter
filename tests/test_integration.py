@@ -115,7 +115,7 @@ def test_setup_is_idempotent_and_teardown_preserves_unowned_config(
     assert first.state == second.state == "ready"
     assert first.created_at == second.created_at
     assert len(second.legacy_hooks_removed) == 3
-    assert [event for event, _ in _spotter_hooks(hooks_path)] == ["PreToolUse"]
+    assert [event for event, _ in _spotter_hooks(hooks_path)] == ["PreToolUse", "SessionStart"]
     assert service.starts == 2
     assert hooks_path.read_bytes() == first_hooks
 
@@ -129,7 +129,7 @@ def test_setup_is_idempotent_and_teardown_preserves_unowned_config(
     assert not manager.manifest_path.exists()
 
     manager.setup()
-    assert [event for event, _ in _spotter_hooks(hooks_path)] == ["PreToolUse"]
+    assert [event for event, _ in _spotter_hooks(hooks_path)] == ["PreToolUse", "SessionStart"]
 
 
 def test_setup_and_teardown_remove_a_hooks_file_created_by_spotter(
@@ -332,6 +332,28 @@ def test_newer_manifest_schema_is_refused(homes: tuple[Path, Path]) -> None:
 
     with pytest.raises(IntegrationError, match="unsupported"):
         IntegrationManifest.load(manager.manifest_path)
+
+
+def test_schema_one_manifest_is_reconciled_with_session_start(
+    homes: tuple[Path, Path],
+) -> None:
+    manager, _ = _manager(homes)
+    manager.setup()
+    manifest = json.loads(manager.manifest_path.read_text())
+    manifest["schema"] = 1
+    manifest["owned_hook"] = manifest.pop("owned_hooks")[0]
+    manager.manifest_path.write_text(json.dumps(manifest))
+    hooks = json.loads(manager.hooks_path.read_text())
+    hooks["hooks"].pop("SessionStart")
+    manager.hooks_path.write_text(json.dumps(hooks))
+
+    upgraded = manager.setup()
+
+    assert upgraded.schema == 2
+    assert [event for event, _ in _spotter_hooks(manager.hooks_path)] == [
+        "PreToolUse",
+        "SessionStart",
+    ]
 
 
 def test_invalid_spotter_config_fails_before_external_mutation(

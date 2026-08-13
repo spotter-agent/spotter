@@ -30,7 +30,12 @@ def _ready_manifest(homes: tuple[Path, Path]) -> IntegrationManifest:
         "matcher": ".*",
         "hook": {"type": "command", "command": "/bin/spotter hook || true"},
     }
-    hooks = {"hooks": {"PreToolUse": [{"matcher": owned["matcher"], "hooks": [owned["hook"]]}]}}
+    hooks = {
+        "hooks": {
+            "PreToolUse": [{"matcher": owned["matcher"], "hooks": [owned["hook"]]}],
+            "SessionStart": [{"hooks": [owned["hook"]]}],
+        }
+    }
     hooks_path = codex / "hooks.json"
     hooks_path.write_text(json.dumps(hooks))
     registration = spotter / "service/spotterd"
@@ -51,7 +56,10 @@ def _ready_manifest(homes: tuple[Path, Path]) -> IntegrationManifest:
         service_owned=True,
         hooks_file=str(hooks_path),
         hooks_file_created=True,
-        owned_hook=owned,
+        owned_hooks=[
+            owned,
+            {"event": "SessionStart", "matcher": None, "hook": owned["hook"]},
+        ],
     )
     manifest.save(spotter / "integrations/codex.json")
     return manifest
@@ -125,13 +133,13 @@ def test_integration_check_reports_a_malformed_owned_hook(homes: tuple[Path, Pat
     _ready_manifest(homes)
     path = homes[0] / "integrations/codex.json"
     raw = json.loads(path.read_text())
-    raw["owned_hook"] = "broken"
+    raw["owned_hooks"] = "broken"
     path.write_text(json.dumps(raw))
 
     check = check_integration().check
 
     assert check.status == FAIL
-    assert "owned Hook is invalid" in check.detail
+    assert "owned Hooks are invalid" in check.detail
 
 
 def test_doctor_probe_reports_an_unreachable_configured_app_server(
