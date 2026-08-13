@@ -146,6 +146,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--reservation",
         help="review: token for a budget slot the caller already reserved (internal)",
     )
+    parser.add_argument("--review-job-id", help=argparse.SUPPRESS)
     parser.add_argument(
         "--check", help="experiment: success command run in each fork worktree (exit 0 = pass)"
     )
@@ -274,7 +275,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             config = SpotterConfig(MainAgentConfig("codex"), ReviewerConfig())
         if args.model:
             config = replace(config, reviewer=replace(config.reviewer, model=args.model))
-        return _review_main(args.session, config, window=args.window, reservation=args.reservation)
+        return _review_main(
+            args.session,
+            config,
+            window=args.window,
+            reservation=args.reservation,
+            review_job_id=args.review_job_id,
+        )
     if args.command == "fork":
         if not args.session or args.step is None:
             parser.error("fork requires --session and --step")
@@ -404,7 +411,12 @@ def _constraints_of(config: SpotterConfig) -> list[str]:
 
 
 def _review_main(
-    session: str, config: SpotterConfig, *, window: int, reservation: str | None = None
+    session: str,
+    config: SpotterConfig,
+    *,
+    window: int,
+    reservation: str | None = None,
+    review_job_id: str | None = None,
 ) -> int:
     """Shadow reviewer: judge the trajectory tail, journal the verdict, inject
     nothing. Injection rights are earned later via labeling + fork pairs."""
@@ -432,6 +444,15 @@ def _review_main(
         cancel(session, reservation)
         print("review failed: empty journal", file=sys.stderr)
         return 1
+    queued_at = next(
+        (
+            record.at
+            for record in reversed(records)
+            if record.event.kind == "review_job_queued"
+            and record.event.payload.get("review_job_id") == review_job_id
+        ),
+        None,
+    )
     try:
         # Check the ledger before spending, not after: the manual path calls
         # the model first, so a corrupt ledger would otherwise pay for a review
@@ -440,6 +461,17 @@ def _review_main(
     except LedgerCorrupt as error:
         print(f"review refused: {error}", file=sys.stderr)
         return 1
+    started = StepJournal(journal_file).record(
+        TraceEvent(
+            "review_inference_started",
+            {
+                "review_job_id": review_job_id,
+                "queue_ms": max(0.0, (time.time() - queued_at) * 1000)
+                if queued_at is not None
+                else None,
+            },
+        )
+    )
     constraints = _constraints_of(config)
     try:
         decision, digest = review(
@@ -451,7 +483,10 @@ def _review_main(
         # distinguishable from "reviewer silently died".
         with suppress(SnapshotError):
             StepJournal(journal_file).record(
-                TraceEvent("reviewer_error", {"error": str(error)[:300]})
+                TraceEvent(
+                    "reviewer_error",
+                    {"error": str(error)[:300], "review_job_id": review_job_id},
+                )
             )
         return 1
     # A reserved slot was already counted by the caller; charging again would
@@ -470,6 +505,11 @@ def _review_main(
                 "confidence": decision.confidence,
                 "model": config.reviewer.model,
                 "reviewed_upto": records[-1].step,
+                "review_job_id": review_job_id,
+                "timing": {
+                    "queue_ms": started.event.payload.get("queue_ms"),
+                    "inference_ms": decision.inference_ms,
+                },
                 "shadow": True,
                 # What the reviewer could actually see when it judged: a verdict
                 # made on a truncated view or with no goal must stay identifiable.

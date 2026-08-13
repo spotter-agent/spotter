@@ -33,6 +33,10 @@ class RuntimeCostReport:
     cumulative_main_tokens: int | None
     reviewer_calls: int
     reviewer_tokens: int | None
+    reviewer_jobs_queued: int
+    reviewer_jobs_started: int
+    reviewer_queue_ms: tuple[float, ...]
+    reviewer_inference_ms: tuple[float, ...]
     tool_duration_ms: tuple[float, ...]
     gate_calls: int
     hook_ms: tuple[float, ...]
@@ -49,8 +53,11 @@ def measure_runtime_costs(
     surfaces: dict[str, SurfaceCost] = {"hook": SurfaceCost(), "app_server": SurfaceCost()}
     sessions = events = completed_turns = token_turns = token_observations = 0
     cumulative_main_tokens = reviewer_calls = reviewer_tokens = journal_bytes = gate_calls = 0
+    reviewer_jobs_queued = reviewer_jobs_started = 0
     main_tokens_known = reviewer_tokens_known = False
     tool_duration_ms: list[float] = []
+    reviewer_queue_ms: list[float] = []
+    reviewer_inference_ms: list[float] = []
     hook_ms: list[float] = []
     ipc_ms: list[float] = []
     daemon_evaluation_ms: list[float] = []
@@ -109,6 +116,14 @@ def measure_runtime_costs(
                     value = spend.get("session_tokens")
                     if isinstance(value, int) and not isinstance(value, bool):
                         latest_reviewer_tokens = value
+                timing = event.payload.get("timing")
+                if isinstance(timing, Mapping):
+                    _append_number(reviewer_inference_ms, timing.get("inference_ms"))
+            if event.kind == "review_job_queued":
+                reviewer_jobs_queued += 1
+            if event.kind == "review_inference_started":
+                reviewer_jobs_started += 1
+                _append_number(reviewer_queue_ms, event.payload.get("queue_ms"))
             if event.kind == "gate_ipc":
                 gate_calls += 1
                 _append_number(hook_ms, event.payload.get("hook_ms"))
@@ -144,6 +159,10 @@ def measure_runtime_costs(
         cumulative_main_tokens if main_tokens_known else None,
         reviewer_calls,
         reviewer_tokens if reviewer_tokens_known else None,
+        reviewer_jobs_queued,
+        reviewer_jobs_started,
+        tuple(reviewer_queue_ms),
+        tuple(reviewer_inference_ms),
         tuple(tool_duration_ms),
         gate_calls,
         tuple(hook_ms),
@@ -176,9 +195,13 @@ def render_runtime_costs(report: RuntimeCostReport) -> str:
     reviewer_tokens = (
         str(report.reviewer_tokens) if report.reviewer_tokens is not None else "unknown"
     )
+    queue = _sample(report.reviewer_queue_ms, report.reviewer_jobs_started)
+    inference = _sample(report.reviewer_inference_ms, report.reviewer_calls)
+    jobs = f"{report.reviewer_calls}/{report.reviewer_jobs_started}/{report.reviewer_jobs_queued}"
     lines.append(
         f"  Spotter semantic: reviewer_calls={report.reviewer_calls}, "
-        f"recorded_session_tokens={reviewer_tokens}"
+        f"recorded_session_tokens={reviewer_tokens}; queue={queue}, "
+        f"inference={inference}; jobs={jobs} decided/started/queued"
     )
     lines.append(
         f"  Spotter deterministic: gate_calls={report.gate_calls}; "

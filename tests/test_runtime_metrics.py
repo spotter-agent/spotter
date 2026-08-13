@@ -39,9 +39,23 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
         ),
         _record(
             3,
+            TraceEvent("review_job_queued", {"review_job_id": "review-1"}),
+        ),
+        _record(
+            4,
+            TraceEvent(
+                "review_inference_started",
+                {"review_job_id": "review-1", "queue_ms": 4.0},
+            ),
+        ),
+        _record(
+            5,
             TraceEvent(
                 "reviewer_decision",
-                {"spend": {"session_tokens": 25}},
+                {
+                    "spend": {"session_tokens": 25},
+                    "timing": {"queue_ms": 4.0, "inference_ms": 8.0},
+                },
             ),
         ),
     ]
@@ -91,10 +105,13 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
     assert report.cumulative_main_tokens == 14
     assert report.reviewer_calls == 1
     assert report.reviewer_tokens == 25
+    assert report.reviewer_jobs_queued == report.reviewer_jobs_started == 1
+    assert report.reviewer_queue_ms == (4.0,)
+    assert report.reviewer_inference_ms == (8.0,)
     assert report.gate_calls == 1
     assert report.tool_duration_ms == (10.0,)
     assert report.source_timestamps == 4
-    assert report.receipt_timestamps == report.events == 8
+    assert report.receipt_timestamps == report.events == 10
     assert report.journal_bytes == 300
 
     rendered = render_runtime_costs(report)
@@ -103,6 +120,7 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
     assert (
         "app_server: actions=1 (from 2 observations), outcomes=1 (from 1 observation)" in rendered
     )
+    assert "jobs=1/1/1 decided/started/queued" in rendered
 
 
 def test_unavailable_runtime_metrics_render_unknown_not_zero() -> None:

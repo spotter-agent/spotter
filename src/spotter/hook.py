@@ -168,6 +168,14 @@ def _maybe_spawn_shadow_review(
         with suppress(SnapshotError, OSError):
             StepJournal(journal_file).record(TraceEvent(kind, {key: refusal}))
         return
+    review_job_id = f"proposal:{proposal_number}"
+    with suppress(SnapshotError, OSError):
+        StepJournal(journal_file).record(
+            TraceEvent(
+                "review_job_queued",
+                {"review_job_id": review_job_id},
+            )
+        )
     args = [
         sys.executable,
         "-m",
@@ -180,6 +188,8 @@ def _maybe_spawn_shadow_review(
         # The slot is already taken; the child settles the cost against it.
         "--reservation",
         token,
+        "--review-job-id",
+        review_job_id,
     ]
     if config_path is not None:
         # Without this the child builds a default config, so the constraints

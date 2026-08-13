@@ -9,9 +9,10 @@ import pytest
 import spotter.experiment as experiment
 from spotter.config import GatesConfig, MainAgentConfig, ReviewerConfig, SpotterConfig
 from spotter.experiment import ArmResult, results_path, run_experiment, summarize
-from spotter.hook import run_hook
+from spotter.hook import journal_path, run_hook
 from spotter.paths import spotter_home
 from spotter.replay import ForkPlan
+from spotter.snapshot import StepJournal
 
 
 @pytest.fixture(autouse=True)
@@ -176,6 +177,9 @@ def test_cadence_forwards_user_config(monkeypatch: pytest.MonkeyPatch, tmp_path:
     # the slot was taken before spawning and is identified by a token, so the
     # child cannot claim a reservation it never received
     assert "--reservation" in argv and len(argv[argv.index("--reservation") + 1]) == 32
+    assert argv[argv.index("--review-job-id") + 1] == "proposal:1"
+    records = StepJournal.load(journal_path({"session_id": "cadence"}))
+    assert any(record.event.kind == "review_job_queued" for record in records)
 
 
 def test_failed_agent_is_not_checked_or_counted_as_success(

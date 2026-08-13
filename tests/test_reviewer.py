@@ -74,6 +74,7 @@ def test_review_uses_injected_runner() -> None:
 
     decision, _ = review(_records(), "test-model", runner=fake_runner)
     assert decision.decision == "continue"
+    assert decision.inference_ms is not None
     assert seen["model"] == "test-model"
     assert "pytest -x" in seen["prompt"]
 
@@ -100,6 +101,7 @@ def test_review_cli_journals_shadow_decision(
     assert verdict.event.payload["shadow"] is True
     assert verdict.event.payload["decision"] == "nudge"
     assert verdict.event.payload["reviewed_upto"] == 0
+    assert verdict.event.payload["timing"]["inference_ms"] is None
 
 
 def test_inflight_lock_skips_duplicate_review(

@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -73,6 +74,7 @@ class ReviewerDecision:
     reason: str
     confidence: float
     hypothesis: str = ""  # the assumption being flagged; "" when none
+    inference_ms: float | None = None
 
 
 def parse_decision(raw: str) -> ReviewerDecision:
@@ -202,11 +204,24 @@ def review(
         # not, refuse rather than send an unbounded request and interpret the
         # provider's error.
         raise RuntimeError(f"reviewer prompt exceeds budget after truncation: {len(prompt)} chars")
+    started = time.perf_counter_ns()
     decision = parse_decision(runner(model, prompt))
+    decision = ReviewerDecision(
+        decision.decision,
+        decision.failure_class,
+        decision.reason,
+        decision.confidence,
+        decision.hypothesis,
+        (time.perf_counter_ns() - started) / 1_000_000,
+    )
     if not digest.goal_present and decision.failure_class == "spec_drift":
         # Instruction alone is not enforcement: a model that answers spec_drift
         # without a specification is answering from imagination.
         decision = ReviewerDecision(
-            "continue", "none", "spec_drift claimed with no goal recorded; discarded", 0.0
+            "continue",
+            "none",
+            "spec_drift claimed with no goal recorded; discarded",
+            0.0,
+            inference_ms=decision.inference_ms,
         )
     return decision, digest
