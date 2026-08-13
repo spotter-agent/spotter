@@ -271,6 +271,9 @@ exact and pre-mutation coverage, without mistaking missing historical Git object
 The first [historical coverage baseline](experiments/fork-coverage-baseline.md) found 0/1,246 clean
 exact proposals (including 0/120 pre-mutation), so neutral execution on that legacy sample is a
 documented no-go rather than a fabricated zero-noise result.
+The first [fresh identical-arm run](experiments/fork-neutral-first-run.md) then observed 0/3
+mechanical disagreements, 0/3 environment mismatches, and 0/6 infrastructure failures at one exact
+prefix. This validates the path but is too narrow to establish the representative noise bound.
 
 Intervention deltas smaller than the instrument noise floor should not be overinterpreted.
 

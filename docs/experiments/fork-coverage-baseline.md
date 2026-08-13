@@ -45,3 +45,7 @@ Collect fresh Hook-observed sessions after the baseline-checkpoint and reversibi
 changes, rerun `fork-coverage`, and execute `spotter experiment --neutral` only for prefixes reported
 as `FORKABLE_EXACT`. #42 remains open until representative exact prefixes establish outcome noise
 and coverage around relevant intervention opportunities.
+
+The first such [fresh identical-arm run](fork-neutral-first-run.md) subsequently found one exact
+post-mutation prefix and 0/3 mechanical disagreements across its repeated neutral pairs. It does not
+change this historical sample's NO-GO decision or establish representative early-prefix coverage.
