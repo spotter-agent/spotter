@@ -23,7 +23,7 @@ from spotter.budget import (
 from spotter.budget import (
     read as read_spend,
 )
-from spotter.build_identity import version_line
+from spotter.build_identity import current_build_identity, version_line
 from spotter.codex import CodexAdapter
 from spotter.config import ConfigurationError, MainAgentConfig, ReviewerConfig, SpotterConfig
 from spotter.core import SpotterRuntime
@@ -1072,6 +1072,14 @@ def _hook_main(
         if manifest is None or manifest.integration_generation != integration_generation:
             print(
                 "spotter: stale integration generation; failing open; "
+                "run `spotter setup codex` to reconcile",
+                file=sys.stderr,
+            )
+            return 0
+        installed_build = current_build_identity().build_id
+        if manifest.setup_build_id != installed_build:
+            print(
+                "spotter: integration package build is stale; failing open; "
                 "run `spotter setup codex` to reconcile",
                 file=sys.stderr,
             )

@@ -19,10 +19,12 @@ from spotter.daemon import (
     DaemonServer,
     DaemonTimeout,
     RuntimeHealth,
+    _PackageBoundaryMonitor,
     runtime_socket,
 )
 from spotter.gates import Gate
 from spotter.identity import IdentityProvenance, RuntimeIdentity, ThreadId, TurnId
+from spotter.paths import RuntimeLayout
 from spotter.snapshot import StepRecord
 from spotter.trace import TraceEvent
 
@@ -60,6 +62,57 @@ def test_control_socket_handles_concurrent_clients_and_health_states(socket_path
         finally:
             await server.close()
         assert not socket_path.exists()
+
+    asyncio.run(scenario())
+
+
+def test_package_boundary_monitor_requires_continuous_absence() -> None:
+    monitor = _PackageBoundaryMonitor(missing_grace=2.0)
+
+    assert not monitor.observe(available=False, now=10.0)
+    assert not monitor.observe(available=False, now=11.9)
+    assert not monitor.observe(available=True, now=12.0), "an upgrade relink resets the fence"
+    assert not monitor.observe(available=False, now=20.0)
+    assert monitor.observe(available=False, now=22.0)
+
+
+def test_daemon_stops_cleanly_after_the_stable_package_is_removed(
+    socket_path: Path, tmp_path: Path
+) -> None:
+    async def scenario() -> None:
+        package_bin = tmp_path / "package/bin"
+        package_bin.mkdir(parents=True)
+        cli = package_bin / "spotter"
+        daemon = package_bin / "spotterd"
+        for executable in (cli, daemon):
+            executable.write_text("#!/bin/sh\nexit 0\n")
+            executable.chmod(0o755)
+        retained = tmp_path / "state/sessions/retained.jsonl"
+        retained.parent.mkdir(parents=True)
+        retained.write_text("durable\n")
+        layout = RuntimeLayout.discover(
+            cli_executable=cli,
+            daemon_executable=daemon,
+            spotter_root=tmp_path / "state",
+            environ={},
+        )
+        server = DaemonServer(
+            socket_path,
+            layout=layout,
+            package_watch_interval=0.01,
+            package_missing_grace=0,
+        )
+        serving = asyncio.create_task(server.serve())
+        for _ in range(50):
+            if (await DaemonClient(socket_path).status()).available:
+                break
+            await asyncio.sleep(0.01)
+        daemon.unlink()
+
+        await asyncio.wait_for(serving, 1)
+
+        assert not socket_path.exists()
+        assert retained.read_text() == "durable\n"
 
     asyncio.run(scenario())
 

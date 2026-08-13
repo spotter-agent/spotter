@@ -38,8 +38,11 @@ CONTROL_TIMEOUT = 1.0
 GATE_TIMEOUT = 0.2
 START_TIMEOUT = 5.0
 STOP_TIMEOUT = 5.0
+SERVICE_COMMAND_TIMEOUT = 10.0
 _MAX_REQUEST_BYTES = 64 * 1024
 _RESOURCE_SAMPLE_EVERY = 64
+_PACKAGE_WATCH_INTERVAL = 0.25
+_PACKAGE_MISSING_GRACE = 10.0
 
 
 class RuntimeHealth(StrEnum):
@@ -61,6 +64,23 @@ class DaemonStatus:
     @property
     def available(self) -> bool:
         return self.health != RuntimeHealth.UNAVAILABLE
+
+
+@dataclass
+class _PackageBoundaryMonitor:
+    """Require a stable executable to stay absent before treating it as uninstall."""
+
+    missing_grace: float
+    missing_since: float | None = None
+
+    def observe(self, *, available: bool, now: float) -> bool:
+        if available:
+            self.missing_since = None
+            return False
+        if self.missing_since is None:
+            self.missing_since = now
+            return self.missing_grace <= 0
+        return now - self.missing_since >= self.missing_grace
 
 
 class DaemonError(RuntimeError):
@@ -223,6 +243,8 @@ class DaemonServer:
         app_server_endpoint: str | None = None,
         journals_dir: Path | None = None,
         layout: RuntimeLayout | None = None,
+        package_watch_interval: float = _PACKAGE_WATCH_INTERVAL,
+        package_missing_grace: float = _PACKAGE_MISSING_GRACE,
     ) -> None:
         self.layout = layout or RuntimeLayout.discover()
         self.socket_path = socket_path or runtime_socket(self.layout)
@@ -239,6 +261,9 @@ class DaemonServer:
         self._runtime_id = uuid.uuid4().hex
         self._gate_requests = 0
         self._resource_sample_seq = 0
+        self._package_watch_interval = package_watch_interval
+        self._package_monitor = _PackageBoundaryMonitor(package_missing_grace)
+        self._package_watch_task: asyncio.Task[None] | None = None
 
     def observe_trace(self, event: TraceEvent) -> ThreadState:
         """Increment daemon-owned hot state after adapter normalization and journaling."""
@@ -294,6 +319,8 @@ class DaemonServer:
                 on_state=self._on_recovery_state,
             )
             await self.recovery.start()
+        if self.layout.daemon_executable is not None:
+            self._package_watch_task = asyncio.create_task(self._watch_package_boundary())
 
     async def serve(self) -> None:
         await self.start()
@@ -306,6 +333,11 @@ class DaemonServer:
         await self._shutdown.wait()
 
     async def close(self) -> None:
+        if self._package_watch_task is not None:
+            self._package_watch_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._package_watch_task
+            self._package_watch_task = None
         if self.recovery is not None:
             await self.recovery.close()
             self.recovery = None
@@ -321,6 +353,20 @@ class DaemonServer:
                 self.socket_path.unlink()
         self._socket_inode = None
         self._release_lock()
+
+    async def _watch_package_boundary(self) -> None:
+        """Stop cleanly after uninstall without mistaking an upgrade relink for removal."""
+
+        executable = self.layout.daemon_executable
+        assert executable is not None
+        loop = asyncio.get_running_loop()
+        while True:
+            if self._package_monitor.observe(
+                available=os.access(executable, os.X_OK), now=loop.time()
+            ):
+                self._shutdown.set()
+                return
+            await asyncio.sleep(self._package_watch_interval)
 
     def set_health(self, health: RuntimeHealth, detail: str | None = None) -> None:
         if health == RuntimeHealth.UNAVAILABLE:
@@ -623,12 +669,17 @@ class ManagedServiceManager:
         logs = secure_dir(self.layout.log_dir)
         log_path = logs / "spotterd.log"
         if self.platform == "darwin":
+            program = self._program()
             return plistlib.dumps(
                 {
                     "Label": self.LABEL,
-                    "ProgramArguments": self._program(),
+                    "ProgramArguments": program,
                     "RunAtLoad": True,
-                    "KeepAlive": True,
+                    # A package-manager uninstall removes the stable entry
+                    # point without calling `spotter teardown`.  Keep the
+                    # integration registration repairable, but do not make
+                    # launchd retry a removed executable forever.
+                    "KeepAlive": {"PathState": {program[0]: True}},
                     "WorkingDirectory": str(home),
                     "EnvironmentVariables": {"SPOTTER_HOME": str(home)},
                     "StandardOutPath": str(log_path),
@@ -666,7 +717,21 @@ class ManagedServiceManager:
 
     @staticmethod
     def _run(command: list[str]) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(command, capture_output=True, text=True, check=False)
+        try:
+            return subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=SERVICE_COMMAND_TIMEOUT,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return subprocess.CompletedProcess(
+                command,
+                124,
+                "",
+                f"service command timed out after {SERVICE_COMMAND_TIMEOUT:.0f}s",
+            )
 
     def _service_error(self, result: subprocess.CompletedProcess[str]) -> DaemonStatus:
         detail = (result.stderr or result.stdout or "service command failed").strip()[:300]
@@ -700,8 +765,10 @@ class ManagedServiceManager:
                     detail="spotterd is running outside the managed launchd service; stop it first",
                 )
             changed = self._install_definition()
-            if loaded and changed:
-                self._run(["launchctl", "bootout", f"{domain}/{self.LABEL}"])
+            if loaded and (changed or not current.available):
+                removed = self._run(["launchctl", "bootout", f"{domain}/{self.LABEL}"])
+                if removed.returncode != 0:
+                    return self._service_error(removed)
                 loaded = False
             if not loaded:
                 result = self._run(["launchctl", "bootstrap", domain, str(self.registration_path)])

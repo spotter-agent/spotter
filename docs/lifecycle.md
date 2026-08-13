@@ -6,9 +6,9 @@
 > implementation state, see [Status](status.md). `spotter setup|teardown codex`, versioned ownership
 > manifests, managed `launchd`/`systemd --user` registration, portable startup, legacy Hook/plugin
 > migration, runtime-aware diagnostics, tag-derived release artifacts, stable packaged runtime
-> layout, official Homebrew tap, and packaged `--version` identity exist. App Server event ingestion
-> also exists, but package-vs-running-daemon upgrade policy, `spotter purge`, and transparent
-> plain-`codex` launch remain target behavior.
+> layout, official Homebrew tap, packaged `--version` identity, and a two-generation Homebrew
+> lifecycle gate exist. App Server event ingestion also exists, but broader configuration/protocol
+> migration policy, `spotter purge`, and transparent plain-`codex` launch remain target behavior.
 
 ---
 
@@ -349,8 +349,9 @@ Integration:  not configured
 - package provenance detection (`homebrew`, source, standalone, etc.);
 
 Release artifacts, the dedicated tap and Formula, shared `spotter`/`spotterd` build identity, stable
-runtime path discovery, and the package-vs-running-daemon build comparison are implemented. Full
-cross-environment install/upgrade/remove smoke coverage remains in #108.
+runtime path discovery, and the package-vs-running-daemon build comparison are implemented. The
+[Homebrew lifecycle smoke](homebrew-lifecycle-smoke.md) covers real macOS install, live upgrade,
+uninstall, and reinstall while fast fixtures cover Intel/macOS and Linuxbrew path logic.
 
 ---
 
@@ -1148,7 +1149,15 @@ Never write versioned Homebrew Cellar paths into agent Hooks/service definitions
 Schema-4 integration Hooks also carry an integration-generation fence. Re-running setup after a
 package-build or stable-prefix change rotates the fence and reconciles the exact owned Hook entries.
 A Codex process holding an older generated command invokes the current stable binary, but that binary
-rejects the retired generation and fails open rather than silently adopting the replacement build.
+rejects the retired generation or package build and fails open rather than silently adopting the
+replacement build.
+
+The running daemon also watches the stable daemon entry point. A transient unlink/relink during an
+upgrade is tolerated, so G1 remains visible until setup explicitly reconciles it. If the entry point
+stays absent for ten seconds after uninstall, the daemon exits cleanly without touching durable
+state or a shared App Server. launchd keep-alive is conditional on that executable path; systemd
+uses restart-on-failure, while package removal is a clean exit. A loaded but unavailable launchd job
+left by teardown-less uninstall is re-bootstrapped after reinstall instead of hanging in kickstart.
 
 `spotter update` should not compete with Homebrew for file ownership. It may check for updates or delegate to the package-manager-supported path.
 
@@ -1250,6 +1259,13 @@ fail-open fallback. If the package link is absent, Codex continues without launc
 removed interpreter. After reinstall, `doctor` reports the missing/old recorded package path or build
 and directs the user to rerun `spotter setup codex`; setup then reconciles the new prefix while
 preserving durable user data.
+
+If setup previously registered the managed runtime, the integration manifest, Hook, and inactive
+service registration deliberately remain repairable integration state. The daemon exits after the
+stable executable disappears, and the conditional service definition does not retry the removed
+binary. Reinstall plus `doctor`/`setup` reuses the exact ownership manifest, rotates stale build state
+when needed, and deduplicates the generated Hooks. An unrecorded or user-modified Spotter Hook is
+reported as ambiguous instead of being overwritten.
 
 It should not remove:
 
@@ -1445,16 +1461,19 @@ daemon requests. See
 [Release artifacts and build identity](releasing.md) for the authoritative artifact and identity
 contract. Homebrew-specific layout remains outside the core artifacts.
 
-Release verification should include fixtures for:
+The [Homebrew lifecycle smoke](homebrew-lifecycle-smoke.md) now verifies:
 
 - clean install;
 - setup;
 - idempotent setup;
 - upgrade with running daemon;
-- schema migration;
+- current Integration Manifest schema repair;
 - teardown;
 - uninstall without teardown;
 - reinstall with retained data.
+
+Broader schema/configuration migrations remain separate #47/#90 gates rather than being inferred
+from the packaging fixture.
 
 ---
 
@@ -1483,7 +1502,7 @@ The lifecycle implies concrete components rather than one monolithic CLI.
 
 The target lifecycle is not complete until all of these work end-to-end:
 
-- [ ] clean package install does not modify Codex;
+- [x] clean package install does not modify Codex;
 - [x] `spotter setup codex` is idempotent;
 - [x] interrupted setup can heal forward when setup is re-run (pre-manifest teardown cannot infer ownership);
 - [ ] ordinary `codex` requires no manual Spotter/App Server startup in managed mode;
@@ -1494,10 +1513,10 @@ The target lifecycle is not complete until all of these work end-to-end:
 - [ ] Codex upgrade degrades by capability rather than silently breaking;
 - [ ] Spotter upgrade handles a running old daemon and schema migration;
 - [x] `teardown codex` removes only Spotter-owned integration changes;
-- [ ] uninstall without teardown does not break Codex;
-- [ ] user data survives normal uninstall;
+- [x] uninstall without teardown does not break Codex;
+- [x] user data survives normal uninstall;
 - [ ] purge can enumerate and safely clean repository resources;
-- [ ] reinstall can reuse/migrate retained data;
+- [x] reinstall can reuse compatible retained data (migration-required state remains #47/#90);
 - [x] legacy plugin users migrate without duplicate events.
 
 For runtime component boundaries, see [Architecture](architecture.md). For implementation sequencing, see [Roadmap](roadmap.md). For current implementation state, see [Status](status.md).

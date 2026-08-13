@@ -1,8 +1,11 @@
 import asyncio
+import concurrent.futures
 import io
 import json
 import plistlib
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -147,6 +150,47 @@ def test_setup_is_idempotent_and_teardown_preserves_unowned_config(
     }
 
 
+def test_setup_waits_for_an_inflight_lifecycle_mutation(
+    homes: tuple[Path, Path],
+) -> None:
+    manager, _ = _manager(homes)
+    manager.lock_path.parent.mkdir(parents=True)
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import fcntl, pathlib, sys\n"
+                "with pathlib.Path(sys.argv[1]).open('a+') as lock:\n"
+                "    fcntl.flock(lock, fcntl.LOCK_EX)\n"
+                "    print('locked', flush=True)\n"
+                "    sys.stdin.readline()\n"
+            ),
+            str(manager.lock_path),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    assert holder.stdout is not None
+    assert holder.stdin is not None
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        assert holder.stdout.readline().strip() == "locked"
+        setup = executor.submit(manager.setup)
+        time.sleep(0.1)
+        waited = not setup.done()
+        holder.stdin.write("\n")
+        holder.stdin.flush()
+        assert setup.result(timeout=2).state == "ready"
+        assert waited
+    finally:
+        if holder.poll() is None:
+            holder.terminate()
+        holder.wait(timeout=2)
+        executor.shutdown(wait=True, cancel_futures=True)
+
+
 def test_setup_and_teardown_remove_a_hooks_file_created_by_spotter(
     homes: tuple[Path, Path],
 ) -> None:
@@ -215,6 +259,28 @@ def test_stale_cached_hook_generation_fails_open(
     assert "stale integration generation" in capsys.readouterr().err
     assert not (homes[0] / "sessions/stale.jsonl").exists()
     assert manifest.integration_generation != "retired-generation"
+
+
+def test_cached_hook_from_the_installed_old_build_fails_open_before_reconcile(
+    homes: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    old = BuildIdentity("1.0.0", "v1.0.0@old", "v1.0.0", "old")
+    new = BuildIdentity("1.0.1", "v1.0.1@new", "v1.0.1", "new")
+    monkeypatch.setattr("spotter.integration.current_build_identity", lambda: old)
+    manager, _ = _manager(homes)
+    manifest = manager.setup()
+    monkeypatch.setattr("spotter.cli.current_build_identity", lambda: new)
+    monkeypatch.setattr(
+        "sys.stdin",
+        io.StringIO('{"hook_event_name":"SessionStart","session_id":"mixed"}'),
+    )
+
+    assert main(["hook", "--integration-generation", manifest.integration_generation]) == 0
+
+    assert "integration package build is stale" in capsys.readouterr().err
+    assert not (homes[0] / "sessions/mixed.jsonl").exists()
 
 
 def test_missing_packaged_bridge_command_is_bounded_and_fail_open(
@@ -371,6 +437,38 @@ def test_teardown_keeps_a_user_modified_owned_hook(homes: tuple[Path, Path]) -> 
     assert "user replacement" in manager.hooks_path.read_text()
 
 
+def test_setup_refuses_to_replace_a_user_modified_owned_hook(
+    homes: tuple[Path, Path],
+) -> None:
+    manager, service = _manager(homes)
+    manager.setup()
+    raw = json.loads(manager.hooks_path.read_text())
+    raw["hooks"]["PreToolUse"][0]["hooks"][0]["command"] += " --user-edit"
+    manager.hooks_path.write_text(json.dumps(raw))
+    before = manager.hooks_path.read_bytes()
+
+    with pytest.raises(IntegrationError, match="ownership is ambiguous"):
+        manager.setup()
+
+    assert manager.hooks_path.read_bytes() == before
+    assert service.starts == 1
+
+
+def test_setup_refuses_generated_hooks_when_the_ownership_manifest_is_missing(
+    homes: tuple[Path, Path],
+) -> None:
+    manager, service = _manager(homes)
+    manager.setup()
+    manager.manifest_path.unlink()
+    before = manager.hooks_path.read_bytes()
+
+    with pytest.raises(IntegrationError, match="ownership is ambiguous"):
+        manager.setup()
+
+    assert manager.hooks_path.read_bytes() == before
+    assert service.starts == 1
+
+
 def test_setup_preserves_unrelated_commands_that_only_mention_spotter_hook(
     homes: tuple[Path, Path],
 ) -> None:
@@ -389,6 +487,23 @@ def test_setup_preserves_unrelated_commands_that_only_mention_spotter_hook(
     manager.setup()
 
     assert "run spotter hook later" in manager.hooks_path.read_text()
+
+
+def test_setup_does_not_treat_a_composite_legacy_hook_command_as_owned(
+    homes: tuple[Path, Path],
+) -> None:
+    _, codex_home = homes
+    codex_home.mkdir()
+    command = "echo /plugins/spotter/scripts/spotter-hook"
+    hooks = {"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": command}]}]}}
+    (codex_home / "hooks.json").write_text(json.dumps(hooks))
+    manager, service = _manager(homes)
+
+    with pytest.raises(IntegrationError, match="ownership is ambiguous"):
+        manager.setup()
+
+    assert command in manager.hooks_path.read_text()
+    assert service.starts == 0
 
 
 def test_portable_setup_does_not_claim_a_preexisting_daemon(
@@ -604,6 +719,7 @@ def test_managed_service_uses_stable_package_and_user_layout(
     if platform == "darwin":
         parsed = plistlib.loads(definition)
         assert parsed["ProgramArguments"] == [str(daemon)]
+        assert parsed["KeepAlive"] == {"PathState": {str(daemon): True}}
         assert parsed["WorkingDirectory"] == str(spotter_home)
         assert parsed["StandardOutPath"] == str(spotter_home / "logs/spotterd.log")
         assert parsed["EnvironmentVariables"] == {"SPOTTER_HOME": str(spotter_home)}
@@ -668,6 +784,105 @@ def test_managed_service_start_registers_and_verifies(
 
     assert asyncio.run(service.start()).health == RuntimeHealth.HEALTHY
     assert any(command[: len(expected)] == expected for command in commands)
+
+
+def test_managed_service_reloads_an_unavailable_but_loaded_launchd_job(
+    homes: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spotter_home, _ = homes
+    service = ManagedServiceManager(
+        platform="darwin",
+        registration_path=spotter_home / "service.plist",
+        executable="/stable/bin/spotterd",
+    )
+    commands: list[list[str]] = []
+    statuses = iter(
+        [
+            DaemonStatus(RuntimeHealth.UNAVAILABLE),
+            DaemonStatus(
+                RuntimeHealth.HEALTHY,
+                build_id=current_build_identity().build_id,
+            ),
+        ]
+    )
+
+    def run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    async def status() -> DaemonStatus:
+        return next(statuses, DaemonStatus(RuntimeHealth.HEALTHY))
+
+    monkeypatch.setattr(service, "_run", run)
+    monkeypatch.setattr(service, "status", status)
+
+    assert asyncio.run(service.start()).health == RuntimeHealth.HEALTHY
+    assert any(command[:2] == ["launchctl", "bootout"] for command in commands)
+    assert any(command[:2] == ["launchctl", "bootstrap"] for command in commands)
+    assert not any(command[:2] == ["launchctl", "kickstart"] for command in commands)
+
+
+def test_managed_service_reports_and_recovers_from_a_failed_rebootstrap(
+    homes: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spotter_home, _ = homes
+    service = ManagedServiceManager(
+        platform="darwin",
+        registration_path=spotter_home / "service.plist",
+        executable="/stable/bin/spotterd",
+    )
+    statuses = iter(
+        [
+            DaemonStatus(RuntimeHealth.UNAVAILABLE),
+            DaemonStatus(RuntimeHealth.UNAVAILABLE),
+            DaemonStatus(
+                RuntimeHealth.HEALTHY,
+                build_id=current_build_identity().build_id,
+            ),
+        ]
+    )
+    booted_out = False
+    bootstrap_attempts = 0
+
+    def run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        nonlocal booted_out, bootstrap_attempts
+        if command[:2] == ["launchctl", "print"]:
+            return subprocess.CompletedProcess(command, 1 if booted_out else 0, "", "")
+        if command[:2] == ["launchctl", "bootout"]:
+            booted_out = True
+        if command[:2] == ["launchctl", "bootstrap"]:
+            bootstrap_attempts += 1
+            if bootstrap_attempts == 1:
+                return subprocess.CompletedProcess(command, 5, "", "bootstrap denied")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    async def status() -> DaemonStatus:
+        return next(statuses, DaemonStatus(RuntimeHealth.HEALTHY))
+
+    monkeypatch.setattr(service, "_run", run)
+    monkeypatch.setattr(service, "status", status)
+
+    failed = asyncio.run(service.start())
+    recovered = asyncio.run(service.start())
+
+    assert failed.health == RuntimeHealth.UNAVAILABLE
+    assert failed.detail == "bootstrap denied"
+    assert recovered.health == RuntimeHealth.HEALTHY
+    assert bootstrap_attempts == 2
+
+
+def test_managed_service_commands_have_a_bounded_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def timeout(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(["launchctl", "print"], 10)
+
+    monkeypatch.setattr(subprocess, "run", timeout)
+
+    result = ManagedServiceManager._run(["launchctl", "print"])  # noqa: SLF001
+
+    assert result.returncode == 124
+    assert "timed out" in result.stderr
 
 
 @pytest.mark.parametrize(
