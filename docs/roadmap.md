@@ -9,6 +9,42 @@ GitHub Milestones are the source of truth for **which stage owns an issue's comp
 
 ## 30-second summary
 
+### Now
+
+**P0 — App Server lifecycle / attach PoC**
+
+Prove that `codex --remote <endpoint>` and Spotter can share the same external App Server,
+observe the same thread/turn, and that `turn/steer` reaches the actual user session. Plain
+`codex` auto-discovery has already been rejected; see [validation](app-server-validation.md).
+
+### Next
+
+```text
+P1  standalone runtime foundation
+ ↓
+P2  product lifecycle: package/setup/status/doctor/teardown
+ ↓
+P3  move existing capabilities behind spotterd
+ ↓
+P4  App Server primary observation + Hook minimization
+```
+
+### Then
+
+```text
+P5  cheap signals → event-driven reviewer
+ ↓
+P6  live VERIFY / NUDGE
+ ↓
+P7  INTERRUPT / RESTART / side-effect-aware recovery
+ ↓
+P8  operational hardening
+ ↓
+P9  adaptation / learned policy only after evidence is strong enough
+```
+
+The corresponding evaluation path is:
+
 ```text
 Runtime
   ↓
@@ -42,6 +78,56 @@ Evaluation is deliberately **inside** the roadmap rather than a separate evaluat
 
 ---
 
+# Runtime / product track
+
+## P0 — App Server lifecycle / attach PoC
+
+**Priority:** first.  
+**Why:** every later App Server/daemon decision depends on this.
+
+### Entry criteria
+
+- current Codex version exposes App Server client/control surfaces worth testing;
+- Spotter can run local integration experiments without changing production policy.
+
+### Questions to answer
+
+1. ~~Does plain `codex` reuse a pre-existing default external App Server daemon?~~ **No** — current docs and CLI source require `--remote`; see [validation](app-server-validation.md).
+2. Can Spotter attach as a second client to the exact same server?
+3. Do TUI and Spotter observe the same thread id and active turn id?
+4. Does `turn/steer` affect the actual user-visible turn?
+5. What happens with multiple simultaneous TUI sessions?
+6. Which launcher/alias/wrapper can supply `--remote` safely across normal, resume, and failure paths?
+7. What can Spotter still do when Codex chooses an embedded server?
+8. What lifecycle/ownership guarantees does Codex's experimental daemon actually provide?
+
+### Experiment A — explicit remote TUI
+
+```text
+start external Codex App Server
+        ↓
+`codex --remote <endpoint>`
+        ↓
+TUI connects to the selected server
+        ↓
+Spotter attaches as client B
+        ↓
+observe same thread/turn
+        ↓
+turn/steer reaches user session
+```
+
+Record:
+
+- daemon endpoint/path;
+- Codex CLI/version/config;
+- thread ids seen by both clients;
+- turn ids over several actions;
+- event duplication/order;
+- steer latency and visible result;
+- disconnect/reconnect behavior.
+
+### Experiment B — Spotter-managed launch UX
 # Runtime
 
 ## Outcome

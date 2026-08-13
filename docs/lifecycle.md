@@ -52,7 +52,8 @@ journals / snapshots / labels / experiments
 
 The most important lifecycle constraint is this:
 
-> **If full Codex mode requires an external App Server, that server must be available before ordinary `codex` chooses its App Server target.**
+> **If full Codex mode requires an external App Server, it must be available and selected
+> explicitly when the TUI starts (currently with `--remote`).**
 
 That conflicts with a completely lazy “wake Spotter on the first Hook” design. #78 proved a
 Spotter-managed external path; #79 and #83 must now make its service ownership and startup strategy
@@ -477,7 +478,10 @@ This is the largest open lifecycle dependency in the target design.
 
 ## 5.1 Why startup order matters
 
-Plain `codex` may choose an embedded App Server when no reusable external daemon is present:
+Plain `codex` does not auto-discover a separately started App Server in the current
+documented/source interface. An external endpoint is selected explicitly with
+`codex --remote <endpoint>`; without that option the external Spotter control plane is
+not selected. See [App Server connection validation](app-server-validation.md).
 
 ```text
 codex starts
@@ -493,25 +497,25 @@ If Codex has already selected an embedded server, waking Spotter later at the fi
 
 ## 5.2 Candidate canonical strategies
 
-### Strategy A — Codex-managed daemon
+### Strategy A — explicit remote TUI
 
 ```text
-ensure Codex App Server daemon
+ensure external Codex App Server
       ↓
-plain `codex` reuses default daemon
+`codex --remote <endpoint>` selects it
       ↓
 Spotter attaches as client B
 ```
 
 Advantages:
 
-- follows Codex's own lifecycle tooling;
-- plain `codex` can remain unchanged if default-daemon reuse works reliably.
+- uses Codex's documented external-TUI interface;
+- makes the selected endpoint explicit and diagnosable.
 
 Risks:
 
-- daemon lifecycle is currently experimental;
-- some CLI/config overrides may disable daemon reuse;
+- App Server/WebSocket lifecycle remains experimental;
+- preserving the plain-command UX requires a separately validated launcher/alias/wrapper;
 - Spotter must not assume exclusive ownership.
 
 ### Strategy B — Spotter-managed App Server process
@@ -577,7 +581,8 @@ The original daemon idea was fully lazy: start on the first Hook, exit when idle
 
 The requirement is mechanism-independent:
 
-> **In managed mode, whatever runtime is required for full observation/control must be ready before ordinary `codex` chooses its App Server target.**
+> **In managed mode, whatever runtime is required for full observation/control must be
+> ready and explicitly selected before the Codex TUI starts.**
 
 If the Runtime gate confirms that an external App Server must already exist, a likely default is a login-scoped user service:
 

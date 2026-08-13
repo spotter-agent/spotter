@@ -30,6 +30,7 @@ PreToolUse Hook only
 (deterministic synchronous enforcement)
 ```
 
+The **immediate blocker** is not writing `spotterd`. Current Codex documentation and CLI source show that a separately started App Server is **not auto-discovered by plain `codex`**; the TUI must select it with `codex --remote <endpoint>`. The remaining PoC must prove that an explicitly connected TUI and Spotter can observe and steer the same real turn, then select an acceptable launch UX. See [App Server connection validation](app-server-validation.md).
 The roadmap no longer uses `P0–P9` / `E0–E5`. It is organized by named outcomes:
 
 ```text
@@ -61,6 +62,10 @@ The remaining implementation boundaries are split into native GitHub issues:
 
 [#31](https://github.com/spotter-agent/spotter/issues/31) then moves independent supervision state into that runtime, fed by the App Server ingestion path in [#85](https://github.com/spotter-agent/spotter/issues/85).
 
+> **Can Spotter provide an acceptable explicit launch path in which the Codex TUI and Spotter use the same external App Server, and can Spotter steer that exact active turn?**
+
+The former assumption that merely starting the external server would make plain `codex`
+reuse it was rejected by the [2026-08-13 validation](app-server-validation.md).
 In parallel, the highest-value evidence foundations remain:
 
 - [#21](https://github.com/spotter-agent/spotter/issues/21) — mechanically scored task set;
@@ -68,6 +73,9 @@ In parallel, the highest-value evidence foundations remain:
 - [#37](https://github.com/spotter-agent/spotter/issues/37) — observability ceiling baseline/post-migration measurement;
 - [#33](https://github.com/spotter-agent/spotter/issues/33) — runtime cost/timing/outcome telemetry.
 
+1. **Explicit remote TUI** — start an external App Server, launch `codex --remote <endpoint>`, and verify Spotter can attach as a second client.
+2. **Spotter launch UX** — validate a launcher/alias/wrapper that supplies the endpoint without claiming unsupported automatic discovery.
+3. **Embedded baseline** — document exactly which Spotter capabilities remain when Codex chooses an embedded App Server that Spotter cannot attach to.
 ---
 
 ## Quick capability status
