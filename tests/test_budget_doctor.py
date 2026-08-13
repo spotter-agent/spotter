@@ -17,6 +17,7 @@ from spotter.trace import TraceEvent
 @pytest.fixture(autouse=True)
 def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("SPOTTER_HOME", str(tmp_path / "spotter"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
     return tmp_path / "spotter"
 
 
@@ -162,7 +163,7 @@ def test_doctor_run_covers_every_layer() -> None:
 def test_status_reports_spend(home: Path, capsys: pytest.CaptureFixture[str]) -> None:
     StepJournal(journal_path({"session_id": "s"})).record(TraceEvent("x"))
     charge("s", tokens=1234)
-    assert main(["status"]) == 0
+    assert main(["status"]) == 1
     out = capsys.readouterr().out
     assert "reviews today: 1" in out and "1234" in out
     assert json.loads((home / "review-spend.json").read_text())["sessions"]["s"]["tokens"] == 1234
@@ -206,7 +207,7 @@ def test_status_survives_a_corrupt_ledger(home: Path, capsys: pytest.CaptureFixt
     it exists to diagnose."""
     StepJournal(journal_path({"session_id": "s"})).record(TraceEvent("x"))
     (home / "review-spend.json").write_text("{torn")
-    assert main(["status"]) == 0
+    assert main(["status"]) == 2
     assert "spend ledger unreadable" in capsys.readouterr().out
 
 

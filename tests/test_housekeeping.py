@@ -22,6 +22,7 @@ from spotter.trace import TraceEvent
 @pytest.fixture(autouse=True)
 def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("SPOTTER_HOME", str(tmp_path / "spotter"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
     return tmp_path / "spotter"
 
 
@@ -113,7 +114,7 @@ def test_status_tightens_permissions_it_finds_loose(
 ) -> None:
     StepJournal(journal_path({"session_id": "s"})).record(TraceEvent("x"))
     home.chmod(0o755)
-    assert main(["status"]) == 0
+    assert main(["status"]) == 1
     assert (home.stat().st_mode & 0o077) == 0
     assert "tightened from" in capsys.readouterr().out
 
@@ -129,7 +130,7 @@ def test_status_warns_about_pre_redaction_credentials(
         "snapshot": None,
     }
     journal.write_text(json.dumps(record) + "\n")
-    assert main(["status"]) == 0
+    assert main(["status"]) == 1
     assert "match credential patterns" in capsys.readouterr().out
 
 

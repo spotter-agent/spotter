@@ -79,7 +79,7 @@ The Runtime milestone is now decomposed into concrete boundaries rather than one
 | [#82](https://github.com/spotter-agent/spotter/issues/82) | bounded Hook ↔ daemon IPC for deterministic `PreToolUse` enforcement (implemented) |
 | [#31](https://github.com/spotter-agent/spotter/issues/31) | independent live supervision state owned by `spotterd` |
 | [#83](https://github.com/spotter-agent/spotter/issues/83) | transactional `setup|teardown codex`, Integration Manifest, legacy migration (implemented) |
-| [#84](https://github.com/spotter-agent/spotter/issues/84) | runtime-aware `status` / `doctor` and degraded capability reporting |
+| [#84](https://github.com/spotter-agent/spotter/issues/84) | runtime-aware `status` / `doctor` and degraded capability reporting (implemented) |
 | [#87](https://github.com/spotter-agent/spotter/issues/87) | daemon/App Server reconnect and thread reconciliation |
 
 Native GitHub issue dependencies encode the actual order between these issues. The table describes responsibility, not a second dependency system.

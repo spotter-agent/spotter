@@ -10,17 +10,25 @@ This module answers the one question the rest of the tool cannot: if nothing
 was recorded, was there nothing to record, or is nothing running?
 """
 
+import asyncio
+import contextlib
 import json
 import os
 import shutil
 import subprocess
 import sys
 import time
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, Any, cast
 
 from spotter.budget import LedgerCorrupt, spend_totals
+from spotter.daemon import DaemonClient, DaemonStatus, RuntimeHealth
 from spotter.paths import spotter_home
+
+if TYPE_CHECKING:
+    from spotter.integration import IntegrationManifest
 
 OK = "ok"
 WARN = "warn"
@@ -32,6 +40,13 @@ class Check:
     name: str
     status: str
     detail: str
+
+
+@dataclass(frozen=True)
+class IntegrationInspection:
+    manifest: "IntegrationManifest | None"
+    check: Check
+    owned_hook_ready: bool
 
 
 def _codex_hooks_files() -> list[Path]:
@@ -172,8 +187,235 @@ def check_freshness(max_idle_hours: float = 24.0) -> Check:
     return Check("observations", status, f"last recorded {age:.1f}h ago")
 
 
+def _hook_entries(path: Path) -> list[tuple[str, object, dict[str, Any]]]:
+    if not path.exists():
+        return []
+    try:
+        raw = json.loads(path.read_bytes())
+    except (OSError, ValueError) as error:
+        raise ValueError(f"{path} is unreadable: {error}") from error
+    if not isinstance(raw, dict) or not isinstance(raw.get("hooks", {}), dict):
+        raise ValueError(f"{path} has an unsupported shape")
+    entries: list[tuple[str, object, dict[str, Any]]] = []
+    for event, groups in cast(dict[str, object], raw.get("hooks", {})).items():
+        if not isinstance(event, str) or not isinstance(groups, list):
+            raise ValueError(f"{path} has an unsupported event shape")
+        for group in groups:
+            if not isinstance(group, dict) or not isinstance(group.get("hooks"), list):
+                raise ValueError(f"{path} has an unsupported hook group")
+            for hook in cast(list[object], group["hooks"]):
+                if isinstance(hook, dict):
+                    entries.append((event, group.get("matcher"), cast(dict[str, Any], hook)))
+    return entries
+
+
+def _legacy_plugins(codex_home: Path) -> tuple[str, ...]:
+    config = codex_home / "config.toml"
+    if not config.exists():
+        return ()
+    try:
+        raw = tomllib.loads(config.read_text())
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        raise ValueError(f"{config} is unreadable: {error}") from error
+    plugins = raw.get("plugins", {})
+    if not isinstance(plugins, dict):
+        raise ValueError(f"{config} has an unsupported plugin shape")
+    return tuple(name for name in plugins if name == "spotter" or name.startswith("spotter@"))
+
+
+def check_integration() -> IntegrationInspection:
+    """Validate the recorded ownership contract without mutating Codex config."""
+    # Local import avoids integration -> doctor -> integration during setup imports.
+    from spotter.integration import IntegrationError, IntegrationManifest, is_spotter_hook
+
+    manifest_path = spotter_home() / "integrations" / "codex.json"
+    try:
+        manifest = IntegrationManifest.load(manifest_path)
+    except IntegrationError as error:
+        return IntegrationInspection(None, Check("Codex integration", FAIL, str(error)), False)
+
+    try:
+        codex_home = Path(
+            manifest.codex_home
+            if manifest is not None
+            else os.environ.get("CODEX_HOME", Path.home() / ".codex")
+        )
+        hooks_path = (
+            Path(manifest.hooks_file) if manifest is not None else codex_home / "hooks.json"
+        )
+        spotter_hooks = [entry for entry in _hook_entries(hooks_path) if is_spotter_hook(entry[2])]
+        legacy_plugins = _legacy_plugins(codex_home)
+    except (TypeError, ValueError) as error:
+        return IntegrationInspection(manifest, Check("Codex integration", FAIL, str(error)), False)
+
+    if manifest is None:
+        leftovers = len(spotter_hooks) + len(legacy_plugins)
+        detail = (
+            f"not configured; found {leftovers} unowned legacy Spotter registration(s)"
+            if leftovers
+            else "not configured"
+        )
+        return IntegrationInspection(None, Check("Codex integration", WARN, detail), False)
+
+    if manifest.state != "ready":
+        return IntegrationInspection(
+            manifest,
+            Check("Codex integration", FAIL, f"manifest state is {manifest.state!r}"),
+            False,
+        )
+    owned = manifest.owned_hook
+    if not isinstance(owned, dict) or not isinstance(owned.get("hook"), dict):
+        return IntegrationInspection(
+            manifest,
+            Check("Codex integration", FAIL, "manifest owned Hook is invalid"),
+            False,
+        )
+    expected = (owned.get("event"), owned.get("matcher"), owned.get("hook"))
+    if spotter_hooks != [expected]:
+        return IntegrationInspection(
+            manifest,
+            Check(
+                "Codex integration",
+                FAIL,
+                f"owned Hook is missing, drifted, or duplicated ({len(spotter_hooks)} found)",
+            ),
+            False,
+        )
+    if legacy_plugins:
+        return IntegrationInspection(
+            manifest,
+            Check(
+                "Codex integration",
+                FAIL,
+                f"stale legacy plugin registration: {', '.join(legacy_plugins)}",
+            ),
+            True,
+        )
+    try:
+        registration_missing = (
+            manifest.service_registration is None
+            or not Path(manifest.service_registration).exists()
+        )
+    except TypeError:
+        registration_missing = True
+    if manifest.runtime_mode == "managed" and manifest.service_owned and registration_missing:
+        return IntegrationInspection(
+            manifest,
+            Check("Codex integration", FAIL, "managed service registration is missing"),
+            True,
+        )
+    return IntegrationInspection(
+        manifest,
+        Check("Codex integration", OK, f"ready ({manifest.runtime_mode})"),
+        True,
+    )
+
+
+def _daemon_check(status: DaemonStatus, configured: bool) -> Check:
+    if status.health == RuntimeHealth.HEALTHY:
+        detail = f"healthy pid={status.pid} protocol={status.protocol}"
+        return Check("daemon", OK, detail)
+    if status.health == RuntimeHealth.UNAVAILABLE:
+        consequence = (
+            "configured enforcement is using local Hook fallback" if configured else "not running"
+        )
+        return Check("daemon", FAIL if configured else WARN, f"unavailable; {consequence}")
+    return Check("daemon", WARN, f"{status.health.value}: {status.detail or 'reduced health'}")
+
+
+async def _probe_app_server(endpoint: str) -> tuple[Check, Check]:
+    client = None
+    try:
+        # Keep the optional WebSocket dependency off the bundled Hook import path.
+        from spotter.app_server import CapabilityStatus, CodexAppServerClient
+
+        client = CodexAppServerClient(endpoint, request_timeout=2)
+        await client.connect()
+        capabilities = client.capabilities
+        observation = Check(
+            "observation",
+            OK if capabilities.observation == CapabilityStatus.AVAILABLE else WARN,
+            f"App Server {client.state.value}; observation {capabilities.observation.value}",
+        )
+        controls = (capabilities.steer, capabilities.interrupt)
+        control = Check(
+            "live control",
+            OK if all(item == CapabilityStatus.AVAILABLE for item in controls) else WARN,
+            "steer/interrupt " + "/".join(item.value for item in controls),
+        )
+        return observation, control
+    except Exception as error:
+        return (
+            Check("observation", WARN, f"App Server disconnected: {error}"),
+            Check("live control", WARN, "unavailable while App Server is disconnected"),
+        )
+    finally:
+        if client is not None:
+            with contextlib.suppress(Exception):
+                await client.disconnect()
+
+
+def check_runtime(*, deep: bool = False) -> list[Check]:
+    """Summarize process, integration, capability, and enforcement consequences."""
+    integration = check_integration()
+    daemon = asyncio.run(DaemonClient().status())
+    configured = integration.manifest is not None
+    checks = [integration.check, _daemon_check(daemon, configured)]
+
+    endpoint = (
+        integration.manifest.app_server_endpoint if integration.manifest is not None else None
+    )
+    if endpoint is None:
+        checks.extend(
+            [
+                Check(
+                    "observation",
+                    WARN,
+                    "unavailable: App Server endpoint is not configured; "
+                    "Hook enforcement is independent",
+                ),
+                Check("live control", WARN, "unavailable: App Server endpoint is not configured"),
+            ]
+        )
+    elif deep:
+        checks.extend(asyncio.run(_probe_app_server(endpoint)))
+    else:
+        checks.extend(
+            [
+                Check("observation", WARN, f"endpoint configured; run doctor to probe {endpoint}"),
+                Check("live control", WARN, "not probed by status"),
+            ]
+        )
+
+    if integration.owned_hook_ready and daemon.health == RuntimeHealth.HEALTHY:
+        checks.append(Check("enforcement", OK, "PreToolUse Hook and daemon gate RPC available"))
+    elif integration.owned_hook_ready:
+        checks.append(
+            Check(
+                "enforcement",
+                WARN,
+                "PreToolUse Hook active; daemon RPC unavailable, using bounded local fallback",
+            )
+        )
+    else:
+        checks.append(Check("enforcement", FAIL if configured else WARN, "owned Hook unavailable"))
+
+    checks.extend(
+        [
+            Check(
+                "runtime state",
+                WARN,
+                "active/dormant thread counts unknown until App Server ingestion (#85)",
+            ),
+            Check("review queue", WARN, "no durable reviewer queue is implemented"),
+        ]
+    )
+    return checks
+
+
 def run(config_path: Path | None = None) -> list[Check]:
     checks = [check_interpreter()]
+    checks.extend(check_runtime(deep=True))
     checks.extend(check_registration())
     checks.extend(check_storage())
     checks.append(check_roundtrip(config_path))

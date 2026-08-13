@@ -60,10 +60,12 @@ local control handshake, explicit health states, manual lifecycle commands, and 
 local enforcement fallback on unavailable/timeout, and separate Hook/IPC timing telemetry.
 [#83](https://github.com/spotter-agent/spotter/issues/83) adds versioned integration manifests,
 transactional Codex Hook/plugin migration, and managed `launchd`/`systemd --user` registration.
+[#84](https://github.com/spotter-agent/spotter/issues/84) adds runtime-aware `status`/`doctor`,
+manifest and Hook ownership checks, App Server probing when an endpoint exists, and explicit
+degraded consequences when observation/control are unavailable but Hook enforcement remains.
 
 The remaining implementation boundaries are split into native GitHub issues:
 
-- [#84](https://github.com/spotter-agent/spotter/issues/84) — runtime-aware status/doctor;
 - [#87](https://github.com/spotter-agent/spotter/issues/87) — daemon/App Server reconnect and identity reconciliation.
 
 [#31](https://github.com/spotter-agent/spotter/issues/31) then moves independent supervision state into that runtime, fed by the App Server ingestion path in [#85](https://github.com/spotter-agent/spotter/issues/85).
@@ -101,7 +103,7 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 | Standalone runtime | 🟡 | Long-lived process, versioned control/gate IPC, health states, manual and managed user-service lifecycle | Add runtime consumers in #31/#85 |
 | Runtime identity | 🟡 | Provisional lifecycle registry and explicit legacy unknowns; no production consumer | Validate and refine it while routing normalized App Server events in #85 |
 | App Server primary observation | 🟡 | Async client, raw events, thread queries, controls, capability degradation | Normalize, identity-route, and journal events in #85 |
-| Managed Codex lifecycle | 🟡 | Transactional setup/teardown, versioned ownership manifest, legacy migration, launchd/systemd-user service | Surface integration drift and capability consequences in #84 |
+| Managed Codex lifecycle | 🟡 | Transactional setup/teardown, versioned ownership manifest, legacy migration, launchd/systemd-user service, runtime diagnostics | Connect and ingest the external App Server in #85/#87 |
 | Runtime reconnect/recovery | ❌ | No long-lived App Server connection to recover | #87 after runtime/state boundaries exist |
 | Event-driven detection | ❌ | Reviewer is still cadence-based | #28 after Runtime/Observe |
 | Live `VERIFY` / `NUDGE` | ❌ | Reviewer decisions stop at the journal | #22 via `turn/steer` |

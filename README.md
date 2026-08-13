@@ -83,7 +83,7 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 | Live `VERIFY / NUDGE` | ❌ | Target: `turn/steer` |
 | `INTERRUPT` | ❌ | Target: `turn/interrupt` |
 | `RESTART` | ❌ | Requires verified-state + side-effect-aware recovery |
-| Codex setup lifecycle | 🟡 | Transactional setup/teardown and manifest implemented; packaging and full App Server integration remain |
+| Codex setup lifecycle | 🟡 | Transactional setup/teardown, ownership diagnostics, and degraded capability reporting implemented; packaging and full App Server integration remain |
 
 ### Current runtime work
 
@@ -96,7 +96,9 @@ routing in [#85](https://github.com/spotter-agent/spotter/issues/85). [#79](http
 adds the `spotterd` process, versioned local control handshake, manual lifecycle commands, and a
 platform-neutral service boundary. [#83](https://github.com/spotter-agent/spotter/issues/83) adds
 transactional Codex setup/teardown, managed user-service registration, and integration ownership.
-Event routing and recovery remain separate work.
+[#84](https://github.com/spotter-agent/spotter/issues/84) makes `status` and `doctor` distinguish
+daemon, observation, control, enforcement, integration drift, storage, and reviewer health. Event
+routing and recovery remain separate work.
 
 ---
 

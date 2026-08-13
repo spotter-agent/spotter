@@ -685,6 +685,11 @@ Codex integration
 
 This allows a Codex upgrade to degrade one feature without forcing a binary “supported/unsupported” result for the whole integration.
 
+`spotter status` now reports this split without probing external services. `spotter doctor` performs
+the deeper App Server connection/initialize probe when the integration manifest has an endpoint.
+Until #85 wires a persistent runtime consumer, thread counts and reviewer queue state are reported
+as unknown/unavailable instead of being derived from incompatible Hook-era sessions.
+
 ---
 
 # 11. Failure and degraded mode
@@ -712,6 +717,10 @@ PreToolUse gate:      active
 Journal:              writable
 Reviewer:             available
 ```
+
+The aggregate command health is healthy/degraded/broken (`0`/`1`/`2`). In particular, a healthy
+daemon with no App Server observation path is degraded while the independent PreToolUse enforcement
+surface can still be reported active.
 
 ### `spotterd` crash
 

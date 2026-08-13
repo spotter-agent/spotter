@@ -33,7 +33,7 @@ from spotter.daemon import (
     RuntimeHealth,
     ServiceManager,
 )
-from spotter.doctor import FAIL, OK, WARN, worst
+from spotter.doctor import FAIL, OK, WARN, check_runtime, worst
 from spotter.doctor import run as run_doctor
 from spotter.experiment import list_forks, results_path, run_experiment, summarize
 from spotter.gates import Gate
@@ -663,45 +663,62 @@ def _status_main() -> int:
     after = home.stat().st_mode & 0o777
     note = f" (tightened from {oct(before)})" if before != after else ""
     print(f"home: {home}  ({total_bytes / 1e6:.1f} MB, mode {oct(after)}{note})")
+    runtime_checks = check_runtime()
+    marks = {OK: "ok", WARN: "WARN", FAIL: "FAIL"}
+    print("runtime:")
+    for check in runtime_checks:
+        print(f"  [{marks[check.status]}] {check.name}: {check.detail}")
     print(f"sessions: {len(journals)}")
+    warned = not journals
     if newest is None:
         print("  last observation: never")
     else:
         age_hours = (time.time() - newest) / 3600
         print(f"  last observation: {age_hours:.1f}h ago")
         if age_hours > 24:
+            warned = True
             print("  WARNING: nothing observed in over a day — is the hook still registered?")
     forks = list_forks()
     if forks:
         print(f"fork worktrees: {len(forks)} (remove with: spotter prune --forks --apply)")
-    errors = 0
+    unreadable = 0
+    reviewer_errors = 0
     exposed = 0
     for journal in journals:
         try:
             records = StepJournal.load(journal)
         except SnapshotError:
             print(f"  UNREADABLE: {journal.name}")
-            errors += 1
+            unreadable += 1
             continue
-        errors += sum(1 for r in records if r.event.kind == "reviewer_error")
+        reviewer_errors += sum(1 for r in records if r.event.kind == "reviewer_error")
         exposed += sum(
             1 for line in journal.read_text(errors="replace").splitlines() if scan_text(line)
         )
-    if errors:
-        print(f"reviewer errors recorded: {errors} (see {home / 'logs'})")
+    if reviewer_errors:
+        warned = True
+        print(f"reviewer errors recorded: {reviewer_errors} (see {home / 'logs'})")
+    ledger_broken = False
     try:
         totals = spend_totals()
     except LedgerCorrupt as error:
+        ledger_broken = True
         # The diagnostic command must survive the corruption it is diagnosing.
         print(f"WARNING: spend ledger unreadable ({error}); ceilings are refusing to spend")
     else:
         if totals is not None:
             print(f"reviews today: {totals['day']}  |  tokens recorded: {totals['tokens']}")
     if exposed:
+        warned = True
         print(
             f"WARNING: {exposed} pre-redaction lines match credential patterns; "
             "these journals predate redaction"
         )
+    verdict = worst(runtime_checks)
+    if verdict == FAIL or unreadable or ledger_broken:
+        return 2
+    if verdict == WARN or warned:
+        return 1
     return 0
 
 

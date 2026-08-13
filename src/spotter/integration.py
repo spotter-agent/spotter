@@ -59,6 +59,24 @@ def _atomic_write(path: Path, content: bytes) -> None:
     os.replace(temporary, path)
 
 
+def is_spotter_hook(hook: object) -> bool:
+    """Recognize executable Spotter Hook commands without matching incidental prose."""
+    if not isinstance(hook, dict) or not isinstance(hook.get("command"), str):
+        return False
+    command = cast(str, hook["command"])
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return False
+    for index, token in enumerate(tokens):
+        name = Path(token).name
+        if name == "spotter-hook":
+            return True
+        if name == "spotter" and index + 1 < len(tokens) and tokens[index + 1] == "hook":
+            return True
+    return False
+
+
 @dataclass(frozen=True)
 class CodexInstall:
     path: str
@@ -257,20 +275,7 @@ class IntegrationManager:
 
     @staticmethod
     def _is_spotter_hook(hook: object) -> bool:
-        if not isinstance(hook, dict) or not isinstance(hook.get("command"), str):
-            return False
-        command = cast(str, hook["command"])
-        try:
-            tokens = shlex.split(command)
-        except ValueError:
-            return False
-        for index, token in enumerate(tokens):
-            name = Path(token).name
-            if name == "spotter-hook":
-                return True
-            if name == "spotter" and index + 1 < len(tokens) and tokens[index + 1] == "hook":
-                return True
-        return False
+        return is_spotter_hook(hook)
 
     def _read_hooks(self) -> tuple[dict[str, Any], bytes | None]:
         if not self.hooks_path.exists():
