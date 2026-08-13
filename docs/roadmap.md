@@ -162,7 +162,7 @@ The Runtime milestone is now decomposed into concrete boundaries rather than one
 | [#79](https://github.com/spotter-agent/spotter/issues/79) | `spotterd`, versioned local control, manual lifecycle, and platform-neutral service boundary (implemented) |
 | [#80](https://github.com/spotter-agent/spotter/issues/80) | production App Server client and capability negotiation |
 | [#81](https://github.com/spotter-agent/spotter/issues/81) | Thread / Turn / Runtime Attachment identity lifecycle (provisional foundation; integration in #85) |
-| [#82](https://github.com/spotter-agent/spotter/issues/82) | bounded Hook ↔ daemon IPC for deterministic `PreToolUse` enforcement |
+| [#82](https://github.com/spotter-agent/spotter/issues/82) | bounded Hook ↔ daemon IPC for deterministic `PreToolUse` enforcement (implemented) |
 | [#31](https://github.com/spotter-agent/spotter/issues/31) | independent live supervision state owned by `spotterd` |
 | [#83](https://github.com/spotter-agent/spotter/issues/83) | transactional `setup|teardown codex`, Integration Manifest, legacy migration |
 | [#84](https://github.com/spotter-agent/spotter/issues/84) | runtime-aware `status` / `doctor` and degraded capability reporting |

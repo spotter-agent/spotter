@@ -22,8 +22,9 @@ class SpotterRuntime:
     adapter: AgentAdapter
     gate: Gate = field(default_factory=Gate)
 
-    def observe(self, event: TraceEvent) -> GateDecision:
-        decision = self.gate.check(event)
+    def observe(self, event: TraceEvent, decision: GateDecision | None = None) -> GateDecision:
+        if decision is None:
+            decision = self.gate.check(event)
         self.adapter.record(event)
         effect = effect_event(event)
         if effect is not None:

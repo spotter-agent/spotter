@@ -1,26 +1,34 @@
 import asyncio
 import json
 import shutil
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 from spotter.cli import main
+from spotter.config import GatesConfig
 from spotter.daemon import (
+    GATE_TIMEOUT,
     PROTOCOL_VERSION,
     DaemonAlreadyRunning,
     DaemonClient,
+    DaemonProtocolError,
     DaemonServer,
+    DaemonTimeout,
     RuntimeHealth,
     runtime_socket,
 )
+from spotter.gates import Gate
+from spotter.trace import TraceEvent
 
 
 @pytest.fixture()
 def socket_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     monkeypatch.setenv("SPOTTER_HOME", str(tmp_path / "home"))
     path = runtime_socket()
+    path.parent.mkdir(parents=True, exist_ok=True)
     yield path
     shutil.rmtree(path.parent, ignore_errors=True)
 
@@ -69,6 +77,108 @@ def test_bad_protocol_does_not_break_later_clients(socket_path: Path) -> None:
                 "error": "incompatible control protocol",
             }
             assert (await DaemonClient(socket_path).status()).health == RuntimeHealth.HEALTHY
+        finally:
+            await server.close()
+
+    asyncio.run(scenario())
+
+
+def test_gate_roundtrip_preserves_policy_and_concurrency(socket_path: Path) -> None:
+    async def scenario() -> None:
+        server = DaemonServer(socket_path)
+        await server.start()
+        try:
+            cases = [
+                (TraceEvent("tool_proposal", {"command": "pytest", "files": []}), GatesConfig()),
+                (
+                    TraceEvent("tool_proposal", {"command": "rm -rf /", "files": []}),
+                    GatesConfig(),
+                ),
+                (
+                    TraceEvent("tool_proposal", {"command": None, "files": ["pyproject.toml"]}),
+                    GatesConfig(block_dependency_changes=True),
+                ),
+                (
+                    TraceEvent("tool_proposal", {"command": None, "files": ["secrets/key"]}),
+                    GatesConfig(forbidden_paths=("secrets/*",)),
+                ),
+            ]
+            results = await asyncio.gather(
+                *(DaemonClient(socket_path).gate(event, gates, "/repo") for event, gates in cases)
+            )
+            for (event, gates), (decision, evaluation_ms) in zip(cases, results, strict=True):
+                assert decision == Gate(
+                    gates.forbidden_paths, gates.block_dependency_changes, "/repo"
+                ).check(event)
+                assert evaluation_ms >= 0
+        finally:
+            await server.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        b"not-json\n",
+        b'{"protocol":999,"ok":true,"decision":{},"evaluation_ms":0}\n',
+    ],
+)
+def test_gate_rejects_malformed_and_mismatched_responses(
+    socket_path: Path, response: bytes
+) -> None:
+    async def scenario() -> None:
+        async def handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            await reader.readline()
+            writer.write(response)
+            await writer.drain()
+            writer.close()
+
+        server = await asyncio.start_unix_server(handler, path=socket_path)
+        async with server:
+            with pytest.raises(DaemonProtocolError):
+                await DaemonClient(socket_path).gate(
+                    TraceEvent("tool_proposal", {"command": "true", "files": []}),
+                    GatesConfig(),
+                    "/repo",
+                )
+
+    asyncio.run(scenario())
+
+
+def test_gate_timeout_is_bounded_across_the_request(socket_path: Path) -> None:
+    async def scenario() -> None:
+        async def handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            await reader.readline()
+            await asyncio.sleep(GATE_TIMEOUT * 2)
+            writer.close()
+
+        server = await asyncio.start_unix_server(handler, path=socket_path)
+        async with server:
+            started = time.perf_counter()
+            with pytest.raises(DaemonTimeout):
+                await DaemonClient(socket_path, timeout=0.01).gate(
+                    TraceEvent("tool_proposal", {"command": "true", "files": []}),
+                    GatesConfig(),
+                    "/repo",
+                )
+            assert time.perf_counter() - started < 0.1
+
+    asyncio.run(scenario())
+
+
+def test_gate_fails_open_for_an_unsupported_proposal_shape(socket_path: Path) -> None:
+    async def scenario() -> None:
+        server = DaemonServer(socket_path)
+        await server.start()
+        try:
+            decision, _ = await DaemonClient(socket_path).gate(
+                TraceEvent("tool_proposal", {"command": 42, "files": "not-a-list"}),
+                GatesConfig(),
+                "/repo",
+            )
+            assert decision.allowed
+            assert decision.rule == "unsupported_proposal"
         finally:
             await server.close()
 

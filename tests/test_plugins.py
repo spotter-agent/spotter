@@ -209,22 +209,45 @@ def test_wrapper_reads_the_documented_home_config(tmp_path: Path) -> None:
         'observation_only = false\n[main_agent]\nadapter = "codex"\n'
         '[gates]\nforbidden_paths = ["secrets/*"]\n'
     )
-    result = subprocess.run(
-        [str(Path("scripts/spotter-hook").resolve())],
-        input=json.dumps(
-            {
-                "hook_event_name": "PreToolUse",
-                "session_id": "cfg",
-                "cwd": str(tmp_path),
-                "tool_name": "apply_patch",
-                "tool_input": {"path": "secrets/key.pem"},
-            }
-        ),
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "SPOTTER_HOME": str(home),
+        "PYTHONPATH": str(Path("src").resolve()),
+    }
+    started = subprocess.run(
+        [sys.executable, "-m", "spotter", "daemon", "start"],
         text=True,
         capture_output=True,
-        env={**os.environ, "HOME": str(home), "SPOTTER_HOME": str(home)},
+        env=env,
         check=False,
     )
+    assert started.returncode == 0, started.stderr
+    try:
+        result = subprocess.run(
+            [str(Path("scripts/spotter-hook").resolve())],
+            input=json.dumps(
+                {
+                    "hook_event_name": "PreToolUse",
+                    "session_id": "cfg",
+                    "cwd": str(tmp_path),
+                    "tool_name": "apply_patch",
+                    "tool_input": {"path": "secrets/key.pem"},
+                }
+            ),
+            text=True,
+            capture_output=True,
+            env=env,
+            check=False,
+        )
+    finally:
+        subprocess.run(
+            [sys.executable, "-m", "spotter", "daemon", "stop"],
+            text=True,
+            capture_output=True,
+            env=env,
+            check=False,
+        )
     assert result.returncode == 0
     assert "forbidden_path" in result.stdout, "the configured gate never reached the hook"
 

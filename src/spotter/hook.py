@@ -5,11 +5,13 @@ Every failure path here fails open (allow) with a note on stderr — Spotter
 losing an observation is recoverable, Codex dying mid-turn is not.
 """
 
+import asyncio
 import json
 import os
 import re
 import subprocess
 import sys
+import time
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -17,8 +19,16 @@ from typing import Any
 from spotter.budget import cancel, reserve
 from spotter.config import SpotterConfig
 from spotter.core import SpotterRuntime
+from spotter.daemon import (
+    GATE_TIMEOUT,
+    PROTOCOL_VERSION,
+    DaemonClient,
+    DaemonProtocolError,
+    DaemonTimeout,
+    DaemonUnavailable,
+)
 from spotter.effects import classify
-from spotter.gates import Gate
+from spotter.gates import Gate, GateDecision
 from spotter.paths import sanitize_session, secure_dir, spotter_home
 from spotter.snapshot import SnapshotError, StepJournal, global_lock, snapshot_worktree
 from spotter.trace import TraceEvent
@@ -188,6 +198,7 @@ def run_hook(
     payload: dict[str, Any], config: SpotterConfig, config_path: Path | None = None
 ) -> str | None:
     """Process one hook invocation. Returns stdout JSON, or None to allow."""
+    hook_started = time.perf_counter_ns()
     cwd = payload.get("cwd")
     gate = Gate(
         forbidden_paths=config.gates.forbidden_paths,
@@ -199,6 +210,12 @@ def run_hook(
     adapter = JournalAdapter(journal)
     runtime = SpotterRuntime(config, adapter, gate)
     event = event_from_hook(payload)
+    gate_decision: GateDecision | None = None
+    gate_telemetry: dict[str, Any] | None = None
+    if event.kind == "tool_proposal":
+        gate_decision, gate_telemetry = _gate_over_ipc(
+            event, config, str(cwd) if isinstance(cwd, str) else None
+        )
     if event.kind == "tool_result":
         event.payload["checkpoint"] = journal.last_snapshot()
     if (
@@ -218,13 +235,16 @@ def run_hook(
                 adapter.next_snapshot = snapshot_worktree(Path(cwd), journal.last_snapshot())
             except SnapshotError:
                 adapter.next_snapshot = None
-            decision = runtime.observe(event)
+            decision = runtime.observe(event, gate_decision)
     else:
-        decision = runtime.observe(event)
+        decision = runtime.observe(event, gate_decision)
     if event.kind == "tool_proposal":
         _maybe_spawn_shadow_review(
             config, payload, journal_file, adapter.last_proposal_number, config_path
         )
+        assert gate_telemetry is not None
+        gate_telemetry["hook_ms"] = (time.perf_counter_ns() - hook_started) / 1_000_000
+        adapter.record(TraceEvent("gate_ipc", gate_telemetry))
     if decision.allowed:
         return None  # implicit allow; stay silent on the happy path
     return json.dumps(
@@ -236,3 +256,40 @@ def run_hook(
             }
         }
     )
+
+
+def _gate_over_ipc(
+    event: TraceEvent, config: SpotterConfig, root: str | None
+) -> tuple[GateDecision, dict[str, Any]]:
+    started = time.perf_counter_ns()
+    status = "ok"
+    evaluation_ms: float | None = None
+    error_detail: str | None = None
+    try:
+        decision, evaluation_ms = asyncio.run(
+            DaemonClient(timeout=GATE_TIMEOUT).gate(event, config.gates, root)
+        )
+    except DaemonTimeout as error:
+        status = "timeout"
+        error_detail = str(error)
+        decision = GateDecision(True, "daemon_timeout", f"fail-open: {error}")
+    except DaemonProtocolError as error:
+        status = "protocol_error"
+        error_detail = str(error)
+        decision = GateDecision(True, "daemon_protocol_error", f"fail-open: {error}")
+    except DaemonUnavailable as error:
+        status = "unavailable"
+        error_detail = str(error)
+        decision = GateDecision(True, "daemon_unavailable", f"fail-open: {error}")
+
+    telemetry: dict[str, Any] = {
+        "status": status,
+        "protocol": PROTOCOL_VERSION,
+        "ipc_ms": (time.perf_counter_ns() - started) / 1_000_000,
+        "daemon_evaluation_ms": evaluation_ms,
+        "tool_use_id": event.payload.get("tool_use_id"),
+        "tool": event.payload.get("tool"),
+    }
+    if error_detail is not None:
+        telemetry["error"] = error_detail[:300]
+    return decision, telemetry

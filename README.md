@@ -23,7 +23,7 @@ Spotter asks a more specific question than “is the agent wrong?”
 
 > **Can we detect a bad assumption, loop, scope drift, or missing validation while the agent is still working, and intervene before the mistake becomes expensive?**
 
-The repository is already beyond a scaffold. The current prototype implements Hook-based trajectory collection, deterministic gates, crash-safe journals, Git snapshots, fork/replay, a shadow reviewer, claim/evidence state, evaluation labels/metrics, counterfactual experiment machinery, and a standalone daemon/control foundation.
+The repository is already beyond a scaffold. The current prototype implements Hook-based trajectory collection, daemon-backed deterministic gates, crash-safe journals, Git snapshots, fork/replay, a shadow reviewer, claim/evidence state, evaluation labels/metrics, counterfactual experiment machinery, and a standalone daemon/control foundation.
 
 The current prototype and target product architecture are different:
 
@@ -69,7 +69,7 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 | Capability | Status | Notes |
 | --- | --- | --- |
 | Hook trajectory ingestion | ✅ | Current primary observation path |
-| Deterministic pre-action gates | ✅ | Rule-based; safe/shadow-first posture |
+| Deterministic pre-action gates | ✅ | Bounded local daemon IPC; strict timeout and fail-open telemetry |
 | Crash-tolerant journal | ✅ | Locking, fsync, torn-tail recovery |
 | Git snapshot / detached restore | ✅ | User HEAD/index remain untouched |
 | Fork / continuation replay | ✅ | Same-prefix continuation machinery |
@@ -77,7 +77,7 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 | Claim/evidence audit ledger | 🟡 | Works where observable outcomes exist |
 | Evaluation labels / metrics | ✅ | Coverage-aware evaluation and precision/FP metrics |
 | Counterfactual experiment harness | ✅ | Control/guidance same-prefix pairs |
-| Standalone `spotterd` runtime | 🟡 | Process, local control handshake, and manual lifecycle implemented; managed startup/runtime consumers remain |
+| Standalone `spotterd` runtime | 🟡 | Process, versioned gate/control IPC, and manual lifecycle implemented; managed startup/runtime consumers remain |
 | App Server primary observation | 🟡 | Client/capabilities implemented; Trace IR ingestion remains (#85) |
 | Event-driven signal engine | ❌ | Current reviewer trigger is periodic |
 | Live `VERIFY / NUDGE` | ❌ | Target: `turn/steer` |

@@ -1,9 +1,12 @@
 import json
+import threading
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 from spotter.config import GatesConfig, MainAgentConfig, ReviewerConfig, SpotterConfig
+from spotter.daemon import DaemonClient, DaemonProtocolError, DaemonServer, DaemonTimeout
 from spotter.hook import event_from_hook, journal_path, run_hook
 from spotter.snapshot import StepJournal, restore_snapshot
 
@@ -33,7 +36,45 @@ def _config(observation_only: bool) -> SpotterConfig:
     )
 
 
-def test_active_mode_emits_deny_json() -> None:
+@pytest.fixture()
+def daemon() -> Iterator[None]:
+    ready = threading.Event()
+    thread_error: list[BaseException] = []
+
+    def run() -> None:
+        async def serve() -> None:
+            server = DaemonServer()
+            await server.start()
+            ready.set()
+            try:
+                await server.wait_for_shutdown()
+            finally:
+                await server.close()
+
+        try:
+            import asyncio
+
+            asyncio.run(serve())
+        except BaseException as error:
+            thread_error.append(error)
+            ready.set()
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    assert ready.wait(1)
+    assert not thread_error
+    try:
+        yield
+    finally:
+        import asyncio
+
+        asyncio.run(DaemonClient().shutdown())
+        worker.join(1)
+        assert not worker.is_alive()
+        assert not thread_error
+
+
+def test_active_mode_emits_deny_json(daemon: None) -> None:
     output = run_hook(_payload("rm -rf /"), _config(observation_only=False))
     assert output is not None
     decision = json.loads(output)["hookSpecificOutput"]
@@ -41,16 +82,67 @@ def test_active_mode_emits_deny_json() -> None:
     assert "rm_root" in decision["permissionDecisionReason"]
 
 
-def test_shadow_mode_allows_but_journals_the_block(spotter_home: Path) -> None:
+def test_shadow_mode_allows_but_journals_the_block(spotter_home: Path, daemon: None) -> None:
     payload = _payload("git push --force")
     assert run_hook(payload, _config(observation_only=True)) is None
     records = StepJournal.load(journal_path(payload))
-    assert [r.event.kind for r in records] == ["tool_proposal", "gate_shadow_block"]
+    assert [r.event.kind for r in records] == [
+        "tool_proposal",
+        "gate_shadow_block",
+        "gate_ipc",
+    ]
     assert records[1].event.payload["rule"] == "git_push_force"
+    assert records[2].event.payload["status"] == "ok"
+    assert records[2].event.payload["ipc_ms"] >= 0
+    assert records[2].event.payload["hook_ms"] >= records[2].event.payload["ipc_ms"]
 
 
-def test_safe_command_allows_silently() -> None:
+def test_safe_command_allows_silently(daemon: None) -> None:
     assert run_hook(_payload("pytest tests/"), _config(observation_only=False)) is None
+
+
+def test_missing_daemon_fails_open_with_telemetry() -> None:
+    payload = _payload("rm -rf /")
+    assert run_hook(payload, _config(observation_only=False)) is None
+
+    records = StepJournal.load(journal_path(payload))
+    assert [record.event.kind for record in records] == [
+        "tool_proposal",
+        "gate_fail_open",
+        "gate_ipc",
+    ]
+    assert records[1].event.payload["rule"] == "daemon_unavailable"
+    assert records[2].event.payload["status"] == "unavailable"
+
+
+def test_timeout_fails_open_with_diagnosable_telemetry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def timeout(*args: object, **kwargs: object) -> object:
+        raise DaemonTimeout("deadline")
+
+    monkeypatch.setattr("spotter.hook.DaemonClient.gate", timeout)
+    payload = _payload("rm -rf /")
+    assert run_hook(payload, _config(observation_only=False)) is None
+
+    records = StepJournal.load(journal_path(payload))
+    assert records[1].event.payload["rule"] == "daemon_timeout"
+    assert records[2].event.payload["status"] == "timeout"
+
+
+def test_protocol_error_fails_open_with_diagnosable_telemetry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def protocol_error(*args: object, **kwargs: object) -> object:
+        raise DaemonProtocolError("incompatible control protocol")
+
+    monkeypatch.setattr("spotter.hook.DaemonClient.gate", protocol_error)
+    payload = _payload("rm -rf /")
+    assert run_hook(payload, _config(observation_only=False)) is None
+
+    records = StepJournal.load(journal_path(payload))
+    assert records[1].event.payload["rule"] == "daemon_protocol_error"
+    assert records[2].event.payload["status"] == "protocol_error"
 
 
 def test_session_id_is_sanitized_for_filenames() -> None:
@@ -69,7 +161,7 @@ def test_file_paths_extracted_from_tool_input() -> None:
     assert event.payload["files"] == ["src/a.py", "src/b.py"]
 
 
-def test_apply_patch_paths_are_gated() -> None:
+def test_apply_patch_paths_are_gated(daemon: None) -> None:
     payload = {
         **_payload("*** Begin Patch\n*** Update File: pyproject.toml\n*** End Patch"),
         "tool_name": "apply_patch",
@@ -137,7 +229,9 @@ def test_unknown_events_still_journal(spotter_home: Path) -> None:
     assert records[0].event.kind == "sessionstart"
 
 
-def test_apply_patch_takes_snapshot_for_fork(tmp_path: Path, spotter_home: Path) -> None:
+def test_apply_patch_takes_snapshot_for_fork(
+    tmp_path: Path, spotter_home: Path, daemon: None
+) -> None:
     import subprocess
 
     repo = tmp_path / "hookrepo"
@@ -164,7 +258,11 @@ def test_apply_patch_takes_snapshot_for_fork(tmp_path: Path, spotter_home: Path)
     (repo / "x.txt").write_text("patched")
     post = {**payload, "hook_event_name": "PostToolUse", "tool_response": {"ok": True}}
     assert run_hook(post, _config(observation_only=True)) is None
-    post_record = StepJournal.load(journal_path(payload))[1]
+    post_record = next(
+        record
+        for record in StepJournal.load(journal_path(payload))
+        if record.event.kind == "tool_result"
+    )
     assert post_record.snapshot and post_record.snapshot != record.snapshot
 
     restored = tmp_path / "restored"
@@ -172,7 +270,7 @@ def test_apply_patch_takes_snapshot_for_fork(tmp_path: Path, spotter_home: Path)
     assert (restored / "x.txt").read_text() == "patched"
 
 
-def test_snapshot_failure_fails_open(tmp_path: Path, spotter_home: Path) -> None:
+def test_snapshot_failure_fails_open(tmp_path: Path, spotter_home: Path, daemon: None) -> None:
     payload = {
         "hook_event_name": "PreToolUse",
         "session_id": "snap2",

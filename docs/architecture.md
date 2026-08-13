@@ -1,7 +1,7 @@
 # Architecture
 
 > **Status:** this document describes both the current hook-based prototype and the target architecture. Active implementation is tracked by the [Roadmap](roadmap.md) and native GitHub Milestones.
-> The `spotterd` process/control foundation, shared-server PoC, and production App Server transport are implemented. App Server primary Trace IR observation and live supervision delivery remain **target behavior**.
+> The `spotterd` process/control foundation, bounded Hook gate IPC, shared-server PoC, and production App Server transport are implemented. App Server primary Trace IR observation and live supervision delivery remain **target behavior**.
 
 ---
 
@@ -329,6 +329,13 @@ Hook response
 ```
 
 No network/model call belongs on this path.
+
+The implemented bridge sends only normalized command/file proposal data, deterministic gate config,
+and the workspace root over the versioned local socket. It has a 200 ms total request deadline. A
+missing daemon, timeout, malformed response, protocol mismatch, or unsupported proposal shape allows
+the action and records `gate_fail_open` plus `gate_ipc` timing/status telemetry. Daemon evaluation time,
+IPC time, and total Hook time are recorded separately so latency percentiles can be computed without
+putting aggregation on the synchronous path.
 
 ## 4.5 Turn completion
 
