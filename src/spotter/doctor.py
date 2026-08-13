@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from spotter.integration import IntegrationManifest
 
 OK = "ok"
+INFO = "info"
 WARN = "warn"
 FAIL = "fail"
 
@@ -46,7 +47,7 @@ class Check:
 class IntegrationInspection:
     manifest: "IntegrationManifest | None"
     check: Check
-    owned_hook_ready: bool
+    hook_ready: bool
 
 
 def _codex_hooks_files() -> list[Path]:
@@ -68,22 +69,28 @@ def check_registration() -> list[Check]:
     — but shallow beats the current situation, which is no check at all.
     """
     checks: list[Check] = []
+    any_wired = False
     for label, files in (("codex", _codex_hooks_files()), ("claude", _claude_settings_files())):
         present = [p for p in files if p.exists()]
         if not present:
-            checks.append(Check(f"{label} config", WARN, "no config found; runtime not installed?"))
+            checks.append(Check(f"{label} config", INFO, "no config found; runtime not configured"))
             continue
         wired = [p for p in present if "spotter" in p.read_text(errors="replace")]
         if wired:
+            any_wired = True
             checks.append(Check(f"{label} hook", OK, f"registered in {wired[0].name}"))
         else:
             checks.append(
                 Check(
                     f"{label} hook",
-                    WARN,
+                    INFO,
                     f"not registered in {', '.join(p.name for p in present)}",
                 )
             )
+    if not any_wired:
+        checks.append(
+            Check("runtime registration", WARN, "Spotter is not registered in any runtime")
+        )
     return checks
 
 
@@ -181,7 +188,7 @@ def check_freshness(max_idle_hours: float = 24.0) -> Check:
     journals = sorted(sessions.glob("*.jsonl")) if sessions.exists() else []
     real = [p for p in journals if not p.stem.startswith("doctor-probe")]
     if not real:
-        return Check("observations", WARN, "no session has ever been recorded")
+        return Check("observations", INFO, "no session has been recorded yet")
     age = (time.time() - max(p.stat().st_mtime for p in real)) / 3600
     status = OK if age <= max_idle_hours else WARN
     return Check("observations", status, f"last recorded {age:.1f}h ago")
@@ -250,12 +257,19 @@ def check_integration() -> IntegrationInspection:
 
     if manifest is None:
         leftovers = len(spotter_hooks) + len(legacy_plugins)
-        detail = (
-            f"not configured; found {leftovers} unowned legacy Spotter registration(s)"
-            if leftovers
-            else "not configured"
+        return IntegrationInspection(
+            None,
+            Check(
+                "Codex integration",
+                INFO if leftovers else WARN,
+                (
+                    f"managed setup absent; found {leftovers} legacy Spotter registration(s)"
+                    if leftovers
+                    else "Spotter is not configured for Codex"
+                ),
+            ),
+            bool(spotter_hooks),
         )
-        return IntegrationInspection(None, Check("Codex integration", WARN, detail), False)
 
     if manifest.state != "ready":
         return IntegrationInspection(
@@ -277,7 +291,8 @@ def check_integration() -> IntegrationInspection:
             Check(
                 "Codex integration",
                 FAIL,
-                f"owned Hook is missing, drifted, or duplicated ({len(spotter_hooks)} found)",
+                "owned Hook is missing, user-modified, or duplicated "
+                f"({len(spotter_hooks)} found); run `spotter setup codex` to reconcile",
             ),
             False,
         )
@@ -319,7 +334,7 @@ def _daemon_check(status: DaemonStatus, configured: bool) -> Check:
         consequence = (
             "configured enforcement is using local Hook fallback" if configured else "not running"
         )
-        return Check("daemon", FAIL if configured else WARN, f"unavailable; {consequence}")
+        return Check("daemon", FAIL if configured else INFO, f"unavailable; {consequence}")
     return Check("daemon", WARN, f"{status.health.value}: {status.detail or 'reduced health'}")
 
 
@@ -366,15 +381,20 @@ def check_runtime(*, deep: bool = False) -> list[Check]:
         integration.manifest.app_server_endpoint if integration.manifest is not None else None
     )
     if endpoint is None:
+        capability_status = WARN if configured else INFO
         checks.extend(
             [
                 Check(
                     "observation",
-                    WARN,
+                    capability_status,
                     "unavailable: App Server endpoint is not configured; "
                     "Hook enforcement is independent",
                 ),
-                Check("live control", WARN, "unavailable: App Server endpoint is not configured"),
+                Check(
+                    "live control",
+                    capability_status,
+                    "unavailable: App Server endpoint is not configured",
+                ),
             ]
         )
     elif deep:
@@ -387,9 +407,9 @@ def check_runtime(*, deep: bool = False) -> list[Check]:
             ]
         )
 
-    if integration.owned_hook_ready and daemon.health == RuntimeHealth.HEALTHY:
+    if integration.hook_ready and daemon.health == RuntimeHealth.HEALTHY:
         checks.append(Check("enforcement", OK, "PreToolUse Hook and daemon gate RPC available"))
-    elif integration.owned_hook_ready:
+    elif integration.hook_ready and configured:
         checks.append(
             Check(
                 "enforcement",
@@ -397,17 +417,25 @@ def check_runtime(*, deep: bool = False) -> list[Check]:
                 "PreToolUse Hook active; daemon RPC unavailable, using bounded local fallback",
             )
         )
+    elif integration.hook_ready:
+        checks.append(Check("enforcement", INFO, "legacy Hook local enforcement available"))
     else:
-        checks.append(Check("enforcement", FAIL if configured else WARN, "owned Hook unavailable"))
+        checks.append(
+            Check(
+                "enforcement",
+                FAIL if configured else INFO,
+                "managed owned Hook unavailable",
+            )
+        )
 
     checks.extend(
         [
             Check(
                 "runtime state",
-                WARN,
+                INFO,
                 "active/dormant thread counts unknown until App Server ingestion (#85)",
             ),
-            Check("review queue", WARN, "no durable reviewer queue is implemented"),
+            Check("review queue", INFO, "no durable reviewer queue is implemented"),
         ]
     )
     return checks

@@ -33,7 +33,7 @@ from spotter.daemon import (
     RuntimeHealth,
     ServiceManager,
 )
-from spotter.doctor import FAIL, OK, WARN, check_runtime, worst
+from spotter.doctor import FAIL, INFO, OK, WARN, check_runtime, worst
 from spotter.doctor import run as run_doctor
 from spotter.experiment import list_forks, results_path, run_experiment, summarize
 from spotter.gates import Gate
@@ -558,7 +558,7 @@ def _doctor_main(config_path: Path | None) -> int:
     A tool whose normal output is silence needs one command that speaks.
     """
     checks = run_doctor(config_path)
-    marks = {OK: "  ok  ", WARN: " warn ", FAIL: " FAIL "}
+    marks = {OK: "  ok  ", INFO: " info ", WARN: " warn ", FAIL: " FAIL "}
     for check in checks:
         print(f"[{marks[check.status]}] {check.name}: {check.detail}")
     verdict = worst(checks)
@@ -664,12 +664,12 @@ def _status_main() -> int:
     note = f" (tightened from {oct(before)})" if before != after else ""
     print(f"home: {home}  ({total_bytes / 1e6:.1f} MB, mode {oct(after)}{note})")
     runtime_checks = check_runtime()
-    marks = {OK: "ok", WARN: "WARN", FAIL: "FAIL"}
+    marks = {OK: "ok", INFO: "info", WARN: "WARN", FAIL: "FAIL"}
     print("runtime:")
     for check in runtime_checks:
         print(f"  [{marks[check.status]}] {check.name}: {check.detail}")
     print(f"sessions: {len(journals)}")
-    warned = not journals
+    warned = False
     if newest is None:
         print("  last observation: never")
     else:

@@ -8,7 +8,17 @@ import pytest
 from spotter.budget import LedgerCorrupt, cancel, charge, exhausted, read, reserve, settle
 from spotter.cli import main
 from spotter.config import GatesConfig, MainAgentConfig, ReviewerConfig, SpotterConfig
-from spotter.doctor import FAIL, OK, WARN, check_freshness, check_roundtrip, run, worst
+from spotter.doctor import (
+    FAIL,
+    INFO,
+    OK,
+    WARN,
+    check_freshness,
+    check_registration,
+    check_roundtrip,
+    run,
+    worst,
+)
 from spotter.hook import journal_path, run_hook
 from spotter.snapshot import StepJournal
 from spotter.trace import TraceEvent
@@ -121,8 +131,8 @@ def test_roundtrip_leaves_no_probe_journal(home: Path) -> None:
 
 
 def test_freshness_reports_never_observed() -> None:
-    assert check_freshness().status == WARN
-    assert "has ever been recorded" in check_freshness().detail
+    assert check_freshness().status == INFO
+    assert "recorded yet" in check_freshness().detail
 
 
 def test_freshness_warns_when_stale(home: Path) -> None:
@@ -158,6 +168,24 @@ def test_doctor_run_covers_every_layer() -> None:
     names = {check.name for check in run(None)}
     assert {"interpreter", "round-trip", "observations"} <= names
     assert any(name.endswith("hook") or name.endswith("config") for name in names)
+
+
+def test_unregistered_optional_runtime_is_informational(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    codex = tmp_path / "codex"
+    claude = tmp_path / "claude"
+    codex.mkdir()
+    claude.mkdir()
+    (codex / "hooks.json").write_text('{"hooks":{"PreToolUse":[{"command":"spotter hook"}]}}')
+    (claude / "settings.json").write_text("{}")
+    monkeypatch.setenv("CODEX_HOME", str(codex))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude))
+
+    checks = check_registration()
+
+    assert worst(checks) == OK
+    assert next(check for check in checks if check.name == "claude hook").status == INFO
 
 
 def test_status_reports_spend(home: Path, capsys: pytest.CaptureFixture[str]) -> None:

@@ -718,9 +718,10 @@ Journal:              writable
 Reviewer:             available
 ```
 
-The aggregate command health is healthy/degraded/broken (`0`/`1`/`2`). In particular, a healthy
-daemon with no App Server observation path is degraded while the independent PreToolUse enforcement
-surface can still be reported active.
+The aggregate command health is healthy/degraded/broken (`0`/`1`/`2`). Known unimplemented or
+optional unconfigured surfaces are informational rather than permanent warnings; absence of every
+runtime registration still warns. In particular, a configured healthy daemon with no App Server
+observation path is degraded while the independent PreToolUse enforcement surface can remain active.
 
 ### `spotterd` crash
 

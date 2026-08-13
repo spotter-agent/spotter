@@ -821,8 +821,10 @@ Designed for a quick operational answer.
 
 The implemented command reports manifest/Hook ownership, daemon RPC, observation, live control,
 enforcement consequences, storage, reviewer errors, and spend-ledger health. Exit `0` is healthy,
-`1` is degraded/warn, and `2` is broken. Until #85 supplies live identity state, active/dormant
-thread counts remain explicitly unknown rather than inferred from Hook sessions.
+`1` is degraded/warn, and `2` is broken. Expected unavailable surfaces are informational and do not
+affect the verdict; once a configured surface becomes unavailable it warns or fails according to
+its consequence. Until #85 supplies live identity state, active/dormant thread counts remain
+explicitly unknown rather than inferred from Hook sessions.
 
 Example:
 
@@ -850,8 +852,9 @@ Doctor should be diagnostic and synthetic, not just configuration inspection.
 
 The implemented doctor preserves the synthetic Hook round-trip and storage/ledger checks, validates
 the integration manifest against the exact owned Hook and legacy plugin state, checks daemon IPC,
-and probes a configured App Server endpoint. Unavailable optional capabilities warn; broken owned
-integration, daemon, storage, or ledger contracts fail.
+and probes a configured App Server endpoint. Expected unimplemented capabilities are informational,
+configured-but-unavailable capabilities warn, and broken owned integration, daemon, storage, or
+ledger contracts fail.
 
 Checks:
 

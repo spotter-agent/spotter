@@ -7,7 +7,7 @@ import pytest
 from spotter.app_server import AppServerTransportError, CodexAppServerClient
 from spotter.cli import main
 from spotter.daemon import DaemonClient, DaemonStatus, RuntimeHealth
-from spotter.doctor import FAIL, OK, WARN, Check, check_integration, check_runtime, worst
+from spotter.doctor import FAIL, INFO, OK, WARN, Check, check_integration, check_runtime, worst
 from spotter.integration import MANIFEST_SCHEMA, IntegrationManifest
 from spotter.snapshot import StepJournal
 from spotter.trace import TraceEvent
@@ -79,8 +79,8 @@ def test_running_daemon_without_app_server_is_degraded_but_enforcement_remains(
     assert by_name["observation"].status == WARN
     assert "Hook enforcement is independent" in by_name["observation"].detail
     assert by_name["enforcement"].status == OK
-    assert by_name["runtime state"].status == WARN
-    assert by_name["review queue"].status == WARN
+    assert by_name["runtime state"].status == INFO
+    assert by_name["review queue"].status == INFO
     assert worst(checks) == WARN
 
 
@@ -155,7 +155,7 @@ def test_doctor_probe_reports_an_unreachable_configured_app_server(
 
 @pytest.mark.parametrize(
     "health,expected",
-    [(OK, 0), (WARN, 1), (FAIL, 2)],
+    [(OK, 0), (INFO, 0), (WARN, 1), (FAIL, 2)],
 )
 def test_status_exit_code_matches_runtime_health(
     homes: tuple[Path, Path],
@@ -169,3 +169,26 @@ def test_status_exit_code_matches_runtime_health(
     monkeypatch.setattr("spotter.cli.check_runtime", lambda: [Check("runtime", health, "test")])
 
     assert main(["status"]) == expected
+
+
+def test_healthy_legacy_hook_without_observations_can_exit_zero(
+    homes: tuple[Path, Path],
+) -> None:
+    spotter, codex = homes
+    spotter.mkdir()
+    codex.mkdir()
+    (codex / "hooks.json").write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": ".*",
+                            "hooks": [{"type": "command", "command": "/bin/spotter hook || true"}],
+                        }
+                    ]
+                }
+            }
+        )
+    )
+    assert main(["status"]) == 0
