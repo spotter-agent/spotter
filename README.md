@@ -350,10 +350,11 @@ spotter metrics
 spotter observability [--session <id>]
 spotter fork --session <id> --step <n>
 spotter prune --repo /path/to/repo  # dry-run unless --apply is supplied
+spotter tasks validate path/to/task-set.toml
 spotter experiment --session <id> --step <n> --guidance "..." --check "..."
 ```
 
-The experiment harness existing does **not** mean positive intervention advantage has been established. A mechanically scored task set and enough executed runs remain evidence gaps.
+Task-set validation freezes task and fixture hashes and checks the versioned scorer/budget contract; it does not execute setup, prechecks, scorers, or agent arms yet. The experiment harness existing does **not** mean positive intervention advantage has been established. Preflight execution, a mechanically scored corpus, and enough executed runs remain evidence gaps.
 
 ---
 
