@@ -117,6 +117,16 @@ def test_integration_check_detects_duplicate_owned_hooks(homes: tuple[Path, Path
     assert "duplicated" in check.detail
 
 
+def test_integration_check_ignores_owned_hook_order(homes: tuple[Path, Path]) -> None:
+    _ready_manifest(homes)
+    path = homes[0] / "integrations/codex.json"
+    raw = json.loads(path.read_text())
+    raw["owned_hooks"].reverse()
+    path.write_text(json.dumps(raw))
+
+    assert check_integration().check.status == OK
+
+
 def test_integration_check_detects_a_stale_legacy_plugin(homes: tuple[Path, Path]) -> None:
     manifest = _ready_manifest(homes)
     (Path(manifest.codex_home) / "config.toml").write_text(

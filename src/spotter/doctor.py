@@ -287,7 +287,9 @@ def check_integration() -> IntegrationInspection:
             False,
         )
     expected = [(entry.get("event"), entry.get("matcher"), entry.get("hook")) for entry in owned]
-    if spotter_hooks != expected:
+    if sorted(json.dumps(entry, sort_keys=True) for entry in spotter_hooks) != sorted(
+        json.dumps(entry, sort_keys=True) for entry in expected
+    ):
         return IntegrationInspection(
             manifest,
             Check(

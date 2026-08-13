@@ -414,7 +414,9 @@ class IntegrationManager:
                     if self._is_spotter_hook(hook):
                         matches.append((event, group.get("matcher"), hook))
         expected = [(entry["event"], entry["matcher"], entry["hook"]) for entry in owned]
-        if matches != expected:
+        if sorted(json.dumps(entry, sort_keys=True) for entry in matches) != sorted(
+            json.dumps(entry, sort_keys=True) for entry in expected
+        ):
             raise IntegrationError(
                 "Codex Hook verification found duplicate or drifted Spotter hooks"
             )

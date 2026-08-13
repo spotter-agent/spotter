@@ -144,6 +144,18 @@ def test_setup_and_teardown_remove_a_hooks_file_created_by_spotter(
     assert not manager.hooks_path.exists()
 
 
+def test_setup_verification_ignores_owned_hook_order(
+    homes: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager, _ = _manager(homes)
+    owned = list(reversed(manager._owned_hooks()))  # noqa: SLF001
+    monkeypatch.setattr(manager, "_owned_hooks", lambda: owned)
+
+    manifest = manager.setup()
+
+    assert manifest.owned_hooks == owned
+
+
 def test_setup_records_app_server_endpoint_as_pending(
     homes: tuple[Path, Path],
 ) -> None:
