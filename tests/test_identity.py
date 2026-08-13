@@ -144,6 +144,8 @@ def test_missing_and_legacy_identity_are_explicit() -> None:
     registry = RuntimeIdentityRegistry()
     with pytest.raises(MissingRuntimeIdentity):
         registry.observe_thread("codex", "")
+    with pytest.raises(MissingRuntimeIdentity):
+        registry.observe_thread("codex", "thread\0suffix")
     with pytest.raises(UnknownRuntimeIdentity):
         registry.resolve_thread("codex", "missing")
 

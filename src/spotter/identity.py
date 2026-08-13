@@ -314,8 +314,8 @@ class RuntimeIdentityRegistry:
 
 
 def _required(value: str, name: str) -> str:
-    if not value.strip():
-        raise MissingRuntimeIdentity(f"missing {name}")
+    if not value.strip() or "\0" in value:
+        raise MissingRuntimeIdentity(f"missing or invalid {name}")
     return value
 
 
