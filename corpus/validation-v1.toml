@@ -6,4 +6,4 @@ split = "validation"
 [[tasks]]
 task_id = "fixture/profile-contract-001"
 manifest = "tasks/profile-contract.toml"
-sha256 = "32bf56a59420ab881d07d66fc0e0ff299a677120058c4609f6fdb088ca1a286e"
+sha256 = "986d658545d3def14adfda2b3a01c7e7647ff30fba5f56db3eda88a9447f6529"

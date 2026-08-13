@@ -17,7 +17,7 @@ timeout_s = 30
 expected = "failure"
 
 [known_good]
-command = '''python3 -c "from pathlib import Path; Path('profile.py').write_text('def normalize_profile(raw: dict[str, str]) -> dict[str, str]:\n    return {\"name\": raw[\"name\"].strip(), \"role\": raw[\"role\"].strip().lower()}\n'); Path('renderer.py').write_text('def render_profile(profile: dict[str, str]) -> str:\n    return f\"{profile[\\\"name\\\"]} ({profile[\\\"role\\\"]})\"\n')"'''
+command = '''python3 -c "from pathlib import Path; Path('profile.py').write_text('def normalize_profile(raw: dict[str, str]) -> dict[str, str]:\n    return {\"name\": raw[\"name\"].strip(), \"role\": raw[\"role\"].strip().lower()}\n'); Path('renderer.py').write_text('def render_profile(profile: dict[str, str]) -> str:\n    return \"{} ({})\".format(profile[\"name\"], profile[\"role\"])\n')"'''
 timeout_s = 30
 
 [[checks]]
