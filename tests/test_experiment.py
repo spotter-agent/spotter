@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 import spotter.experiment as experiment
+from spotter.cli import main
 from spotter.config import GatesConfig, MainAgentConfig, ReviewerConfig, SpotterConfig
 from spotter.experiment import (
     ArmClassification,
@@ -64,7 +65,7 @@ def test_results_carry_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
     assert meta["check"] == "pytest -q"
     assert meta["sandbox"] and meta["timeout"] and meta["started_at"]
     assert meta["pairs"] == 1
-    assert meta["result_schema_version"] == 1
+    assert meta["result_schema_version"] == 2
     assert rows[-1]["complete"] is True and rows[-1]["finished_at"]
     # every row is linked to its conditions via the experiment id
     assert all(row["experiment_id"] == meta["experiment_id"] for row in rows[1:])
@@ -130,6 +131,42 @@ def test_pair_forks_are_both_preflighted_before_either_agent_runs(
     assert events == ["fork", "fork", "run", "run"]
 
 
+def test_neutral_noise_runs_identical_prompts_and_reports_outcome_disagreement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(experiment, "fork", _fake_fork({}))
+    monkeypatch.setattr(experiment, "_codex_version", lambda: None)
+    prompts: list[str] = []
+
+    def record_prompt(session: str, worktree: str, prompt: str, **kwargs: object) -> int:
+        prompts.append(prompt)
+        return 0
+
+    check_exits = iter([0, 1, 0, 0])
+
+    def check(*args: object, **kwargs: object) -> object:
+        return type(
+            "Completed",
+            (),
+            {"returncode": next(check_exits), "stdout": "", "stderr": ""},
+        )()
+
+    monkeypatch.setattr(experiment, "_run_arm", record_prompt)
+    monkeypatch.setattr("spotter.experiment.subprocess.run", check)
+
+    results = run_experiment("s1", 5, None, pairs=2, check="score", run=True, neutral=True)
+
+    assert prompts == [experiment.CONTROL_PROMPT] * 4
+    assert {result.arm for result in results} == {"neutral_a", "neutral_b"}
+    assert all(result.experiment_mode == "neutral-noise" for result in results)
+    summary = summarize(results)
+    assert "mechanical outcome disagreements=1/2 (50.0%)" in summary
+    assert "environment mismatches=0/2" in summary
+    rows = [json.loads(line) for line in results_path("s1", 5).read_text().splitlines()]
+    assert rows[0]["experiment_mode"] == "neutral-noise"
+    assert rows[0]["guidance"] is None
+
+
 def test_environment_mismatch_prevents_both_agent_arms(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -158,7 +195,7 @@ def test_environment_mismatch_prevents_both_agent_arms(
     monkeypatch.setattr(experiment, "_run_arm", record_run)
     monkeypatch.setattr(experiment, "_cleanup", lambda worktree: None)
 
-    results = run_experiment("s1", 5, "hint", run=True)
+    results = run_experiment("s1", 5, None, run=True, neutral=True)
 
     assert ran == []
     assert all(result.classification == ArmClassification.INFRA_FAIL for result in results)
@@ -166,12 +203,36 @@ def test_environment_mismatch_prevents_both_agent_arms(
         result.environment_preflight == "ENVIRONMENT_FINGERPRINT_MISMATCH" for result in results
     )
     assert all(result.agent_exit is None for result in results)
+    assert "environment mismatches=1/1" in summarize(results)
+    assert "infrastructure failures=2/2" in summarize(results)
 
 
 def test_empty_experiment_is_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """PR #15 review P2: --pairs 0 must not succeed with zero data."""
     with pytest.raises(ValueError, match="pairs must be >= 1"):
         run_experiment("s1", 5, "hint", pairs=0)
+
+
+def test_guidance_is_required_outside_neutral_mode() -> None:
+    with pytest.raises(ValueError, match="guidance is required"):
+        run_experiment("s1", 5, None)
+
+
+def test_cli_accepts_neutral_mode_without_guidance(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def record_run(
+        session: str, step: int, guidance: str | None, **kwargs: object
+    ) -> list[ArmResult]:
+        captured.update(session=session, step=step, guidance=guidance, **kwargs)
+        return []
+
+    monkeypatch.setattr("spotter.cli.run_experiment", record_run)
+    monkeypatch.setattr("spotter.cli.summarize", lambda results: "neutral summary")
+
+    assert main(["experiment", "--session", "s1", "--step", "5", "--neutral"]) == 0
+    assert captured["guidance"] is None
+    assert captured["neutral"] is True
 
 
 def test_check_runs_in_each_fork_worktree(monkeypatch: pytest.MonkeyPatch) -> None:

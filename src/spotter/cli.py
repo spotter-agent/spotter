@@ -103,7 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
             "analyze: summarize journaled sessions; fork: branch a session at a step; "
             "prune: drop unreferenced refs/spotter snapshots (dry-run without --apply); "
             "review: run the shadow reviewer on a session (records only, injects nothing); "
-            "experiment: counterfactual fork pairs — nudge vs control (needs --run to execute); "
+            "experiment: guidance or identical-neutral fork pairs (needs --run to execute); "
             "label: record a human verdict on a gate flag, reviewer decision, or session; "
             "metrics: gate FP rate, reviewer precision and observability ceiling from labels; "
             "observability: compare Hook/App Server Trace IR and source-adapter coverage; "
@@ -130,7 +130,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--repo", type=Path, help="repo path (prune; fork override when the journal lacks cwd)"
     )
-    parser.add_argument("--guidance", help="course-correction text for the forked run (fork)")
+    parser.add_argument("--guidance", help="course-correction text for fork/experiment")
     parser.add_argument(
         "--apply", action="store_true", help="prune: actually delete (default is dry-run)"
     )
@@ -154,6 +154,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--window", type=int, default=40, help="review: trajectory tail size fed to the reviewer"
     )
     parser.add_argument("--pairs", type=int, default=1, help="experiment: counterfactual pairs")
+    parser.add_argument(
+        "--neutral",
+        action="store_true",
+        help="experiment: run identical neutral arms to measure the replay noise floor",
+    )
     parser.add_argument("--model", help="review/experiment: pin the Codex model")
     parser.add_argument(
         "--reservation",
@@ -299,8 +304,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "doctor":
         return _doctor_main(args.config)
     if args.command == "experiment":
-        if not args.session or args.step is None or not args.guidance:
-            parser.error("experiment requires --session, --step and --guidance")
+        if not args.session or args.step is None or (not args.neutral and not args.guidance):
+            parser.error("experiment requires --session, --step and either --guidance or --neutral")
         if args.pairs < 1:
             parser.error("--pairs must be >= 1")
         try:
@@ -313,6 +318,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 run=args.run,
                 model=args.model,
                 keep_artifacts=args.keep_artifacts,
+                neutral=args.neutral,
             )
         except (ReplayError, SnapshotError, OSError, subprocess.SubprocessError) as error:
             print(f"experiment failed: {error}", file=sys.stderr)

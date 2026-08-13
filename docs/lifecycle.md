@@ -832,6 +832,11 @@ or captured environment fingerprints differ; captured drift is classified as rep
 tool-version, or otherwise unknown environment drift. This preflight protects pair parity but does
 not yet establish the replay instrument's empirical noise floor.
 
+Neutral-noise mode resumes both arms with the exact same control prompt. Across repeated pairs it
+reports mechanical outcome disagreement separately from environment-preflight mismatches and
+infrastructure failures. This avoids treating stochastic continuation variance as snapshot failure;
+the resulting rate becomes evidence only after representative real prefixes are executed.
+
 Do not treat experiment machinery as evidence of positive intervention advantage until enough mechanically scored runs exist.
 
 Frozen task-set batches run control/guidance arms from separate clean fixture copies. Each arm row

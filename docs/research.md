@@ -260,6 +260,11 @@ Measure:
 - environmental failure rate;
 - detached-worktree effects.
 
+The harness now has an explicit neutral-noise mode: each repeated pair receives the same control
+prompt after shared-prefix/environment preflight, and the summary separates mechanical outcome
+disagreement from environment mismatch and infrastructure failure. No representative real-prefix
+run has established the rate yet.
+
 Intervention deltas smaller than the instrument noise floor should not be overinterpreted.
 
 ---
