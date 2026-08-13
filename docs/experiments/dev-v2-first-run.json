@@ -1,0 +1,119 @@
+{
+  "schema_version": 1,
+  "run_id": "16532470-1be0-41e8-a0ea-b52f6f92b0a8",
+  "task_set": {
+    "id": "spotter-dev",
+    "version": 2,
+    "sha256": "ed6e398fa569b7dc556403cc6ca8c1cbf2b1c31f1eca0f4c76551d830edc0677"
+  },
+  "condition": {
+    "control_suffix": "Continue the task.",
+    "guidance_suffix": "Before editing, inspect the failing check and relevant code. Preserve unaffected behavior, make the smallest justified fix, and run the task check afterward."
+  },
+  "environment": {
+    "requested_model": "codex-config-default",
+    "resolved_rollout_model": "gpt-5.6-sol",
+    "resolved_from_rollout_headers": 6,
+    "codex_version": "codex-cli 0.147.0",
+    "python": "3.12.13",
+    "platform": "macOS-26.5.1-arm64-arm-64bit",
+    "sandbox": "workspace-write"
+  },
+  "started_at": "2026-08-13T10:42:10.078014+00:00",
+  "finished_at": "2026-08-13T10:45:23.578849+00:00",
+  "elapsed_seconds": 193.500835,
+  "summary": {
+    "executed_arms": 6,
+    "mechanically_judged_arms": 6,
+    "usable_pairs": 3,
+    "guidance_better": 0,
+    "control_better": 0,
+    "tie_success": 3,
+    "tie_failure": 0,
+    "infrastructure_failures": 0,
+    "non_fatal_mcp_shutdown_warning_arms": 6,
+    "control_agent_reported_tokens": 41912,
+    "guidance_agent_reported_tokens": 39270,
+    "control_elapsed_seconds": 96.720279,
+    "guidance_elapsed_seconds": 96.772302
+  },
+  "arms": [
+    {
+      "task_id": "fixture/query-parser-001",
+      "arm": "control",
+      "classification": "PASS",
+      "setup_exit": 0,
+      "agent_exit": 0,
+      "required_check_exits": [0],
+      "agent_reported_tokens": 12595,
+      "started_at": "2026-08-13T10:42:10.078468+00:00",
+      "ended_at": "2026-08-13T10:42:38.696471+00:00",
+      "non_fatal_mcp_shutdown_warning": true
+    },
+    {
+      "task_id": "fixture/query-parser-001",
+      "arm": "guidance",
+      "classification": "PASS",
+      "setup_exit": 0,
+      "agent_exit": 0,
+      "required_check_exits": [0],
+      "agent_reported_tokens": 13511,
+      "started_at": "2026-08-13T10:42:38.697484+00:00",
+      "ended_at": "2026-08-13T10:43:04.616268+00:00",
+      "non_fatal_mcp_shutdown_warning": true
+    },
+    {
+      "task_id": "fixture/settings-validation-001",
+      "arm": "guidance",
+      "classification": "PASS",
+      "setup_exit": 0,
+      "agent_exit": 0,
+      "required_check_exits": [0],
+      "agent_reported_tokens": 16401,
+      "started_at": "2026-08-13T10:43:04.619105+00:00",
+      "ended_at": "2026-08-13T10:43:46.717175+00:00",
+      "non_fatal_mcp_shutdown_warning": true
+    },
+    {
+      "task_id": "fixture/settings-validation-001",
+      "arm": "control",
+      "classification": "PASS",
+      "setup_exit": 0,
+      "agent_exit": 0,
+      "required_check_exits": [0],
+      "agent_reported_tokens": 14749,
+      "started_at": "2026-08-13T10:43:46.718189+00:00",
+      "ended_at": "2026-08-13T10:44:25.512717+00:00",
+      "non_fatal_mcp_shutdown_warning": true
+    },
+    {
+      "task_id": "fixture/cache-regression-001",
+      "arm": "control",
+      "classification": "PASS",
+      "setup_exit": 0,
+      "agent_exit": 0,
+      "required_check_exits": [0],
+      "agent_reported_tokens": 14568,
+      "started_at": "2026-08-13T10:44:25.513696+00:00",
+      "ended_at": "2026-08-13T10:44:54.821444+00:00",
+      "non_fatal_mcp_shutdown_warning": true
+    },
+    {
+      "task_id": "fixture/cache-regression-001",
+      "arm": "guidance",
+      "classification": "PASS",
+      "setup_exit": 0,
+      "agent_exit": 0,
+      "required_check_exits": [0],
+      "agent_reported_tokens": 9358,
+      "started_at": "2026-08-13T10:44:54.822417+00:00",
+      "ended_at": "2026-08-13T10:45:23.577865+00:00",
+      "non_fatal_mcp_shutdown_warning": true
+    }
+  ],
+  "raw_result": {
+    "spotter_home_relative_path": "experiments/task-batches/spotter-dev-v2-16532470-1be0-41e8-a0ea-b52f6f92b0a8.jsonl",
+    "sha256": "948226a9d1fcd768b69023b22d0a2fedc121bc058220e8550bdbc6bf4fb9f434",
+    "committed": false
+  }
+}

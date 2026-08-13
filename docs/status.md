@@ -78,10 +78,14 @@ App Server strategy as pending; it does not invent an endpoint or claim ownershi
 
 In parallel, the highest-value evidence foundations remain:
 
-- [#21](https://github.com/spotter-agent/spotter/issues/21) — mechanically scored task set;
 - [#42](https://github.com/spotter-agent/spotter/issues/42) — replay/fork fidelity and noise floor;
 - [#37](https://github.com/spotter-agent/spotter/issues/37) — observability ceiling baseline/post-migration measurement;
 - [#33](https://github.com/spotter-agent/spotter/issues/33) — runtime cost/timing/outcome telemetry.
+
+[#21](https://github.com/spotter-agent/spotter/issues/21) now has frozen dev/validation v2 sets,
+preflight, resumable classified execution, and a [first real three-task development run](experiments/dev-v2-first-run.md).
+All three pairs were tie-success; this qualifies the instrument but is not evidence of intervention
+advantage.
 
 ---
 
@@ -99,7 +103,7 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 | Shadow reviewer | ✅ | Produces `CONTINUE`, `VERIFY`, `NUDGE`; verdicts are recorded only | Move to event-driven candidates, then live delivery |
 | Audit / live state | 🟡 | Daemon-owned typed ThreadState distinguishes constraints, hypotheses, observations, verified facts, summaries, interventions, and coverage | Feed reviewer jobs and signals from immutable snapshots |
 | Evaluation labels / metrics | 🟡 | Coverage-aware labels plus durable Main action/token/timing, reviewer, gate-latency, and storage projections; unavailable values remain unknown | Add live resource/queue/delivery telemetry and objective outcome joins (#33, #38, #34) |
-| Counterfactual harness | ✅ | Same-prefix experiments plus resumable frozen task-set batches; v2 has six disjoint synthetic tasks across five failure families | Execute and report the first real multi-task control/guidance run (#21) |
+| Counterfactual harness | ✅ | Same-prefix experiments plus resumable frozen task-set batches; the first real dev-v2 run completed 6/6 arms with three tie-success pairs | Measure replay noise (#42) before interpreting intervention effects |
 | Standalone runtime | 🟡 | Long-lived process, IPC, lifecycle, isolated per-thread state, and App Server recovery ownership | Select and verify the shared endpoint during setup |
 | Runtime identity | ✅ | Logical threads/turns remain separate from per-connection attachment IDs and monotonically recovered epochs | Propagate the identity into future reviewer jobs |
 | App Server primary observation | 🟡 | Configured endpoints route through `spotterd` into normalized durable Trace IR and incremental ThreadState; a bounded value-free source audit and conformance corpus measure projection coverage | Collect labeled App Server failures to finish #37, then reduce Hooks in #86 |
@@ -153,7 +157,7 @@ Implementation progress and research evidence remain separate.
 | Can Spotter produce plausible semantic reviewer verdicts? | Yes, in shadow mode |
 | Can Spotter branch a shared prefix for counterfactual experiments? | Yes |
 | Is the fork instrument's causal noise floor known? | **No — #42** |
-| Is there a reproducible mechanically scored task corpus? | **Partial — six frozen v2 tasks, preflight, isolated execution, and condition-checked resume exist; a real reportable run remains (#21)** |
+| Is there a reproducible mechanically scored task corpus? | **Yes for the synthetic v2 foundation — six frozen tasks and a reportable 6/6-arm dev run; external/ecosystem breadth remains future work (#21)** |
 | Has live Spotter guidance been shown to improve outcomes? | **No** |
 | Is the App Server control boundary operationally viable? | **Yes for a configured Spotter-managed external path, including daemon reconnect/reconciliation** |
 | Is the post-App-Server visible-in-time ceiling measured? | **No — the instrument exists, but the current sample has 0 App Server sessions and 0/9 labeled sessions (#37)** |

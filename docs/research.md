@@ -25,7 +25,7 @@ The literature and implementation precedents behind these hypotheses are catalog
 | prefix-only early auditing | AgentForesight | detection timing / first-deviation metrics | measurement design, not fully executed |
 | evidence-conditioned action gating | ECLoop / interwhen | bounded deterministic/evidence gates | selected deterministic gates implemented; broader evidence gates unproven |
 | stop/restart bad trajectories | FailFast-RestartSmart | `INTERRUPT` / `RESTART` | target only |
-| intervention advantage | Calibration Is Not Control | same-prefix counterfactual experiment | harness implemented; evidence missing |
+| intervention advantage | Calibration Is Not Control | same-prefix counterfactual experiment | dev-v2 qualification was 3/3 tie-success; causal evidence missing |
 | claim/evidence invalidation | Grounded Continuation | audit ledger + stale propagation | implemented, observation-limited |
 | neutral exploration awareness | AgentProcessBench | candidates are not verdicts | design principle |
 | normalized runtime traces | HarnessFix / NeMo Relay | Trace IR / adapter boundary | partial implementation / target expansion |
@@ -48,8 +48,8 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 needs experiment · ❌ m
 | snapshot/fork/replay | ✅ | machinery exists and can branch from recorded prefixes |
 | model-backed semantic judgment | ✅ shadow | reviewer produces plausible structured verdicts but does not affect Main |
 | claim/evidence ledger | 🟡 | works only where the observation surface exposes usable outcomes |
-| counterfactual experiment framework | ✅ | machinery exists; not enough executed ground-truth runs |
-| ground-truth task set | ❌ | major current evaluation blocker |
+| counterfactual experiment framework | ✅ | frozen/resumable machinery completed its first 6-arm development qualification run |
+| ground-truth task set | 🟡 | six synthetic frozen tasks across five failure families; external/ecosystem breadth remains missing |
 | positive intervention advantage | ❌ | not established |
 | event-driven reviewer dispatch | ❌ | current reviewer trigger is cadence-based |
 | live `VERIFY / NUDGE` delivery | ❌ | target: `turn/steer` |
@@ -57,6 +57,10 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 needs experiment · ❌ m
 | App Server observation/control viability | ✅ PoC | #78 proved a Spotter-managed external App Server can be shared by the real TUI and Spotter and can steer the active turn |
 | production App Server observation path | 🟡 | async client/control surface exists; normalized event routing, identity reconciliation, and reconnect remain |
 | speculative supervision | ❌ | no measured lookahead/prediction/intervention pipeline yet |
+
+The first [dev-v2 multi-task run](experiments/dev-v2-first-run.md) completed all six arms and produced
+three tie-success pairs. This qualifies the task instrument; it is a small development-set null result,
+not positive intervention evidence. The held-out validation set remains unexecuted.
 
 The Hook-collected corpus exposed a concrete observation limit for the audit ledger: directly usable outcomes were present in only a small fraction of real tool results. The App Server migration must **re-measure** that ceiling rather than assume it is permanent.
 
@@ -393,7 +397,8 @@ RESTART
 
 # Current top evidence gaps
 
-1. **No ground-truth task set** large enough to run meaningful counterfactual experiments.
+1. **No broad ground-truth task set** beyond the six-task synthetic v2 foundation; ecosystem and
+   sample-size coverage remain too small for a meaningful intervention claim.
 2. **No measured positive intervention advantage** for Spotter guidance.
 3. **No sampled miss-rate/recall estimate** for semantic detector behavior.
 4. **No post-migration App Server observability-ceiling measurement** yet. The coverage taxonomy,
