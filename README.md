@@ -69,7 +69,7 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 | Capability | Status | Notes |
 | --- | --- | --- |
 | Hook trajectory ingestion | ✅ | Current primary observation path |
-| Deterministic pre-action gates | ✅ | Bounded local daemon IPC; strict timeout and fail-open telemetry |
+| Deterministic pre-action gates | ✅ | Bounded daemon IPC; local fallback preserves enforcement if the daemon is unavailable |
 | Crash-tolerant journal | ✅ | Locking, fsync, torn-tail recovery |
 | Git snapshot / detached restore | ✅ | User HEAD/index remain untouched |
 | Fork / continuation replay | ✅ | Same-prefix continuation machinery |

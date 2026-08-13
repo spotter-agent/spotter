@@ -57,7 +57,7 @@ typed steer/interrupt methods, and explicit supported/unknown/unavailable capabi
 local control handshake, explicit health states, manual lifecycle commands, and a testable
 `ServiceManager` boundary. It deliberately does not own or stop a shared Codex App Server.
 [#82](https://github.com/spotter-agent/spotter/issues/82) adds bounded deterministic gate requests,
-strict timeout and fail-open handling, and separate Hook/IPC timing telemetry.
+local enforcement fallback on unavailable/timeout, and separate Hook/IPC timing telemetry.
 
 The remaining implementation boundaries are split into native GitHub issues:
 
@@ -90,7 +90,7 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 | Area | Status | What exists now | Next concrete step |
 | --- | --- | --- | --- |
 | Hook ingestion | ✅ | `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse` are journaled | App Server ingestion #85, then remove redundant Hooks in #86 |
-| Deterministic gate | ✅ | Shell-aware daemon evaluation over bounded local IPC; timeout/unavailable/protocol failures fail open with telemetry | Continue policy precision/miss-rate measurement |
+| Deterministic gate | ✅ | Shell-aware daemon evaluation over bounded local IPC; unavailable/timeout uses the local Gate, while incompatible responses fail open | Continue policy precision/miss-rate measurement |
 | Journal | ✅ | Crash-tolerant JSONL, locking, fsync, torn-tail recovery | Feed it from identity-rich App Server Trace IR in #85 |
 | Snapshot | ✅ | Git-backed snapshots, deduplication, pruning, detached restore | Preserve lineage through runtime/retention migration (#89) |
 | Fork / replay | ✅ | Continue Codex from a shared prefix in a detached worktree | Measure fidelity/noise floor in #42 |

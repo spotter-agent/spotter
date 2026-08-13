@@ -185,6 +185,24 @@ def test_gate_fails_open_for_an_unsupported_proposal_shape(socket_path: Path) ->
     asyncio.run(scenario())
 
 
+def test_gate_normalizes_missing_files_without_skipping_the_command(socket_path: Path) -> None:
+    async def scenario() -> None:
+        server = DaemonServer(socket_path)
+        await server.start()
+        try:
+            decision, _ = await DaemonClient(socket_path).gate(
+                TraceEvent("tool_proposal", {"command": "rm -rf /", "files": None}),
+                GatesConfig(),
+                "/repo",
+            )
+            assert not decision.allowed
+            assert decision.rule == "rm_root"
+        finally:
+            await server.close()
+
+    asyncio.run(scenario())
+
+
 def test_second_daemon_cannot_take_the_live_socket(socket_path: Path) -> None:
     async def scenario() -> None:
         first = DaemonServer(socket_path)

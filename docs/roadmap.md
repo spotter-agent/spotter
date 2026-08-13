@@ -177,7 +177,7 @@ Runtime is credible when:
 - normal use does not require manually starting Spotter before every Codex session;
 - one long-lived runtime owns isolated state for multiple threads;
 - the real active Codex turn can be observed and addressed safely;
-- deterministic enforcement crosses a bounded fail-open IPC path;
+- deterministic enforcement crosses bounded IPC with a local compatibility fallback;
 - setup/teardown ownership is explicit and repeatable;
 - a dead or disconnected subsystem is reported as degraded instead of healthy;
 - reconnect/restart can recover identity and durable state without inventing missing observations.

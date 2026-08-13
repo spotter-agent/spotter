@@ -214,7 +214,7 @@ def run_hook(
     gate_telemetry: dict[str, Any] | None = None
     if event.kind == "tool_proposal":
         gate_decision, gate_telemetry = _gate_over_ipc(
-            event, config, str(cwd) if isinstance(cwd, str) else None
+            event, config, str(cwd) if isinstance(cwd, str) else None, gate
         )
     if event.kind == "tool_result":
         event.payload["checkpoint"] = journal.last_snapshot()
@@ -259,7 +259,7 @@ def run_hook(
 
 
 def _gate_over_ipc(
-    event: TraceEvent, config: SpotterConfig, root: str | None
+    event: TraceEvent, config: SpotterConfig, root: str | None, fallback: Gate
 ) -> tuple[GateDecision, dict[str, Any]]:
     started = time.perf_counter_ns()
     status = "ok"
@@ -272,7 +272,7 @@ def _gate_over_ipc(
     except DaemonTimeout as error:
         status = "timeout"
         error_detail = str(error)
-        decision = GateDecision(True, "daemon_timeout", f"fail-open: {error}")
+        decision = fallback.check(event)
     except DaemonProtocolError as error:
         status = "protocol_error"
         error_detail = str(error)
@@ -280,7 +280,7 @@ def _gate_over_ipc(
     except DaemonUnavailable as error:
         status = "unavailable"
         error_detail = str(error)
-        decision = GateDecision(True, "daemon_unavailable", f"fail-open: {error}")
+        decision = fallback.check(event)
 
     telemetry: dict[str, Any] = {
         "status": status,

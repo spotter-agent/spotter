@@ -101,21 +101,21 @@ def test_safe_command_allows_silently(daemon: None) -> None:
     assert run_hook(_payload("pytest tests/"), _config(observation_only=False)) is None
 
 
-def test_missing_daemon_fails_open_with_telemetry() -> None:
+def test_missing_daemon_uses_local_gate_with_telemetry() -> None:
     payload = _payload("rm -rf /")
-    assert run_hook(payload, _config(observation_only=False)) is None
+    assert "rm_root" in (run_hook(payload, _config(observation_only=False)) or "")
 
     records = StepJournal.load(journal_path(payload))
     assert [record.event.kind for record in records] == [
         "tool_proposal",
-        "gate_fail_open",
+        "gate_block",
         "gate_ipc",
     ]
-    assert records[1].event.payload["rule"] == "daemon_unavailable"
+    assert records[1].event.payload["rule"] == "rm_root"
     assert records[2].event.payload["status"] == "unavailable"
 
 
-def test_timeout_fails_open_with_diagnosable_telemetry(
+def test_timeout_uses_local_gate_with_diagnosable_telemetry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def timeout(*args: object, **kwargs: object) -> object:
@@ -123,10 +123,10 @@ def test_timeout_fails_open_with_diagnosable_telemetry(
 
     monkeypatch.setattr("spotter.hook.DaemonClient.gate", timeout)
     payload = _payload("rm -rf /")
-    assert run_hook(payload, _config(observation_only=False)) is None
+    assert "rm_root" in (run_hook(payload, _config(observation_only=False)) or "")
 
     records = StepJournal.load(journal_path(payload))
-    assert records[1].event.payload["rule"] == "daemon_timeout"
+    assert records[1].event.payload["rule"] == "rm_root"
     assert records[2].event.payload["status"] == "timeout"
 
 

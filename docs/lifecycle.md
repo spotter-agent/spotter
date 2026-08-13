@@ -897,7 +897,8 @@ hydrate durable state where needed
 READY
 ```
 
-During daemon downtime, the Hook gate remains fail-open unless a future opt-in fail-closed mode is designed separately.
+During daemon downtime, the Hook preserves existing deterministic enforcement with its local Gate
+while reporting degraded IPC telemetry. Ambiguous or unsupported proposals still fail open.
 
 ## 10.2 App Server disconnect/crash
 

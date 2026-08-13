@@ -122,6 +122,8 @@ class DaemonClient:
         finally:
             if writer is not None:
                 writer.close()
+                with suppress(ConnectionError, OSError):
+                    await writer.wait_closed()
 
     async def status(self) -> DaemonStatus:
         try:
@@ -151,7 +153,7 @@ class DaemonClient:
             {
                 "proposal": {
                     "command": event.payload.get("command"),
-                    "files": event.payload.get("files"),
+                    "files": event.payload.get("files") or [],
                 },
                 "gates": {
                     "forbidden_paths": list(gates.forbidden_paths),
