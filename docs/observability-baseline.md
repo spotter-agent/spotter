@@ -72,9 +72,9 @@ samples, and no failed/degraded session labels in this snapshot. Consequently:
 - no post-App-Server visible-in-time percentage can be stated;
 - no Hook-to-App-Server improvement can be stated;
 - no important failure-class ceiling can be stated; and
-- #37 remains open.
+- the post-App-Server evidence gate remains unmet.
 
-## Evidence needed to finish #37
+## Evidence still needed after #37's instrumentation work
 
 Collect representative failed or degraded App Server trajectories, label each failure boundary and
 minimal required evidence set, and run:

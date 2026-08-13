@@ -338,6 +338,13 @@ version-mismatched responses and unsupported proposal shapes fail open. Daemon e
 time, and total Hook time are recorded separately so latency percentiles can be computed without putting
 aggregation on the synchronous path.
 
+`spotter metrics` projects these durable records into separate accounting domains: Main semantic
+actions and token observations, Spotter semantic reviewer calls/tokens, deterministic Hook/IPC
+latency, timing coverage, and journal storage. Hook and App Server action surfaces are reported
+separately during migration rather than summed. Token totals remain `cumulative/unknown-scope`, and
+missing token/timing/latency data is printed as unknown with an explicit coverage denominator. Source
+wall time is never subtracted from receipt wall time to manufacture a latency across clock domains.
+
 ## 4.5 Turn completion
 
 ```text

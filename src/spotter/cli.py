@@ -52,6 +52,7 @@ from spotter.paths import secure_dir, spotter_home
 from spotter.redact import scan_text
 from spotter.replay import ReplayError, fork, plan_to_json
 from spotter.reviewer import last_usage, review
+from spotter.runtime_metrics import measure_runtime_costs, render_runtime_costs
 from spotter.snapshot import (
     SnapshotError,
     StepJournal,
@@ -763,6 +764,7 @@ def _metrics_main(session: str | None) -> int:
         print("no journals found", file=sys.stderr)
         return 1
     gates: dict[str, Tally] = {}
+    runtime_journals: list[tuple[list[StepRecord], int]] = []
     blind_spots: dict[str, int] = {}
     reviewer = ceiling = Tally()
     for journal in journals:
@@ -771,6 +773,7 @@ def _metrics_main(session: str | None) -> int:
         except SnapshotError as error:
             print(f"{journal.stem}: unreadable journal ({error})", file=sys.stderr)
             continue
+        runtime_journals.append((records, journal.stat().st_size))
         try:
             session_gates, session_reviewer, session_ceiling = tally_session(journal.stem, records)
         except LabelError as error:
@@ -799,6 +802,7 @@ def _metrics_main(session: str | None) -> int:
     print("  " + reviewer.rate_line("interventions", "correct"))
     print("P1 observability ceiling (label failed sessions visible|invisible):")
     print("  " + ceiling.rate_line("sessions", "visible"))
+    print(render_runtime_costs(measure_runtime_costs(runtime_journals)))
     return 0
 
 

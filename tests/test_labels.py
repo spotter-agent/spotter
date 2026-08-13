@@ -206,6 +206,7 @@ def test_cli_label_and_metrics_roundtrip(capsys: pytest.CaptureFixture[str]) -> 
     assert "P3 gate false positives" in out
     assert "P4 reviewer precision" in out
     assert "P1 observability ceiling" in out
+    assert "Runtime cost / efficiency (coverage-aware)" in out
     assert "too few decided labels" in out  # honest about n=1
 
 
