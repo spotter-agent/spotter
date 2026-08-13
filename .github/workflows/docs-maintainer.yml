@@ -60,7 +60,7 @@ jobs:
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           model: ${{ inputs.scout_model }}
-          sandbox: read-only
+          permission-profile: ":read-only"
           output-file: .codex-maintainer/docs-scout.md
           prompt: |
             Inspect all documentation, implementation, tests, roadmap, and
@@ -76,9 +76,10 @@ jobs:
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           model: ${{ inputs.writer_model }}
-          sandbox: workspace-write
+          permission-profile: ":workspace"
+          safety-strategy: unsafe
           prompt: |
-            Read .codex-maintainer/docs-scout.md and docs-context.json, then independently
+            Read .codex-maintainer/docs-scout.md and .codex-maintainer/docs-context.json, then independently
             verify every proposed change against the implementation, tests, open issues,
             milestones, and roadmap. Update, create, merge, or delete documentation files as
             appropriate. Do not edit implementation, tests, workflows, or issue state. Keep
