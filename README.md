@@ -77,13 +77,13 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 | Claim/evidence audit ledger | 🟡 | Works where observable outcomes exist |
 | Evaluation labels / metrics | ✅ | Coverage-aware evaluation and precision/FP metrics |
 | Counterfactual experiment harness | ✅ | Control/guidance same-prefix pairs |
-| Standalone `spotterd` runtime | 🟡 | Process, versioned gate/control IPC, and manual lifecycle implemented; managed startup/runtime consumers remain |
+| Standalone `spotterd` runtime | 🟡 | Process, versioned gate/control IPC, and managed user-service startup implemented; runtime consumers remain |
 | App Server primary observation | 🟡 | Client/capabilities implemented; Trace IR ingestion remains (#85) |
 | Event-driven signal engine | ❌ | Current reviewer trigger is periodic |
 | Live `VERIFY / NUDGE` | ❌ | Target: `turn/steer` |
 | `INTERRUPT` | ❌ | Target: `turn/interrupt` |
 | `RESTART` | ❌ | Requires verified-state + side-effect-aware recovery |
-| Homebrew / setup lifecycle | 🎯 | Target product path |
+| Codex setup lifecycle | 🟡 | Transactional setup/teardown and manifest implemented; packaging and full App Server integration remain |
 
 ### Current runtime work
 
@@ -94,7 +94,9 @@ control methods, and per-capability degraded state. [#81](https://github.com/spo
 adds a provisional thread/turn/attachment registry; it remains unconsumed until App Server event
 routing in [#85](https://github.com/spotter-agent/spotter/issues/85). [#79](https://github.com/spotter-agent/spotter/issues/79)
 adds the `spotterd` process, versioned local control handshake, manual lifecycle commands, and a
-platform-neutral service boundary. Managed setup, event routing, and recovery remain separate work.
+platform-neutral service boundary. [#83](https://github.com/spotter-agent/spotter/issues/83) adds
+transactional Codex setup/teardown, managed user-service registration, and integration ownership.
+Event routing and recovery remain separate work.
 
 ---
 
@@ -312,13 +314,24 @@ claude plugin marketplace add spotter-agent/spotter
 claude plugin install spotter@spotter
 ```
 
-Plugin installation is the **current prototype path**, not the long-term product boundary.
+Plugin installation remains a compatibility path. New standalone integration can use:
+
+```bash
+spotter setup codex --dry-run
+spotter setup codex
+spotter teardown codex
+```
+
+The explicit external App Server still has to be selected with the launch command printed by setup
+until the remaining App Server ingestion/lifecycle work lands.
 
 Useful commands:
 
 ```bash
 spotter observe
 spotter hook  # hook bridge; JSON payload on stdin
+spotter setup codex [--dry-run|--portable]
+spotter teardown codex
 spotter daemon start|stop|restart|status
 spotter analyze
 spotter review --session <id>

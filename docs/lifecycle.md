@@ -1,7 +1,7 @@
 # Lifecycle and Operations
 
-> **Status:** target design. Active implementation is tracked by the [Roadmap](roadmap.md) and native GitHub Milestones.
-> The current prototype is still hook/plugin-centered. A manual `spotterd` process/control lifecycle exists, but Homebrew installation, managed service registration, and full App Server integration described here are the **intended product lifecycle**, not current shipping behavior.
+> **Status:** target design with an implemented transactional Codex setup slice. Active implementation is tracked by the [Roadmap](roadmap.md) and native GitHub Milestones.
+> `spotter setup|teardown codex`, versioned ownership manifests, managed `launchd`/`systemd --user` registration, portable startup, and legacy Hook/plugin migration exist. Homebrew installation, App Server event ingestion, runtime-aware diagnostics, and transparent plain-`codex` launch remain target behavior.
 
 ---
 
@@ -312,6 +312,11 @@ spotter setup codex
 
 It must be **idempotent** and **transactional**.
 
+The implemented command supports `--dry-run` and `--portable`. Managed mode registers `spotterd`
+as a login-scoped user service; portable mode starts it without persistent registration. Setup
+mutates only Codex Hook/plugin configuration, keeps fingerprinted backups, verifies daemon health
+and a synthetic Hook round-trip, then atomically commits `~/.spotter/integrations/codex.json`.
+
 ## 4.1 Transaction stages
 
 ```text
@@ -381,7 +386,7 @@ Plan
   Agent config backup/fingerprint: required
 ```
 
-A future dry-run surface is useful:
+The mutation plan is available without writes:
 
 ```bash
 spotter setup codex --dry-run
@@ -419,6 +424,10 @@ Spotter ↔ App Server initialized
 Hook IPC reachable
 ```
 
+The current #83 implementation verifies Codex's `app-server --listen` and `--remote` capability and
+records the selected explicit endpoint, but does not create or stop a shared App Server. Live
+App Server initialize/event verification joins the ingestion and diagnostic work in #85/#84.
+
 ## 4.7 VERIFY
 
 A synthetic E2E verification should check at least:
@@ -450,8 +459,9 @@ Example manifest:
   "agent_version": "...",
   "app_server_strategy": "codex-managed-external",
   "runtime_mode": "managed",
-  "hooks_added": ["PreToolUse"],
-  "legacy_hooks_removed": ["PostToolUse"],
+  "service_owned": true,
+  "owned_hook": {"event": "PreToolUse", "matcher": ".*", "hook": {"type": "command"}},
+  "legacy_hooks_removed": [{"event": "PostToolUse"}],
   "config_fingerprint_before": "...",
   "created_at": "..."
 }
@@ -1316,8 +1326,8 @@ The lifecycle implies concrete components rather than one monolithic CLI.
 The target lifecycle is not complete until all of these work end-to-end:
 
 - [ ] clean package install does not modify Codex;
-- [ ] `spotter setup codex` is idempotent;
-- [ ] interrupted setup can be resumed/reconciled;
+- [x] `spotter setup codex` is idempotent;
+- [x] interrupted setup can be resumed/reconciled;
 - [ ] ordinary `codex` requires no manual Spotter/App Server startup in managed mode;
 - [ ] `status` distinguishes daemon, observation, control, enforcement, storage health;
 - [ ] `doctor` performs a real synthetic round-trip;
@@ -1325,11 +1335,11 @@ The target lifecycle is not complete until all of these work end-to-end:
 - [ ] daemon crash recovers without corrupting journal/live state;
 - [ ] Codex upgrade degrades by capability rather than silently breaking;
 - [ ] Spotter upgrade handles a running old daemon and schema migration;
-- [ ] `teardown codex` removes only Spotter-owned integration changes;
+- [x] `teardown codex` removes only Spotter-owned integration changes;
 - [ ] uninstall without teardown does not break Codex;
 - [ ] user data survives normal uninstall;
 - [ ] purge can enumerate and safely clean repository resources;
 - [ ] reinstall can reuse/migrate retained data;
-- [ ] legacy plugin users migrate without duplicate events.
+- [x] legacy plugin users migrate without duplicate events.
 
 For runtime component boundaries, see [Architecture](architecture.md). For implementation sequencing, see [Roadmap](roadmap.md). For current implementation state, see [Status](status.md).

@@ -5,6 +5,8 @@ import asyncio
 import hashlib
 import json
 import os
+import plistlib
+import shutil
 import stat
 import subprocess
 import sys
@@ -353,6 +355,8 @@ class ServiceManager(Protocol):
 
     async def status(self) -> DaemonStatus: ...
 
+    async def uninstall(self) -> DaemonStatus: ...
+
 
 class ManualServiceManager:
     """Portable process lifecycle used by explicit CLI escape hatches."""
@@ -418,6 +422,172 @@ class ManualServiceManager:
         if stopped.available:
             return stopped
         return await self.start()
+
+    async def uninstall(self) -> DaemonStatus:
+        return await self.stop()
+
+
+class ManagedServiceManager:
+    """Install and control a login-scoped launchd or systemd user service."""
+
+    LABEL = "dev.spotter.runtime"
+
+    def __init__(
+        self,
+        socket_path: Path | None = None,
+        *,
+        platform: str | None = None,
+        registration_path: Path | None = None,
+        executable: str | None = None,
+    ) -> None:
+        self.socket_path = socket_path or runtime_socket()
+        self.client = DaemonClient(self.socket_path)
+        self.platform = platform or sys.platform
+        self.executable = executable or shutil.which("spotterd")
+        if registration_path is not None:
+            self.registration_path = registration_path
+        elif self.platform == "darwin":
+            self.registration_path = Path.home() / "Library/LaunchAgents" / f"{self.LABEL}.plist"
+        elif self.platform.startswith("linux"):
+            self.registration_path = Path.home() / ".config/systemd/user" / "spotterd.service"
+        else:
+            raise DaemonError(f"managed services are unsupported on {self.platform}")
+
+    def _program(self) -> list[str]:
+        if self.executable:
+            return [self.executable]
+        return [sys.executable, "-m", "spotter.daemon"]
+
+    def _definition(self) -> bytes:
+        home = secure_dir(spotter_home())
+        logs = secure_dir(home / "logs")
+        if self.platform == "darwin":
+            return plistlib.dumps(
+                {
+                    "Label": self.LABEL,
+                    "ProgramArguments": self._program(),
+                    "RunAtLoad": True,
+                    "KeepAlive": True,
+                    "EnvironmentVariables": {"SPOTTER_HOME": str(home)},
+                    "StandardOutPath": str(logs / "spotterd.log"),
+                    "StandardErrorPath": str(logs / "spotterd.log"),
+                }
+            )
+        command = " ".join(json.dumps(part) for part in self._program())
+        return (
+            "[Unit]\nDescription=Spotter supervision runtime\n\n"
+            "[Service]\nType=simple\n"
+            f"ExecStart={command}\n"
+            f"Environment={json.dumps(f'SPOTTER_HOME={home}')}\n"
+            "Restart=on-failure\n\n"
+            "[Install]\nWantedBy=default.target\n"
+        ).encode()
+
+    def _install_definition(self) -> bool:
+        content = self._definition()
+        if self.registration_path.exists() and self.registration_path.read_bytes() == content:
+            return False
+        self.registration_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.registration_path.with_suffix(self.registration_path.suffix + ".tmp")
+        temporary.write_bytes(content)
+        temporary.chmod(0o600)
+        os.replace(temporary, self.registration_path)
+        return True
+
+    @staticmethod
+    def _run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(command, capture_output=True, text=True, check=False)
+
+    def _service_error(self, result: subprocess.CompletedProcess[str]) -> DaemonStatus:
+        detail = (result.stderr or result.stdout or "service command failed").strip()[:300]
+        return DaemonStatus(RuntimeHealth.UNAVAILABLE, detail=detail)
+
+    async def _wait_ready(self) -> DaemonStatus:
+        deadline = asyncio.get_running_loop().time() + START_TIMEOUT
+        while asyncio.get_running_loop().time() < deadline:
+            status = await self.status()
+            if status.available:
+                return status
+            await asyncio.sleep(0.05)
+        return DaemonStatus(
+            RuntimeHealth.UNAVAILABLE, detail="managed spotterd did not become ready"
+        )
+
+    async def status(self) -> DaemonStatus:
+        return await self.client.status()
+
+    async def start(self) -> DaemonStatus:
+        current = await self.status()
+        if self.platform == "darwin":
+            domain = f"gui/{os.getuid()}"
+            loaded = self._run(["launchctl", "print", f"{domain}/{self.LABEL}"]).returncode == 0
+            if current.available and not loaded:
+                return DaemonStatus(
+                    RuntimeHealth.DEGRADED,
+                    pid=current.pid,
+                    detail="spotterd is running outside the managed launchd service; stop it first",
+                )
+            changed = self._install_definition()
+            if loaded and changed:
+                self._run(["launchctl", "bootout", f"{domain}/{self.LABEL}"])
+                loaded = False
+            if not loaded:
+                result = self._run(["launchctl", "bootstrap", domain, str(self.registration_path)])
+            else:
+                if current.available:
+                    return current
+                result = self._run(["launchctl", "kickstart", "-k", f"{domain}/{self.LABEL}"])
+        else:
+            active = (
+                self._run(["systemctl", "--user", "is-active", "spotterd.service"]).returncode == 0
+            )
+            if current.available and not active:
+                return DaemonStatus(
+                    RuntimeHealth.DEGRADED,
+                    pid=current.pid,
+                    detail="spotterd is running outside the managed systemd service; stop it first",
+                )
+            changed = self._install_definition()
+            if changed:
+                result = self._run(["systemctl", "--user", "daemon-reload"])
+                if result.returncode != 0:
+                    return self._service_error(result)
+            if active:
+                if current.available and not changed:
+                    return current
+                result = self._run(["systemctl", "--user", "restart", "spotterd.service"])
+            else:
+                result = self._run(["systemctl", "--user", "enable", "--now", "spotterd.service"])
+        if result.returncode != 0:
+            return self._service_error(result)
+        return await self._wait_ready()
+
+    async def stop(self) -> DaemonStatus:
+        if self.platform == "darwin":
+            result = self._run(["launchctl", "bootout", f"gui/{os.getuid()}/{self.LABEL}"])
+        else:
+            result = self._run(["systemctl", "--user", "stop", "spotterd.service"])
+        if result.returncode != 0 and (await self.status()).available:
+            return self._service_error(result)
+        return DaemonStatus(RuntimeHealth.UNAVAILABLE, detail="stopped")
+
+    async def restart(self) -> DaemonStatus:
+        await self.stop()
+        return await self.start()
+
+    async def uninstall(self) -> DaemonStatus:
+        if self.platform.startswith("linux"):
+            stopped = self._run(["systemctl", "--user", "disable", "--now", "spotterd.service"])
+            if stopped.returncode != 0 and (await self.status()).available:
+                return self._service_error(stopped)
+        else:
+            status = await self.stop()
+            if status.health != RuntimeHealth.UNAVAILABLE:
+                return status
+        self.registration_path.unlink(missing_ok=True)
+        if self.platform.startswith("linux"):
+            self._run(["systemctl", "--user", "daemon-reload"])
+        return DaemonStatus(RuntimeHealth.UNAVAILABLE, detail="service removed")
 
 
 def _secure_runtime_dir(path: Path) -> None:

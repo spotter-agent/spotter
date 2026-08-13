@@ -58,10 +58,11 @@ local control handshake, explicit health states, manual lifecycle commands, and 
 `ServiceManager` boundary. It deliberately does not own or stop a shared Codex App Server.
 [#82](https://github.com/spotter-agent/spotter/issues/82) adds bounded deterministic gate requests,
 local enforcement fallback on unavailable/timeout, and separate Hook/IPC timing telemetry.
+[#83](https://github.com/spotter-agent/spotter/issues/83) adds versioned integration manifests,
+transactional Codex Hook/plugin migration, and managed `launchd`/`systemd --user` registration.
 
 The remaining implementation boundaries are split into native GitHub issues:
 
-- [#83](https://github.com/spotter-agent/spotter/issues/83) — transactional Codex setup/teardown and integration ownership;
 - [#84](https://github.com/spotter-agent/spotter/issues/84) — runtime-aware status/doctor;
 - [#87](https://github.com/spotter-agent/spotter/issues/87) — daemon/App Server reconnect and identity reconciliation.
 
@@ -69,8 +70,9 @@ The remaining implementation boundaries are split into native GitHub issues:
 
 The assumption that merely starting the external server would make plain `codex` reuse it was
 rejected by the [2026-08-13 validation](app-server-validation.md). The explicit `--remote` path
-subsequently passed the same-thread/same-turn PoC. Multi-TUI concurrency, reconnect, managed setup,
-and the embedded-server degraded baseline remain unresolved productization boundaries.
+subsequently passed the same-thread/same-turn PoC. Multi-TUI concurrency, reconnect, and the
+embedded-server degraded baseline remain unresolved productization boundaries. Setup records
+and prints the explicit remote endpoint; it does not claim ownership of or stop a shared App Server.
 
 In parallel, the highest-value evidence foundations remain:
 
@@ -96,10 +98,10 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 | Audit ledger | 🟡 | Claim/evidence state and stale propagation where outcomes are observable | Move independent state into `spotterd` (#31) |
 | Evaluation labels / metrics | ✅ | Coverage-aware labeling and precision/FP metrics | Broader cost/miss/harm metrics (#33, #38, #34) |
 | Counterfactual harness | ✅ | Control/guidance same-prefix pairs can be prepared/run | Add mechanically scored tasks (#21) |
-| Standalone runtime | 🟡 | Long-lived process, versioned control/gate IPC, health states, manual lifecycle, service abstraction | Register managed startup in #83; add runtime consumers in #31/#85 |
+| Standalone runtime | 🟡 | Long-lived process, versioned control/gate IPC, health states, manual and managed user-service lifecycle | Add runtime consumers in #31/#85 |
 | Runtime identity | 🟡 | Provisional lifecycle registry and explicit legacy unknowns; no production consumer | Validate and refine it while routing normalized App Server events in #85 |
 | App Server primary observation | 🟡 | Async client, raw events, thread queries, controls, capability degradation | Normalize, identity-route, and journal events in #85 |
-| Managed Codex lifecycle | ❌ | Current path is source/plugin installation | transactional setup/teardown in #83; diagnostics in #84 |
+| Managed Codex lifecycle | 🟡 | Transactional setup/teardown, versioned ownership manifest, legacy migration, launchd/systemd-user service | Surface integration drift and capability consequences in #84 |
 | Runtime reconnect/recovery | ❌ | No long-lived App Server connection to recover | #87 after runtime/state boundaries exist |
 | Event-driven detection | ❌ | Reviewer is still cadence-based | #28 after Runtime/Observe |
 | Live `VERIFY` / `NUDGE` | ❌ | Reviewer decisions stop at the journal | #22 via `turn/steer` |
