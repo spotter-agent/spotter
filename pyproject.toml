@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling>=1.24"]
+requires = ["hatchling>=1.24", "hatch-vcs>=0.4,<0.6"]
 build-backend = "hatchling.build"
 
 [project]
 name = "spotter-agent"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Runtime trajectory supervision for coding agents"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -21,6 +21,16 @@ dev = [
 
 [project.scripts]
 spotter = "spotter.cli:main"
+spotterd = "spotter.daemon:main"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.version.raw-options]
+fallback_version = "0.1.0.dev0"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/spotter/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/spotter"]
@@ -40,4 +50,3 @@ files = ["src", "tests"]
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
-
