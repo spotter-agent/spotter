@@ -55,7 +55,7 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 needs experiment · ❌ m
 | live `VERIFY / NUDGE` delivery | ❌ | target: `turn/steer` |
 | `INTERRUPT / RESTART` | ❌ | target only |
 | App Server observation/control viability | ✅ PoC | #78 proved a Spotter-managed external App Server can be shared by the real TUI and Spotter and can steer the active turn |
-| production App Server observation path | 🟡 | async client/control surface exists; normalized event routing, identity reconciliation, and reconnect remain |
+| production App Server observation path | 🟡 | configured endpoints have normalized event routing, identity reconciliation, and reconnect; setup endpoint selection and post-migration coverage evidence remain |
 | speculative supervision | ❌ | no measured lookahead/prediction/intervention pipeline yet |
 
 The Hook-collected corpus exposed a concrete observation limit for the audit ledger: directly usable outcomes were present in only a small fraction of real tool results. The App Server migration must **re-measure** that ceiling rather than assume it is permanent.

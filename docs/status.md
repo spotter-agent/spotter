@@ -72,8 +72,8 @@ multi-thread reconciliation, durable observation gaps, and exact epoch/turn cont
 
 The assumption that merely starting the external server would make plain `codex` reuse it was
 rejected by the [2026-08-13 validation](app-server-validation.md). The explicit `--remote` path
-subsequently passed the same-thread/same-turn PoC. Multi-TUI concurrency, reconnect, and the
-embedded-server degraded baseline remain unresolved productization boundaries. Setup records the
+subsequently passed the same-thread/same-turn PoC. Multi-TUI concurrency and the embedded-server
+degraded baseline remain unresolved productization boundaries. Setup records the
 App Server strategy as pending; it does not invent an endpoint or claim ownership of a shared server.
 
 In parallel, the highest-value evidence foundations remain:

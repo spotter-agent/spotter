@@ -63,9 +63,9 @@ PreToolUse Hook only where synchronous deterministic enforcement is required
 [#78](https://github.com/spotter-agent/spotter/issues/78) demonstrated that a TUI and Spotter can
 attach to one Spotter-managed external App Server, observe the same thread/turn, and steer the real
 user-visible turn. The Codex-managed daemon path was unavailable to the tested Homebrew Cask install.
-A provisional concurrent identity registry is now explicit but unconsumed. The standalone daemon
-and local control foundation exist; managed registration, event routing, and reconnect remain
-Runtime work rather than assumed properties.
+The standalone daemon, transactional integration management, identity-rich event routing, and
+daemon-owned reconnect/reconciliation now exist. Setup still does not select or provision the
+external App Server endpoint required for ordinary use, and packaging remains Harden work.
 
 ## Implementation after the gate
 
@@ -74,13 +74,13 @@ The Runtime milestone is now decomposed into concrete boundaries rather than one
 | Issue | Boundary |
 | --- | --- |
 | [#79](https://github.com/spotter-agent/spotter/issues/79) | `spotterd`, versioned local control, manual lifecycle, and platform-neutral service boundary (implemented) |
-| [#80](https://github.com/spotter-agent/spotter/issues/80) | production App Server client and capability negotiation |
-| [#81](https://github.com/spotter-agent/spotter/issues/81) | Thread / Turn / Runtime Attachment identity lifecycle (provisional foundation; integration in #85) |
+| [#80](https://github.com/spotter-agent/spotter/issues/80) | production App Server client and capability negotiation (implemented) |
+| [#81](https://github.com/spotter-agent/spotter/issues/81) | Thread / Turn / Runtime Attachment identity lifecycle (implemented and consumed by ingestion) |
 | [#82](https://github.com/spotter-agent/spotter/issues/82) | bounded Hook ↔ daemon IPC for deterministic `PreToolUse` enforcement (implemented) |
-| [#31](https://github.com/spotter-agent/spotter/issues/31) | independent live supervision state owned by `spotterd` |
+| [#31](https://github.com/spotter-agent/spotter/issues/31) | independent live supervision state owned by `spotterd` (implemented) |
 | [#83](https://github.com/spotter-agent/spotter/issues/83) | transactional `setup|teardown codex`, Integration Manifest, legacy migration (implemented) |
 | [#84](https://github.com/spotter-agent/spotter/issues/84) | runtime-aware `status` / `doctor` and degraded capability reporting (implemented) |
-| [#87](https://github.com/spotter-agent/spotter/issues/87) | daemon/App Server reconnect and thread reconciliation |
+| [#87](https://github.com/spotter-agent/spotter/issues/87) | daemon/App Server reconnect and thread reconciliation (implemented) |
 
 Native GitHub issue dependencies encode the actual order between these issues. The table describes responsibility, not a second dependency system.
 

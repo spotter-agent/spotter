@@ -75,7 +75,7 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 | Fork / continuation replay | ✅ | Same-prefix continuation machinery |
 | Shadow reviewer | ✅ | Produces `CONTINUE / VERIFY / NUDGE`; no live delivery |
 | Claim/evidence audit ledger | 🟡 | Works where observable outcomes exist |
-| Evaluation labels / metrics | ✅ | Coverage-aware evaluation and precision/FP metrics |
+| Evaluation labels / metrics | 🟡 | Coverage-aware labels and durable runtime projections exist; resource, delivery, and objective-outcome joins remain |
 | Counterfactual experiment harness | ✅ | Control/guidance same-prefix pairs |
 | Standalone `spotterd` runtime | 🟡 | Process, gate IPC, per-thread immutable state, and App Server recovery ownership implemented; setup endpoint selection remains |
 | App Server primary observation | 🟡 | Configured endpoints route through daemon-owned epoch/reconciliation into durable Trace IR and ThreadState; setup does not select an endpoint yet |
@@ -355,7 +355,7 @@ spotter tasks preflight path/to/task-set.toml
 spotter experiment --session <id> --step <n> --guidance "..." --check "..."
 ```
 
-Task-set validation freezes task and fixture hashes and checks the versioned scorer/budget contract without executing commands. Preflight runs setup, the broken-state scorer, a declared known-good transform, and the positive scorer in a temporary fixture copy; it never runs agent arms. Because preflight executes corpus-declared shell commands, use `validate` only for untrusted task sets. The experiment harness existing does **not** mean positive intervention advantage has been established. A frozen multi-task corpus and enough executed runs remain evidence gaps.
+Task-set validation freezes task and fixture hashes and checks the versioned scorer/budget contract without executing commands. Preflight runs setup, the broken-state scorer, a declared known-good transform, and the positive scorer in a temporary fixture copy; it never runs agent arms. Because preflight executes corpus-declared shell commands, use `validate` only for untrusted task sets. The experiment harness's existence does **not** mean positive intervention advantage has been established. A frozen multi-task corpus and enough executed runs remain evidence gaps.
 
 ---
 

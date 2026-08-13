@@ -13,6 +13,7 @@ Start here if you are reading the repository for the first time.
 | What did the App Server proof of concept establish? | [App Server PoC](app-server-poc.md) | exploratory protocol and transport findings |
 | Was shared TUI control validated end to end? | [App Server validation](app-server-validation.md) | historical validation evidence and limitations |
 | How is source/Trace IR/ThreadState coverage measured? | [Observability baseline](observability-baseline.md) | taxonomy, safe audit method, current sample limits |
+| How are task sets validated and experiment results classified? | [Task corpus](../corpus/README.md) | frozen-set commands, scorer safety, and arm-result eligibility |
 | What should become trustworthy next? | [Roadmap](roadmap.md) | Runtime → Observe → Detect → Intervene → Recover → Harden, with evidence gates |
 | What prior papers/systems should I study, and what does Spotter borrow from them? | [Reference](reference.md) | literature + implementation precedents, boundaries, and implementation hints |
 | What hypotheses remain unproven, and how will Spotter evaluate them? | [Research](research.md) | evidence posture, research questions, experiments, and metrics |
@@ -87,7 +88,7 @@ spotterd
 PreToolUse Hook only for deterministic blocking
 ```
 
-The initial validation found that plain `codex` does not auto-discover a separately started App Server. [#78](https://github.com/spotter-agent/spotter/issues/78) subsequently proved the explicit remote path: the user's Codex TUI and Spotter can share a Spotter-managed external App Server, and `turn/steer` reaches the real active turn. A provisional identity registry and production App Server client now exist; normalized event consumption, identity reconciliation, reconnect, and remaining daemon/runtime ownership work are tracked separately. See [App Server connection validation](app-server-validation.md) and [Status](status.md).
+The initial validation found that plain `codex` does not auto-discover a separately started App Server. [#78](https://github.com/spotter-agent/spotter/issues/78) subsequently proved the explicit remote path: the user's Codex TUI and Spotter can share a Spotter-managed external App Server, and `turn/steer` reaches the real active turn. A production App Server client, identity-rich normalized ingestion, and daemon-owned reconnect/reconciliation now exist for configured endpoints. Setup endpoint selection and the remaining ordinary-use lifecycle work are still pending. See [App Server connection validation](app-server-validation.md) and [Status](status.md).
 
 ## Roadmap vocabulary
 

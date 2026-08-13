@@ -5,8 +5,8 @@
 > for current
 > implementation state, see [Status](status.md). `spotter setup|teardown codex`, versioned ownership
 > manifests, managed `launchd`/`systemd --user` registration, portable startup, legacy Hook/plugin
-> migration, and runtime-aware diagnostics exist. App Server event ingestion also exists, but daemon
-> connection ownership, reconnect/reconciliation, Homebrew distribution, `spotter version`,
+> migration, runtime-aware diagnostics, and daemon-owned App Server connection/reconciliation for
+> configured endpoints exist. Homebrew distribution, `spotter version`,
 > `spotter purge`, and transparent plain-`codex` launch remain target behavior.
 
 ---
@@ -834,8 +834,8 @@ The implemented command reports manifest/Hook ownership, daemon RPC, observation
 enforcement consequences, storage, reviewer errors, and spend-ledger health. Exit `0` is healthy,
 `1` is degraded/warn, and `2` is broken. Expected unavailable surfaces are informational and do not
 affect the verdict; once a configured surface becomes unavailable it warns or fails according to
-its consequence. Until #85 supplies live identity state, active/dormant thread counts remain
-explicitly unknown rather than inferred from Hook sessions.
+its consequence. Active/dormant thread counts remain explicitly unknown in this command rather than
+being inferred from Hook sessions or the daemon's internal live-state snapshots.
 
 Target output shape (not current CLI output):
 
@@ -1366,7 +1366,7 @@ The target lifecycle is not complete until all of these work end-to-end:
 - [x] `status` distinguishes daemon, observation, control, enforcement, storage health;
 - [x] `doctor` performs a real synthetic round-trip;
 - [ ] multiple concurrent threads/sessions remain isolated;
-- [ ] daemon crash recovers without corrupting journal/live state;
+- [x] daemon crash recovers journal/live state conservatively and requires live reconciliation before control;
 - [ ] Codex upgrade degrades by capability rather than silently breaking;
 - [ ] Spotter upgrade handles a running old daemon and schema migration;
 - [x] `teardown codex` removes only Spotter-owned integration changes;

@@ -676,9 +676,9 @@ State scope:
 | durable journal lineage | Thread |
 | fork branch point | Thread + Turn/Step |
 
-## Provisional identity foundation
+## Implemented identity foundation
 
-`RuntimeIdentityRegistry` sketches this transport-independent boundary:
+`RuntimeIdentityRegistry` provides this transport-independent boundary:
 
 - agent-scoped external thread and turn IDs are retained as provenance and mapped deterministically
   to Spotter IDs;
@@ -999,8 +999,9 @@ PreToolUse:  possibly available
   explicit per-capability degradation used by later runtime components.
 - Path A remains unavailable for the tested Homebrew Cask because the managed daemon expects the
   standalone installer layout.
-- A provisional concurrent thread identity registry exists from #81 but is not wired into production;
-  App Server event routing in #85 must validate it, while reconnect reconciliation remains #87.
+- The concurrent thread identity registry is consumed by production App Server event routing;
+  daemon-owned reconciliation re-establishes attachment epochs and exact active-turn identity after
+  reconnect before control becomes ready.
 - Transactional Codex setup now owns only its recorded Hook/plugin/service mutations. App Server
   endpoint selection remains explicitly pending; setup neither owns nor stops a shared App Server.
 
@@ -1038,7 +1039,7 @@ The migration should not throw away hardening already earned by real use.
 - ambiguous/unsupported cases fail open;
 - blind spots are measured separately from false positives.
 
-The hook-era corpus exposed directly usable outcomes in only 33 of 340 real tool results (10%). That is a measurement of the **current observation surface**, not a permanent architectural ceiling. P4 must re-measure it after App Server migration.
+The hook-era corpus exposed directly usable outcomes in only 33 of 340 real tool results (10%). That is a measurement of the **current observation surface**, not a permanent architectural ceiling. The Observe-stage measurement tracked by [#37](https://github.com/spotter-agent/spotter/issues/37) must re-measure it after App Server migration.
 
 ---
 
