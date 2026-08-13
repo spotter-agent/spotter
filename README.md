@@ -360,7 +360,9 @@ spotter experiment --session <id> --step <n> --guidance "..." --check "..."
 spotter experiment --session <id> --step <n> --neutral --pairs 3 --check "..." --run
 ```
 
-`spotter fork` writes a durable manifest under `~/.spotter/fork-manifests/`. The manifest links the
+When snapshotting is enabled, `SessionStart` pins one baseline Git snapshot so read-only exploration
+before the first mutation has a fork anchor; mutation boundaries continue to add deduplicated
+snapshots. `spotter fork` writes a durable manifest under `~/.spotter/fork-manifests/`. The manifest links the
 source event, snapshot, rollout-prefix digest, external-effect warnings, and captured environment
 fingerprint. Counterfactual pairs are fully prepared and must pass shared-prefix and captured-
 environment parity checks before either agent arm runs. Ignored files, environment variables, and

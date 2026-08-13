@@ -98,8 +98,8 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 | Hook ingestion | ✅ | `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse` are journaled | Measure App Server parity in #37, then remove redundant Hooks in #86 |
 | Deterministic gate | ✅ | Shell-aware daemon evaluation over bounded local IPC; unavailable/timeout uses the local Gate, while incompatible responses fail open | Continue policy precision/miss-rate measurement |
 | Journal | ✅ | Crash-tolerant JSONL stores identity-rich App Server Trace IR with locking, fsync, torn-tail recovery, and recovery gaps | Add bounded retention/checkpoint lifecycle in #89 |
-| Snapshot | ✅ | Git-backed snapshots, deduplication, pruning, detached restore | Preserve lineage through runtime/retention migration (#89) |
-| Fork / replay | ✅ | Continue Codex from a shared prefix in a detached worktree; persist prefix/environment provenance, preflight pair parity, and run identical neutral-arm repetitions | Execute a representative neutral replay corpus and measure remaining uncaptured drift in #42 |
+| Snapshot | ✅ | Git-backed session baseline and mutation snapshots, deduplication, pruning, detached restore | Preserve lineage through runtime/retention migration (#89) |
+| Fork / replay | ✅ | Continue Codex from a shared prefix, including pre-mutation read-only exploration; persist provenance, preflight pair parity, and run identical neutral-arm repetitions | Execute a representative neutral replay corpus and quantify branch coverage in #42 |
 | Shadow reviewer | ✅ | Produces `CONTINUE`, `VERIFY`, `NUDGE`; verdicts are recorded only | Move to event-driven candidates, then live delivery |
 | Audit / live state | 🟡 | Daemon-owned typed ThreadState distinguishes constraints, hypotheses, observations, verified facts, summaries, interventions, and coverage | Feed reviewer jobs and signals from immutable snapshots |
 | Evaluation labels / metrics | 🟡 | Coverage-aware labels plus durable Main action/token/timing, reviewer, gate-latency, and storage projections; unavailable values remain unknown | Add live resource/queue/delivery telemetry and objective outcome joins (#33, #38, #34) |

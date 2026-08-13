@@ -249,14 +249,15 @@ def run_hook(
         )
     if event.kind == "tool_result":
         event.payload["checkpoint"] = journal.last_snapshot()
-    if (
+    baseline_snapshot = config.snapshot_on_patch and event.kind == "sessionstart"
+    mutation_snapshot = (
         config.snapshot_on_patch
         and event.kind in ("tool_proposal", "tool_result")
         and event.payload.get("reversibility_class") == "B"
-        and isinstance(cwd, str)
-    ):
-        # PreToolUse captures the state before a reversible local mutation;
-        # PostToolUse captures the state after it, preserving its lineage.
+    )
+    if (baseline_snapshot or mutation_snapshot) and isinstance(cwd, str):
+        # SessionStart makes early read-only proposals forkable. Pre/PostToolUse
+        # continue to capture state around reversible local mutations.
         # The global lock closes the ref-created-but-not-yet-journaled window
         # a concurrent prune --apply could otherwise exploit.
         with global_lock():

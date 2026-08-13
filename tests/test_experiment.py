@@ -218,6 +218,11 @@ def test_guidance_is_required_outside_neutral_mode() -> None:
         run_experiment("s1", 5, None)
 
 
+def test_neutral_mode_rejects_guidance_provenance() -> None:
+    with pytest.raises(ValueError, match="cannot include guidance"):
+        run_experiment("s1", 5, "do something different", neutral=True)
+
+
 def test_cli_accepts_neutral_mode_without_guidance(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
@@ -233,6 +238,22 @@ def test_cli_accepts_neutral_mode_without_guidance(monkeypatch: pytest.MonkeyPat
     assert main(["experiment", "--session", "s1", "--step", "5", "--neutral"]) == 0
     assert captured["guidance"] is None
     assert captured["neutral"] is True
+
+
+def test_cli_rejects_neutral_mode_with_guidance() -> None:
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "experiment",
+                "--session",
+                "s1",
+                "--step",
+                "5",
+                "--neutral",
+                "--guidance",
+                "different",
+            ]
+        )
 
 
 def test_check_runs_in_each_fork_worktree(monkeypatch: pytest.MonkeyPatch) -> None:

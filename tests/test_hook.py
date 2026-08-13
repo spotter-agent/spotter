@@ -8,6 +8,7 @@ import pytest
 from spotter.config import GatesConfig, MainAgentConfig, ReviewerConfig, SpotterConfig
 from spotter.daemon import DaemonClient, DaemonProtocolError, DaemonServer, DaemonTimeout
 from spotter.hook import event_from_hook, journal_path, run_hook
+from spotter.replay import fork
 from spotter.snapshot import StepJournal, restore_snapshot
 
 
@@ -236,6 +237,69 @@ def test_unknown_events_still_journal(spotter_home: Path) -> None:
     assert records[0].event.identity.provenance.legacy_session_id == "s2"
     assert records[0].event.provenance is not None
     assert records[0].event.provenance.source == "codex_hook"
+
+
+def test_session_start_takes_baseline_snapshot_for_early_forks(
+    tmp_path: Path, spotter_home: Path
+) -> None:
+    import subprocess
+
+    repo = tmp_path / "baseline-repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / "x.txt").write_text("baseline")
+    payload = {"hook_event_name": "SessionStart", "session_id": "baseline", "cwd": str(repo)}
+
+    assert run_hook(payload, _config(observation_only=True)) is None
+
+    record = StepJournal.load(journal_path(payload))[0]
+    assert record.event.kind == "sessionstart"
+    assert record.snapshot
+    restored = tmp_path / "baseline-restored"
+    restore_snapshot(repo, record.snapshot, restored)
+    assert (restored / "x.txt").read_text() == "baseline"
+
+    proposal = {
+        "hook_event_name": "PreToolUse",
+        "session_id": "baseline",
+        "cwd": str(repo),
+        "tool_name": "Bash",
+        "tool_use_id": "early-call",
+        "tool_input": {"command": "sed -n '1,20p' x.txt"},
+    }
+    assert run_hook(proposal, _config(observation_only=True)) is None
+    codex_home = tmp_path / "codex"
+    rollout = codex_home / "sessions" / "rollout-baseline.jsonl"
+    rollout.parent.mkdir(parents=True)
+    rollout.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "session_meta",
+                        "payload": {"session_id": "baseline", "id": "baseline"},
+                    }
+                ),
+                json.dumps({"type": "response_item", "payload": {"call_id": "early-call"}}),
+            ]
+        )
+        + "\n"
+    )
+    plan = fork("baseline", 1, codex_home=codex_home)
+    assert Path(plan.worktree, "x.txt").read_text() == "baseline"
+
+
+def test_session_start_snapshot_failure_fails_open(tmp_path: Path, spotter_home: Path) -> None:
+    payload = {
+        "hook_event_name": "SessionStart",
+        "session_id": "baseline-failure",
+        "cwd": str(tmp_path / "not-a-repo"),
+    }
+
+    assert run_hook(payload, _config(observation_only=True)) is None
+    assert StepJournal.load(journal_path(payload))[0].snapshot is None
 
 
 def test_apply_patch_takes_snapshot_for_fork(

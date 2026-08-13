@@ -211,6 +211,8 @@ def run_experiment(
     """Build (and with run=True, execute) n counterfactual pairs."""
     if pairs < 1:
         raise ValueError("pairs must be >= 1 — an empty experiment is not a successful one")
+    if neutral and guidance:
+        raise ValueError("neutral noise mode cannot include guidance")
     if not neutral and not guidance:
         raise ValueError("guidance is required unless neutral noise mode is selected")
     experiment_mode = "neutral-noise" if neutral else "guidance"

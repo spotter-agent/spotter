@@ -306,6 +306,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "experiment":
         if not args.session or args.step is None or (not args.neutral and not args.guidance):
             parser.error("experiment requires --session, --step and either --guidance or --neutral")
+        if args.neutral and args.guidance:
+            parser.error("--neutral and --guidance cannot be used together")
         if args.pairs < 1:
             parser.error("--pairs must be >= 1")
         try:

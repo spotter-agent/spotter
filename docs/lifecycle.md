@@ -798,6 +798,11 @@ captured environment fingerprint. The fingerprint covers tracked/untracked Git s
 status, Git/Python versions, and platform identity. Ignored files, environment variables, and agent
 configuration remain explicitly uncaptured limitations.
 
+With snapshotting enabled, the Codex `SessionStart` Hook pins a baseline snapshot for the reported
+Git working directory. Read-only proposals before the first mutation can therefore reuse that one
+anchor with their reconstructed rollout context; Spotter does not create a filesystem snapshot for
+every observation. Mutation boundaries keep the existing before/after snapshots and tree dedup.
+
 Forked worktree lifecycle:
 
 ```text

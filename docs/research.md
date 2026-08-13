@@ -263,7 +263,9 @@ Measure:
 The harness now has an explicit neutral-noise mode: each repeated pair receives the same control
 prompt after shared-prefix/environment preflight, and the summary separates mechanical outcome
 disagreement from environment mismatch and infrastructure failure. No representative real-prefix
-run has established the rate yet.
+run has established the rate yet. New Hook-observed sessions pin a baseline snapshot at
+`SessionStart`, removing the previous pre-mutation read-only blind region without snapshotting every
+observation; historical sessions whose snapshot objects were pruned remain non-recoverable.
 
 Intervention deltas smaller than the instrument noise floor should not be overinterpreted.
 
