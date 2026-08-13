@@ -2,13 +2,11 @@
 
 import argparse
 import asyncio
-import hashlib
 import json
 import math
 import os
 import plistlib
 import resource
-import shutil
 import stat
 import subprocess
 import sys
@@ -26,7 +24,7 @@ from spotter.build_identity import RuntimeComponent, current_build_identity, ver
 from spotter.config import GatesConfig
 from spotter.gates import Gate, GateDecision
 from spotter.identity import ThreadId
-from spotter.paths import secure_dir, spotter_home
+from spotter.paths import RuntimeLayout, RuntimeLayoutError, secure_dir
 from spotter.protocol import CONTROL_PROTOCOL_VERSION
 from spotter.snapshot import StepRecord
 from spotter.thread_state import ThreadState, ThreadStateStore
@@ -41,7 +39,6 @@ GATE_TIMEOUT = 0.2
 START_TIMEOUT = 5.0
 STOP_TIMEOUT = 5.0
 _MAX_REQUEST_BYTES = 64 * 1024
-_SAFE_UNIX_PATH_BYTES = 100
 _RESOURCE_SAMPLE_EVERY = 64
 
 
@@ -92,13 +89,8 @@ class RuntimeRecovery(Protocol):
     async def close(self) -> None: ...
 
 
-def runtime_socket() -> Path:
-    home = spotter_home()
-    candidate = home / "runtime" / "spotterd.sock"
-    if len(os.fsencode(candidate)) <= _SAFE_UNIX_PATH_BYTES:
-        return candidate
-    digest = hashlib.sha256(os.fsencode(home)).hexdigest()[:12]
-    return Path("/tmp") / f"spotter-{os.getuid()}-{digest}" / "spotterd.sock"
+def runtime_socket(layout: RuntimeLayout | None = None) -> Path:
+    return (layout or RuntimeLayout.discover()).control_socket
 
 
 class DaemonClient:
@@ -230,8 +222,10 @@ class DaemonServer:
         *,
         app_server_endpoint: str | None = None,
         journals_dir: Path | None = None,
+        layout: RuntimeLayout | None = None,
     ) -> None:
-        self.socket_path = socket_path or runtime_socket()
+        self.layout = layout or RuntimeLayout.discover()
+        self.socket_path = socket_path or runtime_socket(self.layout)
         self.health = RuntimeHealth.HEALTHY
         self.health_detail: str | None = None
         self._server: asyncio.AbstractServer | None = None
@@ -240,7 +234,7 @@ class DaemonServer:
         self._lock: TextIOWrapper | None = None
         self.thread_states = ThreadStateStore()
         self.app_server_endpoint = app_server_endpoint
-        self.journals_dir = journals_dir or spotter_home() / "sessions"
+        self.journals_dir = journals_dir or self.layout.user_data_dir / "sessions"
         self.recovery: RuntimeRecovery | None = None
         self._runtime_id = uuid.uuid4().hex
         self._gate_requests = 0
@@ -513,8 +507,11 @@ class ServiceManager(Protocol):
 class ManualServiceManager:
     """Portable process lifecycle used by explicit CLI escape hatches."""
 
-    def __init__(self, socket_path: Path | None = None) -> None:
-        self.socket_path = socket_path or runtime_socket()
+    def __init__(
+        self, socket_path: Path | None = None, *, layout: RuntimeLayout | None = None
+    ) -> None:
+        self.layout = layout or RuntimeLayout.discover()
+        self.socket_path = socket_path or runtime_socket(self.layout)
         self.client = DaemonClient(self.socket_path)
 
     async def status(self) -> DaemonStatus:
@@ -522,15 +519,20 @@ class ManualServiceManager:
 
     async def start(self) -> DaemonStatus:
         current = await self.status()
-        if current.available:
+        installed_build = current_build_identity().build_id
+        if current.available and current.build_id == installed_build:
             return current
+        if current.available:
+            stopped = await self.stop()
+            if stopped.available:
+                return stopped
 
-        home = secure_dir(spotter_home())
-        logs = secure_dir(home / "logs")
+        home = secure_dir(self.layout.user_data_dir)
+        logs = secure_dir(self.layout.log_dir)
         log_path = logs / "spotterd.log"
         with log_path.open("ab") as log:
             process = subprocess.Popen(
-                [sys.executable, "-m", "spotter.daemon"],
+                list(self.layout.daemon_command),
                 cwd=home,
                 stdin=subprocess.DEVNULL,
                 stdout=log,
@@ -540,7 +542,7 @@ class ManualServiceManager:
         deadline = asyncio.get_running_loop().time() + START_TIMEOUT
         while asyncio.get_running_loop().time() < deadline:
             status = await self.status()
-            if status.available:
+            if status.available and status.build_id == installed_build:
                 return status
             if process.poll() is not None:
                 return DaemonStatus(
@@ -591,28 +593,35 @@ class ManagedServiceManager:
         platform: str | None = None,
         registration_path: Path | None = None,
         executable: str | None = None,
+        layout: RuntimeLayout | None = None,
     ) -> None:
-        self.socket_path = socket_path or runtime_socket()
+        self.layout = layout or RuntimeLayout.discover(daemon_executable=executable)
+        self.socket_path = socket_path or runtime_socket(self.layout)
         self.client = DaemonClient(self.socket_path)
         self.platform = platform or sys.platform
-        self.executable = executable or shutil.which("spotterd")
+        self.executable = (
+            str(self.layout.daemon_executable)
+            if self.layout.daemon_executable is not None
+            else None
+        )
         if registration_path is not None:
             self.registration_path = registration_path
-        elif self.platform == "darwin":
-            self.registration_path = Path.home() / "Library/LaunchAgents" / f"{self.LABEL}.plist"
-        elif self.platform.startswith("linux"):
-            self.registration_path = Path.home() / ".config/systemd/user" / "spotterd.service"
         else:
-            raise DaemonError(f"managed services are unsupported on {self.platform}")
+            try:
+                self.registration_path = self.layout.service_registration(self.platform, self.LABEL)
+            except RuntimeLayoutError as error:
+                raise DaemonError(str(error)) from error
 
     def _program(self) -> list[str]:
-        if self.executable:
-            return [self.executable]
-        return [sys.executable, "-m", "spotter.daemon"]
+        try:
+            return list(self.layout.persistent_daemon_command())
+        except RuntimeLayoutError as error:
+            raise DaemonError(str(error)) from error
 
     def _definition(self) -> bytes:
-        home = secure_dir(spotter_home())
-        logs = secure_dir(home / "logs")
+        home = secure_dir(self.layout.user_data_dir)
+        logs = secure_dir(self.layout.log_dir)
+        log_path = logs / "spotterd.log"
         if self.platform == "darwin":
             return plistlib.dumps(
                 {
@@ -620,20 +629,26 @@ class ManagedServiceManager:
                     "ProgramArguments": self._program(),
                     "RunAtLoad": True,
                     "KeepAlive": True,
+                    "WorkingDirectory": str(home),
                     "EnvironmentVariables": {"SPOTTER_HOME": str(home)},
-                    "StandardOutPath": str(logs / "spotterd.log"),
-                    "StandardErrorPath": str(logs / "spotterd.log"),
+                    "StandardOutPath": str(log_path),
+                    "StandardErrorPath": str(log_path),
                 }
             )
         # ponytail: this handles systemd specifier expansion for ordinary paths; use a
         # dedicated systemd escaping helper if arbitrary control characters are supported.
         command = " ".join(json.dumps(part.replace("%", "%%")) for part in self._program())
         environment = json.dumps(f"SPOTTER_HOME={home}".replace("%", "%%"))
+        working_directory = json.dumps(str(home).replace("%", "%%"))
+        output = json.dumps(f"append:{log_path}".replace("%", "%%"))
         return (
             "[Unit]\nDescription=Spotter supervision runtime\n\n"
             "[Service]\nType=simple\n"
             f"ExecStart={command}\n"
             f"Environment={environment}\n"
+            f"WorkingDirectory={working_directory}\n"
+            f"StandardOutput={output}\n"
+            f"StandardError={output}\n"
             "Restart=on-failure\n\n"
             "[Install]\nWantedBy=default.target\n"
         ).encode()
@@ -659,13 +674,15 @@ class ManagedServiceManager:
 
     async def _wait_ready(self) -> DaemonStatus:
         deadline = asyncio.get_running_loop().time() + START_TIMEOUT
+        installed_build = current_build_identity().build_id
         while asyncio.get_running_loop().time() < deadline:
             status = await self.status()
-            if status.available:
+            if status.available and status.build_id == installed_build:
                 return status
             await asyncio.sleep(0.05)
         return DaemonStatus(
-            RuntimeHealth.UNAVAILABLE, detail="managed spotterd did not become ready"
+            RuntimeHealth.UNAVAILABLE,
+            detail=f"managed spotterd did not become ready with build {installed_build}",
         )
 
     async def status(self) -> DaemonStatus:
@@ -689,7 +706,8 @@ class ManagedServiceManager:
             if not loaded:
                 result = self._run(["launchctl", "bootstrap", domain, str(self.registration_path)])
             else:
-                if current.available:
+                build_changed = current.build_id != current_build_identity().build_id
+                if current.available and not build_changed:
                     return current
                 result = self._run(["launchctl", "kickstart", "-k", f"{domain}/{self.LABEL}"])
         else:
@@ -708,7 +726,8 @@ class ManagedServiceManager:
                 if result.returncode != 0:
                     return self._service_error(result)
             if active:
-                if current.available and not changed:
+                build_changed = current.build_id != current_build_identity().build_id
+                if current.available and not changed and not build_changed:
                     return current
                 result = self._run(["systemctl", "--user", "restart", "spotterd.service"])
             else:
@@ -758,7 +777,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--version", action="version", version=version_line("spotterd"))
     parser.parse_args(argv)
     try:
-        asyncio.run(DaemonServer(app_server_endpoint=_configured_app_server_endpoint()).serve())
+        layout = RuntimeLayout.discover()
+        asyncio.run(
+            DaemonServer(
+                app_server_endpoint=_configured_app_server_endpoint(layout), layout=layout
+            ).serve()
+        )
     except DaemonAlreadyRunning as error:
         print(error, file=sys.stderr)
         return 1
@@ -767,8 +791,8 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _configured_app_server_endpoint() -> str | None:
-    path = spotter_home() / "integrations" / "codex.json"
+def _configured_app_server_endpoint(layout: RuntimeLayout | None = None) -> str | None:
+    path = (layout or RuntimeLayout.discover()).integration_manifest
     try:
         raw = json.loads(path.read_bytes())
     except (OSError, ValueError):

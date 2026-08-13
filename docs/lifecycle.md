@@ -5,8 +5,8 @@
 > for current
 > implementation state, see [Status](status.md). `spotter setup|teardown codex`, versioned ownership
 > manifests, managed `launchd`/`systemd --user` registration, portable startup, legacy Hook/plugin
-> migration, runtime-aware diagnostics, tag-derived release artifacts, and packaged `--version`
-> identity exist. App Server event ingestion also exists, but Homebrew publication,
+> migration, runtime-aware diagnostics, tag-derived release artifacts, stable packaged runtime
+> layout, and packaged `--version` identity exist. App Server event ingestion also exists, but Homebrew publication,
 > package-vs-running-daemon upgrade policy, `spotter purge`, and transparent plain-`codex` launch
 > remain target behavior.
 
@@ -197,26 +197,34 @@ package metadata
 
 Homebrew owns these files.
 
+The package manager exposes `spotter` and `spotterd` through stable entry points. For Homebrew these
+are Formula-provided `opt_bin`/prefix-linked paths; versioned Cellar paths are implementation files,
+not durable references. The packaged `spotter hook` subcommand is the minimal bridge. The legacy
+repository plugin script remains source/plugin compatibility material and is not copied into the
+Python release artifact or generated integration state.
+
 ## 2.2 Integration-owned resources
 
-Conceptual layout:
+Implemented compatibility layout:
 
 ```text
-~/.config/spotter/
-  config.toml
+~/.spotter/
   integrations/
     codex.json
-    claude.json
+    codex.lock
 ```
 
-An `IntegrationManifest` records exactly which agent config fragments Spotter added, removed, or migrated.
+An `IntegrationManifest` records exactly which agent config fragments Spotter added, removed, or
+migrated. Schema 4 also records the package build ID, an immutable integration-generation fence, and
+stable runtime-layout references. It never records the versioned package-assets directory.
 
 ## 2.3 Runtime-owned resources
 
-Conceptual:
+Implemented:
 
 ```text
-runtime socket
+~/.spotter/runtime/spotterd.sock
+adjacent ownership lock
 service registration metadata
 runtime protocol/version metadata
 connection state
@@ -237,9 +245,37 @@ logs
 repository registry
 ```
 
-The current prototype stores much of this under `~/.spotter`; migration must preserve or explicitly migrate it.
+The compatibility root is `~/.spotter`, or `SPOTTER_HOME` when explicitly configured.
+`RuntimeLayout` exposes config, data, integration, runtime, and log paths separately even where they
+share that root. A future move to platform-native roots must preserve or explicitly migrate it.
 
-## 2.5 Repository-owned Spotter resources
+## 2.5 Stable runtime layout contract
+
+The package/runtime boundary supplies one central layout:
+
+```text
+RuntimeLayout
+  cli_executable       stable current-package entry point
+  daemon_executable    stable current-package entry point beside the CLI
+  bridge_command       <cli_executable> hook
+  package_assets_dir   immutable, version-specific package content
+  user_config_dir      mutable user configuration
+  user_data_dir        journals/evidence/experiments
+  integration_dir      generated host ownership state
+  runtime_dir          recreatable socket/lock state
+  log_dir              mutable operational logs
+```
+
+Discovery preserves the invoked executable's path spelling instead of resolving symlinks. An
+explicit package adapter path beats `PATH`, preventing an older installation on `PATH` from being
+selected for a service. `SPOTTER_CLI_EXECUTABLE` and `SPOTTER_DAEMON_EXECUTABLE` are explicit
+packaging-boundary overrides for launchers that cannot preserve invocation identity. Persistent
+setup refuses missing entry points and paths containing a versioned `Cellar` component.
+
+This contract is package-manager-neutral. Homebrew, pipx/uv, and source/editable installs may supply
+different stable executables while using the same core layout interface.
+
+## 2.6 Repository-owned Spotter resources
 
 Spotter can leave resources outside its home directory:
 
@@ -303,13 +339,14 @@ Codex:        detected or not detected
 Integration:  not configured
 ```
 
-### Implementation required
+### Remaining implementation
 
-- Homebrew formula and release artifacts;
-- stable executable paths;
+- Homebrew Formula/tap publication;
 - package provenance detection (`homebrew`, source, standalone, etc.);
-- `spotter --version` and `spotterd --version`;
-- package-vs-running-daemon version comparison.
+
+Release artifacts, shared `spotter`/`spotterd` build identity, stable runtime path discovery, and the
+package-vs-running-daemon build comparison are implemented. Full Formula install/remove smoke
+coverage remains in #107/#108.
 
 ---
 
@@ -326,7 +363,9 @@ It must be **idempotent** and **transactional**.
 The implemented command supports `--dry-run` and `--portable`. Managed mode registers `spotterd`
 as a login-scoped user service; portable mode starts it without persistent registration. Setup
 mutates only Codex Hook/plugin configuration, keeps fingerprinted backups, verifies daemon health
-and a synthetic Hook round-trip, then atomically commits `~/.spotter/integrations/codex.json`.
+and a synthetic packaged-bridge round-trip, then atomically commits
+`~/.spotter/integrations/codex.json`. Generated Hooks invoke the stable packaged CLI, not a copied
+module tree or a persisted Python interpreter path.
 
 ## 4.1 Transaction stages
 
@@ -465,14 +504,23 @@ Example manifest:
 
 ```json
 {
-  "schema": 3,
+  "schema": 4,
   "agent": "codex",
   "setup_by": "0.6.0",
+  "setup_build_id": "v0.6.0@<commit>",
+  "integration_generation": "<sha256>",
   "agent_path": "/opt/homebrew/bin/codex",
   "agent_version": "...",
   "app_server_strategy": "pending-external",
   "app_server_endpoint": null,
   "runtime_mode": "managed",
+  "runtime_layout": {
+    "cli_executable": "/opt/homebrew/opt/spotter/bin/spotter",
+    "daemon_executable": "/opt/homebrew/opt/spotter/bin/spotterd",
+    "bridge_command": ["/opt/homebrew/opt/spotter/bin/spotter", "hook"],
+    "user_data_dir": "~/.spotter",
+    "runtime_dir": "~/.spotter/runtime"
+  },
   "service_owned": true,
   "owned_hooks": [
     {"event": "PreToolUse", "matcher": ".*", "hook": {"type": "command"}},
@@ -634,6 +682,13 @@ Possible implementations:
 - Linux: `systemd --user`.
 
 Do not hard-code these mechanisms into Spotter core. Hide them behind a `ServiceManager` abstraction.
+
+The implemented `ManagedServiceManager` receives its executable and mutable paths from
+`RuntimeLayout`. Launchd and systemd definitions use the stable `spotterd` entry point, set an
+explicit user-data working directory, carry only `SPOTTER_HOME`, write stdout/stderr to the layout's
+log path, and contain no App Server attachment/session state. When the registered service is alive
+but reports an older build ID, `start` restarts it even though the stable executable path and service
+definition did not change.
 
 The current manual escape hatch exercises that boundary without claiming managed setup:
 
@@ -1086,6 +1141,11 @@ Required behavior:
 
 Never write versioned Homebrew Cellar paths into agent Hooks/service definitions. Use stable `bin`/`opt` paths.
 
+Schema-4 integration Hooks also carry an integration-generation fence. Re-running setup after a
+package-build or stable-prefix change rotates the fence and reconciles the exact owned Hook entries.
+A Codex process holding an older generated command invokes the current stable binary, but that binary
+rejects the retired generation and fails open rather than silently adopting the replacement build.
+
 `spotter update` should not compete with Homebrew for file ownership. It may check for updates or delegate to the package-manager-supported path.
 
 ---
@@ -1180,6 +1240,12 @@ Spotter helper missing/unavailable
 ```
 
 Package uninstall removes package files only.
+
+Generated commands first test the stable bridge executable and always terminate through an explicit
+fail-open fallback. If the package link is absent, Codex continues without launching retries or a
+removed interpreter. After reinstall, `doctor` reports the missing/old recorded package path or build
+and directs the user to rerun `spotter setup codex`; setup then reconciles the new prefix while
+preserving durable user data.
 
 It should not remove:
 

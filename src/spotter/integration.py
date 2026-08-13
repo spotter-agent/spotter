@@ -8,7 +8,6 @@ import os
 import shlex
 import shutil
 import subprocess
-import sys
 import tomllib
 from collections.abc import Callable
 from contextlib import suppress
@@ -27,9 +26,9 @@ from spotter.daemon import (
     ServiceManager,
 )
 from spotter.doctor import OK, check_roundtrip
-from spotter.paths import secure_dir, spotter_home
+from spotter.paths import RuntimeLayout, RuntimeLayoutError, secure_dir
 
-MANIFEST_SCHEMA = 3
+MANIFEST_SCHEMA = 4
 
 
 class IntegrationError(RuntimeError):
@@ -46,6 +45,20 @@ def _fingerprint(content: bytes) -> str:
 
 def _package_version() -> str:
     return current_build_identity().version
+
+
+def _integration_generation(layout: RuntimeLayout, config_path: Path | None) -> str:
+    """Fence generated host state to one package build and stable layout."""
+    payload = {
+        "schema": MANIFEST_SCHEMA,
+        "build_id": current_build_identity().build_id,
+        "bridge_command": layout.bridge_command,
+        "daemon_command": layout.daemon_command,
+        "package_assets_dir": str(layout.package_assets_dir),
+        "config_path": str(config_path) if config_path is not None else None,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _atomic_write(path: Path, content: bytes) -> None:
@@ -172,6 +185,9 @@ class IntegrationManifest:
     hooks_fingerprint_before: str | None = None
     hooks_fingerprint_after: str | None = None
     backup_paths: list[str] = field(default_factory=list)
+    setup_build_id: str = "legacy"
+    integration_generation: str = "legacy"
+    runtime_layout: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=_now)
     updated_at: str = field(default_factory=_now)
     error: str | None = None
@@ -187,29 +203,33 @@ class IntegrationManifest:
         if not isinstance(raw, dict):
             raise IntegrationError("integration manifest must be a JSON object")
         schema = raw.get("schema")
-        if schema in {1, 2}:
+        if schema in {1, 2, 3}:
             if schema == 1:
                 raw["owned_hooks"] = [raw.pop("owned_hook", None)]
-            owned = raw.get("owned_hooks")
-            if isinstance(owned, list):
-                hook = next(
-                    (
-                        entry.get("hook")
-                        for entry in owned
-                        if isinstance(entry, dict) and isinstance(entry.get("hook"), dict)
-                    ),
-                    None,
-                )
-                if hook is not None:
-                    for event, matcher in (
-                        ("SessionStart", None),
-                        ("UserPromptSubmit", None),
-                        ("PostToolUse", ".*"),
-                    ):
-                        entry = {"event": event, "matcher": matcher, "hook": hook}
-                        if entry not in owned:
-                            owned.append(entry)
+            if schema in {1, 2}:
+                owned = raw.get("owned_hooks")
+                if isinstance(owned, list):
+                    hook = next(
+                        (
+                            entry.get("hook")
+                            for entry in owned
+                            if isinstance(entry, dict) and isinstance(entry.get("hook"), dict)
+                        ),
+                        None,
+                    )
+                    if hook is not None:
+                        for event, matcher in (
+                            ("SessionStart", None),
+                            ("UserPromptSubmit", None),
+                            ("PostToolUse", ".*"),
+                        ):
+                            entry = {"event": event, "matcher": matcher, "hook": hook}
+                            if entry not in owned:
+                                owned.append(entry)
             raw["schema"] = MANIFEST_SCHEMA
+            raw.setdefault("setup_build_id", "legacy")
+            raw.setdefault("integration_generation", "legacy")
+            raw.setdefault("runtime_layout", {})
         elif schema != MANIFEST_SCHEMA:
             raise IntegrationError(f"unsupported integration manifest schema {raw.get('schema')!r}")
         try:
@@ -253,19 +273,30 @@ class IntegrationManager:
         service: ServiceManager | None = None,
         portable: bool = False,
         spotter_executable: str | None = None,
+        layout: RuntimeLayout | None = None,
         config_path: Path | None = None,
         verifier: Callable[[Path | None], bool] | None = None,
     ) -> None:
         self.codex_home = codex_home or Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
         self.codex = codex
         self._service_explicit = service is not None
-        self.service = service or (ManualServiceManager() if portable else ManagedServiceManager())
+        self.layout = layout or RuntimeLayout.discover(cli_executable=spotter_executable)
+        self.service = service or (
+            ManualServiceManager(layout=self.layout)
+            if portable
+            else ManagedServiceManager(layout=self.layout)
+        )
         self.portable = portable
-        self.spotter_executable = spotter_executable or shutil.which("spotter")
-        default_config = spotter_home() / "spotter.toml"
+        self.spotter_executable = (
+            str(self.layout.cli_executable) if self.layout.cli_executable is not None else None
+        )
+        default_config = self.layout.user_config_dir / "spotter.toml"
         self.config_path = config_path or (default_config if default_config.exists() else None)
-        self.verifier = verifier or (lambda path: check_roundtrip(path).status == OK)
-        integrations = spotter_home() / "integrations"
+        self.integration_generation = _integration_generation(self.layout, self.config_path)
+        self.verifier = verifier or (
+            lambda path: check_roundtrip(path, command=self.layout.bridge_command).status == OK
+        )
+        integrations = self.layout.integration_dir
         self.manifest_path = integrations / "codex.json"
         self.lock_path = integrations / "codex.lock"
         self.hooks_path = self.codex_home / "hooks.json"
@@ -277,14 +308,19 @@ class IntegrationManager:
         return self.codex
 
     def _hook_command(self) -> str:
-        if self.spotter_executable:
-            executable = shlex.quote(self.spotter_executable)
-            command = f"[ -x {executable} ] && {executable} hook"
-        else:
-            python = shlex.quote(sys.executable)
-            command = f"[ -x {python} ] && {python} -m spotter hook"
+        try:
+            self.layout.validate_persistent()
+        except RuntimeLayoutError as error:
+            raise IntegrationError(str(error)) from error
+        assert self.layout.cli_executable is not None
+        executable = shlex.quote(str(self.layout.cli_executable))
+        home = shlex.quote(str(self.layout.user_data_dir))
+        command = (
+            f"[ -x {executable} ] && SPOTTER_HOME={home} {shlex.join(self.layout.bridge_command)}"
+        )
         if self.config_path is not None:
             command += f" --config {shlex.quote(str(self.config_path))}"
+        command += f" --integration-generation {self.integration_generation}"
         return command + " || true"
 
     def _owned_hooks(self) -> list[dict[str, Any]]:
@@ -375,6 +411,10 @@ class IntegrationManager:
     def inspect(
         self,
     ) -> tuple[IntegrationPlan, dict[str, Any], bytes | None, list[dict[str, Any]]]:
+        try:
+            self.layout.validate_persistent()
+        except RuntimeLayoutError as error:
+            raise IntegrationError(str(error)) from error
         codex = self._codex_install()
         if not codex.supports_remote or not codex.supports_app_server:
             raise IntegrationError("Codex lacks the required app-server/--remote capability")
@@ -403,7 +443,7 @@ class IntegrationManager:
     def _backup(self, name: str, content: bytes | None) -> Path | None:
         if content is None:
             return None
-        backups = secure_dir(spotter_home() / "backups")
+        backups = secure_dir(self.layout.user_data_dir / "backups")
         path = backups / f"{name}-{_fingerprint(content)[:12]}.bak"
         if not path.exists():
             _atomic_write(path, content)
@@ -503,6 +543,9 @@ class IntegrationManager:
                 state="ready",
                 agent="codex",
                 setup_by=_package_version(),
+                setup_build_id=current_build_identity().build_id,
+                integration_generation=self.integration_generation,
+                runtime_layout=self.layout.integration_record(),
                 agent_path=codex.path,
                 agent_version=codex.version,
                 codex_home=str(self.codex_home),
@@ -571,9 +614,9 @@ class IntegrationManager:
                 return False
             if not self._service_explicit:
                 self.service = (
-                    ManualServiceManager()
+                    ManualServiceManager(layout=self.layout)
                     if manifest.runtime_mode == "portable"
-                    else ManagedServiceManager()
+                    else ManagedServiceManager(layout=self.layout)
                 )
             hooks, before = self._read_hooks()
             events = cast(dict[str, list[dict[str, Any]]], hooks["hooks"])

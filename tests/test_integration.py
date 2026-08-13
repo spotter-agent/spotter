@@ -1,18 +1,23 @@
 import asyncio
+import io
 import json
+import plistlib
 import subprocess
 from pathlib import Path
 
 import pytest
 
+from spotter.build_identity import BuildIdentity, current_build_identity
 from spotter.cli import main
 from spotter.daemon import DaemonStatus, ManagedServiceManager, RuntimeHealth
 from spotter.integration import (
+    MANIFEST_SCHEMA,
     CodexInstall,
     IntegrationError,
     IntegrationManager,
     IntegrationManifest,
 )
+from spotter.paths import RuntimeLayout
 
 
 class FakeService:
@@ -38,7 +43,7 @@ class FakeService:
         return await self.start()
 
     async def status(self) -> DaemonStatus:
-        return DaemonStatus(self.health)
+        return DaemonStatus(self.health, build_id=current_build_identity().build_id)
 
     async def uninstall(self) -> DaemonStatus:
         self.uninstalls += 1
@@ -175,6 +180,109 @@ def test_setup_records_app_server_endpoint_as_pending(
 
     assert manifest.app_server_strategy == "pending-external"
     assert manifest.app_server_endpoint is None
+
+
+def test_setup_records_stable_layout_build_and_integration_generation(
+    homes: tuple[Path, Path],
+) -> None:
+    manager, _ = _manager(homes)
+
+    manifest = manager.setup()
+
+    assert manifest.schema == MANIFEST_SCHEMA == 4
+    assert manifest.setup_build_id == current_build_identity().build_id
+    assert len(manifest.integration_generation) == 64
+    assert manifest.runtime_layout["cli_executable"] == "/opt/homebrew/bin/spotter"
+    assert manifest.runtime_layout["daemon_executable"] == "/opt/homebrew/bin/spotterd"
+    commands = [str(entry[1]["command"]) for entry in _spotter_hooks(manager.hooks_path)]
+    assert commands
+    assert all(manifest.integration_generation in command for command in commands)
+    assert all("SPOTTER_HOME=" in command and "|| true" in command for command in commands)
+
+
+def test_stale_cached_hook_generation_fails_open(
+    homes: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    manager, _ = _manager(homes)
+    manifest = manager.setup()
+    payload = '{"hook_event_name":"SessionStart","session_id":"stale"}'
+    monkeypatch.setattr("sys.stdin", io.StringIO(payload))
+
+    assert main(["hook", "--integration-generation", "retired-generation"]) == 0
+
+    assert "stale integration generation" in capsys.readouterr().err
+    assert not (homes[0] / "sessions/stale.jsonl").exists()
+    assert manifest.integration_generation != "retired-generation"
+
+
+def test_missing_packaged_bridge_command_is_bounded_and_fail_open(
+    homes: tuple[Path, Path],
+) -> None:
+    manager, _ = _manager(homes)
+
+    result = subprocess.run(
+        ["sh", "-c", manager._hook_command()],  # noqa: SLF001 - generated host contract
+        input="{}",
+        capture_output=True,
+        text=True,
+        timeout=1,
+        check=False,
+    )
+
+    assert result.returncode == 0
+
+
+def test_reinstall_at_a_different_stable_prefix_reconciles_owned_state(
+    homes: tuple[Path, Path],
+) -> None:
+    spotter_home, codex_home = homes
+    retained = spotter_home / "sessions/retained.jsonl"
+    retained.parent.mkdir(parents=True)
+    retained.write_text("durable\n")
+    first_service = FakeService(spotter_home / "service/spotterd")
+    first = IntegrationManager(
+        codex_home=codex_home,
+        codex=CodexInstall("/bin/codex", "codex 1.0", True, True),
+        service=first_service,
+        spotter_executable="/old-prefix/opt/spotter/bin/spotter",
+        verifier=lambda _: True,
+    )
+    old = first.setup()
+
+    second = IntegrationManager(
+        codex_home=codex_home,
+        codex=CodexInstall("/bin/codex", "codex 1.0", True, True),
+        service=FakeService(spotter_home / "service/spotterd"),
+        spotter_executable="/new-prefix/opt/spotter/bin/spotter",
+        verifier=lambda _: True,
+    )
+    new = second.setup()
+
+    hooks = second.hooks_path.read_text()
+    assert old.integration_generation != new.integration_generation
+    assert "/new-prefix/opt/spotter/bin/spotter" in hooks
+    assert "/old-prefix/opt/spotter/bin/spotter" not in hooks
+    assert retained.read_text() == "durable\n"
+
+
+def test_package_build_change_rotates_generated_integration_identity(
+    homes: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first_identity = BuildIdentity("1.0.0", "v1.0.0@one", "v1.0.0", "one")
+    second_identity = BuildIdentity("1.0.1", "v1.0.1@two", "v1.0.1", "two")
+    monkeypatch.setattr("spotter.integration.current_build_identity", lambda: first_identity)
+    first, _ = _manager(homes)
+    old = first.setup()
+
+    monkeypatch.setattr("spotter.integration.current_build_identity", lambda: second_identity)
+    second, _ = _manager(homes)
+    new = second.setup()
+
+    assert old.setup_build_id == first_identity.build_id
+    assert new.setup_build_id == second_identity.build_id
+    assert old.integration_generation != new.integration_generation
 
 
 def test_failed_verification_rolls_back_hooks_service_and_manifest(
@@ -371,7 +479,7 @@ def test_schema_one_manifest_is_reconciled_with_observation_hooks(
 
     upgraded = manager.setup()
 
-    assert upgraded.schema == 3
+    assert upgraded.schema == MANIFEST_SCHEMA
     assert {event for event, _ in _spotter_hooks(manager.hooks_path)} == {
         "SessionStart",
         "UserPromptSubmit",
@@ -396,13 +504,33 @@ def test_schema_two_manifest_is_reconciled_with_observation_hooks(
 
     upgraded = manager.setup()
 
-    assert upgraded.schema == 3
+    assert upgraded.schema == MANIFEST_SCHEMA
     assert {event for event, _ in _spotter_hooks(manager.hooks_path)} == {
         "SessionStart",
         "UserPromptSubmit",
         "PreToolUse",
         "PostToolUse",
     }
+
+
+def test_schema_three_manifest_is_upgraded_with_layout_and_generation(
+    homes: tuple[Path, Path],
+) -> None:
+    manager, _ = _manager(homes)
+    manager.setup()
+    raw = json.loads(manager.manifest_path.read_text())
+    raw["schema"] = 3
+    raw.pop("setup_build_id")
+    raw.pop("integration_generation")
+    raw.pop("runtime_layout")
+    manager.manifest_path.write_text(json.dumps(raw))
+
+    upgraded = manager.setup()
+
+    assert upgraded.schema == MANIFEST_SCHEMA
+    assert upgraded.setup_build_id == current_build_identity().build_id
+    assert len(upgraded.integration_generation) == 64
+    assert upgraded.runtime_layout["bridge_command"] == ["/opt/homebrew/bin/spotter", "hook"]
 
 
 def test_invalid_spotter_config_fails_before_external_mutation(
@@ -444,6 +572,48 @@ def test_managed_service_definition_is_private_and_idempotent(
     assert not service._install_definition()  # noqa: SLF001
     assert path.stat().st_mode & 0o777 == 0o600
     assert b"spotterd" in path.read_bytes()
+
+
+@pytest.mark.parametrize(
+    "platform,prefix",
+    [
+        ("darwin", "/opt/homebrew"),
+        ("darwin", "/usr/local"),
+        ("linux", "/home/linuxbrew/.linuxbrew"),
+    ],
+)
+def test_managed_service_uses_stable_package_and_user_layout(
+    homes: tuple[Path, Path], platform: str, prefix: str
+) -> None:
+    spotter_home, _ = homes
+    daemon = Path(prefix) / "opt/spotter/bin/spotterd"
+    layout = RuntimeLayout.discover(
+        cli_executable=daemon.with_name("spotter"),
+        daemon_executable=daemon,
+        spotter_root=spotter_home,
+        environ={},
+    )
+    service = ManagedServiceManager(
+        platform=platform,
+        registration_path=spotter_home / "service",
+        layout=layout,
+    )
+
+    definition = service._definition()  # noqa: SLF001 - service artifact contract
+
+    if platform == "darwin":
+        parsed = plistlib.loads(definition)
+        assert parsed["ProgramArguments"] == [str(daemon)]
+        assert parsed["WorkingDirectory"] == str(spotter_home)
+        assert parsed["StandardOutPath"] == str(spotter_home / "logs/spotterd.log")
+        assert parsed["EnvironmentVariables"] == {"SPOTTER_HOME": str(spotter_home)}
+    else:
+        text = definition.decode()
+        assert f'ExecStart="{daemon}"' in text
+        assert f'WorkingDirectory="{spotter_home}"' in text
+        assert f'Environment="SPOTTER_HOME={spotter_home}"' in text
+        assert f'StandardOutput="append:{spotter_home}/logs/spotterd.log"' in text
+    assert "Cellar" not in definition.decode()
 
 
 def test_systemd_definition_escapes_percent_specifiers(homes: tuple[Path, Path]) -> None:
@@ -488,13 +658,58 @@ def test_managed_service_start_registers_and_verifies(
         return subprocess.CompletedProcess(command, 1 if inactive else 0, "", "")
 
     async def healthy() -> DaemonStatus:
-        return DaemonStatus(next(statuses, RuntimeHealth.HEALTHY))
+        return DaemonStatus(
+            next(statuses, RuntimeHealth.HEALTHY),
+            build_id=current_build_identity().build_id,
+        )
 
     monkeypatch.setattr(service, "_run", run)
     monkeypatch.setattr(service, "status", healthy)
 
     assert asyncio.run(service.start()).health == RuntimeHealth.HEALTHY
     assert any(command[: len(expected)] == expected for command in commands)
+
+
+@pytest.mark.parametrize(
+    "platform,restart",
+    [
+        ("darwin", ["launchctl", "kickstart", "-k"]),
+        ("linux", ["systemctl", "--user", "restart"]),
+    ],
+)
+def test_managed_service_restarts_an_old_build_behind_the_same_stable_link(
+    homes: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    platform: str,
+    restart: list[str],
+) -> None:
+    spotter_home, _ = homes
+    service = ManagedServiceManager(
+        platform=platform,
+        registration_path=spotter_home / "service",
+        executable="/stable/opt/spotter/bin/spotterd",
+    )
+    service._install_definition()  # noqa: SLF001 - keep the stable path unchanged
+    commands: list[list[str]] = []
+    statuses = iter(
+        [
+            DaemonStatus(RuntimeHealth.HEALTHY, build_id="retired-build"),
+            DaemonStatus(RuntimeHealth.HEALTHY, build_id=current_build_identity().build_id),
+        ]
+    )
+
+    def run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    async def status() -> DaemonStatus:
+        return next(statuses, DaemonStatus(RuntimeHealth.HEALTHY))
+
+    monkeypatch.setattr(service, "_run", run)
+    monkeypatch.setattr(service, "status", status)
+
+    assert asyncio.run(service.start()).health == RuntimeHealth.HEALTHY
+    assert any(command[: len(restart)] == restart for command in commands)
 
 
 @pytest.mark.parametrize("platform", ["darwin", "linux"])

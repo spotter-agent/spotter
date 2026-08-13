@@ -1,7 +1,7 @@
 # Architecture
 
 > **Status:** this document describes both the current hook-based prototype and the target architecture. Active implementation is tracked by the [Roadmap](roadmap.md) and native GitHub Milestones.
-> The `spotterd` process/control foundation, bounded Hook gate IPC, shared-server PoC, production App Server transport, durable Trace IR ingestion, and daemon reconnect/reconciliation are implemented. Live supervision delivery remains **target behavior**.
+> The `spotterd` process/control foundation, bounded Hook gate IPC, shared-server PoC, production App Server transport, durable Trace IR ingestion, daemon reconnect/reconciliation, and stable packaged runtime layout are implemented. Live supervision delivery remains **target behavior**.
 
 ---
 
@@ -812,33 +812,59 @@ reviewer timeout/error
 
 # 12. Runtime resources
 
-Exact platform paths are implementation details, but ownership should be explicit from the start.
+`RuntimeLayout` is the package/runtime path-discovery boundary. It resolves current package entry
+points and logical config, durable-data, integration, runtime, and log locations without treating a
+repository checkout or current working directory as packaged state. Install adapters may supply
+explicit `SPOTTER_CLI_EXECUTABLE` / `SPOTTER_DAEMON_EXECUTABLE` paths; otherwise the invoked
+`spotter` entry point wins over ambient `PATH`, and `spotterd` is derived beside it. Stable symlink
+spelling is preserved rather than resolved into a versioned package directory.
 
-Conceptual layout:
+The implemented compatibility layout is:
 
 ```text
-~/.config/spotter/
-  config.toml
+PACKAGE_OWNED
+  <stable-bin>/spotter
+  <stable-bin>/spotterd
+  <versioned-package>/spotter/*
+
+INTEGRATION_MANAGED
+~/.spotter/
   integrations/
     codex.json
+    codex.lock
 
-~/.local/state/spotter/     # use platform-appropriate state directory
+RUNTIME_EPHEMERAL
+~/.spotter/runtime/
+  spotterd.sock
+  spotterd.lock
+
+USER_DURABLE
+~/.spotter/
+  spotter.toml
   sessions/
   labels/
   experiments/
   logs/
-  runtime/
-    spotter.sock
-    daemon metadata
   repos.json
 ```
 
-The current prototype uses `~/.spotter`; migration must preserve compatibility or provide an explicit data move.
+`SPOTTER_HOME` relocates all mutable Spotter-owned roots together for compatibility. The logical
+properties remain distinct so a future platform-native config/data migration can be explicit rather
+than inferred. No mutable path is derived from `package_assets_dir`, `sys.prefix`, or a Homebrew
+prefix.
 
 The current daemon control socket is `~/.spotter/runtime/spotterd.sock`. When a configured
 `SPOTTER_HOME` would exceed the platform UNIX-socket path limit, Spotter uses a short, private,
 user-and-home-specific runtime directory under `/tmp`. The socket handshake is the liveness source;
 the adjacent lock only serializes ownership.
+
+Persistent Hook and service commands require absolute stable entry points and reject a path with a
+`Cellar` component. Generated Hooks call the packaged `spotter hook` bridge, carry an immutable
+integration generation derived from build identity and layout, guard a missing executable, and end
+with fail-open behavior. The manifest records that generation, exact package build, and stable
+layout references, but never the versioned package-assets directory. The daemon handshake
+independently reports its package build ID, so an old running process cannot masquerade as the newly
+installed package merely because both use the same stable service path.
 
 Repository/Git-owned Spotter resources may include:
 

@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from spotter.app_server import AppServerTransportError, CodexAppServerClient
+from spotter.build_identity import current_build_identity
 from spotter.cli import main
 from spotter.daemon import DaemonClient, DaemonStatus, RuntimeHealth
 from spotter.doctor import FAIL, INFO, OK, WARN, Check, check_integration, check_runtime, worst
@@ -72,7 +73,10 @@ def _ready_manifest(homes: tuple[Path, Path]) -> IntegrationManifest:
 def _daemon_status(monkeypatch: pytest.MonkeyPatch, health: RuntimeHealth) -> None:
     async def status(self: DaemonClient) -> DaemonStatus:
         return DaemonStatus(
-            health, pid=123 if health != RuntimeHealth.UNAVAILABLE else None, protocol=1
+            health,
+            pid=123 if health != RuntimeHealth.UNAVAILABLE else None,
+            protocol=1,
+            build_id=current_build_identity().build_id,
         )
 
     monkeypatch.setattr(DaemonClient, "status", status)
@@ -154,6 +158,49 @@ def test_integration_check_reports_a_malformed_owned_hook(homes: tuple[Path, Pat
 
     assert check.status == FAIL
     assert "owned Hooks are invalid" in check.detail
+
+
+def test_integration_check_diagnoses_a_removed_package_after_reinstall(
+    homes: tuple[Path, Path],
+) -> None:
+    manifest = replace(
+        _ready_manifest(homes),
+        setup_build_id=current_build_identity().build_id,
+        integration_generation="generation",
+        runtime_layout={
+            "cli_executable": str(homes[0] / "removed/bin/spotter"),
+            "daemon_executable": str(homes[0] / "removed/bin/spotterd"),
+        },
+    )
+    manifest.save(homes[0] / "integrations/codex.json")
+
+    check = check_integration().check
+
+    assert check.status == FAIL
+    assert "owned Hooks fail open" in check.detail
+    assert "after reinstall" in check.detail
+
+
+def test_runtime_check_distinguishes_a_running_old_daemon_build(
+    homes: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _ready_manifest(homes)
+
+    async def old_status(self: DaemonClient) -> DaemonStatus:
+        return DaemonStatus(
+            RuntimeHealth.HEALTHY,
+            pid=123,
+            protocol=1,
+            build_id="retired-build",
+        )
+
+    monkeypatch.setattr(DaemonClient, "status", old_status)
+
+    check = {item.name: item for item in check_runtime()}["daemon"]
+
+    assert check.status == WARN
+    assert "retired-build" in check.detail
+    assert "restart required" in check.detail
 
 
 def test_doctor_probe_reports_an_unreachable_configured_app_server(

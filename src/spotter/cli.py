@@ -49,7 +49,7 @@ from spotter.observability import (
     measure_observability,
     render_observability,
 )
-from spotter.paths import secure_dir, spotter_home
+from spotter.paths import RuntimeLayout, secure_dir, spotter_home
 from spotter.redact import scan_text
 from spotter.replay import (
     ReplayError,
@@ -178,6 +178,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="review: token for a budget slot the caller already reserved (internal)",
     )
     parser.add_argument("--review-job-id", help=argparse.SUPPRESS)
+    parser.add_argument("--integration-generation", help=argparse.SUPPRESS)
     parser.add_argument(
         "--check", help="experiment: success command run in each fork worktree (exit 0 = pass)"
     )
@@ -226,7 +227,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         # PreToolUse hook says "deny" — so a malformed config file would not
         # merely disable supervision, it would block every tool call in the
         # session. Unsupervised beats blocked.
-        return _hook_main(None, args.config)
+        return _hook_main(None, args.config, args.integration_generation)
 
     if args.command == "daemon":
         if args.target is None or args.target == "codex":
@@ -722,7 +723,7 @@ def _daemon_main(action: str, manager: ServiceManager | None = None) -> int:
         service = manager
     else:
         try:
-            manifest = IntegrationManifest.load(spotter_home() / "integrations" / "codex.json")
+            manifest = IntegrationManifest.load(RuntimeLayout.discover().integration_manifest)
         except IntegrationError as error:
             print(f"spotterd: unavailable ({error})", file=sys.stderr)
             return 1
@@ -1049,12 +1050,32 @@ def _prune_main(
     return 0
 
 
-def _hook_main(config: SpotterConfig | None, config_path: Path | None = None) -> int:
+def _hook_main(
+    config: SpotterConfig | None,
+    config_path: Path | None = None,
+    integration_generation: str | None = None,
+) -> int:
     """Read one hook payload from stdin, print a decision if any.
 
     Always exits 0: any failure here fails open. Breaking the Codex session
     over a supervision bug would be the exact harm Spotter exists to prevent.
     """
+    if integration_generation is not None:
+        try:
+            manifest = IntegrationManifest.load(RuntimeLayout.discover().integration_manifest)
+        except Exception as error:  # noqa: BLE001 — generated Hook must always fail open
+            print(
+                f"spotter: integration generation unavailable ({error}); failing open",
+                file=sys.stderr,
+            )
+            return 0
+        if manifest is None or manifest.integration_generation != integration_generation:
+            print(
+                "spotter: stale integration generation; failing open; "
+                "run `spotter setup codex` to reconcile",
+                file=sys.stderr,
+            )
+            return 0
     if config is None and config_path is not None:
         try:
             config = SpotterConfig.from_toml(config_path)

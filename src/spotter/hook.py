@@ -31,7 +31,7 @@ from spotter.daemon import (
 from spotter.effects import classify
 from spotter.gates import Gate, GateDecision
 from spotter.identity import RuntimeIdentity
-from spotter.paths import sanitize_session, secure_dir, spotter_home
+from spotter.paths import RuntimeLayout, sanitize_session, secure_dir, spotter_home
 from spotter.snapshot import SnapshotError, StepJournal, global_lock, snapshot_worktree
 from spotter.trace import TraceEvent, TraceProvenance
 
@@ -195,7 +195,7 @@ def _maybe_spawn_shadow_review(
         # Without this the child builds a default config, so the constraints
         # the user configured never reach the reviewer (PR #58 review, P1).
         args += ["--config", str(config_path)]
-    logs = spotter_home() / "logs"
+    logs = RuntimeLayout.discover().log_dir
     logs.mkdir(parents=True, exist_ok=True)
     with (logs / f"review-{sanitize_session(session)}.log").open("ab") as log:
         try:

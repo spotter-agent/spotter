@@ -78,13 +78,13 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 | Evaluation labels / metrics | ✅ | Coverage-aware evaluation and precision/FP metrics |
 | Counterfactual experiment harness | ✅ | Control/guidance same-prefix pairs |
 | Standalone `spotterd` runtime | 🟡 | Process, gate IPC, per-thread immutable state, and App Server recovery ownership implemented; setup endpoint selection remains |
-| Versioned release artifacts | 🟡 | Tag-only sdist/wheel builds, SHA256 sums, and CLI/daemon/bridge build identity exist; GitHub Release/Homebrew publication remains |
+| Packaging / release | 🟡 | Tags publish verified sdist/wheel/checksum metadata; stable package entry points, mutable-state boundaries, Hook generation fencing, and old-daemon build detection exist; Homebrew tap publication remains |
 | App Server primary observation | 🟡 | Configured endpoints route through daemon-owned epoch/reconciliation into durable Trace IR and ThreadState; setup does not select an endpoint yet |
 | Event-driven signal engine | ❌ | Current reviewer trigger is periodic |
 | Live `VERIFY / NUDGE` | ❌ | Target: `turn/steer` |
 | `INTERRUPT` | ❌ | Target: `turn/interrupt` |
 | `RESTART` | ❌ | Requires verified-state + side-effect-aware recovery |
-| Codex setup lifecycle | 🟡 | Transactional setup/teardown, ownership diagnostics, and degraded capability reporting implemented; packaging and full App Server integration remain |
+| Codex setup lifecycle | 🟡 | Transactional setup/teardown, stable packaged Hook/service references, ownership diagnostics, and degraded capability reporting implemented; full App Server integration remains |
 
 ### Current runtime work
 

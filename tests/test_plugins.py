@@ -328,3 +328,40 @@ def test_other_commands_still_reject_a_bad_config(tmp_path: Path) -> None:
         check=False,
     )
     assert result.returncode == 2
+
+
+def test_package_identity_survives_unavailable_user_state_and_hook_fails_open(
+    tmp_path: Path,
+) -> None:
+    unavailable = tmp_path / "state-is-a-file"
+    unavailable.write_text("not a directory")
+    source = str(Path("src").resolve())
+    environment = {
+        **os.environ,
+        "PYTHONPATH": source,
+        "SPOTTER_HOME": str(unavailable),
+    }
+
+    version = subprocess.run(
+        [sys.executable, "-m", "spotter", "--version"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        env=environment,
+        check=False,
+    )
+    hook = subprocess.run(
+        [sys.executable, "-m", "spotter", "hook"],
+        cwd=tmp_path,
+        input='{"hook_event_name":"SessionStart","session_id":"unavailable"}',
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=2,
+        check=False,
+    )
+
+    assert version.returncode == 0
+    assert "build" in version.stdout
+    assert hook.returncode == 0
+    assert "failing open" in hook.stderr
