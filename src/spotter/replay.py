@@ -22,19 +22,107 @@ Honest limits, stated rather than papered over:
   agent, so the human stays on the trigger.
 """
 
+import hashlib
 import json
+import os
+import platform
 import shlex
+import subprocess
 import uuid
+from contextlib import suppress
 from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 
 from spotter.effects import external_effects
 from spotter.hook import journal_path
+from spotter.paths import secure_dir, spotter_home
+from spotter.redact import redact_text
 from spotter.snapshot import StepJournal, StepRecord, restore_snapshot
 
 
 class ReplayError(RuntimeError):
     """Raised when a fork cannot be assembled from the recorded ingredients."""
+
+
+FORK_MANIFEST_SCHEMA_VERSION = 1
+
+
+class ForkStatus(StrEnum):
+    CREATING = "CREATING"
+    READY = "READY"
+    FAILED = "FAILED"
+
+
+class EnvironmentDrift(StrEnum):
+    TRACKED_STATE_MISMATCH = "TRACKED_STATE_MISMATCH"
+    TOOL_VERSION_DRIFT = "TOOL_VERSION_DRIFT"
+    UNKNOWN_ENVIRONMENT_DRIFT = "UNKNOWN_ENVIRONMENT_DRIFT"
+
+
+@dataclass(frozen=True)
+class EnvironmentFingerprint:
+    worktree: str
+    snapshot_sha: str
+    tree_sha: str
+    status_sha256: str
+    index_diff_sha256: str
+    tracked_diff_sha256: str
+    submodule_status_sha256: str
+    git_version: str
+    python_version: str
+    platform_system: str
+    platform_machine: str
+    ignored_state: str
+    environment_variables: str
+    fingerprint_sha256: str
+
+
+@dataclass(frozen=True)
+class EnvironmentComparison:
+    equivalent: bool
+    drift: tuple[EnvironmentDrift, ...]
+
+
+@dataclass(frozen=True)
+class PrefixManifest:
+    prefix_id: str
+    source_session_id: str
+    branch_step: int
+    source_event_id: str | None
+    source_turn_id: str | None
+    connection_epoch: int | None
+    journal_schema_version: int
+    tool_use_id: str
+    repository_path: str
+    repository_id: str
+    snapshot_sha: str
+    snapshot_tree_sha: str
+    rollout_prefix_sha256: str
+    agent: str
+    model: str | None
+    runtime_version: str | None
+    agent_config: str
+    context_source: str
+    context_limitations: tuple[str, ...]
+    external_effects: tuple[dict[str, object], ...]
+    observation_gaps: int
+    created_at: str
+
+
+@dataclass(frozen=True)
+class ForkManifest:
+    schema_version: int
+    fork_id: str
+    status: ForkStatus
+    prefix: PrefixManifest
+    worktree: str
+    rollout: str | None
+    environment: EnvironmentFingerprint | None
+    created_at: str
+    updated_at: str
+    failure: str | None = None
 
 
 @dataclass(frozen=True)
@@ -46,6 +134,9 @@ class ForkPlan:
     command: str  # suggested invocation; the human runs it
     # Kept backward-compatible for callers constructing plans directly.
     external_effects: list[dict[str, object]] = field(default_factory=list)
+    manifest: str | None = None
+    prefix_id: str | None = None
+    environment_fingerprint: str | None = None
 
 
 def find_rollout(session_id: str, codex_home: Path | None = None) -> Path:
@@ -58,6 +149,80 @@ def find_rollout(session_id: str, codex_home: Path | None = None) -> Path:
     if not matches:
         raise ReplayError(f"no rollout found for session {session_id} under {home}/sessions")
     return matches[-1]
+
+
+def fingerprint_environment(worktree: Path) -> EnvironmentFingerprint:
+    """Fingerprint material Git/tool state without reading user secrets or ignored files."""
+
+    snapshot_sha = _git_output(worktree, "rev-parse", "HEAD")
+    tree_sha = _git_output(worktree, "rev-parse", "HEAD^{tree}")
+    status = _git_output(worktree, "status", "--porcelain=v1", "--untracked-files=all")
+    index_diff = _git_output(
+        worktree, "diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv", "HEAD", "--"
+    )
+    tracked_diff = _git_output(
+        worktree, "diff", "--binary", "--no-ext-diff", "--no-textconv", "HEAD", "--"
+    )
+    submodules = _git_output(worktree, "submodule", "status", "--recursive", allow_failure=True)
+    git_version = _command_version(["git", "--version"])
+    material = {
+        "snapshot_sha": snapshot_sha,
+        "tree_sha": tree_sha,
+        "status_sha256": _digest(status.encode()),
+        "index_diff_sha256": _digest(index_diff.encode()),
+        "tracked_diff_sha256": _digest(tracked_diff.encode()),
+        "submodule_status_sha256": _digest(submodules.encode()),
+        "git_version": git_version,
+        "python_version": platform.python_version(),
+        "platform_system": platform.system(),
+        "platform_machine": platform.machine(),
+        "ignored_state": "not_captured_by_git_snapshot",
+        "environment_variables": "not_captured",
+    }
+    return EnvironmentFingerprint(
+        worktree=str(worktree.resolve()),
+        **material,
+        fingerprint_sha256=_digest(_canonical_json(material)),
+    )
+
+
+def compare_environments(
+    left: EnvironmentFingerprint, right: EnvironmentFingerprint
+) -> EnvironmentComparison:
+    """Classify captured-state differences; worktree paths intentionally may differ."""
+
+    drift: list[EnvironmentDrift] = []
+    if (
+        left.snapshot_sha,
+        left.tree_sha,
+        left.status_sha256,
+        left.index_diff_sha256,
+        left.tracked_diff_sha256,
+        left.submodule_status_sha256,
+    ) != (
+        right.snapshot_sha,
+        right.tree_sha,
+        right.status_sha256,
+        right.index_diff_sha256,
+        right.tracked_diff_sha256,
+        right.submodule_status_sha256,
+    ):
+        drift.append(EnvironmentDrift.TRACKED_STATE_MISMATCH)
+    if (left.git_version, left.python_version) != (right.git_version, right.python_version):
+        drift.append(EnvironmentDrift.TOOL_VERSION_DRIFT)
+    if (
+        left.platform_system,
+        left.platform_machine,
+        left.ignored_state,
+        left.environment_variables,
+    ) != (
+        right.platform_system,
+        right.platform_machine,
+        right.ignored_state,
+        right.environment_variables,
+    ):
+        drift.append(EnvironmentDrift.UNKNOWN_ENVIRONMENT_DRIFT)
+    return EnvironmentComparison(not drift, tuple(drift))
 
 
 def fork_rollout(rollout: Path, call_id: str, new_id: str) -> Path:
@@ -126,14 +291,73 @@ def fork(
     if repo_path is None:
         raise ReplayError("journal has no cwd for this step; pass repo explicitly")
 
+    source_rollout = find_rollout(session_id, codex_home)
+    prefix = _build_prefix_manifest(
+        session_id,
+        step,
+        target,
+        records,
+        repo_path,
+        snapshot,
+        source_rollout,
+        call_id,
+    )
     new_id = str(uuid.uuid4())
     worktree = dest or journal_file.parent.parent / "forks" / new_id
-    forked_rollout = fork_rollout(find_rollout(session_id, codex_home), call_id, new_id)
+    manifest_file = fork_manifest_path(new_id)
+    created_at = datetime.now(UTC).isoformat()
+    manifest = ForkManifest(
+        schema_version=FORK_MANIFEST_SCHEMA_VERSION,
+        fork_id=new_id,
+        status=ForkStatus.CREATING,
+        prefix=prefix,
+        worktree=str(worktree),
+        rollout=None,
+        environment=None,
+        created_at=created_at,
+        updated_at=created_at,
+    )
+    _write_fork_manifest(manifest_file, manifest)
+
+    forked_rollout: Path | None = None
+    restored = False
     try:
+        forked_rollout = fork_rollout(source_rollout, call_id, new_id)
         restore_snapshot(repo_path, snapshot, worktree)
-    except Exception:
-        forked_rollout.unlink(missing_ok=True)
+        restored = True
+        environment = fingerprint_environment(worktree)
+    except Exception as error:
+        if forked_rollout is not None and not restored:
+            forked_rollout.unlink(missing_ok=True)
+        cleaned, _ = redact_text(str(error))
+        failed = ForkManifest(
+            schema_version=FORK_MANIFEST_SCHEMA_VERSION,
+            fork_id=new_id,
+            status=ForkStatus.FAILED,
+            prefix=prefix,
+            worktree=str(worktree),
+            rollout=str(forked_rollout) if forked_rollout and restored else None,
+            environment=None,
+            created_at=created_at,
+            updated_at=datetime.now(UTC).isoformat(),
+            failure=cleaned[:1000],
+        )
+        with suppress(OSError):
+            _write_fork_manifest(manifest_file, failed)
         raise
+
+    ready = ForkManifest(
+        schema_version=FORK_MANIFEST_SCHEMA_VERSION,
+        fork_id=new_id,
+        status=ForkStatus.READY,
+        prefix=prefix,
+        worktree=str(worktree),
+        rollout=str(forked_rollout),
+        environment=environment,
+        created_at=created_at,
+        updated_at=datetime.now(UTC).isoformat(),
+    )
+    _write_fork_manifest(manifest_file, ready)
 
     argv = ["codex", "exec", "-C", str(worktree), "resume", "--json", new_id]
     if guidance:
@@ -145,12 +369,190 @@ def fork(
         worktree=str(worktree),
         rollout=str(forked_rollout),
         command=command,
-        external_effects=external_effects(records, through_step=step),
+        external_effects=list(prefix.external_effects),
+        manifest=str(manifest_file),
+        prefix_id=prefix.prefix_id,
+        environment_fingerprint=environment.fingerprint_sha256,
     )
 
 
 def plan_to_json(plan: ForkPlan) -> str:
     return json.dumps(asdict(plan), indent=2)
+
+
+def fork_manifest_path(fork_id: str) -> Path:
+    directory = spotter_home() / "fork-manifests"
+    secure_dir(directory)
+    return directory / f"{fork_id}.json"
+
+
+def load_fork_manifest(path: Path) -> ForkManifest:
+    try:
+        raw = json.loads(path.read_text())
+        if raw.get("schema_version") != FORK_MANIFEST_SCHEMA_VERSION:
+            raise ReplayError(f"unsupported fork manifest schema in {path}")
+        prefix_raw = raw["prefix"]
+        prefix = PrefixManifest(
+            **{
+                **prefix_raw,
+                "context_limitations": tuple(prefix_raw["context_limitations"]),
+                "external_effects": tuple(prefix_raw["external_effects"]),
+            }
+        )
+        environment_raw = raw.get("environment")
+        environment = (
+            EnvironmentFingerprint(**environment_raw) if isinstance(environment_raw, dict) else None
+        )
+        return ForkManifest(
+            schema_version=raw["schema_version"],
+            fork_id=raw["fork_id"],
+            status=ForkStatus(raw["status"]),
+            prefix=prefix,
+            worktree=raw["worktree"],
+            rollout=raw.get("rollout"),
+            environment=environment,
+            created_at=raw["created_at"],
+            updated_at=raw["updated_at"],
+            failure=raw.get("failure"),
+        )
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+        raise ReplayError(f"invalid fork manifest {path}: {error}") from error
+
+
+def _build_prefix_manifest(
+    session_id: str,
+    step: int,
+    target: StepRecord,
+    records: list[StepRecord],
+    repo: Path,
+    snapshot: str,
+    rollout: Path,
+    call_id: str,
+) -> PrefixManifest:
+    snapshot_tree = _git_output(repo, "rev-parse", f"{snapshot}^{{tree}}")
+    common_dir = Path(_git_output(repo, "rev-parse", "--git-common-dir"))
+    if not common_dir.is_absolute():
+        common_dir = repo / common_dir
+    repository_id = _digest(str(common_dir.resolve()).encode())
+    rollout_digest = _rollout_prefix_digest(rollout, call_id)
+    model, runtime_version = _rollout_provenance(rollout, call_id)
+    identity = target.event.identity
+    turn_id = identity.turn_id.value if identity and identity.turn_id else None
+    effects = tuple(external_effects(records, through_step=step))
+    gaps = sum(record.event.kind == "observation_gap" for record in records[: step + 1])
+    identity_material = {
+        "source_session_id": session_id,
+        "branch_step": step,
+        "source_event_id": target.event.event_id,
+        "tool_use_id": call_id,
+        "repository_id": repository_id,
+        "snapshot_sha": snapshot,
+        "snapshot_tree_sha": snapshot_tree,
+        "rollout_prefix_sha256": rollout_digest,
+    }
+    return PrefixManifest(
+        prefix_id=_digest(_canonical_json(identity_material)),
+        source_session_id=session_id,
+        branch_step=step,
+        source_event_id=target.event.event_id,
+        source_turn_id=turn_id,
+        connection_epoch=target.event.connection_epoch,
+        journal_schema_version=target.version,
+        tool_use_id=call_id,
+        repository_path=str(repo.resolve()),
+        repository_id=repository_id,
+        snapshot_sha=snapshot,
+        snapshot_tree_sha=snapshot_tree,
+        rollout_prefix_sha256=rollout_digest,
+        agent="codex",
+        model=model,
+        runtime_version=runtime_version,
+        agent_config="not_captured",
+        context_source="truncated_codex_rollout",
+        context_limitations=(
+            "spotter_private_reviewer_state_not_injected",
+            "ignored_files_and_environment_variables_not_restored",
+        ),
+        external_effects=effects,
+        observation_gaps=gaps,
+        created_at=datetime.now(UTC).isoformat(),
+    )
+
+
+def _rollout_prefix_digest(rollout: Path, call_id: str) -> str:
+    lines = rollout.read_text(encoding="utf-8").splitlines()
+    for index, line in enumerate(lines):
+        if call_id in _record_ids(_rollout_record(line, index + 1)):
+            return _digest(("\n".join(lines[:index]) + "\n").encode())
+    raise ReplayError(f"call_id {call_id} not found in rollout {rollout.name}")
+
+
+def _rollout_provenance(rollout: Path, call_id: str) -> tuple[str | None, str | None]:
+    model = None
+    runtime_version = None
+    for index, line in enumerate(rollout.read_text(encoding="utf-8").splitlines()):
+        record = _rollout_record(line, index + 1)
+        if call_id in _record_ids(record):
+            break
+        payload = record.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        if isinstance(payload.get("model"), str):
+            model = payload["model"]
+        if isinstance(payload.get("cli_version"), str):
+            runtime_version = payload["cli_version"]
+    return model, runtime_version
+
+
+def _write_fork_manifest(path: Path, manifest: ForkManifest) -> None:
+    temporary = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as sink:
+            json.dump(asdict(manifest), sink, indent=2)
+            sink.write("\n")
+            sink.flush()
+            os.fsync(sink.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _git_output(repo: Path, *args: str, allow_failure: bool = False) -> str:
+    try:
+        result = subprocess.run(
+            ["git", *args], cwd=repo, capture_output=True, text=True, timeout=30
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ReplayError(f"git {' '.join(args)} failed: {error}") from error
+    if result.returncode != 0:
+        if allow_failure:
+            return f"unavailable:{result.returncode}"
+        raise ReplayError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
+    return result.stdout.strip()
+
+
+def _command_version(args: list[str]) -> str:
+    try:
+        result = subprocess.run(args, capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ReplayError(f"{' '.join(args)} failed: {error}") from error
+    if result.returncode != 0:
+        raise ReplayError(f"{' '.join(args)} failed: {result.stderr.strip()}")
+    return result.stdout.strip()
+
+
+def _canonical_json(value: object) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+
+
+def _digest(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
 
 
 def _rollout_record(line: str, number: int) -> dict[str, object]:

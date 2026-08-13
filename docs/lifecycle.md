@@ -791,6 +791,13 @@ forked rollout/thread
 worktree
 ```
 
+The implementation persists this lineage in a secure, atomically replaced fork manifest. It records
+the source event and tool call, repository and snapshot identity, the exact rollout-prefix digest,
+model/runtime metadata available in the rollout, external-effect warnings, observation gaps, and a
+captured environment fingerprint. The fingerprint covers tracked/untracked Git status, submodule
+status, Git/Python versions, and platform identity. Ignored files, environment variables, and agent
+configuration remain explicitly uncaptured limitations.
+
 Forked worktree lifecycle:
 
 ```text
@@ -819,6 +826,11 @@ model/config provenance
 result
 cost/timing
 ```
+
+Both forks in a pair are created before either arm runs. Execution is refused when their prefix IDs
+or captured environment fingerprints differ; captured drift is classified as repository-state,
+tool-version, or otherwise unknown environment drift. This preflight protects pair parity but does
+not yet establish the replay instrument's empirical noise floor.
 
 Do not treat experiment machinery as evidence of positive intervention advantage until enough mechanically scored runs exist.
 

@@ -1,6 +1,7 @@
 import json
 import subprocess
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -27,11 +28,19 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
-def _fake_fork(counter: dict[str, int]) -> object:
+def _fake_fork(counter: dict[str, int]) -> Callable[..., ForkPlan]:
     def fake(session_id: str, step: int, *, codex_home: object = None) -> ForkPlan:
         counter["n"] = counter.get("n", 0) + 1
         n = counter["n"]
-        return ForkPlan(f"fork-{n}", step, f"/wt/{n}", f"/ro/{n}", "codex ...")
+        return ForkPlan(
+            f"fork-{n}",
+            step,
+            f"/wt/{n}",
+            f"/ro/{n}",
+            "codex ...",
+            prefix_id="prefix",
+            environment_fingerprint="environment",
+        )
 
     return fake
 
@@ -60,6 +69,9 @@ def test_results_carry_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
     # every row is linked to its conditions via the experiment id
     assert all(row["experiment_id"] == meta["experiment_id"] for row in rows[1:])
     assert all(row.get("classification") == "UNJUDGEABLE" for row in rows[1:-1])
+    assert all(row.get("prefix_id") == "prefix" for row in rows[1:-1])
+    assert all(row.get("environment_fingerprint") == "environment" for row in rows[1:-1])
+    assert all(row.get("environment_preflight") == "MATCHED" for row in rows[1:-1])
     assert all(r.experiment_id == meta["experiment_id"] for r in results)
     # a rerun with different conditions is distinguishable
     monkeypatch.setattr(experiment, "fork", _fake_fork({}))
@@ -93,6 +105,67 @@ def test_arm_order_is_counterbalanced(monkeypatch: pytest.MonkeyPatch) -> None:
     assert [r.arm for r in results] == ["control", "guidance", "guidance", "control"]
     assert prompts[0] == "Continue the task." and "hint" in prompts[1]
     assert "hint" in prompts[2] and prompts[3] == "Continue the task."
+
+
+def test_pair_forks_are_both_preflighted_before_either_agent_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    counter: dict[str, int] = {}
+    fake = _fake_fork(counter)
+
+    def record_fork(session_id: str, step: int, *, codex_home: object = None) -> ForkPlan:
+        events.append("fork")
+        return fake(session_id, step, codex_home=codex_home)
+
+    def record_run(*args: object, **kwargs: object) -> int:
+        events.append("run")
+        return 0
+
+    monkeypatch.setattr(experiment, "fork", record_fork)
+    monkeypatch.setattr(experiment, "_run_arm", record_run)
+
+    run_experiment("s1", 5, "hint", run=True)
+
+    assert events == ["fork", "fork", "run", "run"]
+
+
+def test_environment_mismatch_prevents_both_agent_arms(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def mismatched_fork(*args: object, **kwargs: object) -> ForkPlan:
+        nonlocal calls
+        calls += 1
+        return ForkPlan(
+            f"fork-{calls}",
+            5,
+            f"/wt/{calls}",
+            f"/ro/{calls}",
+            "codex ...",
+            prefix_id="same-prefix",
+            environment_fingerprint=f"environment-{calls}",
+        )
+
+    ran: list[str] = []
+    monkeypatch.setattr(experiment, "fork", mismatched_fork)
+
+    def record_run(*args: object, **kwargs: object) -> int:
+        ran.append("run")
+        return 0
+
+    monkeypatch.setattr(experiment, "_run_arm", record_run)
+    monkeypatch.setattr(experiment, "_cleanup", lambda worktree: None)
+
+    results = run_experiment("s1", 5, "hint", run=True)
+
+    assert ran == []
+    assert all(result.classification == ArmClassification.INFRA_FAIL for result in results)
+    assert all(
+        result.environment_preflight == "ENVIRONMENT_FINGERPRINT_MISMATCH" for result in results
+    )
+    assert all(result.agent_exit is None for result in results)
 
 
 def test_empty_experiment_is_an_error(monkeypatch: pytest.MonkeyPatch) -> None:

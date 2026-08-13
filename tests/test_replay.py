@@ -1,12 +1,22 @@
 import json
 import shlex
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from spotter.hook import journal_path
-from spotter.replay import ReplayError, fork, fork_rollout
+from spotter.replay import (
+    EnvironmentDrift,
+    ForkStatus,
+    ReplayError,
+    compare_environments,
+    fingerprint_environment,
+    fork,
+    fork_rollout,
+    load_fork_manifest,
+)
 from spotter.snapshot import SnapshotError, StepJournal, snapshot_worktree
 from spotter.trace import TraceEvent
 
@@ -36,8 +46,16 @@ def codex_home(tmp_path: Path) -> Path:
     day = home / "sessions" / "2026" / "08" / "11"
     day.mkdir(parents=True)
     lines = [
-        {"ordinal": 0, "type": "session_meta", "payload": {"session_id": OLD_ID, "id": OLD_ID}},
-        {"ordinal": 1, "type": "response_item", "payload": {"call_id": "call_A", "name": "exec"}},
+        {
+            "ordinal": 0,
+            "type": "session_meta",
+            "payload": {"session_id": OLD_ID, "id": OLD_ID, "cli_version": "test-1"},
+        },
+        {
+            "ordinal": 1,
+            "type": "response_item",
+            "payload": {"call_id": "call_A", "name": "exec", "model": "gpt-test"},
+        },
         {"ordinal": 2, "type": "response_item", "payload": {"call_id": "call_A", "output": "ok"}},
         {"ordinal": 3, "type": "response_item", "payload": {"call_id": "call_B", "name": "exec"}},
     ]
@@ -111,6 +129,21 @@ def test_fork_end_to_end(repo: Path, codex_home: Path) -> None:
     assert plan.session_id in plan.command and str(plan.worktree) in plan.command
     assert "check the stack trace first" in plan.command
     assert Path(plan.rollout).exists()
+    assert plan.manifest and plan.prefix_id and plan.environment_fingerprint
+    manifest = load_fork_manifest(Path(plan.manifest))
+    assert manifest.status == ForkStatus.READY
+    assert manifest.prefix.prefix_id == plan.prefix_id
+    assert manifest.prefix.snapshot_sha == sha
+    assert manifest.prefix.rollout_prefix_sha256
+    assert manifest.prefix.context_source == "truncated_codex_rollout"
+    assert manifest.prefix.agent == "codex"
+    assert manifest.prefix.model == "gpt-test"
+    assert manifest.prefix.runtime_version == "test-1"
+    assert manifest.prefix.agent_config == "not_captured"
+    assert manifest.environment is not None
+    assert manifest.environment.snapshot_sha == sha
+    assert manifest.environment.fingerprint_sha256 == plan.environment_fingerprint
+    assert Path(plan.manifest).stat().st_mode & 0o777 == 0o600
     assert shlex.split(plan.command) == [
         "codex",
         "exec",
@@ -140,7 +173,10 @@ def test_fork_command_shell_quotes_guidance(repo: Path, codex_home: Path) -> Non
 
 
 def test_fork_removes_rollout_when_restore_fails(
-    repo: Path, codex_home: Path, monkeypatch: pytest.MonkeyPatch
+    repo: Path,
+    codex_home: Path,
+    spotter_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     sha = snapshot_worktree(repo)
     _journal(
@@ -161,6 +197,12 @@ def test_fork_removes_rollout_when_restore_fails(
     with pytest.raises(SnapshotError, match="restore failed"):
         fork(OLD_ID, 0, codex_home=codex_home)
     assert set((codex_home / "sessions").rglob("*.jsonl")) == original
+    manifests = list((spotter_home / "fork-manifests").glob("*.json"))
+    assert len(manifests) == 1
+    failed = load_fork_manifest(manifests[0])
+    assert failed.status == ForkStatus.FAILED
+    assert failed.failure == "restore failed"
+    assert failed.rollout is None
 
 
 def test_fork_without_snapshot_names_the_missing_ingredient(codex_home: Path) -> None:
@@ -204,3 +246,100 @@ def test_fork_rollout_matches_event_msg_item_ids(codex_home: Path) -> None:
     rollout.write_text("\n".join(lines) + "\n")
     forked = fork_rollout(rollout, "exec-1234", "new-id")
     assert len(forked.read_text().splitlines()) == 4  # cut before the event_msg
+
+
+def test_two_forks_share_prefix_and_equivalent_captured_environments(
+    repo: Path, codex_home: Path
+) -> None:
+    sha = snapshot_worktree(repo)
+    _journal(
+        OLD_ID,
+        [
+            (
+                TraceEvent("tool_proposal", {"tool_use_id": "call_B", "cwd": str(repo)}),
+                sha,
+            )
+        ],
+    )
+
+    first = fork(OLD_ID, 0, codex_home=codex_home)
+    second = fork(OLD_ID, 0, codex_home=codex_home)
+    first_manifest = load_fork_manifest(Path(first.manifest or ""))
+    second_manifest = load_fork_manifest(Path(second.manifest or ""))
+
+    assert first.session_id != second.session_id
+    assert first.prefix_id == second.prefix_id
+    assert first_manifest.environment and second_manifest.environment
+    assert compare_environments(first_manifest.environment, second_manifest.environment).equivalent
+
+    Path(second.worktree, "a.txt").write_text("drifted")
+    drifted = fingerprint_environment(Path(second.worktree))
+    comparison = compare_environments(first_manifest.environment, drifted)
+    assert comparison.equivalent is False
+    assert comparison.drift == (EnvironmentDrift.TRACKED_STATE_MISMATCH,)
+
+    Path(first.worktree, "a.txt").write_text("first content")
+    Path(second.worktree, "a.txt").write_text("second content")
+    first_changed = fingerprint_environment(Path(first.worktree))
+    second_changed = fingerprint_environment(Path(second.worktree))
+    assert first_changed.status_sha256 == second_changed.status_sha256
+    assert first_changed.tracked_diff_sha256 != second_changed.tracked_diff_sha256
+    assert compare_environments(first_changed, second_changed).drift == (
+        EnvironmentDrift.TRACKED_STATE_MISMATCH,
+    )
+
+
+def test_environment_comparison_classifies_tool_and_platform_drift(
+    repo: Path,
+) -> None:
+    sha = snapshot_worktree(repo)
+    worktree = repo.parent / "fingerprint"
+    subprocess.run(["git", "worktree", "add", "--detach", str(worktree), sha], cwd=repo, check=True)
+    baseline = fingerprint_environment(worktree)
+    changed = replace(baseline, python_version="different", platform_machine="different")
+
+    comparison = compare_environments(baseline, changed)
+
+    assert comparison.drift == (
+        EnvironmentDrift.TOOL_VERSION_DRIFT,
+        EnvironmentDrift.UNKNOWN_ENVIRONMENT_DRIFT,
+    )
+
+
+def test_prefix_manifest_carries_gap_and_external_effect_limits(
+    repo: Path, codex_home: Path
+) -> None:
+    sha = snapshot_worktree(repo)
+    _journal(
+        OLD_ID,
+        [
+            (TraceEvent("observation_gap", {"reason": "disconnect"}), None),
+            (
+                TraceEvent(
+                    "external_effect",
+                    {"kind": "git_remote_write", "resource": "origin", "reversible": False},
+                ),
+                None,
+            ),
+            (
+                TraceEvent(
+                    "tool_proposal",
+                    {"tool_use_id": "call_B", "cwd": str(repo)},
+                    event_id="event-B",
+                    connection_epoch=3,
+                ),
+                sha,
+            ),
+        ],
+    )
+
+    plan = fork(OLD_ID, 2, codex_home=codex_home)
+    manifest = load_fork_manifest(Path(plan.manifest or ""))
+
+    assert manifest.prefix.source_event_id == "event-B"
+    assert manifest.prefix.connection_epoch == 3
+    assert manifest.prefix.observation_gaps == 1
+    assert manifest.prefix.external_effects == (
+        {"kind": "git_remote_write", "resource": "origin", "reversible": False},
+    )
+    assert plan.external_effects == list(manifest.prefix.external_effects)

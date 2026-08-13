@@ -27,7 +27,7 @@ from pathlib import Path
 
 from spotter.hook import journal_path
 from spotter.paths import sanitize_session, spotter_home
-from spotter.replay import fork
+from spotter.replay import ForkPlan, compare_environments, fork, load_fork_manifest
 from spotter.snapshot import StepJournal
 
 CONTROL_PROMPT = "Continue the task."
@@ -60,6 +60,10 @@ class ArmResult:
     check_stderr: str = ""
     infra_diagnostic: str | None = None
     result_schema_version: int = EXPERIMENT_RESULT_SCHEMA_VERSION
+    fork_manifest: str | None = None
+    prefix_id: str | None = None
+    environment_fingerprint: str | None = None
+    environment_preflight: str | None = None
 
 
 def results_path(session_id: str, step: int) -> Path:
@@ -100,6 +104,27 @@ def _run_arm(
         env=env,
     )
     return result.returncode
+
+
+def _pair_environment_preflight(prepared: list[tuple[str, str, ForkPlan]]) -> str:
+    plans = [plan for _, _, plan in prepared]
+    if len(plans) != 2 or any(
+        plan.prefix_id is None or plan.environment_fingerprint is None for plan in plans
+    ):
+        return "FORK_PROVENANCE_UNAVAILABLE"
+    if plans[0].prefix_id != plans[1].prefix_id:
+        return "PREFIX_MISMATCH"
+    if plans[0].environment_fingerprint == plans[1].environment_fingerprint:
+        return "MATCHED"
+    if not plans[0].manifest or not plans[1].manifest:
+        return "ENVIRONMENT_FINGERPRINT_MISMATCH"
+    left = load_fork_manifest(Path(plans[0].manifest))
+    right = load_fork_manifest(Path(plans[1].manifest))
+    if left.environment is None or right.environment is None:
+        return "ENVIRONMENT_FINGERPRINT_MISSING"
+    comparison = compare_environments(left.environment, right.environment)
+    detail = ",".join(comparison.drift) or "UNKNOWN_ENVIRONMENT_DRIFT"
+    return f"ENVIRONMENT_MISMATCH:{detail}"
 
 
 def run_experiment(
@@ -153,8 +178,11 @@ def run_experiment(
         ]
         if (pair + uuid.UUID(experiment_id).int) % 2:  # randomize pair 0, then alternate
             arms.reverse()
-        for arm, prompt in arms:
-            plan = fork(session_id, step, codex_home=codex_home)
+        prepared = [
+            (arm, prompt, fork(session_id, step, codex_home=codex_home)) for arm, prompt in arms
+        ]
+        environment_preflight = _pair_environment_preflight(prepared)
+        for arm, prompt, plan in prepared:
             agent_exit: int | None = None
             check_exit: int | None = None
             classification = ArmClassification.UNJUDGEABLE
@@ -162,50 +190,54 @@ def run_experiment(
             check_stderr = ""
             infra_diagnostic: str | None = None
             if run:
-                try:
-                    agent_exit = _run_arm(
-                        plan.session_id,
-                        plan.worktree,
-                        prompt,
-                        sandbox=sandbox,
-                        timeout=timeout,
-                        model=model,
-                        codex_home=codex_home,
-                    )
-                except subprocess.TimeoutExpired as error:
-                    classification = ArmClassification.TIMEOUT_AGENT
-                    infra_diagnostic = str(error)
-                except OSError as error:
+                if environment_preflight != "MATCHED":
                     classification = ArmClassification.INFRA_FAIL
-                    infra_diagnostic = str(error)
-                if agent_exit is not None and agent_exit != 0:
-                    classification = ArmClassification.INFRA_FAIL
-                    infra_diagnostic = f"agent exited {agent_exit}"
-                elif check and agent_exit == 0:
+                    infra_diagnostic = environment_preflight
+                else:
                     try:
-                        completed = subprocess.run(
-                            check,
-                            shell=True,
-                            cwd=plan.worktree,
-                            capture_output=True,
-                            text=True,
+                        agent_exit = _run_arm(
+                            plan.session_id,
+                            plan.worktree,
+                            prompt,
+                            sandbox=sandbox,
                             timeout=timeout,
-                        )
-                        check_exit = completed.returncode
-                        check_stdout = _bounded_output(completed.stdout)
-                        check_stderr = _bounded_output(completed.stderr)
-                        classification = (
-                            ArmClassification.PASS
-                            if check_exit == 0
-                            else ArmClassification.TASK_FAIL
+                            model=model,
+                            codex_home=codex_home,
                         )
                     except subprocess.TimeoutExpired as error:
-                        classification = ArmClassification.TIMEOUT_CHECK
-                        check_stdout = _bounded_output(error.stdout)
-                        check_stderr = _bounded_output(error.stderr)
-                    except OSError as error:
-                        classification = ArmClassification.CHECK_ERROR
+                        classification = ArmClassification.TIMEOUT_AGENT
                         infra_diagnostic = str(error)
+                    except OSError as error:
+                        classification = ArmClassification.INFRA_FAIL
+                        infra_diagnostic = str(error)
+                    if agent_exit is not None and agent_exit != 0:
+                        classification = ArmClassification.INFRA_FAIL
+                        infra_diagnostic = f"agent exited {agent_exit}"
+                    elif check and agent_exit == 0:
+                        try:
+                            completed = subprocess.run(
+                                check,
+                                shell=True,
+                                cwd=plan.worktree,
+                                capture_output=True,
+                                text=True,
+                                timeout=timeout,
+                            )
+                            check_exit = completed.returncode
+                            check_stdout = _bounded_output(completed.stdout)
+                            check_stderr = _bounded_output(completed.stderr)
+                            classification = (
+                                ArmClassification.PASS
+                                if check_exit == 0
+                                else ArmClassification.TASK_FAIL
+                            )
+                        except subprocess.TimeoutExpired as error:
+                            classification = ArmClassification.TIMEOUT_CHECK
+                            check_stdout = _bounded_output(error.stdout)
+                            check_stderr = _bounded_output(error.stderr)
+                        except OSError as error:
+                            classification = ArmClassification.CHECK_ERROR
+                            infra_diagnostic = str(error)
             result = ArmResult(
                 experiment_id,
                 pair,
@@ -218,6 +250,10 @@ def run_experiment(
                 check_stdout,
                 check_stderr,
                 infra_diagnostic,
+                fork_manifest=plan.manifest,
+                prefix_id=plan.prefix_id,
+                environment_fingerprint=plan.environment_fingerprint,
+                environment_preflight=environment_preflight,
             )
             results.append(result)
             with out.open("a", encoding="utf-8") as sink:  # one row per run, crash-safe
