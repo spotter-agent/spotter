@@ -150,6 +150,35 @@ def test_concurrent_requests_are_matched_by_id() -> None:
     asyncio.run(scenario())
 
 
+def test_server_request_is_rejected_without_blocking_the_server() -> None:
+    async def scenario() -> None:
+        async def handler(connection: ServerConnection) -> None:
+            await _ready(connection)
+            await connection.send(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "approval-1",
+                        "method": "commandExecution/requestApproval",
+                        "params": {"threadId": "thread-1"},
+                    }
+                )
+            )
+            response = _message(await connection.recv())
+            assert response["id"] == "approval-1"
+            assert response["error"]["code"] == -32601
+            await connection.wait_closed()
+
+        async with _server(handler) as endpoint:
+            client = CodexAppServerClient(endpoint)
+            await client.connect()
+            event = await client.next_event()
+            assert event.method == "commandExecution/requestApproval"
+            await client.disconnect()
+
+    asyncio.run(scenario())
+
+
 def test_missing_capability_degrades_only_that_surface() -> None:
     async def scenario() -> None:
         async def handler(connection: ServerConnection) -> None:
@@ -263,6 +292,18 @@ def test_disconnect_and_protocol_failure_are_structured() -> None:
             error = await client.wait_closed()
             assert isinstance(error, AppServerTransportError)
             assert client.state == ConnectionState.DEGRADED
+            try:
+                await client.next_event()
+            except AppServerTransportError:
+                pass
+            else:
+                raise AssertionError("event consumer wasn't released on disconnect")
+            try:
+                await client.next_event()
+            except AppServerTransportError:
+                pass
+            else:
+                raise AssertionError("closed event stream became readable again")
             await client.disconnect()
 
     async def malformed_result() -> None:
@@ -285,7 +326,33 @@ def test_disconnect_and_protocol_failure_are_structured() -> None:
             assert client.state == ConnectionState.DEGRADED
             await client.disconnect()
 
+    async def request_timeout() -> None:
+        async def handler(connection: ServerConnection) -> None:
+            await _ready(connection)
+            await _receive(connection, "thread/read")
+            await connection.wait_closed()
+
+        async with _server(handler) as endpoint:
+            client = CodexAppServerClient(endpoint, request_timeout=0.1)
+            await client.connect()
+            try:
+                await client.read_thread("thread-1")
+            except AppServerTransportError as error:
+                assert "timed out" in str(error)
+            else:
+                raise AssertionError("request timeout wasn't reported")
+            assert client.state == ConnectionState.DEGRADED
+            assert isinstance(await client.wait_closed(), AppServerTransportError)
+            try:
+                await client.list_threads()
+            except AppServerTransportError:
+                pass
+            else:
+                raise AssertionError("failed connection accepted another request")
+            await client.disconnect()
+
     asyncio.run(disconnected())
     asyncio.run(malformed())
     asyncio.run(clean_close())
     asyncio.run(malformed_result())
+    asyncio.run(request_timeout())

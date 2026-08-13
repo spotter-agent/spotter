@@ -90,7 +90,12 @@ _CAPABILITY_BY_METHOD = {
 
 
 class CodexAppServerClient:
-    """One initialized JSON-RPC client for an external Codex App Server."""
+    """One initialized JSON-RPC client for an external Codex App Server.
+
+    A request timeout invalidates and closes the entire connection. This avoids accepting late
+    responses after callers have already acted on a timeout. Server-initiated requests are exposed
+    as events and rejected with method-not-found because this observer doesn't own approval flows.
+    """
 
     def __init__(
         self,
@@ -109,11 +114,13 @@ class CodexAppServerClient:
         self.last_error: AppServerError | None = None
         self._socket: ClientConnection | None = None
         self._reader: asyncio.Task[None] | None = None
+        self._failure_close: asyncio.Task[None] | None = None
         self._closed = asyncio.Event()
         self._closing = False
         self._next_id = 1
         self._pending: dict[int, asyncio.Future[JsonObject]] = {}
-        self._events: asyncio.Queue[AppServerEvent] = asyncio.Queue()
+        # ponytail: #85 owns bounded backpressure once a real ingestion consumer exists.
+        self._events: asyncio.Queue[AppServerEvent | AppServerError] = asyncio.Queue()
         self._capabilities = self._initial_capabilities()
 
     @staticmethod
@@ -138,7 +145,9 @@ class CodexAppServerClient:
         self.state = ConnectionState.CONNECTING
         self._capabilities = self._initial_capabilities()
         self._closing = False
+        self._failure_close = None
         self._closed.clear()
+        self._events = asyncio.Queue()
         self.last_error = None
         try:
             self._socket = await websocket_connect(
@@ -188,6 +197,7 @@ class CodexAppServerClient:
 
     async def disconnect(self) -> None:
         self._closing = True
+        was_closed = self._closed.is_set()
         socket, reader = self._socket, self._reader
         self._socket = None
         self._reader = None
@@ -197,19 +207,34 @@ class CodexAppServerClient:
             reader.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await reader
-        self._fail_pending(AppServerTransportError("App Server client disconnected"))
+        if self._failure_close is not None:
+            await self._failure_close
+            self._failure_close = None
+        disconnect_error = AppServerTransportError("App Server client disconnected")
+        self._fail_pending(disconnect_error)
+        if not was_closed:
+            self._events.put_nowait(disconnect_error)
         self.server_info = None
         self.last_error = None
         self.state = ConnectionState.DISCONNECTED
         self._closed.set()
 
     async def next_event(self) -> AppServerEvent:
-        return await self._events.get()
+        """Return the next server message or raise once the connection ends."""
+
+        if self._closed.is_set() and self._events.empty():
+            raise self.last_error or AppServerTransportError("App Server client disconnected")
+        event = await self._events.get()
+        if isinstance(event, AppServerError):
+            raise event
+        return event
 
     async def wait_closed(self) -> AppServerError | None:
         """Wait for intentional shutdown or connection loss."""
 
         await self._closed.wait()
+        if self._failure_close is not None:
+            await self._failure_close
         return self.last_error
 
     async def list_threads(
@@ -253,8 +278,8 @@ class CodexAppServerClient:
 
     async def _request(self, method: str, params: JsonObject) -> Any:
         socket = self._socket
-        if socket is None:
-            raise AppServerTransportError("App Server client is not connected")
+        if socket is None or self._closed.is_set():
+            raise self.last_error or AppServerTransportError("App Server client is not connected")
         request_id = self._next_id
         self._next_id += 1
         future = asyncio.get_running_loop().create_future()
@@ -324,11 +349,30 @@ class CodexAppServerClient:
                 message = self._decode_message(raw)
                 request_id = message.get("id")
                 method = message.get("method")
-                if isinstance(request_id, int) and method is None:
+                if (
+                    isinstance(request_id, int)
+                    and not isinstance(request_id, bool)
+                    and method is None
+                ):
                     future = self._pending.pop(request_id, None)
                     if future is not None and not future.done():
                         future.set_result(message)
                 elif isinstance(method, str):
+                    if request_id is not None:
+                        if not self._is_request_id(request_id):
+                            raise AppServerProtocolError("server request has an invalid id")
+                        await socket.send(
+                            json.dumps(
+                                {
+                                    "jsonrpc": "2.0",
+                                    "id": request_id,
+                                    "error": {
+                                        "code": -32601,
+                                        "message": f"Spotter does not handle {method} requests",
+                                    },
+                                }
+                            )
+                        )
                     await self._events.put(AppServerEvent(method, message))
                 else:
                     raise AppServerProtocolError("received an invalid JSON-RPC message")
@@ -356,10 +400,15 @@ class CodexAppServerClient:
         return cast(JsonObject, message)
 
     def _connection_failed(self, error: AppServerError) -> None:
+        if self._closed.is_set():
+            return
         self.last_error = error
         self.state = ConnectionState.DEGRADED
         self._fail_pending(error)
+        self._events.put_nowait(error)
         self._closed.set()
+        if self._socket is not None:
+            self._failure_close = asyncio.create_task(self._socket.close())
 
     def _raise_protocol_error(self, message: str) -> NoReturn:
         error = AppServerProtocolError(message)
@@ -371,3 +420,7 @@ class CodexAppServerClient:
             if not future.done():
                 future.set_exception(error)
         self._pending.clear()
+
+    @staticmethod
+    def _is_request_id(value: Any) -> bool:
+        return isinstance(value, (int, str)) and not isinstance(value, bool)
