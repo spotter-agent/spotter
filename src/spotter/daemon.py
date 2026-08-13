@@ -231,7 +231,13 @@ class DaemonServer:
                 "health": self.health.value,
                 "pid": os.getpid(),
             }
-        except (DaemonProtocolError, json.JSONDecodeError, TimeoutError, ValueError) as error:
+        except (
+            DaemonProtocolError,
+            json.JSONDecodeError,
+            OSError,
+            TimeoutError,
+            ValueError,
+        ) as error:
             response = {
                 "protocol": PROTOCOL_VERSION,
                 "ok": False,
