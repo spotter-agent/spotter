@@ -95,6 +95,10 @@ def test_shadow_mode_allows_but_journals_the_block(spotter_home: Path, daemon: N
     assert records[2].event.payload["status"] == "ok"
     assert records[2].event.payload["ipc_ms"] >= 0
     assert records[2].event.payload["hook_ms"] >= records[2].event.payload["ipc_ms"]
+    sample = records[2].event.payload["runtime_sample"]
+    assert sample["sample_seq"] == 1
+    assert sample["cpu_seconds"] >= 0
+    assert sample["peak_rss_bytes"] >= 0
 
 
 def test_safe_command_allows_silently(daemon: None) -> None:

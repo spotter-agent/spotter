@@ -4,13 +4,16 @@ import argparse
 import asyncio
 import hashlib
 import json
+import math
 import os
 import plistlib
+import resource
 import shutil
 import stat
 import subprocess
 import sys
 import time
+import uuid
 from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
@@ -37,6 +40,7 @@ START_TIMEOUT = 5.0
 STOP_TIMEOUT = 5.0
 _MAX_REQUEST_BYTES = 64 * 1024
 _SAFE_UNIX_PATH_BYTES = 100
+_RESOURCE_SAMPLE_EVERY = 64
 
 
 class RuntimeHealth(StrEnum):
@@ -164,7 +168,7 @@ class DaemonClient:
 
     async def gate(
         self, event: TraceEvent, gates: GatesConfig, root: str | None
-    ) -> tuple[GateDecision, float]:
+    ) -> tuple[GateDecision, float, dict[str, int | float | str] | None]:
         response = await self.request(
             "gate",
             {
@@ -192,7 +196,8 @@ class DaemonClient:
             raise DaemonProtocolError("daemon returned an invalid gate reason")
         if isinstance(evaluation_ms, bool) or evaluation_ms < 0:
             raise DaemonProtocolError("daemon returned invalid gate timing")
-        return GateDecision(allowed, rule, reason), float(evaluation_ms)
+        sample = _resource_sample_from(response.get("runtime_sample"))
+        return GateDecision(allowed, rule, reason), float(evaluation_ms), sample
 
 
 class DaemonServer:
@@ -216,6 +221,9 @@ class DaemonServer:
         self.app_server_endpoint = app_server_endpoint
         self.journals_dir = journals_dir or spotter_home() / "sessions"
         self.recovery: RuntimeRecovery | None = None
+        self._runtime_id = uuid.uuid4().hex
+        self._gate_requests = 0
+        self._resource_sample_seq = 0
 
     def observe_trace(self, event: TraceEvent) -> ThreadState:
         """Increment daemon-owned hot state after adapter normalization and journaling."""
@@ -344,6 +352,8 @@ class DaemonServer:
                 response["detail"] = self.health_detail
             if method == "gate":
                 response.update(_evaluate_gate(request.get("params")))
+                if sample := self._maybe_sample_resources():
+                    response["runtime_sample"] = sample
         except (
             DaemonProtocolError,
             json.JSONDecodeError,
@@ -367,6 +377,27 @@ class DaemonServer:
                 await writer.wait_closed()
         if shutdown:
             self._shutdown.set()
+
+    def _maybe_sample_resources(self) -> dict[str, int | float | str] | None:
+        """Bounded resource sample, kept off all but one in 64 gate requests."""
+
+        self._gate_requests += 1
+        if self._gate_requests != 1 and self._gate_requests % _RESOURCE_SAMPLE_EVERY:
+            return None
+        try:
+            usage = resource.getrusage(resource.RUSAGE_SELF)
+        except OSError:
+            return None  # optional telemetry must never break a gate response
+        self._resource_sample_seq += 1
+        rss = int(usage.ru_maxrss)
+        if sys.platform != "darwin":
+            rss *= 1024  # Linux reports KiB; macOS reports bytes.
+        return {
+            "runtime_id": self._runtime_id,
+            "sample_seq": self._resource_sample_seq,
+            "cpu_seconds": usage.ru_utime + usage.ru_stime,
+            "peak_rss_bytes": rss,
+        }
 
 
 def _evaluate_gate(raw: object) -> dict[str, Any]:
@@ -408,6 +439,38 @@ def _evaluate_gate(raw: object) -> dict[str, Any]:
             "reason": decision.reason,
         },
         "evaluation_ms": evaluation_ms,
+    }
+
+
+def _resource_sample_from(raw: object) -> dict[str, int | float | str] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        return None
+    runtime_id = raw.get("runtime_id")
+    sample_seq = raw.get("sample_seq")
+    cpu_seconds = raw.get("cpu_seconds")
+    peak_rss_bytes = raw.get("peak_rss_bytes")
+    if (
+        not isinstance(runtime_id, str)
+        or not runtime_id
+        or not isinstance(sample_seq, int)
+        or isinstance(sample_seq, bool)
+        or sample_seq <= 0
+        or not isinstance(cpu_seconds, int | float)
+        or isinstance(cpu_seconds, bool)
+        or cpu_seconds < 0
+        or not math.isfinite(cpu_seconds)
+        or not isinstance(peak_rss_bytes, int)
+        or isinstance(peak_rss_bytes, bool)
+        or peak_rss_bytes < 0
+    ):
+        return None
+    return {
+        "runtime_id": runtime_id,
+        "sample_seq": sample_seq,
+        "cpu_seconds": float(cpu_seconds),
+        "peak_rss_bytes": peak_rss_bytes,
     }
 
 

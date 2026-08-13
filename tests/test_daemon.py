@@ -142,15 +142,32 @@ def test_gate_roundtrip_preserves_policy_and_concurrency(socket_path: Path) -> N
             results = await asyncio.gather(
                 *(DaemonClient(socket_path).gate(event, gates, "/repo") for event, gates in cases)
             )
-            for (event, gates), (decision, evaluation_ms) in zip(cases, results, strict=True):
+            for (event, gates), (decision, evaluation_ms, _sample) in zip(
+                cases, results, strict=True
+            ):
                 assert decision == Gate(
                     gates.forbidden_paths, gates.block_dependency_changes, "/repo"
                 ).check(event)
                 assert evaluation_ms >= 0
+            assert sum(sample is not None for _, _, sample in results) == 1
         finally:
             await server.close()
 
     asyncio.run(scenario())
+
+
+def test_resource_sampling_is_bounded_and_runtime_addressable(socket_path: Path) -> None:
+    server = DaemonServer(socket_path)
+
+    samples = [server._maybe_sample_resources() for _ in range(65)]
+    observed = [sample for sample in samples if sample is not None]
+
+    assert len(observed) == 2
+    assert [sample["sample_seq"] for sample in observed] == [1, 2]
+    assert len({sample["runtime_id"] for sample in observed}) == 1
+    first_cpu, last_cpu = observed[0]["cpu_seconds"], observed[-1]["cpu_seconds"]
+    assert isinstance(first_cpu, int | float) and isinstance(last_cpu, int | float)
+    assert last_cpu >= first_cpu
 
 
 @pytest.mark.parametrize(
@@ -208,7 +225,7 @@ def test_gate_fails_open_for_an_unsupported_proposal_shape(socket_path: Path) ->
         server = DaemonServer(socket_path)
         await server.start()
         try:
-            decision, _ = await DaemonClient(socket_path).gate(
+            decision, _, _ = await DaemonClient(socket_path).gate(
                 TraceEvent("tool_proposal", {"command": 42, "files": "not-a-list"}),
                 GatesConfig(),
                 "/repo",
@@ -226,7 +243,7 @@ def test_gate_normalizes_missing_files_without_skipping_the_command(socket_path:
         server = DaemonServer(socket_path)
         await server.start()
         try:
-            decision, _ = await DaemonClient(socket_path).gate(
+            decision, _, _ = await DaemonClient(socket_path).gate(
                 TraceEvent("tool_proposal", {"command": "rm -rf /", "files": None}),
                 GatesConfig(),
                 "/repo",

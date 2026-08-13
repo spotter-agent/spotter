@@ -295,9 +295,10 @@ def _gate_over_ipc(
     started = time.perf_counter_ns()
     status = "ok"
     evaluation_ms: float | None = None
+    runtime_sample: dict[str, int | float | str] | None = None
     error_detail: str | None = None
     try:
-        decision, evaluation_ms = asyncio.run(
+        decision, evaluation_ms, runtime_sample = asyncio.run(
             DaemonClient(timeout=GATE_TIMEOUT).gate(event, config.gates, root)
         )
     except DaemonTimeout as error:
@@ -323,4 +324,6 @@ def _gate_over_ipc(
     }
     if error_detail is not None:
         telemetry["error"] = error_detail[:300]
+    if runtime_sample is not None:
+        telemetry["runtime_sample"] = runtime_sample
     return decision, telemetry

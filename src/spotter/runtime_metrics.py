@@ -43,6 +43,9 @@ class RuntimeCostReport:
     hook_ms: tuple[float, ...]
     ipc_ms: tuple[float, ...]
     daemon_evaluation_ms: tuple[float, ...]
+    daemon_resource_samples: int
+    daemon_cpu_seconds: float | None
+    daemon_peak_rss_bytes: int | None
     source_timestamps: int
     receipt_timestamps: int
     journal_bytes: int
@@ -63,6 +66,7 @@ def measure_runtime_costs(
     hook_ms: list[float] = []
     ipc_ms: list[float] = []
     daemon_evaluation_ms: list[float] = []
+    daemon_samples: dict[tuple[str, int], tuple[float, int]] = {}
     source_timestamps = receipt_timestamps = 0
 
     for records_iter, size in journals:
@@ -139,6 +143,7 @@ def measure_runtime_costs(
                 _append_number(hook_ms, event.payload.get("hook_ms"))
                 _append_number(ipc_ms, event.payload.get("ipc_ms"))
                 _append_number(daemon_evaluation_ms, event.payload.get("daemon_evaluation_ms"))
+                _append_daemon_sample(daemon_samples, event.payload.get("runtime_sample"))
         current = surfaces[surface]
         surfaces[surface] = SurfaceCost(
             actions=current.actions + len(actions),
@@ -158,6 +163,12 @@ def measure_runtime_costs(
         if latest_reviewer_tokens is not None:
             reviewer_tokens_known = True
             reviewer_tokens += latest_reviewer_tokens
+
+    latest_samples: dict[str, tuple[int, float, int]] = {}
+    for (runtime_id, sample_seq), (cpu_seconds, peak_rss_bytes) in daemon_samples.items():
+        previous = latest_samples.get(runtime_id)
+        if previous is None or sample_seq > previous[0]:
+            latest_samples[runtime_id] = (sample_seq, cpu_seconds, peak_rss_bytes)
 
     return RuntimeCostReport(
         sessions,
@@ -179,6 +190,9 @@ def measure_runtime_costs(
         tuple(hook_ms),
         tuple(ipc_ms),
         tuple(daemon_evaluation_ms),
+        len(daemon_samples),
+        sum(sample[1] for sample in latest_samples.values()) if latest_samples else None,
+        max((sample[2] for sample in latest_samples.values()), default=None),
         source_timestamps,
         receipt_timestamps,
         journal_bytes,
@@ -219,6 +233,18 @@ def render_runtime_costs(report: RuntimeCostReport) -> str:
         f"hook={_sample(report.hook_ms, report.gate_calls)}, "
         f"ipc={_sample(report.ipc_ms, report.gate_calls)}, "
         f"daemon_eval={_sample(report.daemon_evaluation_ms, report.gate_calls)}"
+    )
+    cpu = (
+        f"{report.daemon_cpu_seconds:.3f}s" if report.daemon_cpu_seconds is not None else "unknown"
+    )
+    rss = (
+        f"{report.daemon_peak_rss_bytes} bytes"
+        if report.daemon_peak_rss_bytes is not None
+        else "unknown"
+    )
+    lines.append(
+        f"  Spotter resources: cpu={cpu}, peak_rss={rss}; "
+        f"samples={report.daemon_resource_samples}/{report.gate_calls} gate calls"
     )
     tool_outcomes = sum(cost.outcome_observations for cost in report.surfaces.values())
     lines.append(
@@ -291,6 +317,27 @@ def _append_number(target: list[float], value: object) -> None:
     parsed = _number(value)
     if parsed is not None:
         target.append(parsed)
+
+
+def _append_daemon_sample(target: dict[tuple[str, int], tuple[float, int]], value: object) -> None:
+    if not isinstance(value, Mapping):
+        return
+    runtime_id = value.get("runtime_id")
+    sample_seq = value.get("sample_seq")
+    cpu_seconds = _number(value.get("cpu_seconds"))
+    peak_rss_bytes = value.get("peak_rss_bytes")
+    if (
+        isinstance(runtime_id, str)
+        and runtime_id
+        and isinstance(sample_seq, int)
+        and not isinstance(sample_seq, bool)
+        and sample_seq > 0
+        and cpu_seconds is not None
+        and isinstance(peak_rss_bytes, int)
+        and not isinstance(peak_rss_bytes, bool)
+        and peak_rss_bytes >= 0
+    ):
+        target[(runtime_id, sample_seq)] = (cpu_seconds, peak_rss_bytes)
 
 
 def _sample(values: tuple[float, ...], eligible: int) -> str:

@@ -34,7 +34,17 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
             2,
             TraceEvent(
                 "gate_ipc",
-                {"hook_ms": 3.0, "ipc_ms": 2.0, "daemon_evaluation_ms": 1.0},
+                {
+                    "hook_ms": 3.0,
+                    "ipc_ms": 2.0,
+                    "daemon_evaluation_ms": 1.0,
+                    "runtime_sample": {
+                        "runtime_id": "daemon-1",
+                        "sample_seq": 1,
+                        "cpu_seconds": 0.25,
+                        "peak_rss_bytes": 1024,
+                    },
+                },
             ),
         ),
         _record(
@@ -117,6 +127,9 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
     assert report.reviewer_inference_ms == (8.0,)
     assert report.turn_wall_ms == (2000.0,)
     assert report.gate_calls == 1
+    assert report.daemon_resource_samples == 1
+    assert report.daemon_cpu_seconds == 0.25
+    assert report.daemon_peak_rss_bytes == 1024
     assert report.tool_duration_ms == (10.0,)
     assert report.source_timestamps == 5
     assert report.receipt_timestamps == report.events == 11
@@ -129,6 +142,7 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
         "app_server: actions=1 (from 2 observations), outcomes=1 (from 1 observation)" in rendered
     )
     assert "jobs=1/1/1 decided/started/queued" in rendered
+    assert "cpu=0.250s, peak_rss=1024 bytes; samples=1/1 gate calls" in rendered
     assert "turn_wall(source)=avg=2000.00ms max=2000.00ms (1/1)" in rendered
 
 
