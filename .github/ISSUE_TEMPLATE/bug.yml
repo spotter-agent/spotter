@@ -1,0 +1,25 @@
+name: Bug report
+description: Something is broken or behaves differently from the intended contract.
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the incorrect behavior and its impact.
+      placeholder: What did Spotter do, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction / context
+      description: Minimal steps, command, session context, logs, or a small example. Remove secrets first.
+      placeholder: Steps or context that make the problem reproducible...
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Add only details that may matter.
+      placeholder: Spotter version/commit, OS, Python, Codex/Claude version, relevant config...

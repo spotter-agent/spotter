@@ -1,0 +1,28 @@
+name: Architecture / design
+description: Propose a change to ownership, interfaces, lifecycle, state, or runtime boundaries.
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Decision / problem
+      description: What architectural question must be resolved, and why now?
+    validations:
+      required: true
+  - type: textarea
+    id: boundary
+    attributes:
+      label: Current vs desired boundary
+      description: What owns the behavior/state today, and what should own it instead?
+      placeholder: Observation, control, enforcement, persistence, process, adapter, lifecycle...
+    validations:
+      required: true
+  - type: textarea
+    id: tradeoffs
+    attributes:
+      label: Constraints / tradeoffs
+      description: Latency, compatibility, failure modes, migration, resource ownership, or alternatives.
+  - type: textarea
+    id: exit
+    attributes:
+      label: Proof / exit criteria
+      description: What PoC, test, or observable result would be enough to make the decision?

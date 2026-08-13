@@ -1,0 +1,15 @@
+name: Documentation
+description: Improve or correct repository documentation without changing product behavior.
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Documentation problem
+      description: What is missing, inaccurate, stale, or hard to understand?
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: Optional. What should a reader be able to understand or do after the change?

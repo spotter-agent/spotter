@@ -1,0 +1,15 @@
+name: Maintenance / chore
+description: Tooling, CI, dependency, cleanup, packaging, or repository maintenance.
+body:
+  - type: textarea
+    id: task
+    attributes:
+      label: Task / problem
+      description: What maintenance work is needed and why now?
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: Optional. A short completion or verification condition.
