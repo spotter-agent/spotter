@@ -39,7 +39,9 @@ unrelated Codex state and durable Spotter data remain
 The fixture removes the old keg during upgrade; no assertion relies on a versioned Cellar path
 remaining present. It checks the CLI, daemon, running PID/build, Integration Manifest generation,
 Hook command, service definition, and representative user config/journal/label/experiment/registry
-files at the relevant transitions.
+files at the relevant transitions. A long-lived fake Codex App Server sentinel must retain the same
+PID through setup, upgrade/reconcile, teardown-less uninstall, reinstall, teardown, and final
+uninstall.
 
 ## Reproduce locally
 
@@ -80,7 +82,8 @@ The cached-host check executes the generated G1 command directly rather than dep
 undocumented Codex internals. Mixed generations must be detectable and non-blocking; after a host
 reload only the reconciled G2 Hook remains.
 
-The fixture does not start or stop a shared Codex App Server. Setup currently records that endpoint
-strategy as pending, so claiming ownership in this smoke would violate the runtime boundary. Full
-configuration-generation, protocol-range, schema-migration, retention, and repository-aware purge
-behavior remains owned by #90, #47, and #89 rather than being inferred from a green packaging gate.
+The fixture starts and later cleans up its own shared App Server sentinel, but Spotter is never
+configured as that process's owner. Setup currently records the endpoint strategy as pending, so
+claiming ownership in this smoke would violate the runtime boundary. Full configuration-generation,
+protocol-range, schema-migration, retention, and repository-aware purge behavior remains owned by
+#90, #47, and #89 rather than being inferred from a green packaging gate.
