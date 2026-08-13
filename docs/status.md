@@ -112,7 +112,7 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 | Event-driven detection | ❌ | Reviewer is still cadence-based | #28 after Runtime/Observe |
 | Live `VERIFY` / `NUDGE` | ❌ | Reviewer decisions stop at the journal | #22 via `turn/steer` |
 | `INTERRUPT` / `RESTART` | ❌ | No live recovery path | #26 + #30 after soft intervention is understood |
-| Packaging / long-term operations | 🟡 | Exact version tags build validated sdist/wheel artifacts, release metadata, SHA256 sums, and shared CLI/daemon/bridge build identity; Homebrew publication is not yet implemented | #105 release automation, #106–#108 packaged layout/tap/smoke, #89 retention, #90 upgrade compatibility |
+| Packaging / long-term operations | 🟡 | Exact version tags run validation and publish a verified GitHub Release containing the sdist, wheel, release metadata, and SHA256 sums; CLI/daemon/bridge share embedded build identity; Homebrew publication is not yet implemented | #106–#108 packaged layout/tap/smoke, #89 retention, #90 upgrade compatibility |
 
 ---
 

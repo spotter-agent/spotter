@@ -1,9 +1,8 @@
 # Release artifacts and build identity
 
-Spotter's repository-owned release builder produces package-manager-neutral Python artifacts from an
-exact tag. GitHub Release publication is a separate automation step tracked by
-[#105](https://github.com/spotter-agent/spotter/issues/105); Homebrew Formula layout remains owned by
-the dedicated tap.
+Spotter's repository-owned release workflow produces package-manager-neutral Python artifacts from
+an exact tag and publishes them to a GitHub Release. Homebrew Formula layout remains owned by the
+dedicated tap.
 
 ## Artifact contract
 
@@ -49,6 +48,23 @@ The builder deliberately does not build the working tree or a branch name. It:
 
 An unknown tag, branch name, malformed tag, failed package build, identity mismatch, or incomplete
 entry-point set aborts before artifacts are published to the requested output directory.
+
+## Publish a GitHub Release
+
+Push an exact `vMAJOR.MINOR.PATCH` tag to the canonical repository. The tag-triggered
+[`release.yml`](../.github/workflows/release.yml) workflow checks out that tag and runs the same
+format, lint, typecheck, and test gates as CI before it builds anything. It then builds the four-file
+artifact contract above and verifies the local filenames and SHA256 manifest.
+
+Publication uses a draft GitHub Release as staging state. The workflow uploads the complete artifact
+set, downloads it again, compares every remote file byte-for-byte with the validated build, and
+checks the downloaded SHA256 manifest before publishing the draft. A failed validation, build,
+upload, or verification therefore cannot create a public partial release. A retry may refresh assets
+on an existing draft, but the workflow refuses to alter an already-published release for the tag.
+
+The published release exposes both the versioned source-distribution URL and its SHA256 in
+`spotter-agent-X.Y.Z-SHA256SUMS` and `spotter-agent-X.Y.Z-release.json`. The tap update flow can use
+those values directly; it does not need to rebuild or inspect a moving branch.
 
 ## Runtime identity contract
 

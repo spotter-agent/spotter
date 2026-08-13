@@ -1365,13 +1365,15 @@ GitHub Release
 Homebrew formula update
 ```
 
-The repository now implements the package/build portion of this pipeline. An exact
-`vMAJOR.MINOR.PATCH` tag produces a source distribution, universal wheel, machine-readable release
-manifest, and versioned SHA256 file. Both installed entry points expose the embedded tag+commit build
-identity, while the Hook bridge identifies itself independently on daemon requests. See
+The repository now implements the package/build and GitHub Release portions of this pipeline. Pushing
+an exact `vMAJOR.MINOR.PATCH` tag runs the repository validation gates, then produces a source
+distribution, universal wheel, machine-readable release manifest, and versioned SHA256 file. The
+workflow verifies the complete remote artifact set while the release is still a draft and publishes
+only after every downloaded asset matches the validated build. Both installed entry points expose
+the embedded tag+commit build identity, while the Hook bridge identifies itself independently on
+daemon requests. See
 [Release artifacts and build identity](releasing.md) for the authoritative artifact and identity
-contract. GitHub Release publication remains tracked by #105, and Homebrew-specific layout remains
-outside the core artifacts.
+contract. Homebrew-specific layout remains outside the core artifacts.
 
 Release verification should include fixtures for:
 

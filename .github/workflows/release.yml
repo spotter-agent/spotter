@@ -1,0 +1,160 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate tagged source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e '.[dev]'
+      - run: ruff format --check .
+      - run: ruff check .
+      - run: mypy src tests
+      - run: pytest
+
+  build:
+    name: Build release artifacts
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e '.[dev]'
+      - name: Build from the exact tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          event_commit="$(git rev-parse --verify "$GITHUB_SHA^{commit}")"
+          tag_commit="$(git rev-parse --verify "refs/tags/$GITHUB_REF_NAME^{commit}")"
+          if [[ "$tag_commit" != "$event_commit" ]]; then
+            echo "tag $GITHUB_REF_NAME moved after this workflow was triggered" >&2
+            exit 1
+          fi
+          python scripts/build_release.py --tag "$GITHUB_REF_NAME"
+      - name: Verify the local artifact set
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          expected_assets="$(mktemp)"
+          actual_assets="$(mktemp)"
+          trap 'rm -f "$expected_assets" "$actual_assets"' EXIT
+
+          printf '%s\n' \
+            "spotter-agent-$version-SHA256SUMS" \
+            "spotter-agent-$version-release.json" \
+            "spotter_agent-$version-py3-none-any.whl" \
+            "spotter_agent-$version.tar.gz" \
+            | sort > "$expected_assets"
+          find dist/release -maxdepth 1 -type f -printf '%f\n' | sort > "$actual_assets"
+          diff -u "$expected_assets" "$actual_assets"
+          (
+            cd dist/release
+            sha256sum --check "spotter-agent-$version-SHA256SUMS"
+          )
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ github.ref_name }}
+          path: dist/release/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-${{ github.ref_name }}
+          path: dist/release
+      - name: Stage and verify the draft release
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          version="${tag#v}"
+          expected_assets="$(mktemp)"
+          remote_assets="$(mktemp)"
+          verification_dir="$(mktemp -d)"
+          trap 'rm -f "$expected_assets" "$remote_assets"; rm -rf "$verification_dir"' EXIT
+
+          printf '%s\n' \
+            "spotter-agent-$version-SHA256SUMS" \
+            "spotter-agent-$version-release.json" \
+            "spotter_agent-$version-py3-none-any.whl" \
+            "spotter_agent-$version.tar.gz" \
+            | sort > "$expected_assets"
+
+          manifest="dist/release/spotter-agent-$version-release.json"
+          artifact_tag="$(jq -er '.release_tag' "$manifest")"
+          artifact_commit="$(jq -er '.commit' "$manifest")"
+          remote_commit="$(gh api "repos/$GH_REPO/commits/$tag" --jq .sha)"
+          if [[ "$artifact_tag" != "$tag" || "$artifact_commit" != "$remote_commit" ]]; then
+            echo "release metadata no longer matches the remote tag" >&2
+            exit 1
+          fi
+
+          if release_is_draft="$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null)"; then
+            if [[ "$release_is_draft" != "true" ]]; then
+              echo "release $tag is already published; refusing to replace its assets" >&2
+              exit 1
+            fi
+          else
+            gh release create "$tag" \
+              --draft \
+              --generate-notes \
+              --title "Spotter $version" \
+              --verify-tag
+          fi
+
+          # Draft assets are staging state. Replacing them makes a failed upload retryable;
+          # the release remains private until the complete remote set passes verification.
+          gh release upload "$tag" dist/release/* --clobber
+
+          gh release view "$tag" --json assets --jq '.assets[].name' \
+            | sort > "$remote_assets"
+          diff -u "$expected_assets" "$remote_assets"
+
+          gh release download "$tag" --dir "$verification_dir"
+          while IFS= read -r asset; do
+            cmp --silent "dist/release/$asset" "$verification_dir/$asset"
+          done < "$expected_assets"
+          (
+            cd "$verification_dir"
+            sha256sum --check "spotter-agent-$version-SHA256SUMS"
+          )
+      - name: Publish the verified release
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release edit "$GITHUB_REF_NAME" --draft=false --verify-tag
+          [[ "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" == "false" ]]
