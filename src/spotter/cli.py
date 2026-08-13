@@ -1,6 +1,7 @@
 """Command-line entry point: passive observation and the Codex hook bridge."""
 
 import argparse
+import asyncio
 import json
 import subprocess
 import sys
@@ -25,6 +26,7 @@ from spotter.budget import (
 from spotter.codex import CodexAdapter
 from spotter.config import ConfigurationError, MainAgentConfig, ReviewerConfig, SpotterConfig
 from spotter.core import SpotterRuntime
+from spotter.daemon import DaemonStatus, ManualServiceManager, RuntimeHealth, ServiceManager
 from spotter.doctor import FAIL, OK, WARN, worst
 from spotter.doctor import run as run_doctor
 from spotter.experiment import list_forks, results_path, run_experiment, summarize
@@ -65,6 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
             "metrics",
             "status",
             "doctor",
+            "daemon",
         ],
         default="observe",
         help=(
@@ -76,8 +79,15 @@ def build_parser() -> argparse.ArgumentParser:
             "label: record a human verdict on a gate flag, reviewer decision, or session; "
             "metrics: gate FP rate, reviewer precision and observability ceiling from labels; "
             "status: what Spotter is storing, and whether it is actually running; "
-            "doctor: verify supervision end to end (non-zero exit when broken)"
+            "doctor: verify supervision end to end (non-zero exit when broken); "
+            "daemon: manually start, stop, restart, or inspect spotterd"
         ),
+    )
+    parser.add_argument(
+        "daemon_action",
+        nargs="?",
+        choices=["start", "stop", "restart", "status"],
+        help="daemon lifecycle action",
     )
     parser.add_argument("--config", type=Path, help="path to Spotter TOML config")
     parser.add_argument("--session", help="session id (fork; analyze filters to it)")
@@ -155,6 +165,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         # merely disable supervision, it would block every tool call in the
         # session. Unsupervised beats blocked.
         return _hook_main(None, args.config)
+
+    if args.command == "daemon":
+        if args.daemon_action is None:
+            parser.error("daemon requires start, stop, restart, or status")
+        return _daemon_main(args.daemon_action)
+    if args.daemon_action is not None:
+        parser.error("daemon lifecycle actions require the daemon command")
 
     config = _load_config(parser, args.config)
     # One boundary check for every command that names a session: sanitizing
@@ -522,6 +539,33 @@ def _doctor_main(config_path: Path | None) -> int:
         return 1
     print("\nsupervision is working")
     return 0
+
+
+def _daemon_main(action: str, manager: ServiceManager | None = None) -> int:
+    service = manager or ManualServiceManager()
+
+    async def run() -> DaemonStatus:
+        operations = {
+            "start": service.start,
+            "stop": service.stop,
+            "restart": service.restart,
+            "status": service.status,
+        }
+        return await operations[action]()
+
+    status = asyncio.run(run())
+    details = []
+    if status.pid is not None:
+        details.append(f"pid={status.pid}")
+    if status.protocol is not None:
+        details.append(f"protocol={status.protocol}")
+    if status.detail:
+        details.append(status.detail)
+    suffix = f" ({', '.join(details)})" if details else ""
+    print(f"spotterd: {status.health.value}{suffix}")
+    if action == "stop":
+        return 0 if status.health == RuntimeHealth.UNAVAILABLE else 1
+    return 0 if status.health == RuntimeHealth.HEALTHY else 1
 
 
 def _status_main() -> int:

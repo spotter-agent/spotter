@@ -1,7 +1,7 @@
 # Architecture
 
 > **Status:** this document describes both the current hook-based prototype and the target architecture. Active implementation is tracked by the [Roadmap](roadmap.md) and native GitHub Milestones.
-> `spotterd`, App Server primary Trace IR observation, and live supervision delivery are **target behavior**. The shared-server PoC and production App Server transport are implemented foundations.
+> The `spotterd` process/control foundation, shared-server PoC, and production App Server transport are implemented. App Server primary Trace IR observation and live supervision delivery remain **target behavior**.
 
 ---
 
@@ -105,7 +105,20 @@ Its limitations are now structural:
 - periodic review spends tokens even when nothing looks wrong;
 - richer App Server events are not the primary observation surface.
 
-## 1.2 Target runtime
+## 1.2 Implemented runtime foundation
+
+`spotterd` is an installable long-lived process with a versioned newline-delimited JSON control
+protocol over a per-user UNIX socket. `spotter daemon start|stop|restart|status` exercises a real
+handshake rather than treating a PID file as liveness. The server serializes ownership, accepts
+concurrent clients, reports `healthy` / `degraded` / `recovering`, and makes absence explicit as
+`unavailable`.
+
+Manual process management implements the `ServiceManager` boundary used by the CLI. Managed
+`launchd` / `systemd --user` registration belongs to setup lifecycle work. This daemon currently
+owns no App Server, semantic `ThreadState`, Hook IPC, or event routing, so stopping it cannot stop a
+shared Codex App Server and existing Hook behavior remains independent.
+
+## 1.3 Target runtime
 
 The target hot path is daemon-owned:
 
@@ -761,6 +774,11 @@ Conceptual layout:
 
 The current prototype uses `~/.spotter`; migration must preserve compatibility or provide an explicit data move.
 
+The current daemon control socket is `~/.spotter/runtime/spotterd.sock`. When a configured
+`SPOTTER_HOME` would exceed the platform UNIX-socket path limit, Spotter uses a short, private,
+user-and-home-specific runtime directory under `/tmp`. The socket handshake is the liveness source;
+the adjacent lock only serializes ownership.
+
 Repository/Git-owned Spotter resources may include:
 
 ```text
@@ -921,7 +939,7 @@ PreToolUse:  possibly available
 - Path A remains unavailable for the tested Homebrew Cask because the managed daemon expects the
   standalone installer layout.
 - A provisional concurrent thread identity registry exists from #81 but is not wired into production;
-  App Server event routing in #85 must validate it, daemon/service ownership remains #79/#83, and
+  App Server event routing in #85 must validate it, managed service registration remains #83, and
   reconnect reconciliation remains #87.
 
 ---

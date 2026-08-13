@@ -23,7 +23,7 @@ Spotter asks a more specific question than “is the agent wrong?”
 
 > **Can we detect a bad assumption, loop, scope drift, or missing validation while the agent is still working, and intervene before the mistake becomes expensive?**
 
-The repository is already beyond a scaffold. The current prototype implements Hook-based trajectory collection, deterministic gates, crash-safe journals, Git snapshots, fork/replay, a shadow reviewer, claim/evidence state, evaluation labels/metrics, and counterfactual experiment machinery.
+The repository is already beyond a scaffold. The current prototype implements Hook-based trajectory collection, deterministic gates, crash-safe journals, Git snapshots, fork/replay, a shadow reviewer, claim/evidence state, evaluation labels/metrics, counterfactual experiment machinery, and a standalone daemon/control foundation.
 
 The current prototype and target product architecture are different:
 
@@ -77,7 +77,7 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 | Claim/evidence audit ledger | 🟡 | Works where observable outcomes exist |
 | Evaluation labels / metrics | ✅ | Coverage-aware evaluation and precision/FP metrics |
 | Counterfactual experiment harness | ✅ | Control/guidance same-prefix pairs |
-| Standalone `spotterd` runtime | ❌ | Target runtime boundary |
+| Standalone `spotterd` runtime | 🟡 | Process, local control handshake, and manual lifecycle implemented; managed startup/runtime consumers remain |
 | App Server primary observation | 🟡 | Client/capabilities implemented; Trace IR ingestion remains (#85) |
 | Event-driven signal engine | ❌ | Current reviewer trigger is periodic |
 | Live `VERIFY / NUDGE` | ❌ | Target: `turn/steer` |
@@ -92,9 +92,9 @@ App Server can share the TUI's real thread and steer its active turn. The produc
 [#80](https://github.com/spotter-agent/spotter/issues/80) now exposes events, thread queries,
 control methods, and per-capability degraded state. [#81](https://github.com/spotter-agent/spotter/issues/81)
 adds a provisional thread/turn/attachment registry; it remains unconsumed until App Server event
-routing in [#85](https://github.com/spotter-agent/spotter/issues/85). The remaining Runtime work also
-establishes `spotterd` ([#79](https://github.com/spotter-agent/spotter/issues/79)) and
-lifecycle/recovery boundaries.
+routing in [#85](https://github.com/spotter-agent/spotter/issues/85). [#79](https://github.com/spotter-agent/spotter/issues/79)
+adds the `spotterd` process, versioned local control handshake, manual lifecycle commands, and a
+platform-neutral service boundary. Managed setup, event routing, and recovery remain separate work.
 
 ---
 
@@ -313,6 +313,7 @@ Plugin installation is the **current prototype path**, not the long-term product
 Useful commands:
 
 ```bash
+spotter daemon start|stop|restart|status
 spotter analyze
 spotter review --session <id>
 spotter label --session <id> --step <n> --verdict fp

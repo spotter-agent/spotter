@@ -21,6 +21,7 @@ dev = [
 
 [project.scripts]
 spotter = "spotter.cli:main"
+spotterd = "spotter.daemon:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/spotter"]

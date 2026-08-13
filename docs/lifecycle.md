@@ -1,7 +1,7 @@
 # Lifecycle and Operations
 
 > **Status:** target design. Active implementation is tracked by the [Roadmap](roadmap.md) and native GitHub Milestones.
-> The current prototype is still hook/plugin-centered. Commands such as Homebrew installation, managed `spotterd`, and full App Server integration described here are the **intended product lifecycle**, not current shipping behavior.
+> The current prototype is still hook/plugin-centered. A manual `spotterd` process/control lifecycle exists, but Homebrew installation, managed service registration, and full App Server integration described here are the **intended product lifecycle**, not current shipping behavior.
 
 ---
 
@@ -56,8 +56,8 @@ The most important lifecycle constraint is this:
 > explicitly when the TUI starts (currently with `--remote`).**
 
 That conflicts with a completely lazy “wake Spotter on the first Hook” design. #78 proved a
-Spotter-managed external path; #79 and #83 must now make its service ownership and startup strategy
-explicit before the lifecycle is finalized.
+Spotter-managed external path, and #79 provides the daemon/control and `ServiceManager` foundation.
+#83 must register the selected managed startup strategy before the lifecycle is finalized.
 
 ---
 
@@ -602,6 +602,17 @@ Possible implementations:
 - Linux: `systemd --user`.
 
 Do not hard-code these mechanisms into Spotter core. Hide them behind a `ServiceManager` abstraction.
+
+The current manual escape hatch exercises that boundary without claiming managed setup:
+
+```bash
+spotter daemon start
+spotter daemon status
+spotter daemon restart
+spotter daemon stop
+```
+
+These commands control only `spotterd`. They never stop or reset a shared Codex App Server.
 
 A portable mode may trade capability for zero persistent service registration:
 
