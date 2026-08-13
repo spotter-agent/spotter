@@ -87,6 +87,23 @@ def is_spotter_hook(hook: object) -> bool:
     return False
 
 
+def _is_known_legacy_hook(hook: object) -> bool:
+    """Recognize the repository/plugin bridge shape that predates manifests."""
+
+    if not isinstance(hook, dict) or not isinstance(hook.get("command"), str):
+        return False
+    try:
+        tokens = shlex.split(cast(str, hook["command"]))
+    except ValueError:
+        return False
+    if len(tokens) != 1:
+        return False
+    normalized = tokens[0].replace("\\", "/")
+    return normalized.endswith("/scripts/spotter-hook") and (
+        "PLUGIN_ROOT" in normalized or "/spotter/" in normalized
+    )
+
+
 @dataclass(frozen=True)
 class CodexInstall:
     path: str
@@ -354,22 +371,37 @@ class IntegrationManager:
                     raise IntegrationError("Codex hooks file has an unsupported hook group")
         return cast(dict[str, Any], raw), content
 
-    def _migrate_hooks(self, raw: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    def _migrate_hooks(
+        self, raw: dict[str, Any], existing: IntegrationManifest | None
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         updated = copy.deepcopy(raw)
         events = cast(dict[str, list[dict[str, Any]]], updated.setdefault("hooks", {}))
         removed: list[dict[str, Any]] = []
         owned = self._owned_hooks()
+        previously_owned = existing.owned_hooks if existing is not None else []
         for event, groups in list(events.items()):
             kept_groups: list[dict[str, Any]] = []
             for group in groups:
                 kept_hooks = []
                 for hook in cast(list[dict[str, Any]], group["hooks"]):
                     if self._is_spotter_hook(hook):
-                        if not any(
-                            (event, group.get("matcher"), hook)
-                            == (entry["event"], entry["matcher"], entry["hook"])
+                        identity = (event, group.get("matcher"), hook)
+                        is_current = existing is not None and any(
+                            identity == (entry["event"], entry["matcher"], entry["hook"])
                             for entry in owned
-                        ):
+                        )
+                        is_recorded = any(
+                            isinstance(entry, dict)
+                            and identity
+                            == (entry.get("event"), entry.get("matcher"), entry.get("hook"))
+                            for entry in previously_owned
+                        )
+                        if not (is_current or is_recorded or _is_known_legacy_hook(hook)):
+                            raise IntegrationError(
+                                "found an unowned or user-modified Spotter Hook; "
+                                "ownership is ambiguous, so setup made no changes"
+                            )
+                        if not is_current:
                             removed.append(
                                 {"event": event, "matcher": group.get("matcher"), "hook": hook}
                             )
@@ -409,8 +441,10 @@ class IntegrationManager:
         return str(path) if isinstance(path, Path) else None
 
     def inspect(
-        self,
+        self, existing: IntegrationManifest | None = None
     ) -> tuple[IntegrationPlan, dict[str, Any], bytes | None, list[dict[str, Any]]]:
+        if existing is None and self.manifest_path.exists():
+            existing = IntegrationManifest.load(self.manifest_path)
         try:
             self.layout.validate_persistent()
         except RuntimeLayoutError as error:
@@ -424,7 +458,7 @@ class IntegrationManager:
             except (OSError, tomllib.TOMLDecodeError, ConfigurationError) as error:
                 raise IntegrationError(f"Spotter config is unusable: {error}") from error
         hooks, before = self._read_hooks()
-        migrated, removed = self._migrate_hooks(hooks)
+        migrated, removed = self._migrate_hooks(hooks, existing)
         after = (json.dumps(migrated, indent=2, sort_keys=True) + "\n").encode()
         plan = IntegrationPlan(
             hooks_file=self.hooks_path,
@@ -483,7 +517,7 @@ class IntegrationManager:
         flock(lock, LOCK_EX)
         try:
             existing = IntegrationManifest.load(self.manifest_path)
-            plan, hooks, hooks_before, removed_hooks = self.inspect()
+            plan, hooks, hooks_before, removed_hooks = self.inspect(existing)
             codex = self._codex_install()
             hooks_after = (json.dumps(hooks, indent=2, sort_keys=True) + "\n").encode()
             config_before = (

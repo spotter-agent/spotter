@@ -91,12 +91,19 @@ class RuntimeLayout:
 
         explicit_daemon = daemon_executable or environment.get("SPOTTER_DAEMON_EXECUTABLE")
         daemon = _executable(explicit_daemon, search_path=search_path)
+        if daemon is None and invoked.name == "spotterd":
+            daemon = _executable(invoked_as, search_path=search_path)
         if daemon is None and cli is not None:
             # The active package boundary wins over PATH.  A missing sibling is
             # diagnosed later instead of silently selecting an older install.
             daemon = cli.with_name("spotterd")
         if daemon is None and not module_invocation:
             daemon = _executable("spotterd", search_path=search_path)
+        if cli is None and daemon is not None:
+            # A managed service commonly has a minimal PATH and starts through
+            # the stable daemon link directly.  Preserve that package boundary
+            # rather than falling back to a source/module identity.
+            cli = daemon.with_name("spotter")
 
         raw_system_config = environment.get("XDG_CONFIG_HOME")
         system_config = _absolute(

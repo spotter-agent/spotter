@@ -78,7 +78,7 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 | Evaluation labels / metrics | 🟡 | Coverage-aware labels and durable action/token/timing, reviewer, gate-latency, and storage metrics; live resource, delivery, and outcome joins remain |
 | Counterfactual experiment harness | ✅ | Control/guidance same-prefix pairs |
 | Standalone `spotterd` runtime | 🟡 | Process, gate IPC, per-thread immutable state, and App Server recovery ownership implemented; setup endpoint selection remains |
-| Packaging / release | 🟡 | Tags publish verified sdist/wheel/checksum metadata; the dedicated Homebrew tap installs immutable releases and opens repeatable Formula-update PRs; stable package paths, mutable-state boundaries, Hook generation fencing, and old-daemon build detection exist; cross-environment smoke remains |
+| Packaging / release | 🟡 | Tags publish verified artifacts; the dedicated Homebrew tap installs immutable releases and opens Formula-update PRs; macOS CI covers live G1→G2 upgrade/reconcile, teardown-less fail-open uninstall, retained data, and reinstall; broader #89/#90 lifecycle work remains |
 | App Server primary observation | 🟡 | Configured endpoints route through daemon-owned epoch/reconciliation into durable Trace IR and ThreadState; setup does not select an endpoint yet |
 | Event-driven signal engine | ❌ | Current reviewer trigger is periodic |
 | Live `VERIFY / NUDGE` | ❌ | Target: `turn/steer` |

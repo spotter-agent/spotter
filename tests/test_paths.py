@@ -121,6 +121,19 @@ def test_explicit_invocation_wins_over_path_discovery(
     assert layout.daemon_executable == invoked.with_name("spotterd")
 
 
+def test_managed_daemon_invocation_preserves_the_stable_package_boundary(
+    tmp_path: Path,
+) -> None:
+    cli = _executable(tmp_path / "stable/opt/spotter/bin/spotter")
+    daemon = _executable(cli.with_name("spotterd"))
+
+    layout = RuntimeLayout.discover(argv0=str(daemon), environ={"PATH": ""})
+
+    assert layout.daemon_executable == daemon
+    assert layout.cli_executable == cli
+    assert layout.daemon_command == (str(daemon),)
+
+
 def test_long_state_root_uses_a_short_private_runtime_address(tmp_path: Path) -> None:
     root = tmp_path / ("long" * 40)
     layout = RuntimeLayout.discover(spotter_root=root, environ={})
