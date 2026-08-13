@@ -62,7 +62,13 @@ from spotter.snapshot import (
     snapshot_references,
     stale_journals,
 )
-from spotter.task_corpus import TaskCorpusError, validate_task_set
+from spotter.task_corpus import (
+    PreflightClassification,
+    TaskCorpusError,
+    TaskPreflight,
+    preflight_task_set,
+    validate_task_set,
+)
 from spotter.trace import TraceEvent
 
 
@@ -99,7 +105,7 @@ def build_parser() -> argparse.ArgumentParser:
             "label: record a human verdict on a gate flag, reviewer decision, or session; "
             "metrics: gate FP rate, reviewer precision and observability ceiling from labels; "
             "observability: compare Hook/App Server Trace IR and source-adapter coverage; "
-            "tasks: validate a frozen task-set manifest without running agents; "
+            "tasks: validate or preflight a frozen task set without running agents; "
             "status: what Spotter is storing, and whether it is actually running; "
             "doctor: verify supervision end to end (non-zero exit when broken); "
             "daemon: manually start, stop, restart, or inspect spotterd; "
@@ -109,7 +115,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "target",
         nargs="?",
-        choices=["start", "stop", "restart", "status", "codex", "validate"],
+        choices=["start", "stop", "restart", "status", "codex", "validate", "preflight"],
         help="daemon lifecycle action, integration target, or task action",
     )
     parser.add_argument("subject", nargs="?", help="task-set manifest path")
@@ -217,10 +223,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             dry_run=args.dry_run,
         )
     if args.command == "tasks":
-        if args.target != "validate" or not args.subject:
-            parser.error("tasks requires: spotter tasks validate <set.toml>")
+        if args.target not in {"validate", "preflight"} or not args.subject:
+            parser.error("tasks requires: spotter tasks validate|preflight <set.toml>")
+        preflight_results: tuple[TaskPreflight, ...]
         try:
-            task_set = validate_task_set(Path(args.subject))
+            if args.target == "validate":
+                task_set = validate_task_set(Path(args.subject))
+                preflight_results = ()
+            else:
+                task_set, preflight_results = preflight_task_set(Path(args.subject))
         except TaskCorpusError as error:
             print(f"task validation failed: {error}", file=sys.stderr)
             return 1
@@ -228,6 +239,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"validated {task_set.task_set_id} v{task_set.version} "
             f"({task_set.split}): {len(task_set.tasks)} task(s)"
         )
+        for result in preflight_results:
+            print(f"  {result.task_id}: {result.classification}")
+        if any(
+            result.classification != PreflightClassification.READY for result in preflight_results
+        ):
+            return 1
         return 0
     if args.target is not None:
         parser.error("the second positional argument requires daemon, setup, teardown, or tasks")
