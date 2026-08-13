@@ -153,6 +153,39 @@ def test_duplicate_and_out_of_order_events_reconcile_across_restart(tmp_path: Pa
     assert resumed.ingest(_item_event("item/started", {**command, "status": "inProgress"})) is None
 
 
+def test_recovery_repairs_a_torn_journal_tail(tmp_path: Path) -> None:
+    ingestor = AppServerTraceIngestor(tmp_path)
+    ingestor.ingest(
+        _event(
+            "thread/started",
+            {"thread": {"id": "thread-1", "createdAt": 100, "cwd": "/repo"}},
+        )
+    )
+    journal = next(tmp_path.glob("app-server-*.jsonl"))
+    with journal.open("ab") as handle:
+        handle.write(b'{"step": 1')
+
+    resumed = AppServerTraceIngestor(tmp_path)
+    resumed.ingest(_event("thread/status/changed", {"threadId": "thread-1", "status": "active"}))
+
+    assert [record.event.kind for record in StepJournal.load(journal)] == [
+        "thread_started",
+        "thread_status",
+    ]
+
+
+def test_identical_stateless_notifications_are_not_mistaken_for_replays(tmp_path: Path) -> None:
+    ingestor = AppServerTraceIngestor(tmp_path)
+    status = _event("thread/status/changed", {"threadId": "thread-1", "status": "active"})
+
+    first = ingestor.ingest(status)
+    second = ingestor.ingest(status)
+
+    assert first is not None and second is not None
+    assert first.event.event_id is None
+    assert second.event.event_id is None
+
+
 def test_operation_and_timestamp_state_is_scoped_to_a_turn(tmp_path: Path) -> None:
     ingestor = AppServerTraceIngestor(tmp_path)
     item = {

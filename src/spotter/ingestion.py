@@ -19,6 +19,13 @@ from spotter.trace import TraceEvent, TraceProvenance
 
 _AGENT = "codex"
 _SOURCE = "codex_app_server"
+_REPLAY_SAFE_METHODS = {
+    "thread/started",
+    "turn/started",
+    "turn/completed",
+    "item/started",
+    "item/completed",
+}
 
 
 class IngestionError(ValueError):
@@ -222,6 +229,8 @@ class AppServerTraceIngestor:
         self._operations: dict[tuple[str, str, str], tuple[str, str | None]] = {}
         self._terminal_turns: set[str] = set()
         self._last_at: dict[tuple[str, str], float] = {}
+        # ponytail: recovery is O(all App Server history); #87 should checkpoint per-thread
+        # reconciliation state and apply retention before the daemon owns long-lived ingestion.
         self._recover()
 
     def ingest(self, raw_event: AppServerEvent) -> StepRecord | None:
@@ -239,7 +248,7 @@ class AppServerTraceIngestor:
             operation_key = _operation_key(event, route)
             lifecycle = _optional_string(event.payload.get("lifecycle"))
             previous = self._operations.get(operation_key)
-            if lifecycle == "started" and previous and previous[0] == "completed":
+            if lifecycle == "started" and previous is not None:
                 return None
             if lifecycle == "completed":
                 outcome = _optional_string(event.payload.get("status"))
@@ -266,7 +275,7 @@ class AppServerTraceIngestor:
 
     def _recover(self) -> None:
         for path in sorted(self.journals_dir.glob("app-server-*.jsonl")):
-            for record in StepJournal.load(path, strict=True):
+            for record in StepJournal.load(path, repair_tail=True):
                 event = record.event
                 self._restore_identity(event)
                 self._remember(event, path.name)
@@ -375,7 +384,9 @@ def _normalize_item(item: Mapping[str, Any], completed: bool) -> tuple[str, dict
     return ("item_completed" if completed else "item_started"), {"item_type": item_type}
 
 
-def _event_id(method: str, params: Mapping[str, Any]) -> str:
+def _event_id(method: str, params: Mapping[str, Any]) -> str | None:
+    if method not in _REPLAY_SAFE_METHODS:
+        return None
     encoded = json.dumps(
         {"method": method, "params": params},
         sort_keys=True,
