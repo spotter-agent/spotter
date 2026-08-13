@@ -1,8 +1,13 @@
 import hashlib
+import json
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 
+import spotter.cli as cli
+import spotter.task_corpus as task_corpus
 from spotter.cli import main
 from spotter.task_corpus import (
     PreflightClassification,
@@ -10,6 +15,8 @@ from spotter.task_corpus import (
     file_digest,
     fixture_digest,
     preflight_task_set,
+    run_task_batch,
+    summarize_task_batch,
     validate_task_set,
 )
 
@@ -203,3 +210,194 @@ def test_repo_corpus_is_frozen_and_preflight_ready(name: str) -> None:
 
     assert task_set.tasks
     assert all(result.classification == PreflightClassification.READY for result in results)
+
+
+def test_task_batch_runs_clean_control_and_guidance_arms(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _corpus(tmp_path / "corpus")
+    monkeypatch.setenv("SPOTTER_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(task_corpus, "_codex_version", lambda: "codex-test")
+    prompts: list[str] = []
+
+    def solve(
+        workspace: Path,
+        prompt: str,
+        *,
+        model: str | None,
+        sandbox: str,
+        timeout: int,
+    ) -> subprocess.CompletedProcess[str]:
+        prompts.append(prompt)
+        (workspace / "parser.py").write_text("def parse(): return 1\n")
+        shutil.rmtree(workspace / "__pycache__", ignore_errors=True)
+        return subprocess.CompletedProcess([], 0, "agent output", "")
+
+    monkeypatch.setattr(task_corpus, "_run_task_agent", solve)
+
+    output, results = run_task_batch(path, "Inspect the failing check first.")
+
+    assert {result.arm for result in results} == {"control", "guidance"}
+    assert all(result.classification == "PASS" for result in results)
+    assert all(result.setup.returncode == 0 for result in results)
+    assert all(result.checks[0].returncode == 0 for result in results)
+    assert all(result.wall_time_s == 600 and result.max_turns == 20 for result in results)
+    assert len({result.experiment_pair_id for result in results}) == 1
+    assert "pairs: n=1/1 mechanically judgeable" in summarize_task_batch(results)
+    assert all(result.workspace is None for result in results)
+    assert any("Inspect the failing check first." in prompt for prompt in prompts)
+    rows = [json.loads(line) for line in output.read_text().splitlines()]
+    assert rows[0]["task_set_sha256"] == file_digest(path)
+    assert rows[-1]["complete"] is True
+
+
+def test_task_batch_resumes_without_rerunning_completed_arms(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _corpus(tmp_path / "corpus")
+    monkeypatch.setenv("SPOTTER_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(task_corpus, "_codex_version", lambda: None)
+    calls = 0
+
+    def solve(
+        workspace: Path,
+        prompt: str,
+        *,
+        model: str | None,
+        sandbox: str,
+        timeout: int,
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        (workspace / "parser.py").write_text("def parse(): return 1\n")
+        shutil.rmtree(workspace / "__pycache__", ignore_errors=True)
+        return subprocess.CompletedProcess([], 0, "", "")
+
+    monkeypatch.setattr(task_corpus, "_run_task_agent", solve)
+    output, _ = run_task_batch(path, "Verify first.")
+    rows = output.read_text().splitlines()
+    output.write_text("\n".join(rows[:2]) + "\n")
+    calls = 0
+
+    resumed_output, results = run_task_batch(path, "Verify first.", resume=output)
+
+    assert resumed_output == output
+    assert calls == 1
+    assert len(results) == 2
+    assert len({(result.task_id, result.arm) for result in results}) == 2
+
+
+def test_task_batch_repairs_a_torn_final_row_before_resuming(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _corpus(tmp_path / "corpus")
+    monkeypatch.setenv("SPOTTER_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(task_corpus, "_codex_version", lambda: None)
+
+    def solve(
+        workspace: Path,
+        prompt: str,
+        *,
+        model: str | None,
+        sandbox: str,
+        timeout: int,
+    ) -> subprocess.CompletedProcess[str]:
+        (workspace / "parser.py").write_text("def parse(): return 1\n")
+        shutil.rmtree(workspace / "__pycache__", ignore_errors=True)
+        return subprocess.CompletedProcess([], 0, "", "")
+
+    monkeypatch.setattr(task_corpus, "_run_task_agent", solve)
+    output, _ = run_task_batch(path, "Verify first.")
+    rows = output.read_text().splitlines()
+    output.write_text("\n".join(rows[:2]) + '\n{"task_id":')
+
+    _, results = run_task_batch(path, "Verify first.", resume=output)
+
+    assert len(results) == 2
+    assert all(json.loads(line) for line in output.read_text().splitlines())
+
+
+def test_task_batch_refuses_resume_with_changed_conditions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _corpus(tmp_path / "corpus")
+    monkeypatch.setenv("SPOTTER_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(task_corpus, "_codex_version", lambda: None)
+
+    def fail(
+        workspace: Path,
+        prompt: str,
+        *,
+        model: str | None,
+        sandbox: str,
+        timeout: int,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess([], 1, "", "agent failed")
+
+    monkeypatch.setattr(task_corpus, "_run_task_agent", fail)
+    output, _ = run_task_batch(path, "Original guidance.")
+
+    with pytest.raises(TaskCorpusError, match="guidance does not match"):
+        run_task_batch(path, "Changed guidance.", resume=output)
+
+
+def test_task_batch_classifies_agent_timeout_without_running_checks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _corpus(tmp_path / "corpus")
+    monkeypatch.setenv("SPOTTER_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(task_corpus, "_codex_version", lambda: None)
+
+    def timeout(
+        workspace: Path,
+        prompt: str,
+        *,
+        model: str | None,
+        sandbox: str,
+        timeout: int,
+    ) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired("codex", timeout, output="partial", stderr="timed out")
+
+    monkeypatch.setattr(task_corpus, "_run_task_agent", timeout)
+
+    _, results = run_task_batch(path, "Verify first.")
+
+    assert all(result.classification == "TIMEOUT_AGENT" for result in results)
+    assert all(result.checks == () for result in results)
+    assert all(result.agent_stdout == "partial" for result in results)
+
+
+def test_task_batch_classifies_per_arm_setup_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _corpus(tmp_path / "corpus")
+    task = tmp_path / "corpus" / "tasks" / "parser.toml"
+    task.write_text(task.read_text().replace("python3 -m compileall .", "exit 2"))
+    _refreeze_task(tmp_path / "corpus", path)
+    task_set = validate_task_set(path)
+    ready = tuple(
+        task_corpus.TaskPreflight(manifest.task_id, PreflightClassification.READY, ())
+        for manifest in task_set.tasks
+    )
+    monkeypatch.setenv("SPOTTER_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(task_corpus, "preflight_task_set", lambda _: (task_set, ready))
+    monkeypatch.setattr(task_corpus, "_codex_version", lambda: None)
+
+    _, results = run_task_batch(path, "Verify first.")
+
+    assert all(result.classification == "SETUP_FAIL" for result in results)
+    assert all(result.setup.returncode == 2 for result in results)
+
+
+def test_task_batch_cli_requires_paid_run_opt_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = _corpus(tmp_path / "corpus")
+    with pytest.raises(SystemExit):
+        main(["tasks", "run", str(path), "--guidance", "Verify first."])
+
+    output = tmp_path / "batch.jsonl"
+    monkeypatch.setattr(cli, "run_task_batch", lambda *args, **kwargs: (output, ()))
+
+    assert main(["tasks", "run", str(path), "--guidance", "Verify first.", "--run"]) == 0
+    assert f"results written to {output}" in capsys.readouterr().out

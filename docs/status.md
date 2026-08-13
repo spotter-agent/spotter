@@ -99,7 +99,7 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 | Shadow reviewer | ✅ | Produces `CONTINUE`, `VERIFY`, `NUDGE`; verdicts are recorded only | Move to event-driven candidates, then live delivery |
 | Audit / live state | 🟡 | Daemon-owned typed ThreadState distinguishes constraints, hypotheses, observations, verified facts, summaries, interventions, and coverage | Feed reviewer jobs and signals from immutable snapshots |
 | Evaluation labels / metrics | 🟡 | Coverage-aware labels plus durable Main action/token/timing, reviewer, gate-latency, and storage projections; unavailable values remain unknown | Add live resource/queue/delivery telemetry and objective outcome joins (#33, #38, #34) |
-| Counterfactual harness | ✅ | Control/guidance same-prefix pairs persist explicit task/infra/timeout classifications and bounded check diagnostics | Execute frozen task sets as resumable batches (#21) |
+| Counterfactual harness | ✅ | Same-prefix experiments plus resumable frozen task-set batches persist explicit classifications and bounded diagnostics | Expand the corpus and execute the first reportable multi-task control/guidance run (#21) |
 | Standalone runtime | 🟡 | Long-lived process, IPC, lifecycle, isolated per-thread state, and App Server recovery ownership | Select and verify the shared endpoint during setup |
 | Runtime identity | ✅ | Logical threads/turns remain separate from per-connection attachment IDs and monotonically recovered epochs | Propagate the identity into future reviewer jobs |
 | App Server primary observation | 🟡 | Configured endpoints route through `spotterd` into normalized durable Trace IR and incremental ThreadState; a bounded value-free source audit and conformance corpus measure projection coverage | Collect labeled App Server failures to finish #37, then reduce Hooks in #86 |
@@ -153,7 +153,7 @@ Implementation progress and research evidence remain separate.
 | Can Spotter produce plausible semantic reviewer verdicts? | Yes, in shadow mode |
 | Can Spotter branch a shared prefix for counterfactual experiments? | Yes |
 | Is the fork instrument's causal noise floor known? | **No — #42** |
-| Is there a reproducible mechanically scored task corpus? | **Partial — frozen synthetic dev/validation fixtures and preflight exist; resumable multi-task execution remains (#21)** |
+| Is there a reproducible mechanically scored task corpus? | **Partial — frozen fixtures, preflight, isolated control/guidance execution, and condition-checked resume exist; corpus breadth and a real reportable run remain (#21)** |
 | Has live Spotter guidance been shown to improve outcomes? | **No** |
 | Is the App Server control boundary operationally viable? | **Yes for a configured Spotter-managed external path, including daemon reconnect/reconciliation** |
 | Is the post-App-Server visible-in-time ceiling measured? | **No — the instrument exists, but the current sample has 0 App Server sessions and 0/9 labeled sessions (#37)** |

@@ -352,10 +352,13 @@ spotter fork --session <id> --step <n>
 spotter prune --repo /path/to/repo  # dry-run unless --apply is supplied
 spotter tasks validate path/to/task-set.toml
 spotter tasks preflight path/to/task-set.toml
+spotter tasks run path/to/task-set.toml --guidance "..." --run
+# after an interrupted batch, repeat the same conditions and add:
+# --resume ~/.spotter/experiments/task-batches/<batch>.jsonl
 spotter experiment --session <id> --step <n> --guidance "..." --check "..."
 ```
 
-Task-set validation freezes task and fixture hashes and checks the versioned scorer/budget contract without executing commands. Preflight runs setup, the broken-state scorer, a declared known-good transform, and the positive scorer in a temporary fixture copy; it never runs agent arms. Because preflight executes corpus-declared shell commands, use `validate` only for untrusted task sets. The experiment harness existing does **not** mean positive intervention advantage has been established. A frozen multi-task corpus and enough executed runs remain evidence gaps.
+Task-set validation freezes task and fixture hashes and checks the versioned scorer/budget contract without executing commands. Preflight runs setup, the broken-state scorer, a declared known-good transform, and the positive scorer in a temporary fixture copy; it never runs agent arms. Because preflight and batch execution run corpus-declared shell commands, use `validate` only for untrusted task sets. `tasks run` requires an explicit paid-run opt-in, starts each control/guidance arm from a clean fixture copy, journals bounded mechanical results with `fsync`, and resumes only when the frozen set, environment, and run conditions still match. The Codex backend enforces the wall-time budget; it records the declared max-turn budget for parity/provenance because `codex exec` does not expose a hard turn-limit flag. The existence of the experiment harness does **not** mean positive intervention advantage has been established. Enough executed multi-task runs remain an evidence gap.
 
 ---
 

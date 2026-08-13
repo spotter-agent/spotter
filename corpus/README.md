@@ -16,4 +16,12 @@ spotter tasks preflight corpus/dev-v1.toml
 spotter tasks preflight corpus/validation-v1.toml
 ```
 
-These synthetic fixtures establish harness behavior. They are not evidence of intervention advantage and do not replace the later multi-task executed experiment.
+Run paid control/guidance arms from independent clean fixture copies:
+
+```bash
+spotter tasks run corpus/dev-v1.toml --guidance "Inspect the failing check first." --run
+spotter tasks run corpus/dev-v1.toml --guidance "Inspect the failing check first." --run \
+  --resume ~/.spotter/experiments/task-batches/<batch>.jsonl
+```
+
+Resume refuses changed task-set hashes, environment, guidance, model, or sandbox settings and skips already journaled arms. These synthetic fixtures establish harness behavior. They are not evidence of intervention advantage and do not replace the later executed experiment across a larger heterogeneous corpus.

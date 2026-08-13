@@ -822,6 +822,13 @@ cost/timing
 
 Do not treat experiment machinery as evidence of positive intervention advantage until enough mechanically scored runs exist.
 
+Frozen task-set batches run control/guidance arms from separate clean fixture copies. Each arm row
+records the task/set identity, declared budget, setup/check diagnostics, and an explicit task versus
+infrastructure/timeout classification. Rows are flushed durably after scoring; resume skips existing
+task/arm keys only when the task-set hash, environment, guidance, model, and sandbox still match.
+The current Codex backend enforces wall time and records the declared max-turn budget; the Codex CLI
+does not yet expose a hard max-turn limit for the batch runner to enforce.
+
 ---
 
 # 9. Status, doctor, and repair

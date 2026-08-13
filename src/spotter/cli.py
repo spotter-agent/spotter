@@ -67,6 +67,8 @@ from spotter.task_corpus import (
     TaskCorpusError,
     TaskPreflight,
     preflight_task_set,
+    run_task_batch,
+    summarize_task_batch,
     validate_task_set,
 )
 from spotter.trace import TraceEvent
@@ -115,10 +117,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "target",
         nargs="?",
-        choices=["start", "stop", "restart", "status", "codex", "validate", "preflight"],
+        choices=["start", "stop", "restart", "status", "codex", "validate", "preflight", "run"],
         help="daemon lifecycle action, integration target, or task action",
     )
     parser.add_argument("subject", nargs="?", help="task-set manifest path")
+    parser.add_argument("--resume", type=Path, help="tasks run: resume this task-batch JSONL")
     parser.add_argument("--config", type=Path, help="path to Spotter TOML config")
     parser.add_argument(
         "--session", help="session id (fork; analyze/metrics/observability filter to it)"
@@ -223,8 +226,29 @@ def main(argv: Sequence[str] | None = None) -> int:
             dry_run=args.dry_run,
         )
     if args.command == "tasks":
-        if args.target not in {"validate", "preflight"} or not args.subject:
-            parser.error("tasks requires: spotter tasks validate|preflight <set.toml>")
+        if args.target not in {"validate", "preflight", "run"} or not args.subject:
+            parser.error("tasks requires: spotter tasks validate|preflight|run <set.toml>")
+        if args.target == "run":
+            if not args.run:
+                parser.error("tasks run requires --run because it executes paid agent arms")
+            if not args.guidance:
+                parser.error("tasks run requires --guidance")
+            try:
+                output, task_results = run_task_batch(
+                    Path(args.subject),
+                    args.guidance,
+                    resume=args.resume,
+                    model=args.model,
+                    keep_artifacts=args.keep_artifacts,
+                )
+            except TaskCorpusError as error:
+                print(f"task batch failed: {error}", file=sys.stderr)
+                return 1
+            print(summarize_task_batch(task_results))
+            print(f"results written to {output}")
+            return 0
+        if args.resume:
+            parser.error("--resume requires tasks run")
         preflight_results: tuple[TaskPreflight, ...]
         try:
             if args.target == "validate":
@@ -248,6 +272,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.target is not None:
         parser.error("the second positional argument requires daemon, setup, teardown, or tasks")
+    if args.resume:
+        parser.error("--resume requires tasks run")
     if args.dry_run or args.portable:
         parser.error("--dry-run and --portable require setup")
 

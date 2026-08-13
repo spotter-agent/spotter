@@ -1,20 +1,28 @@
 """Versioned, dependency-free task corpus manifests."""
 
 import hashlib
+import json
 import os
+import platform
 import shutil
 import signal
 import subprocess
 import tempfile
 import tomllib
+import uuid
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from spotter.experiment import CONTROL_PROMPT, ArmClassification
+from spotter.paths import spotter_home
+
 TASK_SCHEMA_VERSION = 1
 TASK_SET_SCHEMA_VERSION = 1
+TASK_BATCH_SCHEMA_VERSION = 1
 
 
 class TaskCorpusError(ValueError):
@@ -39,11 +47,14 @@ class TaskManifest:
     task_id: str
     path: Path
     source: Path
+    source_sha256: str
     prompt: str
     setup: CommandSpec
     precheck: CommandSpec
     checks: tuple[CheckSpec, ...]
     known_good: CommandSpec | None
+    wall_time_s: int
+    max_turns: int
 
 
 @dataclass(frozen=True)
@@ -76,6 +87,29 @@ class TaskPreflight:
     task_id: str
     classification: PreflightClassification
     commands: tuple[CommandResult, ...]
+
+
+@dataclass(frozen=True)
+class TaskArmResult:
+    run_id: str
+    experiment_pair_id: str
+    task_set_id: str
+    task_set_version: int
+    task_id: str
+    arm: str
+    classification: ArmClassification
+    fixture_sha256: str
+    wall_time_s: int
+    max_turns: int
+    setup: CommandResult
+    checks: tuple[CommandResult, ...]
+    agent_exit: int | None
+    agent_stdout: str
+    agent_stderr: str
+    started_at: str
+    ended_at: str
+    workspace: str | None = None
+    result_schema_version: int = TASK_BATCH_SCHEMA_VERSION
 
 
 def validate_task_set(path: Path) -> TaskSetManifest:
@@ -156,6 +190,412 @@ def preflight_task_set(path: Path) -> tuple[TaskSetManifest, tuple[TaskPreflight
     return task_set, tuple(_preflight_task(task) for task in task_set.tasks)
 
 
+def run_task_batch(
+    path: Path,
+    guidance: str,
+    *,
+    resume: Path | None = None,
+    model: str | None = None,
+    sandbox: str = "workspace-write",
+    keep_artifacts: bool = False,
+) -> tuple[Path, tuple[TaskArmResult, ...]]:
+    """Run control/guidance arms from clean fixture copies, resuming completed rows."""
+
+    if not guidance.strip():
+        raise TaskCorpusError("task batch guidance must be non-empty")
+    set_path = path.resolve()
+    task_set, preflight = preflight_task_set(set_path)
+    not_ready = [
+        result for result in preflight if result.classification != PreflightClassification.READY
+    ]
+    if not_ready:
+        detail = ", ".join(f"{row.task_id}={row.classification}" for row in not_ready)
+        raise TaskCorpusError(f"task batch preflight failed: {detail}")
+
+    set_sha256 = file_digest(set_path)
+    if resume is None:
+        run_id = str(uuid.uuid4())
+        output = task_batch_path(task_set, run_id)
+        header = {
+            "meta": True,
+            "result_schema_version": TASK_BATCH_SCHEMA_VERSION,
+            "run_id": run_id,
+            "task_set_id": task_set.task_set_id,
+            "task_set_version": task_set.version,
+            "task_set_sha256": set_sha256,
+            "split": task_set.split,
+            "guidance": guidance,
+            "model": model or "codex-config-default",
+            "sandbox": sandbox,
+            "python": platform.python_version(),
+            "platform": platform.platform(),
+            "codex_version": _codex_version(),
+            "codex_home": str(Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")).resolve()),
+            "started_at": datetime.now(UTC).isoformat(),
+        }
+        _append_json(output, header)
+        existing: list[TaskArmResult] = []
+    else:
+        output = resume.resolve()
+        header, existing, was_complete = _read_task_batch(output)
+        _validate_resume(
+            output,
+            header,
+            task_set,
+            set_sha256=set_sha256,
+            guidance=guidance,
+            model=model,
+            sandbox=sandbox,
+            existing=existing,
+        )
+        run_id = str(header["run_id"])
+        if was_complete and len(existing) == len(task_set.tasks) * 2:
+            return output, tuple(existing)
+
+    completed = {(row.task_id, row.arm) for row in existing}
+    results = list(existing)
+    for index, task in enumerate(task_set.tasks):
+        arms = [
+            ("control", f"{task.prompt}\n\n{CONTROL_PROMPT}"),
+            ("guidance", f"{task.prompt}\n\n{CONTROL_PROMPT} {guidance}"),
+        ]
+        if (index + uuid.UUID(run_id).int) % 2:
+            arms.reverse()
+        for arm, prompt in arms:
+            if (task.task_id, arm) in completed:
+                continue
+            result = _run_task_arm(
+                run_id,
+                task_set,
+                task,
+                arm,
+                prompt,
+                model=model,
+                sandbox=sandbox,
+                keep_artifacts=keep_artifacts,
+            )
+            _append_json(output, asdict(result))
+            results.append(result)
+    _append_json(
+        output,
+        {
+            "complete": True,
+            "run_id": run_id,
+            "results": len(results),
+            "finished_at": datetime.now(UTC).isoformat(),
+        },
+    )
+    return output, tuple(results)
+
+
+def task_batch_path(task_set: TaskSetManifest, run_id: str) -> Path:
+    base = spotter_home() / "experiments" / "task-batches"
+    base.mkdir(parents=True, exist_ok=True)
+    safe_set_id = "".join(
+        character if character.isalnum() or character in "-_" else "_"
+        for character in task_set.task_set_id
+    )
+    return base / f"{safe_set_id}-v{task_set.version}-{run_id}.jsonl"
+
+
+def summarize_task_batch(results: tuple[TaskArmResult, ...]) -> str:
+    task_count = len({row.task_id for row in results})
+    lines = [f"task batch: {len(results)} arm(s), {task_count} task(s)"]
+    for arm in ("control", "guidance"):
+        arm_results = tuple(row for row in results if row.arm == arm)
+        counts = ", ".join(
+            f"{classification}={sum(row.classification == classification for row in arm_results)}"
+            for classification in ArmClassification
+            if any(row.classification == classification for row in arm_results)
+        )
+        lines.append(f"{arm}: {counts or 'no results'}")
+
+    guidance_better = control_better = tied = complete = 0
+    for pair_id in {row.experiment_pair_id for row in results}:
+        pair = {row.arm: row for row in results if row.experiment_pair_id == pair_id}
+        if set(pair) != {"control", "guidance"} or any(
+            row.classification not in {ArmClassification.PASS, ArmClassification.TASK_FAIL}
+            for row in pair.values()
+        ):
+            continue
+        complete += 1
+        control_passed = pair["control"].classification == ArmClassification.PASS
+        guidance_passed = pair["guidance"].classification == ArmClassification.PASS
+        guidance_better += guidance_passed and not control_passed
+        control_better += control_passed and not guidance_passed
+        tied += guidance_passed == control_passed
+    lines.append(
+        f"pairs: n={complete}/{task_count} mechanically judgeable; "
+        f"guidance better={guidance_better}, control better={control_better}, tied={tied}"
+    )
+    return "\n".join(lines)
+
+
+def _run_task_arm(
+    run_id: str,
+    task_set: TaskSetManifest,
+    task: TaskManifest,
+    arm: str,
+    prompt: str,
+    *,
+    model: str | None,
+    sandbox: str,
+    keep_artifacts: bool,
+) -> TaskArmResult:
+    started_at = datetime.now(UTC).isoformat()
+    scratch = Path(tempfile.mkdtemp(prefix="spotter-task-arm-"))
+    workspace = scratch / "workspace"
+    checks: tuple[CommandResult, ...] = ()
+    agent_exit: int | None = None
+    agent_stdout = ""
+    agent_stderr = ""
+    try:
+        try:
+            shutil.copytree(task.source, workspace)
+            setup = _run_command("setup", task.setup, workspace)
+        except OSError as error:
+            setup = CommandResult("setup", None, "", _bounded_output(str(error)))
+
+        if setup.timed_out or setup.returncode != 0:
+            classification = ArmClassification.SETUP_FAIL
+        else:
+            try:
+                completed = _run_task_agent(
+                    workspace,
+                    prompt,
+                    model=model,
+                    sandbox=sandbox,
+                    timeout=task.wall_time_s,
+                )
+                agent_exit = completed.returncode
+                agent_stdout = _bounded_output(completed.stdout)
+                agent_stderr = _bounded_output(completed.stderr)
+                if agent_exit != 0:
+                    classification = ArmClassification.INFRA_FAIL
+                else:
+                    checks = tuple(
+                        _run_command(f"check:{check.id}", check.command, workspace)
+                        for check in task.checks
+                    )
+                    required = tuple(
+                        result
+                        for check, result in zip(task.checks, checks, strict=True)
+                        if check.required
+                    )
+                    if any(result.timed_out for result in required):
+                        classification = ArmClassification.TIMEOUT_CHECK
+                    elif any(result.returncode is None for result in required):
+                        classification = ArmClassification.CHECK_ERROR
+                    elif all(result.returncode == 0 for result in required):
+                        classification = ArmClassification.PASS
+                    else:
+                        classification = ArmClassification.TASK_FAIL
+            except subprocess.TimeoutExpired as error:
+                classification = ArmClassification.TIMEOUT_AGENT
+                agent_stdout = _bounded_output(error.stdout)
+                agent_stderr = _bounded_output(error.stderr)
+            except OSError as error:
+                classification = ArmClassification.INFRA_FAIL
+                agent_stderr = _bounded_output(str(error))
+        return TaskArmResult(
+            run_id=run_id,
+            experiment_pair_id=f"{run_id}:{task.task_id}",
+            task_set_id=task_set.task_set_id,
+            task_set_version=task_set.version,
+            task_id=task.task_id,
+            arm=arm,
+            classification=classification,
+            fixture_sha256=task.source_sha256,
+            wall_time_s=task.wall_time_s,
+            max_turns=task.max_turns,
+            setup=setup,
+            checks=checks,
+            agent_exit=agent_exit,
+            agent_stdout=agent_stdout,
+            agent_stderr=agent_stderr,
+            started_at=started_at,
+            ended_at=datetime.now(UTC).isoformat(),
+            workspace=str(workspace) if keep_artifacts else None,
+        )
+    finally:
+        if not keep_artifacts:
+            shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _run_task_agent(
+    workspace: Path,
+    prompt: str,
+    *,
+    model: str | None,
+    sandbox: str,
+    timeout: int,
+) -> subprocess.CompletedProcess[str]:
+    args = ["codex", "exec", "-C", str(workspace)]
+    if model:
+        args += ["--model", model]
+    args += ["--skip-git-repo-check", "--sandbox", sandbox, prompt]
+    process = subprocess.Popen(
+        args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+        env={**os.environ, "SPOTTER_DISABLE": "1"},
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as initial_timeout:
+        with suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+        try:
+            stdout, stderr = process.communicate(timeout=1)
+        except subprocess.TimeoutExpired as escaped_child:
+            if process.stdout is not None:
+                process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()
+            with suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=1)
+            raise subprocess.TimeoutExpired(
+                args,
+                timeout,
+                output=escaped_child.stdout or initial_timeout.stdout,
+                stderr=escaped_child.stderr or initial_timeout.stderr,
+            ) from escaped_child
+        raise subprocess.TimeoutExpired(
+            args, timeout, output=stdout, stderr=stderr
+        ) from initial_timeout
+    return subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
+
+
+def _append_json(path: Path, row: dict[str, Any]) -> None:
+    with path.open("a", encoding="utf-8") as sink:
+        sink.write(json.dumps(row) + "\n")
+        sink.flush()
+        os.fsync(sink.fileno())
+
+
+def _read_task_batch(path: Path) -> tuple[dict[str, Any], list[TaskArmResult], bool]:
+    try:
+        lines = path.read_text().splitlines(keepends=True)
+    except OSError as error:
+        raise TaskCorpusError(f"cannot resume task batch {path}: {error}") from error
+    if not lines:
+        raise TaskCorpusError(f"cannot resume empty task batch {path}")
+    rows: list[dict[str, Any]] = []
+    for index, line in enumerate(lines):
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as error:
+            if index == len(lines) - 1:
+                with path.open("w", encoding="utf-8") as sink:
+                    sink.write("".join(lines[:index]))
+                    sink.flush()
+                    os.fsync(sink.fileno())
+                break
+            raise TaskCorpusError(f"task batch {path} has corrupt row {index + 1}") from error
+        if not isinstance(row, dict):
+            raise TaskCorpusError(f"task batch {path} row {index + 1} is not an object")
+        rows.append(row)
+    if not rows or rows[0].get("meta") is not True:
+        raise TaskCorpusError(f"task batch {path} has no metadata header")
+
+    results: list[TaskArmResult] = []
+    seen: set[tuple[str, str]] = set()
+    for row in rows[1:]:
+        if "task_id" not in row:
+            continue
+        try:
+            key = (str(row["task_id"]), str(row["arm"]))
+            if key in seen:
+                raise TaskCorpusError(f"task batch {path} has duplicate result {key}")
+            seen.add(key)
+            results.append(
+                TaskArmResult(
+                    run_id=str(row["run_id"]),
+                    experiment_pair_id=str(row["experiment_pair_id"]),
+                    task_set_id=str(row["task_set_id"]),
+                    task_set_version=int(row["task_set_version"]),
+                    task_id=key[0],
+                    arm=key[1],
+                    classification=ArmClassification(row["classification"]),
+                    fixture_sha256=str(row["fixture_sha256"]),
+                    wall_time_s=int(row["wall_time_s"]),
+                    max_turns=int(row["max_turns"]),
+                    setup=CommandResult(**row["setup"]),
+                    checks=tuple(CommandResult(**check) for check in row["checks"]),
+                    agent_exit=row["agent_exit"],
+                    agent_stdout=str(row["agent_stdout"]),
+                    agent_stderr=str(row["agent_stderr"]),
+                    started_at=str(row["started_at"]),
+                    ended_at=str(row["ended_at"]),
+                    workspace=row.get("workspace"),
+                    result_schema_version=int(row["result_schema_version"]),
+                )
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise TaskCorpusError(f"task batch {path} contains an invalid result") from error
+    if any(result.result_schema_version != TASK_BATCH_SCHEMA_VERSION for result in results):
+        raise TaskCorpusError(f"task batch {path} contains an unsupported result schema")
+    return rows[0], results, any(row.get("complete") is True for row in rows[1:])
+
+
+def _validate_resume(
+    path: Path,
+    header: dict[str, Any],
+    task_set: TaskSetManifest,
+    *,
+    set_sha256: str,
+    guidance: str,
+    model: str | None,
+    sandbox: str,
+    existing: list[TaskArmResult],
+) -> None:
+    expected = {
+        "result_schema_version": TASK_BATCH_SCHEMA_VERSION,
+        "task_set_id": task_set.task_set_id,
+        "task_set_version": task_set.version,
+        "task_set_sha256": set_sha256,
+        "guidance": guidance,
+        "model": model or "codex-config-default",
+        "sandbox": sandbox,
+        "python": platform.python_version(),
+        "platform": platform.platform(),
+        "codex_version": _codex_version(),
+        "codex_home": str(Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")).resolve()),
+    }
+    for key, value in expected.items():
+        if header.get(key) != value:
+            raise TaskCorpusError(f"cannot resume {path}: {key} does not match")
+    try:
+        uuid.UUID(str(header["run_id"]))
+    except (KeyError, ValueError) as error:
+        raise TaskCorpusError(f"cannot resume {path}: invalid run_id") from error
+    manifests = {task.task_id: task for task in task_set.tasks}
+    for row in existing:
+        manifest = manifests.get(row.task_id)
+        if (
+            manifest is None
+            or row.run_id != header["run_id"]
+            or row.experiment_pair_id != f"{row.run_id}:{row.task_id}"
+            or row.task_set_id != task_set.task_set_id
+            or row.task_set_version != task_set.version
+            or row.arm not in {"control", "guidance"}
+            or row.fixture_sha256 != manifest.source_sha256
+            or row.wall_time_s != manifest.wall_time_s
+            or row.max_turns != manifest.max_turns
+        ):
+            raise TaskCorpusError(f"cannot resume {path}: result provenance does not match")
+
+
+def _codex_version() -> str | None:
+    try:
+        result = subprocess.run(["codex", "--version"], capture_output=True, text=True, timeout=10)
+        return result.stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 def _validate_task(path: Path, corpus_root: Path) -> TaskManifest:
     data = _load_toml(path)
     _schema(data, "task_schema_version", TASK_SCHEMA_VERSION, path)
@@ -168,7 +608,8 @@ def _validate_task(path: Path, corpus_root: Path) -> TaskManifest:
     fixture = _contained_path(corpus_root, _text(source, "path", path), path)
     if not fixture.is_dir():
         raise TaskCorpusError(f"{path}: fixture source does not exist: {fixture}")
-    if fixture_digest(fixture) != _text(source, "sha256", path):
+    source_sha256 = _text(source, "sha256", path)
+    if fixture_digest(fixture) != source_sha256:
         raise TaskCorpusError(f"{path}: fixture sha256 mismatch")
 
     setup = _command(_table(data, "setup", path), path)
@@ -203,8 +644,8 @@ def _validate_task(path: Path, corpus_root: Path) -> TaskManifest:
         known_good = _command(known_good_raw, path)
 
     budget = _table(data, "budget", path)
-    _positive_int(budget, "wall_time_s", path)
-    _positive_int(budget, "max_turns", path)
+    wall_time_s = _positive_int(budget, "wall_time_s", path)
+    max_turns = _positive_int(budget, "max_turns", path)
     metadata = _table(data, "metadata", path)
     for key in ("family", "difficulty", "provenance"):
         _text(metadata, key, path)
@@ -212,11 +653,14 @@ def _validate_task(path: Path, corpus_root: Path) -> TaskManifest:
         task_id,
         path,
         fixture,
+        source_sha256,
         prompt,
         setup,
         precheck_command,
         tuple(parsed_checks),
         known_good,
+        wall_time_s,
+        max_turns,
     )
 
 
