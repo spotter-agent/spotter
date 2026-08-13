@@ -11,7 +11,9 @@
 
 **P0 — App Server lifecycle / attach PoC**
 
-Prove that ordinary `codex` and Spotter can share the same external App Server, observe the same thread/turn, and that `turn/steer` reaches the actual user session.
+Prove that `codex --remote <endpoint>` and Spotter can share the same external App Server,
+observe the same thread/turn, and that `turn/steer` reaches the actual user session. Plain
+`codex` auto-discovery has already been rejected; see [validation](app-server-validation.md).
 
 ### Next
 
@@ -124,23 +126,23 @@ The project is therefore **implementation-rich but evidence-poor**: substantial 
 
 ### Questions to answer
 
-1. Does plain `codex` reuse a pre-existing default external App Server daemon?
+1. ~~Does plain `codex` reuse a pre-existing default external App Server daemon?~~ **No** — current docs and CLI source require `--remote`; see [validation](app-server-validation.md).
 2. Can Spotter attach as a second client to the exact same server?
 3. Do TUI and Spotter observe the same thread id and active turn id?
 4. Does `turn/steer` affect the actual user-visible turn?
 5. What happens with multiple simultaneous TUI sessions?
-6. Which CLI/config overrides disable daemon reuse?
+6. Which launcher/alias/wrapper can supply `--remote` safely across normal, resume, and failure paths?
 7. What can Spotter still do when Codex chooses an embedded server?
 8. What lifecycle/ownership guarantees does Codex's experimental daemon actually provide?
 
-### Experiment A — Codex-managed daemon
+### Experiment A — explicit remote TUI
 
 ```text
-ensure Codex App Server daemon
+start external Codex App Server
         ↓
-plain `codex`
+`codex --remote <endpoint>`
         ↓
-TUI reuses external daemon
+TUI connects to the selected server
         ↓
 Spotter attaches as client B
         ↓
@@ -159,7 +161,7 @@ Record:
 - steer latency and visible result;
 - disconnect/reconnect behavior.
 
-### Experiment B — Spotter-managed App Server
+### Experiment B — Spotter-managed launch UX
 
 ```text
 Spotter starts external `codex app-server`

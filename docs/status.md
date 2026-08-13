@@ -30,7 +30,7 @@ PreToolUse Hook only
 (deterministic synchronous enforcement)
 ```
 
-The **immediate blocker** is not writing `spotterd`. It is proving that ordinary `codex` and Spotter can share the **same externally reachable App Server**, so Spotter can observe the real thread and steer the real active turn. If that PoC fails, the target architecture must be revisited before the daemon migration continues.
+The **immediate blocker** is not writing `spotterd`. Current Codex documentation and CLI source show that a separately started App Server is **not auto-discovered by plain `codex`**; the TUI must select it with `codex --remote <endpoint>`. The remaining PoC must prove that an explicitly connected TUI and Spotter can observe and steer the same real turn, then select an acceptable launch UX. See [App Server connection validation](app-server-validation.md).
 
 ### Read next
 
@@ -72,12 +72,15 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 PoC required · 🎯 targ
 
 The question is intentionally narrow:
 
-> **Can a user run ordinary `codex`, while the Codex TUI and Spotter use the same external App Server, and can Spotter steer that exact active turn?**
+> **Can Spotter provide an acceptable explicit launch path in which the Codex TUI and Spotter use the same external App Server, and can Spotter steer that exact active turn?**
+
+The former assumption that merely starting the external server would make plain `codex`
+reuse it was rejected by the [2026-08-13 validation](app-server-validation.md).
 
 Test three paths:
 
-1. **Codex-managed daemon** — start/ensure the Codex App Server daemon, then verify plain `codex` reuses it and Spotter can attach as a second client.
-2. **Spotter-managed App Server** — Spotter starts/owns the external `codex app-server` process while preserving a normal `codex` UX.
+1. **Explicit remote TUI** — start an external App Server, launch `codex --remote <endpoint>`, and verify Spotter can attach as a second client.
+2. **Spotter launch UX** — validate a launcher/alias/wrapper that supplies the endpoint without claiming unsupported automatic discovery.
 3. **Embedded baseline** — document exactly which Spotter capabilities remain when Codex chooses an embedded App Server that Spotter cannot attach to.
 
 PoC exit criteria:

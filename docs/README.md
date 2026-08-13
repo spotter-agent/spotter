@@ -70,7 +70,10 @@ spotterd
 PreToolUse Hook only for deterministic blocking
 ```
 
-The target is **conditional on P0**: Spotter must prove that the user's ordinary Codex TUI and Spotter can share the same external App Server and that `turn/steer` reaches the real active user turn.
+The target is **conditional on P0**: [validation](app-server-validation.md) found that
+plain `codex` does not auto-discover a separately started App Server. Spotter must now
+prove that an explicitly remote-connected TUI and Spotter can share the server and that
+`turn/steer` reaches the real active user turn.
 
 If that does not work reliably, the target architecture is revisited before the daemon migration continues.
 

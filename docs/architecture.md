@@ -236,7 +236,9 @@ Codex TUI attaches to external App Server
         └─ Spotter = client B
 ```
 
-Important constraint: plain `codex` can choose an embedded App Server when a reusable external daemon is unavailable. Starting Spotter only at the first `PreToolUse` can therefore be too late for full observation/control.
+Important constraint: plain `codex` does not auto-discover a separately started external
+App Server in the current interface; the external endpoint requires `--remote`. Starting
+Spotter only at the first `PreToolUse` is therefore too late for full observation/control.
 
 That is why P0 comes before the daemon migration.
 
@@ -853,14 +855,14 @@ When a capability is missing, Spotter should hide/disable the feature or report 
 
 The target architecture is gated by this experiment.
 
-## Path A — Codex-managed daemon
+## Path A — Explicit remote TUI
 
 ```text
-start/ensure Codex App Server daemon
+start/ensure external Codex App Server
       ↓
-plain `codex`
+codex --remote <endpoint>
       ↓
-TUI attaches to default external daemon
+TUI attaches to selected external server
       ↓
 Spotter attaches as second client
       ↓
@@ -868,6 +870,9 @@ observe same thread/turn
       ↓
 turn/steer reaches TUI
 ```
+
+Plain `codex` does not auto-discover the separately started server in the current
+documented/source interface. See [App Server connection validation](app-server-validation.md).
 
 ## Path B — Spotter-managed App Server
 
