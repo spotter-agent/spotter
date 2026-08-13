@@ -1,7 +1,7 @@
 # Architecture
 
 > **Status:** this document describes both the current hook-based prototype and the target architecture. Active implementation is tracked by the [Roadmap](roadmap.md) and native GitHub Milestones.
-> The `spotterd` process/control foundation, bounded Hook gate IPC, shared-server PoC, production App Server transport, and durable Trace IR ingestion are implemented. Daemon event routing and live supervision delivery remain **target behavior**.
+> The `spotterd` process/control foundation, bounded Hook gate IPC, shared-server PoC, production App Server transport, durable Trace IR ingestion, and daemon reconnect/reconciliation are implemented. Live supervision delivery remains **target behavior**.
 
 ---
 
@@ -113,10 +113,10 @@ handshake rather than treating a PID file as liveness. The server serializes own
 concurrent clients, reports `healthy` / `degraded` / `recovering`, and makes absence explicit as
 `unavailable`.
 
-Manual process management implements the `ServiceManager` boundary used by the CLI. Managed
-`launchd` / `systemd --user` registration belongs to setup lifecycle work. This daemon currently
-owns semantic `ThreadState` and bounded Hook gate IPC, but no App Server connection or event routing,
-so stopping it cannot stop a shared Codex App Server and existing Hook behavior remains independent.
+Manual process management implements the `ServiceManager` boundary used by the CLI. For a configured
+endpoint, the daemon owns one App Server connection/reconnect loop, routes epoch-tagged Trace IR into
+durable journals and `ThreadState`, and reconciles loaded threads before reporting control-ready.
+It never owns or stops the shared App Server process; existing Hook enforcement remains independent.
 
 ## 1.3 Target runtime
 
@@ -477,7 +477,7 @@ disappearing or leaking a new wire shape into core consumers.
 
 `AppServerTraceIngestor` writes one journal per Spotter thread identity, separately named from
 Hook-era session journals. Its recovery scan rebuilds deduplication and lifecycle state after a
-restart. Item starts and outcomes correlate by App Server item ID, not journal adjacency. A terminal
+restart. Item starts and outcomes correlate by App Server item ID plus connection epoch, not journal adjacency. A terminal
 event seen before its start is retained with `observed_start=false`; a later start cannot regress it.
 Timestamp regressions are accepted but marked `out_of_order`, and conflicting terminal outcomes fail
 explicitly. Hook records carry legacy-session provenance with unknown thread, turn, and attachment
@@ -590,8 +590,8 @@ only be created by an explicit verification-satisfied event. Duplicate event IDs
 out-of-order lifecycle is recorded as partial coverage, and thread identities remain isolated.
 
 Journal hydration deterministically replays Trace IR but clears active-turn/control readiness. A
-recovered daemon must receive a live `runtime_reconciled` event before control can be considered
-safe; #87 owns that connection and reconciliation loop.
+recovered daemon receives a live `runtime_reconciled` event only after the App Server thread list/read
+pass proves current attachment and exact active-turn identity. Until then control remains unavailable.
 
 ## 8.2 Durable journal
 
@@ -676,8 +676,8 @@ State scope:
   than being promoted into an identity it cannot prove.
 
 The registry owns identity and lifecycle only. App Server Trace normalization and the daemon's
-semantic `ThreadState` consume those identities without importing Codex wire shapes. Daemon
-connection reconciliation remains #87.
+semantic `ThreadState` consume those identities without importing Codex wire shapes. Each physical
+connection gets a new attachment ID and monotonically recovered epoch; logical thread IDs survive it.
 
 ---
 
@@ -715,8 +715,9 @@ This allows a Codex upgrade to degrade one feature without forcing a binary “s
 
 `spotter status` now reports this split without probing external services. `spotter doctor` performs
 the deeper App Server connection/initialize probe when the integration manifest has an endpoint.
-Until #85 wires a persistent runtime consumer, thread counts and reviewer queue state are reported
-as unknown/unavailable instead of being derived from incompatible Hook-era sessions.
+When the integration manifest contains an endpoint, `spotterd` keeps the persistent consumer and a
+full per-connection capability/server fingerprint. Endpoint selection remains explicit and pending in
+setup rather than being inferred from a listener that merely answers a socket.
 
 ---
 
@@ -772,14 +773,15 @@ During daemon downtime, the Hook gate fails open.
 ### App Server disconnect
 
 ```text
-CONNECTED
-  ↓
-DEGRADED
-  ↓
-RECONNECTING
-  ├─ CONNECTED
-  └─ UNAVAILABLE
+DISCONNECTED → CONNECTING → RECONCILING → READY
+                    ↑                       │
+                    └─ BACKING_OFF ← DEGRADED
 ```
+
+Every successful physical connection advances the durable-enough local epoch. Disconnect intervals
+produce per-thread `observation_gap` records; current thread/turn state is queried rather than
+invented. Control calls must name the exact reconciled epoch and active turn, so late results from an
+older connection are rejected instead of silently retargeted.
 
 A healthy daemon with no observation/control channel is not fully healthy.
 

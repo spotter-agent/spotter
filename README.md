@@ -55,8 +55,8 @@ External Codex App Server
 ```
 
 [#78](https://github.com/spotter-agent/spotter/issues/78) proved shared observation and steering for a
-Spotter-managed external App Server. Current Runtime work turns that viable control boundary into
-the daemon, identity, lifecycle, and recovery components required for ordinary use.
+Spotter-managed external App Server. The daemon now owns connection epochs, reconnect/reconciliation,
+and conservative control freshness; endpoint selection in setup remains the last ordinary-use gap.
 
 For the fastest project snapshot, read [Status](docs/status.md). For sequence and evidence gates, read [Roadmap](docs/roadmap.md).
 
@@ -77,8 +77,8 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 | Claim/evidence audit ledger | 🟡 | Works where observable outcomes exist |
 | Evaluation labels / metrics | ✅ | Coverage-aware evaluation and precision/FP metrics |
 | Counterfactual experiment harness | ✅ | Control/guidance same-prefix pairs |
-| Standalone `spotterd` runtime | 🟡 | Process, gate/control IPC, managed startup, and per-thread immutable live state implemented; App Server connection ownership remains |
-| App Server primary observation | 🟡 | Client, identity-rich Trace IR, durable ingestion, and incremental ThreadState reducer implemented; daemon connection routing remains |
+| Standalone `spotterd` runtime | 🟡 | Process, gate IPC, per-thread immutable state, and App Server recovery ownership implemented; setup endpoint selection remains |
+| App Server primary observation | 🟡 | Configured endpoints route through daemon-owned epoch/reconciliation into durable Trace IR and ThreadState; setup does not select an endpoint yet |
 | Event-driven signal engine | ❌ | Current reviewer trigger is periodic |
 | Live `VERIFY / NUDGE` | ❌ | Target: `turn/steer` |
 | `INTERRUPT` | ❌ | Target: `turn/interrupt` |
@@ -97,14 +97,15 @@ MCP, search, diff, and token events into durable Trace IR. Exact replays are ded
 restarts, operation outcomes correlate by item ID, and unknown notification families remain explicit.
 [#31](https://github.com/spotter-agent/spotter/issues/31) reduces that Trace IR into isolated,
 immutable, versioned ThreadState snapshots owned by `spotterd`; restart hydration deliberately
-requires live turn reconciliation before control becomes ready again.
+requires live turn reconciliation before control becomes ready again. [#87](https://github.com/spotter-agent/spotter/issues/87)
+adds the single-owner connection loop, bounded reconnect backoff, durable observation gaps,
+connection/attachment epochs, multi-thread reconciliation, and exact epoch+turn control fencing.
 [#79](https://github.com/spotter-agent/spotter/issues/79)
 adds the `spotterd` process, versioned local control handshake, manual lifecycle commands, and a
 platform-neutral service boundary. [#83](https://github.com/spotter-agent/spotter/issues/83) adds
 transactional Codex setup/teardown, managed user-service registration, and integration ownership.
 [#84](https://github.com/spotter-agent/spotter/issues/84) makes `status` and `doctor` distinguish
-daemon, observation, control, enforcement, integration drift, storage, and reviewer health. Event
-routing and recovery remain separate work.
+daemon, observation, control, enforcement, integration drift, storage, and reviewer health.
 
 ---
 
@@ -330,8 +331,9 @@ spotter setup codex
 spotter teardown codex
 ```
 
-App Server endpoint selection remains pending until the remaining ingestion/lifecycle work lands;
-setup does not print or claim an endpoint that it has not verified.
+App Server endpoint selection remains pending; when a verified endpoint is present in the integration
+manifest, `spotterd` owns its connection and recovery loop. Setup does not print or claim an endpoint
+that it has not verified.
 
 Useful commands:
 

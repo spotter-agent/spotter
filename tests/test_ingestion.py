@@ -214,6 +214,28 @@ def test_operation_and_timestamp_state_is_scoped_to_a_turn(tmp_path: Path) -> No
     assert "out_of_order" not in second_turn.event.payload
 
 
+def test_operation_correlation_does_not_cross_connection_epochs(tmp_path: Path) -> None:
+    ingestor = AppServerTraceIngestor(tmp_path)
+    item = {
+        "id": "command-7",
+        "type": "commandExecution",
+        "command": "pytest",
+        "cwd": "/repo",
+        "status": "inProgress",
+        "commandActions": [],
+    }
+    ingestor.ingest(_item_event("item/started", item, 2_000), connection_epoch=1)
+    completed = ingestor.ingest(
+        _item_event("item/completed", {**item, "status": "completed"}, 1_000),
+        connection_epoch=2,
+    )
+
+    assert completed is not None
+    assert completed.event.connection_epoch == 2
+    assert completed.event.payload["observed_start"] is False
+    assert "out_of_order" not in completed.event.payload
+
+
 def test_out_of_order_timestamp_is_explicit_and_terminal_conflicts_fail(tmp_path: Path) -> None:
     ingestor = AppServerTraceIngestor(tmp_path)
     item = {

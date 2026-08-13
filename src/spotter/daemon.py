@@ -141,6 +141,9 @@ class DaemonClient:
                 health=health,
                 pid=pid,
                 protocol=PROTOCOL_VERSION,
+                detail=(
+                    response.get("detail") if isinstance(response.get("detail"), str) else None
+                ),
             )
         except DaemonUnavailable as error:
             return DaemonStatus(RuntimeHealth.UNAVAILABLE, detail=str(error))
@@ -186,14 +189,24 @@ class DaemonClient:
 class DaemonServer:
     """Own the local runtime socket without owning any agent App Server."""
 
-    def __init__(self, socket_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        socket_path: Path | None = None,
+        *,
+        app_server_endpoint: str | None = None,
+        journals_dir: Path | None = None,
+    ) -> None:
         self.socket_path = socket_path or runtime_socket()
         self.health = RuntimeHealth.HEALTHY
+        self.health_detail: str | None = None
         self._server: asyncio.AbstractServer | None = None
         self._shutdown = asyncio.Event()
         self._socket_inode: int | None = None
         self._lock: TextIOWrapper | None = None
         self.thread_states = ThreadStateStore()
+        self.app_server_endpoint = app_server_endpoint
+        self.journals_dir = journals_dir or spotter_home() / "sessions"
+        self.recovery: Any | None = None
 
     def observe_trace(self, event: TraceEvent) -> ThreadState:
         """Increment daemon-owned hot state after adapter normalization and journaling."""
@@ -238,6 +251,17 @@ class DaemonServer:
             raise
         self.socket_path.chmod(0o600)
         self._socket_inode = self.socket_path.stat().st_ino
+        if self.app_server_endpoint is not None:
+            # Keep websockets and the App Server stack off the Hook import path.
+            from spotter.runtime_connection import AppServerRecoveryLoop
+
+            self.recovery = AppServerRecoveryLoop(
+                self.app_server_endpoint,
+                self.journals_dir,
+                self.thread_states,
+                on_state=self._on_recovery_state,
+            )
+            await self.recovery.start()
 
     async def serve(self) -> None:
         await self.start()
@@ -250,6 +274,9 @@ class DaemonServer:
         await self._shutdown.wait()
 
     async def close(self) -> None:
+        if self.recovery is not None:
+            await self.recovery.close()
+            self.recovery = None
         if self._server is not None:
             self._server.close()
             await self._server.wait_closed()
@@ -263,10 +290,20 @@ class DaemonServer:
         self._socket_inode = None
         self._release_lock()
 
-    def set_health(self, health: RuntimeHealth) -> None:
+    def set_health(self, health: RuntimeHealth, detail: str | None = None) -> None:
         if health == RuntimeHealth.UNAVAILABLE:
             raise ValueError("a running daemon cannot report itself unavailable")
         self.health = health
+        self.health_detail = detail
+
+    def _on_recovery_state(self, state: object, detail: str | None) -> None:
+        value = getattr(state, "value", str(state))
+        if value == "ready":
+            self.set_health(RuntimeHealth.HEALTHY)
+        elif value in {"connecting", "reconciling"}:
+            self.set_health(RuntimeHealth.RECOVERING, detail)
+        elif value in {"degraded", "backing_off"}:
+            self.set_health(RuntimeHealth.DEGRADED, detail)
 
     def _release_lock(self) -> None:
         if self._lock is None:
@@ -294,6 +331,8 @@ class DaemonServer:
                 "health": self.health.value,
                 "pid": os.getpid(),
             }
+            if self.health_detail is not None:
+                response["detail"] = self.health_detail
             if method == "gate":
                 response.update(_evaluate_gate(request.get("params")))
         except (
@@ -624,13 +663,23 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the Spotter supervision daemon")
     parser.parse_args(argv)
     try:
-        asyncio.run(DaemonServer().serve())
+        asyncio.run(DaemonServer(app_server_endpoint=_configured_app_server_endpoint()).serve())
     except DaemonAlreadyRunning as error:
         print(error, file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         return 0
     return 0
+
+
+def _configured_app_server_endpoint() -> str | None:
+    path = spotter_home() / "integrations" / "codex.json"
+    try:
+        raw = json.loads(path.read_bytes())
+    except (OSError, ValueError):
+        return None
+    endpoint = raw.get("app_server_endpoint") if isinstance(raw, dict) else None
+    return endpoint if isinstance(endpoint, str) and endpoint.strip() else None
 
 
 if __name__ == "__main__":

@@ -424,9 +424,10 @@ Spotter ↔ App Server initialized
 Hook IPC reachable
 ```
 
-The current #83 implementation verifies Codex's `app-server --listen` and `--remote` capability but
-records endpoint selection as pending because it does not create or own a shared App Server. Live
-endpoint selection and App Server initialize/event verification join #85/#87 and #84 diagnostics.
+The current setup verifies Codex's `app-server --listen` and `--remote` capability but records
+endpoint selection as pending because it does not create or own a shared App Server. When a verified
+endpoint is present in the manifest, `spotterd` owns connection, epoch, backoff, and reconciliation;
+`doctor` continues to probe the same explicit endpoint.
 
 ## 4.7 VERIFY
 
@@ -487,7 +488,8 @@ re-running setup heals forward, while teardown cannot remove an unrecorded mutat
 
 # 5. App Server lifecycle
 
-This is the largest open lifecycle dependency in the target design.
+Connection recovery is implemented; selecting and verifying the shared endpoint without claiming
+ownership of another client's App Server remains the lifecycle dependency.
 
 ## 5.1 Why startup order matters
 

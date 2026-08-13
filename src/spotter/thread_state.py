@@ -101,6 +101,8 @@ class TaskState:
 
 @dataclass(frozen=True)
 class EvidenceState:
+    # Evidence remains addressable for later verification/invalidation. #89 may compact
+    # only after persisted conditions and dependencies gain the same retention boundary.
     items: tuple[StateItem, ...] = ()
     conditions: tuple[VerificationCondition, ...] = ()
 
@@ -155,9 +157,6 @@ class ThreadState:
     execution: ExecutionState = field(default_factory=ExecutionState)
     supervision: SupervisionState = field(default_factory=SupervisionState)
     coverage: CoverageState = field(default_factory=CoverageState)
-    # ponytail: exact dedupe retains IDs for the thread lifetime; #87 checkpoints and
-    # #89 retention should compact only with an explicit durable replay boundary.
-    applied_event_ids: frozenset[str] = field(default_factory=frozenset, repr=False)
 
     @property
     def thread_id(self) -> ThreadId:
@@ -178,8 +177,6 @@ class ThreadStateReducer:
             raise ThreadStateError("Trace event has no logical thread identity")
         if state is not None and state.thread_id != identity.thread_id:
             raise ThreadStateError("Trace event belongs to another thread")
-        if state is not None and event.event_id and event.event_id in state.applied_event_ids:
-            return state
         if arrival_seq <= 0 or (state is not None and arrival_seq <= state.last_arrival_seq):
             raise ThreadStateError("arrival sequence must increase monotonically")
 
@@ -189,9 +186,6 @@ class ThreadStateReducer:
             and current.connection_epoch is not None
             and event.connection_epoch != current.connection_epoch
         )
-        applied = current.applied_event_ids
-        if event.event_id:
-            applied = applied | {event.event_id}
         current = replace(
             current,
             identity=identity,
@@ -205,7 +199,6 @@ class ThreadStateReducer:
             ),
             active_turn_id=None if epoch_changed else current.active_turn_id,
             control_ready=False if epoch_changed else current.control_ready,
-            applied_event_ids=applied,
         )
         current = self._lifecycle(current, event)
         current = self._semantic(current, event)
@@ -233,10 +226,24 @@ class ThreadStateReducer:
             return replace(state, active_turn_id=None, control_ready=False, execution=execution)
         if event.kind in {"thread_archived", "thread_closed", "thread_deleted"}:
             return replace(state, active_turn_id=None, control_ready=False)
+        if event.kind == "runtime_attachment_unavailable":
+            return replace(
+                state,
+                active_turn_id=None,
+                capabilities=(),
+                control_ready=False,
+            )
+        # runtime_reconciled is produced by #87. The semantic-only kinds below are
+        # reserved for later signal/reviewer producers; Trace IR keeps them transport-neutral.
         if event.kind == "runtime_reconciled":
             capabilities = event.payload.get("capabilities")
+            active_turn_value = event.payload.get("active_turn")
             active_turn = (
-                turn_id if event.payload.get("active_turn") is True else state.active_turn_id
+                turn_id
+                if active_turn_value is True
+                else None
+                if active_turn_value is False
+                else state.active_turn_id
             )
             return replace(
                 state,
@@ -266,9 +273,8 @@ class ThreadStateReducer:
                 if previous is not None:
                     evidence = replace(
                         evidence,
-                        items=_bounded(
-                            evidence.items + (replace(previous, status=StateItemStatus.SUPERSEDED),)
-                        ),
+                        items=evidence.items
+                        + (replace(previous, status=StateItemStatus.SUPERSEDED),),
                     )
                 return replace(state, task=replace(state.task, goal=goal), evidence=evidence)
         if event.kind == "constraint":
@@ -292,9 +298,7 @@ class ThreadStateReducer:
                 )
                 return replace(
                     state,
-                    evidence=replace(
-                        state.evidence, items=_bounded(state.evidence.items + (hypothesis,))
-                    ),
+                    evidence=replace(state.evidence, items=state.evidence.items + (hypothesis,)),
                 )
         if event.kind == "plan":
             text = _summary_text(event.payload)
@@ -374,9 +378,7 @@ class ThreadStateReducer:
             workspace = _workspace(state.workspace, event, edits)
             return replace(
                 state,
-                evidence=replace(
-                    state.evidence, items=_bounded(state.evidence.items + (observation,))
-                ),
+                evidence=replace(state.evidence, items=state.evidence.items + (observation,)),
                 workspace=workspace,
                 execution=replace(
                     state.execution,
@@ -442,15 +444,24 @@ class ThreadStateStore:
     def __init__(self, reducer: ThreadStateReducer | None = None) -> None:
         self.reducer = reducer or ThreadStateReducer()
         self._states: dict[ThreadId, ThreadState] = {}
+        # Exact dedup belongs to the daemon's mutable store, not every immutable snapshot.
+        # ponytail: IDs remain for the thread lifetime; #89 may compact them only at a
+        # durable replay boundary.
+        self._seen_event_ids: dict[ThreadId, set[str]] = {}
         self._arrival_seq = 0
 
     def observe(self, event: TraceEvent) -> ThreadState:
         if event.identity is None or event.identity.thread_id is None:
             raise ThreadStateError("Trace event has no logical thread identity")
         thread_id = event.identity.thread_id
+        seen = self._seen_event_ids.setdefault(thread_id, set())
+        if event.event_id is not None and event.event_id in seen:
+            return self.snapshot(thread_id)
         self._arrival_seq += 1
         state = self.reducer.reduce(self._states.get(thread_id), event, self._arrival_seq)
         self._states[thread_id] = state
+        if event.event_id is not None:
+            seen.add(event.event_id)
         return state
 
     def snapshot(self, thread_id: ThreadId) -> ThreadState:
@@ -581,7 +592,7 @@ def _satisfy_condition(
         state,
         evidence=replace(
             state.evidence,
-            items=_bounded(state.evidence.items + (fact,)),
+            items=state.evidence.items + (fact,),
             conditions=tuple(conditions),
         ),
     )

@@ -273,6 +273,48 @@ def test_verification_and_invalidation_keep_fact_types_distinct() -> None:
     assert hypothesis.status == StateItemStatus.STALE
 
 
+def test_old_evidence_remains_addressable_for_later_verification() -> None:
+    store = ThreadStateStore()
+    store.observe(
+        _event(
+            "test_result",
+            {"status": "passed", "text": "original proof"},
+            event_id="proof",
+        )
+    )
+    for index in range(51):
+        store.observe(
+            _event(
+                "command_result",
+                {"status": "completed", "command": f"echo {index}"},
+                event_id=f"outcome-{index}",
+            )
+        )
+    store.observe(
+        _event(
+            "verification_condition",
+            {
+                "condition_id": "condition",
+                "kind": "test_passes",
+                "required_evidence": ["test_result"],
+            },
+            event_id="condition-event",
+        )
+    )
+    state = store.observe(
+        _event(
+            "verification_satisfied",
+            {"condition_id": "condition", "evidence_id": "proof"},
+            event_id="fact",
+        )
+    )
+
+    assert state.evidence.conditions[0].status == ConditionStatus.SATISFIED
+    assert all(
+        "unknown_verification_evidence" not in value for value in state.coverage.inconsistencies
+    )
+
+
 def test_validation_and_unknown_coverage_never_infer_missing_outcomes() -> None:
     store = ThreadStateStore()
     state = store.observe(_event("runtime_event_unknown", {"method": "future"}))

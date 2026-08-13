@@ -226,15 +226,25 @@ class AppServerTraceIngestor:
         self.journals_dir.mkdir(parents=True, exist_ok=True)
         self.normalizer = CodexTraceNormalizer()
         self._seen: set[str] = set()
-        self._operations: dict[tuple[str, str, str], tuple[str, str | None]] = {}
+        self._operations: dict[tuple[str, str, str, str], tuple[str, str | None]] = {}
         self._terminal_turns: set[str] = set()
-        self._last_at: dict[tuple[str, str], float] = {}
-        # ponytail: recovery is O(all App Server history); #87 should checkpoint per-thread
-        # reconciliation state and apply retention before the daemon owns long-lived ingestion.
+        self._last_at: dict[tuple[str, str, str], float] = {}
+        self.last_connection_epoch = 0
+        # ponytail: recovery is O(all App Server history); #89 should checkpoint per-thread
+        # reconciliation state when retained histories become measurably expensive.
         self._recover()
 
-    def ingest(self, raw_event: AppServerEvent) -> StepRecord | None:
+    def ingest(
+        self, raw_event: AppServerEvent, *, connection_epoch: int | None = None
+    ) -> StepRecord | None:
         event = self.normalizer.normalize(raw_event)
+        if connection_epoch is not None:
+            event = replace(event, connection_epoch=connection_epoch)
+        return self.record(event)
+
+    def record(self, event: TraceEvent) -> StepRecord | None:
+        """Append one already-normalized runtime event through the same idempotency path."""
+
         if event.event_id is not None and event.event_id in self._seen:
             return None
         route = _route(event)
@@ -272,6 +282,15 @@ class AppServerTraceIngestor:
         record = StepJournal(self.journals_dir / route).record(event)
         self._remember(record.event, route)
         return record
+
+    def records(self) -> tuple[StepRecord, ...]:
+        """Return durable App Server history for conservative daemon hydration."""
+
+        return tuple(
+            record
+            for path in sorted(self.journals_dir.glob("app-server-*.jsonl"))
+            for record in StepJournal.load(path, repair_tail=True)
+        )
 
     def _recover(self) -> None:
         for path in sorted(self.journals_dir.glob("app-server-*.jsonl")):
@@ -318,6 +337,8 @@ class AppServerTraceIngestor:
             self._last_at[ordering_key] = max(
                 self._last_at.get(ordering_key, event.occurred_at), event.occurred_at
             )
+        if event.connection_epoch is not None:
+            self.last_connection_epoch = max(self.last_connection_epoch, event.connection_epoch)
 
 
 def _normalize_item(item: Mapping[str, Any], completed: bool) -> tuple[str, dict[str, Any]]:
@@ -402,23 +423,23 @@ def _route(event: TraceEvent) -> str:
     return "app-server-unscoped.jsonl"
 
 
-def _operation_key(event: TraceEvent, route: str) -> tuple[str, str, str]:
+def _operation_key(event: TraceEvent, route: str) -> tuple[str, str, str, str]:
     turn_id = (
         event.identity.turn_id.value
         if event.identity is not None and event.identity.turn_id is not None
         else ""
     )
     assert event.operation_id is not None
-    return route, turn_id, event.operation_id
+    return route, turn_id, str(event.connection_epoch or ""), event.operation_id
 
 
-def _ordering_key(event: TraceEvent, route: str) -> tuple[str, str]:
+def _ordering_key(event: TraceEvent, route: str) -> tuple[str, str, str]:
     turn_id = (
         event.identity.turn_id.value
         if event.identity is not None and event.identity.turn_id is not None
         else ""
     )
-    return route, turn_id
+    return route, turn_id, str(event.connection_epoch or "")
 
 
 def _token_usage(value: object) -> dict[str, Any]:
