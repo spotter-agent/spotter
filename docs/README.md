@@ -81,8 +81,8 @@ PreToolUse Hook only for deterministic blocking
 
 [#78](https://github.com/spotter-agent/spotter/issues/78) proved that the user's Codex TUI and
 Spotter can share a Spotter-managed external App Server and that `turn/steer` reaches the real
-active turn. The managed daemon, concurrent identity, and reconnect lifecycle remain explicit
-Runtime work.
+active turn. The identity foundation is implemented; daemon ownership, event routing, and reconnect
+remain explicit Runtime work.
 
 ## Roadmap vocabulary
 

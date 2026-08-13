@@ -91,8 +91,8 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 App Server can share the TUI's real thread and steer its active turn. The production client in
 [#80](https://github.com/spotter-agent/spotter/issues/80) now exposes events, thread queries,
 control methods, and per-capability degraded state. The remaining Runtime work establishes
-`spotterd` ([#79](https://github.com/spotter-agent/spotter/issues/79)), explicit thread/turn identity
-([#81](https://github.com/spotter-agent/spotter/issues/81)), and lifecycle/recovery boundaries.
+`spotterd` ([#79](https://github.com/spotter-agent/spotter/issues/79)) and the lifecycle/recovery
+boundaries around the implemented thread/turn/attachment identity foundation.
 
 ---
 

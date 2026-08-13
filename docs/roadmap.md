@@ -63,8 +63,8 @@ PreToolUse Hook only where synchronous deterministic enforcement is required
 [#78](https://github.com/spotter-agent/spotter/issues/78) demonstrated that a TUI and Spotter can
 attach to one Spotter-managed external App Server, observe the same thread/turn, and steer the real
 user-visible turn. The Codex-managed daemon path was unavailable to the tested Homebrew Cask install.
-Concurrent identity, daemon ownership, and reconnect remain explicit Runtime work rather than
-assumed properties.
+The concurrent identity foundation is now explicit; daemon ownership, event routing, and reconnect
+remain Runtime work rather than assumed properties.
 
 ## Implementation after the gate
 
@@ -74,7 +74,7 @@ The Runtime milestone is now decomposed into concrete boundaries rather than one
 | --- | --- |
 | [#79](https://github.com/spotter-agent/spotter/issues/79) | `spotterd`, local control RPC, per-user service lifecycle |
 | [#80](https://github.com/spotter-agent/spotter/issues/80) | production App Server client and capability negotiation |
-| [#81](https://github.com/spotter-agent/spotter/issues/81) | Thread / Turn / Runtime Attachment identity lifecycle |
+| [#81](https://github.com/spotter-agent/spotter/issues/81) | Thread / Turn / Runtime Attachment identity lifecycle (implemented foundation) |
 | [#82](https://github.com/spotter-agent/spotter/issues/82) | bounded Hook ↔ daemon IPC for deterministic `PreToolUse` enforcement |
 | [#31](https://github.com/spotter-agent/spotter/issues/31) | independent live supervision state owned by `spotterd` |
 | [#83](https://github.com/spotter-agent/spotter/issues/83) | transactional `setup|teardown codex`, Integration Manifest, legacy migration |

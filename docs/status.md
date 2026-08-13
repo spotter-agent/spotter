@@ -37,8 +37,8 @@ Runtime → Observe → Detect → Intervene → Recover → Harden
 ```
 
 The shared-server gate in [#78](https://github.com/spotter-agent/spotter/issues/78) passed for the
-Spotter-managed external App Server path. Spotter now has a production WebSocket client with
-explicit observation/control capabilities; the standalone daemon and identity model remain next.
+Spotter-managed external App Server path. Spotter now has a production WebSocket client and an
+explicit Thread/Turn/Runtime Attachment identity registry; the standalone daemon remains next.
 
 ---
 
@@ -54,7 +54,6 @@ typed steer/interrupt methods, and explicit supported/unknown/unavailable capabi
 The remaining implementation boundaries are split into native GitHub issues:
 
 - [#79](https://github.com/spotter-agent/spotter/issues/79) — `spotterd`, local control RPC, and per-user service lifecycle;
-- [#81](https://github.com/spotter-agent/spotter/issues/81) — Thread / Turn / Runtime Attachment identity;
 - [#82](https://github.com/spotter-agent/spotter/issues/82) — bounded fail-open `PreToolUse` ↔ daemon enforcement IPC;
 - [#83](https://github.com/spotter-agent/spotter/issues/83) — transactional Codex setup/teardown and integration ownership;
 - [#84](https://github.com/spotter-agent/spotter/issues/84) — runtime-aware status/doctor;
@@ -87,8 +86,8 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 | Evaluation labels / metrics | ✅ | Coverage-aware labeling and precision/FP metrics | Broader cost/miss/harm metrics (#33, #38, #34) |
 | Counterfactual harness | ✅ | Control/guidance same-prefix pairs can be prepared/run | Add mechanically scored tasks (#21) |
 | Standalone runtime | ❌ | No long-lived owner, service boundary, or runtime RPC | Build `spotterd` in #79 |
-| Runtime identity | ❌ | Hook-era `session_id` is the dominant identity | Thread/Turn/Attachment model in #81 |
-| App Server primary observation | 🟡 | Async client, raw events, thread queries, controls, capability degradation | Normalize and journal events in #85 after identity #81 |
+| Runtime identity | ✅ | Agent-scoped stable Thread/Turn IDs, attachment periods, lifecycle routing, explicit legacy unknowns | Feed normalized App Server events through it in #85 |
+| App Server primary observation | 🟡 | Async client, raw events, thread queries, controls, capability degradation | Normalize, identity-route, and journal events in #85 |
 | Managed Codex lifecycle | ❌ | Current path is source/plugin installation | transactional setup/teardown in #83; diagnostics in #84 |
 | Runtime reconnect/recovery | ❌ | No long-lived App Server connection to recover | #87 after runtime/state boundaries exist |
 | Event-driven detection | ❌ | Reviewer is still cadence-based | #28 after Runtime/Observe |

@@ -612,6 +612,21 @@ State scope:
 | durable journal lineage | Thread |
 | fork branch point | Thread + Turn/Step |
 
+## Implemented identity foundation
+
+`RuntimeIdentityRegistry` implements this transport-independent boundary:
+
+- agent-scoped external thread and turn IDs are retained as provenance and mapped to stable opaque
+  Spotter IDs, so restart/reconciliation finds the same durable lineage;
+- each attachment period has its own identity, and concurrent attachments do not merge;
+- duplicate lifecycle events are idempotent, while conflicting terminal states fail explicitly;
+- a terminal event observed before its start creates a terminal turn marked `observed_start=False`;
+- Hook-era `session_id` becomes a `RuntimeIdentity` with unknown thread/turn/attachment fields rather
+  than being promoted into an identity it cannot prove.
+
+The registry owns identity and lifecycle only. Semantic `ThreadState` remains #31, and App Server
+event normalization/routing into this registry remains #85.
+
 ---
 
 # 10. App Server connection and capability model
@@ -898,8 +913,8 @@ PreToolUse:  possibly available
   explicit per-capability degradation used by later runtime components.
 - Path A remains unavailable for the tested Homebrew Cask because the managed daemon expects the
   standalone installer layout.
-- Concurrent thread identity is owned by #81, daemon/service ownership by #79/#83, and reconnect
-  reconciliation by #87.
+- The concurrent thread identity foundation is implemented in #81; App Server event routing uses it
+  in #85, daemon/service ownership remains #79/#83, and reconnect reconciliation remains #87.
 
 ---
 
