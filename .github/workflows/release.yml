@@ -158,3 +158,29 @@ jobs:
           set -euo pipefail
           gh release edit "$GITHUB_REF_NAME" --draft=false --verify-tag
           [[ "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" == "false" ]]
+
+  update-homebrew:
+    name: Request Homebrew Formula update
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch the published tag to the Homebrew tap
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "HOMEBREW_TAP_TOKEN is required to dispatch the Formula update" >&2
+            exit 1
+          fi
+          jq -n \
+            --arg release_tag "$GITHUB_REF_NAME" \
+            '{
+              event_type: "spotter-release-published",
+              client_payload: {release_tag: $release_tag}
+            }' \
+            | gh api \
+                --method POST \
+                "repos/spotter-agent/homebrew-spotter/dispatches" \
+                --input -

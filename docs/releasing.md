@@ -63,16 +63,20 @@ upload, or verification therefore cannot create a public partial release. A retr
 on an existing draft, but the workflow refuses to alter an already-published release for the tag.
 
 The published release exposes both the versioned source-distribution URL and its SHA256 in
-`spotter-agent-X.Y.Z-SHA256SUMS` and `spotter-agent-X.Y.Z-release.json`. The tap update flow can use
-those values directly; it does not need to rebuild or inspect a moving branch.
+`spotter-agent-X.Y.Z-SHA256SUMS` and `spotter-agent-X.Y.Z-release.json`. After publication succeeds,
+the release workflow sends the exact tag to the Homebrew tap. This cross-repository dispatch uses
+the `HOMEBREW_TAP_TOKEN` repository secret, scoped to `spotter-agent/homebrew-spotter` with Contents
+write permission. The tap update flow can use the published values directly; it does not need to
+rebuild or inspect a moving branch.
 
 ## Publish through Homebrew
 
-The tap's hourly and manually dispatchable `Update Spotter Formula` workflow reads the latest
-published release and validates its tag, manifest identity, sdist filename, size, and SHA-256 against
-the GitHub Release assets. If the release is newer than the Formula, it opens a version-specific tap
-pull request updating the immutable source URL and checksum. It refuses drafts, prereleases,
-downgrades, malformed manifests, and same-version artifact changes.
+The tap's `Update Spotter Formula` workflow runs for the release dispatch and can also be invoked
+manually with an exact tag. It reads that tag's published release and validates its manifest
+identity, sdist filename, size, and SHA-256 against the GitHub Release assets. If the release is
+newer than the Formula, it opens a version-specific tap pull request updating the immutable source
+URL and checksum together. It refuses drafts, prereleases, downgrades, malformed manifests, and
+same-version artifact changes.
 
 The Formula separately pins the supported Homebrew Python and every Python runtime dependency as an
 immutable resource. A release that changes runtime dependencies therefore requires those resource
