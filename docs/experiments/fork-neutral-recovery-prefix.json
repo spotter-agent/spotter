@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "measured_at": "2026-08-14",
+  "experiment_id": "4a0ae646-68f7-489d-a5d0-d998b405bce2",
+  "source_session": "019ffc08-9b3d-7f83-bfeb-6cf3f833671a",
+  "branch_step": 14,
+  "prefix_id": "20a086ad71aff70f39a174f5600baeaff2982c6b0d24a7b33e0ae2ab73bc3928",
+  "source_snapshot": "96c6509e1265225210fc16ee1c823663c1e2f848",
+  "model": "gpt-5.6-sol",
+  "reasoning_effort": "low",
+  "scorer": "python3 check.py",
+  "raw_result_sha256": "3a863f28a6cc1460d456e2d6b62034bdf3915bf528cfbd8afe75bc955ab1b2dd",
+  "source_failure": {
+    "failure_step": 20,
+    "exception": "TypeError",
+    "recovered": true
+  },
+  "coverage": {
+    "candidates": 9,
+    "forkable_exact": 5,
+    "pre_mutation_candidates": 3,
+    "pre_mutation_forkable": 3,
+    "earliest_forkable_step": 2
+  },
+  "outcomes": {
+    "pairs": 3,
+    "judgeable_pairs": 3,
+    "mechanical_disagreements": 0,
+    "environment_mismatches": 0,
+    "infrastructure_failures": 0,
+    "passing_arms": 6
+  },
+  "continuations": [
+    {
+      "pair": 0,
+      "arm": "neutral_a",
+      "session_id": "beb53e8f-4595-4f7e-936e-688b4bdbfc53",
+      "elapsed_seconds": 1986.775,
+      "tool_calls": 6,
+      "reported_tokens": 240427
+    },
+    {
+      "pair": 0,
+      "arm": "neutral_b",
+      "session_id": "43162207-1b6f-4c07-8d52-6904d1e05411",
+      "elapsed_seconds": 5169.514,
+      "tool_calls": 6,
+      "reported_tokens": 243591
+    },
+    {
+      "pair": 1,
+      "arm": "neutral_b",
+      "session_id": "8de09595-fed1-4f02-afbf-503fe5ad5f5c",
+      "elapsed_seconds": 942.917,
+      "tool_calls": 6,
+      "reported_tokens": 240543
+    },
+    {
+      "pair": 1,
+      "arm": "neutral_a",
+      "session_id": "e0b2e3c5-483c-4093-a5cc-ac562edc9ae2",
+      "elapsed_seconds": 3431.854,
+      "tool_calls": 5,
+      "reported_tokens": 217601
+    },
+    {
+      "pair": 2,
+      "arm": "neutral_a",
+      "session_id": "0afbf36c-f4a6-4392-95b4-2096efc83cf7",
+      "elapsed_seconds": 23.537,
+      "tool_calls": 3,
+      "reported_tokens": 190134
+    },
+    {
+      "pair": 2,
+      "arm": "neutral_b",
+      "session_id": "94a5d4d6-9990-4372-80b0-31cb3fe730fb",
+      "elapsed_seconds": 616.355,
+      "tool_calls": 7,
+      "reported_tokens": 265549
+    }
+  ]
+}
