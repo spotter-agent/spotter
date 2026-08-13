@@ -250,3 +250,53 @@ def test_unreachable_endpoint_backs_off_without_hiding_failure(tmp_path: Path) -
         await recovery.close()
 
     asyncio.run(scenario())
+
+
+def test_unexpected_consumer_failure_forces_degraded_reconnect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def scenario() -> None:
+        send_event = asyncio.Event()
+
+        async def handler(connection: ServerConnection) -> None:
+            await _initialize(connection)
+            listed = await _receive(connection, "thread/list")
+            await _reply(connection, listed, {"data": [], "nextCursor": None})
+            await send_event.wait()
+            await connection.send(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "thread/status/changed",
+                        "params": {"threadId": "thread-1", "status": "active"},
+                    }
+                )
+            )
+            await connection.wait_closed()
+
+        async with _server(handler) as endpoint:
+            recovery = AppServerRecoveryLoop(
+                endpoint,
+                tmp_path / "sessions",
+                ThreadStateStore(),
+                initial_backoff=10,
+                maximum_backoff=10,
+            )
+            await recovery.start()
+            await _wait_until(lambda: recovery.state == RecoveryState.READY)
+
+            def fail_record(event: object) -> None:
+                raise RuntimeError("reducer exploded")
+
+            monkeypatch.setattr(recovery, "_record", fail_record)
+            send_event.set()
+            await _wait_until(lambda: recovery.state == RecoveryState.BACKING_OFF)
+
+            assert recovery.last_error is not None
+            assert "event consumer failed" in recovery.last_error
+            assert "reducer exploded" in recovery.last_error
+            assert recovery.metrics.reconnect_failures == 1
+            assert RecoveryState.DEGRADED in recovery.transitions
+            await recovery.close()
+
+    asyncio.run(scenario())

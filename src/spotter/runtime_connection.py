@@ -225,6 +225,12 @@ class AppServerRecoveryLoop:
                 self.last_error = str(error)
             except AppServerError:
                 return
+            except Exception as error:
+                message = f"App Server event consumer failed: {error}"
+                self.last_error = message
+                self._set_state(RecoveryState.DEGRADED, message)
+                await client.disconnect()
+                raise AppServerTransportError(message) from error
 
     async def _reconcile(
         self,
@@ -449,7 +455,7 @@ class AppServerRecoveryLoop:
 async def _cancel_task(task: asyncio.Task[Any]) -> None:
     if not task.done():
         task.cancel()
-    with contextlib.suppress(asyncio.CancelledError, Exception):
+    with contextlib.suppress(asyncio.CancelledError):
         await task
 
 

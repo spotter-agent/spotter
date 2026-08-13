@@ -17,7 +17,7 @@ from enum import StrEnum
 from fcntl import LOCK_EX, LOCK_NB, LOCK_UN, flock
 from io import TextIOWrapper
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from spotter.config import GatesConfig
 from spotter.gates import Gate, GateDecision
@@ -26,6 +26,9 @@ from spotter.paths import secure_dir, spotter_home
 from spotter.snapshot import StepRecord
 from spotter.thread_state import ThreadState, ThreadStateStore
 from spotter.trace import TraceEvent
+
+if TYPE_CHECKING:
+    from spotter.runtime_connection import RecoveryState
 
 PROTOCOL_VERSION = 1
 CONTROL_TIMEOUT = 1.0
@@ -73,6 +76,12 @@ class DaemonTimeout(DaemonUnavailable):
 
 class DaemonAlreadyRunning(DaemonError):
     """Another daemon already owns the runtime socket."""
+
+
+class RuntimeRecovery(Protocol):
+    async def start(self) -> None: ...
+
+    async def close(self) -> None: ...
 
 
 def runtime_socket() -> Path:
@@ -206,7 +215,7 @@ class DaemonServer:
         self.thread_states = ThreadStateStore()
         self.app_server_endpoint = app_server_endpoint
         self.journals_dir = journals_dir or spotter_home() / "sessions"
-        self.recovery: Any | None = None
+        self.recovery: RuntimeRecovery | None = None
 
     def observe_trace(self, event: TraceEvent) -> ThreadState:
         """Increment daemon-owned hot state after adapter normalization and journaling."""
@@ -296,8 +305,8 @@ class DaemonServer:
         self.health = health
         self.health_detail = detail
 
-    def _on_recovery_state(self, state: object, detail: str | None) -> None:
-        value = getattr(state, "value", str(state))
+    def _on_recovery_state(self, state: "RecoveryState", detail: str | None) -> None:
+        value = state.value
         if value == "ready":
             self.set_health(RuntimeHealth.HEALTHY)
         elif value in {"connecting", "reconciling"}:
