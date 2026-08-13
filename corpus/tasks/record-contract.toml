@@ -1,0 +1,36 @@
+task_schema_version = 1
+task_id = "fixture/record-contract-001"
+prompt = "Normalize record tags by trimming and lowercasing them, discard blanks, deduplicate in first-seen order, and render non-empty tags without mutating the input."
+
+[source]
+kind = "fixture"
+path = "fixtures/record-contract"
+sha256 = "ec4a4665e848239bbb5005cc5032bb68915ac1bfa0fb0ece3f6bea9e2a1b66fd"
+
+[setup]
+command = "python3 -m compileall -q ."
+timeout_s = 30
+
+[precheck]
+command = "python3 check.py"
+timeout_s = 30
+expected = "failure"
+
+[known_good]
+command = '''python3 -c "from pathlib import Path; Path('records.py').write_text('def normalize_record(raw: dict[str, object]) -> dict[str, object]:\n    tags: list[str] = []\n    for value in raw.get(\"tags\", []):\n        tag = str(value).strip().lower()\n        if tag and tag not in tags:\n            tags.append(tag)\n    return {\"name\": str(raw[\"name\"]).strip(), \"tags\": tags}\n'); Path('renderer.py').write_text('def render_record(record: dict[str, object]) -> str:\n    tags = list(record.get(\"tags\", []))\n    suffix = \" [{}]\".format(\", \".join(str(tag) for tag in tags)) if tags else \"\"\n    return \"{}{}\".format(record[\"name\"], suffix)\n')"'''
+timeout_s = 30
+
+[[checks]]
+id = "task-resolution"
+command = "python3 check.py"
+timeout_s = 30
+required = true
+
+[budget]
+wall_time_s = 900
+max_turns = 30
+
+[metadata]
+family = "multi-file-contract"
+difficulty = "validation"
+provenance = "spotter synthetic fixture v2"

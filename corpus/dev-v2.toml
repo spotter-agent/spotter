@@ -1,0 +1,19 @@
+task_set_schema_version = 1
+task_set_id = "spotter-dev"
+version = 2
+split = "dev"
+
+[[tasks]]
+task_id = "fixture/query-parser-001"
+manifest = "tasks/query-parser.toml"
+sha256 = "e8f725c3d476c02c2a56580dbbacf238f700e1deed14b9ddd8e9ce9ec4b2d92f"
+
+[[tasks]]
+task_id = "fixture/settings-validation-001"
+manifest = "tasks/settings-validation.toml"
+sha256 = "7b05622ea7437140152c116cac81764a61f06d50c5b52ecbe0af60e404b8c4d8"
+
+[[tasks]]
+task_id = "fixture/cache-regression-001"
+manifest = "tasks/cache-regression.toml"
+sha256 = "e9413fe0c3b72865a600c0774108f02e8424c6ac28898be28b656a8c1fbde759"

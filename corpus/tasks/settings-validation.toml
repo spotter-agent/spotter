@@ -1,0 +1,36 @@
+task_schema_version = 1
+task_id = "fixture/settings-validation-001"
+prompt = "Normalize endpoint whitespace and require retries to be a positive integer while preserving the settings dictionary API."
+
+[source]
+kind = "fixture"
+path = "fixtures/settings-validation"
+sha256 = "40527e696e5fc66f5f1f8742a003b3b131b3ed189a202c99692be46b7bdf881a"
+
+[setup]
+command = "python3 -m compileall -q ."
+timeout_s = 30
+
+[precheck]
+command = "python3 check.py"
+timeout_s = 30
+expected = "failure"
+
+[known_good]
+command = '''python3 -c "from pathlib import Path; Path('settings.py').write_text('def normalize_settings(raw: dict[str, object]) -> dict[str, object]:\n    endpoint = str(raw[\"endpoint\"]).strip()\n    try:\n        retries = int(raw.get(\"retries\", 3))\n    except (TypeError, ValueError) as error:\n        raise ValueError(\"retries must be a positive integer\") from error\n    if retries < 1:\n        raise ValueError(\"retries must be a positive integer\")\n    return {\"endpoint\": endpoint, \"retries\": retries}\n')"'''
+timeout_s = 30
+
+[[checks]]
+id = "task-resolution"
+command = "python3 check.py"
+timeout_s = 30
+required = true
+
+[budget]
+wall_time_s = 600
+max_turns = 20
+
+[metadata]
+family = "missing-validation"
+difficulty = "dev"
+provenance = "spotter synthetic fixture v2"

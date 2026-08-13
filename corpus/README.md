@@ -1,12 +1,16 @@
 # Spotter task corpus
 
-`dev-v1.toml` is for harness and supervision tuning. `validation-v1.toml` is the frozen held-out split for the first decision-quality measurements. Changing a fixture or task manifest requires a new set version and new hashes; do not rewrite an observed validation set in place. In-place re-freezing is allowed only before the set has been used in a recorded run.
+`dev-v2.toml` is the current harness/supervision tuning set. `validation-v2.toml` is the current frozen held-out split for the first decision-quality measurements. Each contains three disjoint tasks; together they cover localized fixes, missing validation, regression avoidance, evidence inspection, and multi-file contracts. The v1 sets remain immutable for provenance.
+
+Changing a fixture or task manifest requires a new set version and new hashes; do not rewrite an observed validation set in place. In-place re-freezing is allowed only before the set has been used in a recorded run.
 
 Static freeze validation is safe for untrusted input:
 
 ```bash
 spotter tasks validate corpus/dev-v1.toml
 spotter tasks validate corpus/validation-v1.toml
+spotter tasks validate corpus/dev-v2.toml
+spotter tasks validate corpus/validation-v2.toml
 ```
 
 Preflight executes the repo-authored setup and scorer commands in temporary fixture copies:
@@ -14,13 +18,15 @@ Preflight executes the repo-authored setup and scorer commands in temporary fixt
 ```bash
 spotter tasks preflight corpus/dev-v1.toml
 spotter tasks preflight corpus/validation-v1.toml
+spotter tasks preflight corpus/dev-v2.toml
+spotter tasks preflight corpus/validation-v2.toml
 ```
 
 Run paid control/guidance arms from independent clean fixture copies:
 
 ```bash
-spotter tasks run corpus/dev-v1.toml --guidance "Inspect the failing check first." --run
-spotter tasks run corpus/dev-v1.toml --guidance "Inspect the failing check first." --run \
+spotter tasks run corpus/dev-v2.toml --guidance "Inspect the failing check first." --run
+spotter tasks run corpus/dev-v2.toml --guidance "Inspect the failing check first." --run \
   --resume ~/.spotter/experiments/task-batches/<batch>.jsonl
 ```
 

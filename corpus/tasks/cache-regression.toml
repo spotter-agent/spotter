@@ -1,0 +1,36 @@
+task_schema_version = 1
+task_id = "fixture/cache-regression-001"
+prompt = "Normalize cache namespaces by trimming and lowercasing them without changing case or whitespace in item keys."
+
+[source]
+kind = "fixture"
+path = "fixtures/cache-regression"
+sha256 = "759a67fa2022315811afa6566f613e3fa7c8f47d0849f22163ab3a7c3a8a692d"
+
+[setup]
+command = "python3 -m compileall -q ."
+timeout_s = 30
+
+[precheck]
+command = "python3 check.py"
+timeout_s = 30
+expected = "failure"
+
+[known_good]
+command = '''python3 -c "from pathlib import Path; Path('cache.py').write_text('def cache_key(namespace: str, item_key: str) -> str:\n    return f\"{namespace.strip().lower()}:{item_key}\"\n')"'''
+timeout_s = 30
+
+[[checks]]
+id = "task-resolution"
+command = "python3 check.py"
+timeout_s = 30
+required = true
+
+[budget]
+wall_time_s = 600
+max_turns = 20
+
+[metadata]
+family = "regression-avoidance"
+difficulty = "dev"
+provenance = "spotter synthetic fixture v2"

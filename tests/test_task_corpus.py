@@ -202,14 +202,32 @@ def test_preflight_classifies_required_check_timeout(tmp_path: Path) -> None:
     assert results[0].commands[-1].timed_out is True
 
 
-@pytest.mark.parametrize("name", ["dev-v1.toml", "validation-v1.toml"])
-def test_repo_corpus_is_frozen_and_preflight_ready(name: str) -> None:
+@pytest.mark.parametrize(
+    ("name", "expected_tasks"),
+    [
+        ("dev-v1.toml", 1),
+        ("validation-v1.toml", 1),
+        ("dev-v2.toml", 3),
+        ("validation-v2.toml", 3),
+    ],
+)
+def test_repo_corpus_is_frozen_and_preflight_ready(name: str, expected_tasks: int) -> None:
     path = Path(__file__).parents[1] / "corpus" / name
 
     task_set, results = preflight_task_set(path)
 
-    assert task_set.tasks
+    assert len(task_set.tasks) == expected_tasks
     assert all(result.classification == PreflightClassification.READY for result in results)
+
+
+def test_repo_v2_dev_and_validation_tasks_are_disjoint() -> None:
+    corpus = Path(__file__).parents[1] / "corpus"
+    dev = validate_task_set(corpus / "dev-v2.toml")
+    validation = validate_task_set(corpus / "validation-v2.toml")
+
+    assert {task.task_id for task in dev.tasks}.isdisjoint(
+        task.task_id for task in validation.tasks
+    )
 
 
 def test_task_batch_runs_clean_control_and_guidance_arms(

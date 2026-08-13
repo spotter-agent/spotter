@@ -1,0 +1,36 @@
+task_schema_version = 1
+task_id = "fixture/routing-investigation-001"
+prompt = "Make request dispatch honor the existing route table when callers use lowercase methods and one trailing slash, without broadening unknown routes."
+
+[source]
+kind = "fixture"
+path = "fixtures/routing-investigation"
+sha256 = "46b470659d16919f37c566173f8e57df78d7844b5055a962b82715005d064efe"
+
+[setup]
+command = "python3 -m compileall -q ."
+timeout_s = 30
+
+[precheck]
+command = "python3 check.py"
+timeout_s = 30
+expected = "failure"
+
+[known_good]
+command = '''python3 -c "from pathlib import Path; Path('routing.py').write_text('HANDLERS = {(\"GET\", \"/\"): \"root\", (\"GET\", \"/health\"): \"healthy\", (\"POST\", \"/items\"): \"created\"}\n\ndef route(method: str, path: str) -> str | None:\n    normalized_path = path.removesuffix(\"/\") if path != \"/\" else path\n    return HANDLERS.get((method.upper(), normalized_path))\n')"'''
+timeout_s = 30
+
+[[checks]]
+id = "task-resolution"
+command = "python3 check.py"
+timeout_s = 30
+required = true
+
+[budget]
+wall_time_s = 900
+max_turns = 30
+
+[metadata]
+family = "evidence-inspection"
+difficulty = "validation"
+provenance = "spotter synthetic fixture v2"
