@@ -30,7 +30,7 @@ PreToolUse Hook only
 (deterministic synchronous enforcement)
 ```
 
-The shared App Server gate is resolved: an explicitly connected TUI and Spotter can observe and steer the same real turn. The Hook now uses bounded daemon IPC for deterministic enforcement, and `spotterd` owns reconnect/reconciliation for configured App Server endpoints. The immediate work is measuring App Server observability in #37 before reducing redundant Hooks in #86. See [App Server connection validation](app-server-validation.md).
+The shared App Server gate is resolved: an explicitly connected TUI and Spotter can observe and steer the same real turn. The Hook now uses bounded daemon IPC for deterministic enforcement, and `spotterd` owns reconnect/reconciliation for configured App Server endpoints. The #37 instrument now separates Hook, App Server source, Trace IR, and ThreadState coverage, but the available snapshot has no App Server or labeled failure samples, so the post-migration ceiling remains unmeasured. See [Observability ceiling baseline](observability-baseline.md).
 The roadmap no longer uses `P0–P9` / `E0–E5`. It is organized by named outcomes:
 
 ```text
@@ -102,7 +102,7 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 | Counterfactual harness | ✅ | Control/guidance same-prefix pairs can be prepared/run | Add mechanically scored tasks (#21) |
 | Standalone runtime | 🟡 | Long-lived process, IPC, lifecycle, isolated per-thread state, and App Server recovery ownership | Select and verify the shared endpoint during setup |
 | Runtime identity | ✅ | Logical threads/turns remain separate from per-connection attachment IDs and monotonically recovered epochs | Propagate the identity into future reviewer jobs |
-| App Server primary observation | 🟡 | Configured endpoints route through `spotterd` into normalized durable Trace IR and incremental ThreadState | Measure parity/ceiling in #37, then reduce Hooks in #86 |
+| App Server primary observation | 🟡 | Configured endpoints route through `spotterd` into normalized durable Trace IR and incremental ThreadState; a bounded value-free source audit and conformance corpus measure projection coverage | Collect labeled App Server failures to finish #37, then reduce Hooks in #86 |
 | Managed Codex lifecycle | 🟡 | Transactional setup/teardown, managed service, diagnostics, and configured-endpoint recovery | Add verified endpoint selection without claiming shared-process ownership |
 | Runtime reconnect/recovery | ✅ | Explicit connect/reconcile/backoff states, restart hydration, durable gaps, capability/server fingerprints, and stale-control fencing | Add retention/checkpoints in #89 |
 | Event-driven detection | ❌ | Reviewer is still cadence-based | #28 after Runtime/Observe |
@@ -156,6 +156,7 @@ Implementation progress and research evidence remain separate.
 | Is there a reproducible mechanically scored task corpus? | **No — #21** |
 | Has live Spotter guidance been shown to improve outcomes? | **No** |
 | Is the App Server control boundary operationally viable? | **Yes for a configured Spotter-managed external path, including daemon reconnect/reconciliation** |
+| Is the post-App-Server visible-in-time ceiling measured? | **No — the instrument exists, but the current sample has 0 App Server sessions and 0/9 labeled sessions (#37)** |
 
 A mechanism being implemented does not prove it improves outcomes. Null and negative results are first-class outcomes for this project.
 

@@ -396,7 +396,9 @@ RESTART
 1. **No ground-truth task set** large enough to run meaningful counterfactual experiments.
 2. **No measured positive intervention advantage** for Spotter guidance.
 3. **No sampled miss-rate/recall estimate** for semantic detector behavior.
-4. **No post-migration App Server observability-ceiling measurement** yet.
+4. **No post-migration App Server observability-ceiling measurement** yet. The coverage taxonomy,
+   value-free source audit, and conformance corpus exist, but the current snapshot has no App Server
+   sessions or labeled failures; see the [observability baseline](observability-baseline.md).
 5. **No replay/fork noise-floor measurement** supporting causal interpretation.
 6. **No live wrong-nudge/sycophancy evaluation** before injection.
 7. **No full runtime overhead measurement** for the target architecture.

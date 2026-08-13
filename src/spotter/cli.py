@@ -41,6 +41,13 @@ from spotter.hook import journal_path, run_hook
 from spotter.integration import IntegrationError, IntegrationManager, IntegrationManifest
 from spotter.labels import LabelError, add_label, valid_session
 from spotter.metrics import Tally, merge, tally_session
+from spotter.observability import (
+    SOURCE_AUDIT_RELATIVE_PATH,
+    ObservabilityError,
+    SourceAuditStore,
+    measure_observability,
+    render_observability,
+)
 from spotter.paths import secure_dir, spotter_home
 from spotter.redact import scan_text
 from spotter.replay import ReplayError, fork, plan_to_json
@@ -72,6 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
             "experiment",
             "label",
             "metrics",
+            "observability",
             "status",
             "doctor",
             "daemon",
@@ -87,6 +95,7 @@ def build_parser() -> argparse.ArgumentParser:
             "experiment: counterfactual fork pairs — nudge vs control (needs --run to execute); "
             "label: record a human verdict on a gate flag, reviewer decision, or session; "
             "metrics: gate FP rate, reviewer precision and observability ceiling from labels; "
+            "observability: compare Hook/App Server Trace IR and source-adapter coverage; "
             "status: what Spotter is storing, and whether it is actually running; "
             "doctor: verify supervision end to end (non-zero exit when broken); "
             "daemon: manually start, stop, restart, or inspect spotterd; "
@@ -100,7 +109,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="daemon lifecycle action or integration target",
     )
     parser.add_argument("--config", type=Path, help="path to Spotter TOML config")
-    parser.add_argument("--session", help="session id (fork; analyze filters to it)")
+    parser.add_argument(
+        "--session", help="session id (fork; analyze/metrics/observability filter to it)"
+    )
     parser.add_argument("--step", type=int, help="journal step to branch at (fork)")
     parser.add_argument(
         "--repo", type=Path, help="repo path (prune; fork override when the journal lacks cwd)"
@@ -253,6 +264,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _label_main(args.session, args.step, args.verdict, args.note)
     if args.command == "metrics":
         return _metrics_main(args.session)
+    if args.command == "observability":
+        return _observability_main(args.session)
     if args.command == "review":
         if not args.session:
             parser.error("review requires --session")
@@ -786,6 +799,38 @@ def _metrics_main(session: str | None) -> int:
     print("  " + reviewer.rate_line("interventions", "correct"))
     print("P1 observability ceiling (label failed sessions visible|invisible):")
     print("  " + ceiling.rate_line("sessions", "visible"))
+    return 0
+
+
+def _observability_main(session: str | None) -> int:
+    """Report evidence coverage without claiming an unlabeled failure ceiling."""
+
+    sessions_dir = journal_path({"session_id": "probe"}).parent
+    journals = sorted(sessions_dir.glob("*.jsonl"))
+    if session:
+        journals = [journal for journal in journals if journal.stem == session]
+    if not journals:
+        print("no journals found", file=sys.stderr)
+        return 1
+    histories: list[list[StepRecord]] = []
+    for journal in journals:
+        try:
+            histories.append(StepJournal.load(journal))
+        except (OSError, SnapshotError) as error:
+            print(f"{journal.stem}: unreadable journal ({error})", file=sys.stderr)
+    if not histories:
+        return 1
+    try:
+        source_samples = SourceAuditStore(sessions_dir / SOURCE_AUDIT_RELATIVE_PATH).load()
+    except (OSError, UnicodeError, ObservabilityError) as error:
+        print(f"source audit unreadable: {error}", file=sys.stderr)
+        return 1
+    if session:
+        thread_id = (
+            session.removeprefix("app-server-") if session.startswith("app-server-") else None
+        )
+        source_samples = tuple(sample for sample in source_samples if sample.thread_id == thread_id)
+    print(render_observability(measure_observability(histories, source_samples)))
     return 0
 
 

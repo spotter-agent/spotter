@@ -484,6 +484,13 @@ explicitly. Hook records carry legacy-session provenance with unknown thread, tu
 dimensions, so consumers never need Codex transport objects and never infer that a Hook session is an
 App Server thread.
 
+The daemon also writes a bounded, value-free source-shape audit beside session journals. It records
+which App Server field paths existed, which normalized fields and evidence families survived, and
+whether the fact remained available in live `ThreadState`. Source values, raw reasoning, command
+output, and encrypted content are never copied into this audit. `spotter observability` compares the
+Hook and App Server surfaces without treating adapter/state loss as a theoretical source limit. See
+[Observability ceiling baseline](observability-baseline.md).
+
 ---
 
 # 7. Reviewer jobs and freshness

@@ -347,6 +347,7 @@ spotter analyze
 spotter review --session <id>
 spotter label --session <id> --step <n> --verdict fp
 spotter metrics
+spotter observability [--session <id>]
 spotter fork --session <id> --step <n>
 spotter prune --repo /path/to/repo  # dry-run unless --apply is supplied
 spotter experiment --session <id> --step <n> --guidance "..." --check "..."

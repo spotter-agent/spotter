@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import warnings
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
@@ -13,6 +14,11 @@ from spotter.identity import (
     RuntimeIdentity,
     RuntimeIdentityRegistry,
     TurnStatus,
+)
+from spotter.observability import (
+    SOURCE_AUDIT_RELATIVE_PATH,
+    CoverageStatus,
+    SourceAuditStore,
 )
 from spotter.snapshot import StepJournal, StepRecord
 from spotter.trace import TraceEvent, TraceProvenance
@@ -225,6 +231,8 @@ class AppServerTraceIngestor:
         self.journals_dir = journals_dir
         self.journals_dir.mkdir(parents=True, exist_ok=True)
         self.normalizer = CodexTraceNormalizer()
+        self.source_audit = SourceAuditStore(journals_dir / SOURCE_AUDIT_RELATIVE_PATH)
+        self.last_source_audit_error: str | None = None
         self._seen: set[str] = set()
         self._operations: dict[tuple[str, str, str, str], tuple[str, str | None]] = {}
         self._terminal_turns: set[str] = set()
@@ -240,7 +248,42 @@ class AppServerTraceIngestor:
         event = self.normalizer.normalize(raw_event)
         if connection_epoch is not None:
             event = replace(event, connection_epoch=connection_epoch)
-        return self.record(event)
+        return self.record_source(raw_event, event)
+
+    def record_source(self, raw_event: AppServerEvent, event: TraceEvent) -> StepRecord | None:
+        """Persist normalized IR and a bounded value-free source-shape comparison."""
+
+        record = self.record(event)
+        self.audit_source(
+            raw_event,
+            record.event if record is not None else event,
+            disposition="ingested" if record is not None else "deduplicated",
+        )
+        return record
+
+    def audit_source(
+        self,
+        raw_event: AppServerEvent,
+        event: TraceEvent,
+        *,
+        disposition: str,
+        state_status: CoverageStatus | None = None,
+    ) -> None:
+        """Retain field shapes without allowing audit I/O to break observation."""
+
+        try:
+            self.source_audit.record(
+                raw_event,
+                event,
+                disposition=disposition,
+                state_status=state_status,
+            )
+            self.last_source_audit_error = None
+        except (OSError, UnicodeError) as error:
+            # The primary journal already contains the event. Losing the optional
+            # shape audit must not disconnect observation or skip live-state reduction.
+            self.last_source_audit_error = str(error)
+            warnings.warn(f"source audit unavailable: {error}", RuntimeWarning, stacklevel=2)
 
     def record(self, event: TraceEvent) -> StepRecord | None:
         """Append one already-normalized runtime event through the same idempotency path."""

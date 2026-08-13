@@ -1,0 +1,90 @@
+[
+  {
+    "name": "thread identity",
+    "method": "thread/started",
+    "params": {"thread": {"id": "thread-1", "cwd": "/repo", "status": {"type": "idle"}}},
+    "expected_kind": "thread_started",
+    "expected_status": "observed_exact",
+    "families": ["thread_turn_identity"]
+  },
+  {
+    "name": "turn identity",
+    "method": "turn/started",
+    "params": {"threadId": "thread-1", "turn": {"id": "turn-1", "status": "inProgress"}},
+    "expected_kind": "turn_started",
+    "expected_status": "observed_exact",
+    "families": ["thread_turn_identity"]
+  },
+  {
+    "name": "turn completion",
+    "method": "turn/completed",
+    "params": {"threadId": "thread-1", "turn": {"id": "turn-1", "status": "completed", "durationMs": 20}},
+    "expected_kind": "turn_completed",
+    "expected_status": "observed_exact",
+    "families": ["thread_turn_identity"]
+  },
+  {
+    "name": "command outcome",
+    "method": "item/completed",
+    "params": {"threadId": "thread-1", "turnId": "turn-1", "item": {"id": "command-1", "type": "commandExecution", "command": "pytest", "cwd": "/repo", "status": "completed", "aggregatedOutput": "ok", "exitCode": 0}},
+    "expected_kind": "command_result",
+    "expected_status": "observed_exact",
+    "families": ["command_tool_call", "tool_outcome"]
+  },
+  {
+    "name": "file diff",
+    "method": "item/completed",
+    "params": {"threadId": "thread-1", "turnId": "turn-1", "item": {"id": "file-1", "type": "fileChange", "status": "completed", "changes": [{"path": "src/example.py", "kind": "update", "diff": "+pass"}]}},
+    "expected_kind": "file_edit",
+    "expected_status": "observed_exact",
+    "families": ["file_edit_diff"]
+  },
+  {
+    "name": "MCP result",
+    "method": "item/completed",
+    "params": {"threadId": "thread-1", "turnId": "turn-1", "item": {"id": "mcp-1", "type": "mcpToolCall", "server": "github", "tool": "read", "arguments": {"id": 1}, "status": "completed", "result": {"ok": true}}},
+    "expected_kind": "tool_result",
+    "expected_status": "observed_exact",
+    "families": ["mcp_call_result"]
+  },
+  {
+    "name": "plan summary",
+    "method": "item/completed",
+    "params": {"threadId": "thread-1", "turnId": "turn-1", "item": {"id": "plan-1", "type": "plan", "text": "Run focused checks"}},
+    "expected_kind": "plan",
+    "expected_status": "observed_exact",
+    "families": ["plan_summary"]
+  },
+  {
+    "name": "reasoning summary excludes raw content",
+    "method": "item/completed",
+    "params": {"threadId": "thread-1", "turnId": "turn-1", "item": {"id": "reasoning-1", "type": "reasoning", "summary": ["Inspect the boundary"], "content": ["SYNTHETIC_PRIVATE_REASONING"]}},
+    "expected_kind": "reasoning_summary",
+    "expected_status": "observed_exact",
+    "families": ["reasoning_summary"]
+  },
+  {
+    "name": "runtime usage",
+    "method": "thread/tokenUsage/updated",
+    "params": {"threadId": "thread-1", "turnId": "turn-1", "tokenUsage": {"last": {"inputTokens": 10, "outputTokens": 4}, "total": {"totalTokens": 14}, "modelContextWindow": 200000}},
+    "expected_kind": "token_usage",
+    "expected_status": "observed_exact",
+    "families": ["runtime_usage"]
+  },
+  {
+    "name": "unknown method remains visible",
+    "method": "future/event",
+    "params": {"threadId": "thread-1", "turnId": "turn-1", "futurePayload": {"shape": "known-only-to-source"}},
+    "expected_kind": "runtime_event_unknown",
+    "expected_status": "unknown",
+    "families": []
+  },
+  {
+    "name": "encrypted child content is not reconstructed",
+    "method": "item/completed",
+    "params": {"threadId": "thread-1", "turnId": "turn-1", "item": {"id": "child-1", "type": "collabToolCall", "status": "completed", "encryptedContent": "SYNTHETIC_CIPHERTEXT"}},
+    "expected_kind": "item_completed",
+    "expected_status": "observed_encrypted",
+    "families": []
+  }
+]

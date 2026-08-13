@@ -23,6 +23,8 @@ from spotter.app_server import (
 )
 from spotter.identity import AttachmentId, RuntimeIdentity, ThreadId
 from spotter.ingestion import AppServerTraceIngestor, IngestionError
+from spotter.observability import state_coverage_status
+from spotter.snapshot import StepRecord
 from spotter.thread_state import ThreadState, ThreadStateError, ThreadStateStore
 from spotter.trace import TraceEvent, TraceProvenance
 
@@ -220,7 +222,21 @@ class AppServerRecoveryLoop:
                     identity=self._epoch_identity(event.identity, attachment_id),
                     connection_epoch=epoch,
                 )
-                self._record(event)
+                record = self._record(event)
+                state_status = None
+                if (
+                    record is not None
+                    and event.identity is not None
+                    and event.identity.thread_id is not None
+                ):
+                    state = self.thread_states.snapshot(event.identity.thread_id)
+                    state_status = state_coverage_status(record.event, state)
+                self.ingestor.audit_source(
+                    raw_event,
+                    record.event if record is not None else event,
+                    disposition="ingested" if record is not None else "deduplicated",
+                    state_status=state_status,
+                )
             except IngestionError as error:
                 self.last_error = str(error)
             except AppServerError:
@@ -349,11 +365,12 @@ class AppServerRecoveryLoop:
         )
         self.metrics = replace(self.metrics, observation_gaps=self.metrics.observation_gaps + 1)
 
-    def _record(self, event: TraceEvent) -> None:
+    def _record(self, event: TraceEvent) -> StepRecord | None:
         record = self.ingestor.record(event)
         if record is None or event.identity is None or event.identity.thread_id is None:
-            return
+            return record
         self.thread_states.observe(record.event)
+        return record
 
     def _runtime_identity(
         self,
