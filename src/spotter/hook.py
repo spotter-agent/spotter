@@ -17,6 +17,7 @@ from typing import Any
 from spotter.budget import cancel, reserve
 from spotter.config import SpotterConfig
 from spotter.core import SpotterRuntime
+from spotter.effects import classify
 from spotter.gates import Gate
 from spotter.paths import sanitize_session, secure_dir, spotter_home
 from spotter.snapshot import SnapshotError, StepJournal, global_lock, snapshot_worktree
@@ -59,6 +60,7 @@ def event_from_hook(payload: dict[str, Any]) -> TraceEvent:
             # A patch body is not a shell command; judging it as one produced
             # real FPs (a patch editing gates.py tripped the gate it edits).
             patch, command = command, None
+        classification = classify(payload.get("tool_name"), tool_input)
         return TraceEvent(
             "tool_proposal",
             {
@@ -69,17 +71,29 @@ def event_from_hook(payload: dict[str, Any]) -> TraceEvent:
                 # Correlation keys for P0 fork: tool_use_id matches the rollout's
                 # call_id; cwd locates the repo to snapshot/restore.
                 "tool_use_id": payload.get("tool_use_id"),
+                "turn_id": payload.get("turn_id"),
                 "cwd": payload.get("cwd"),
+                "reversibility_class": classification.reversibility_class,
+                "effect_kind": classification.kind,
+                "resource": classification.resource,
+                "reversible": classification.reversible,
             },
         )
     if name == "PostToolUse":
+        tool_input = payload.get("tool_input")
+        classification = classify(payload.get("tool_name"), tool_input)
         return TraceEvent(
             "tool_result",
             {
                 "tool": payload.get("tool_name"),
                 "tool_use_id": payload.get("tool_use_id"),
+                "turn_id": payload.get("turn_id"),
                 "tool_input": payload.get("tool_input"),
                 "tool_response": payload.get("tool_response"),
+                "reversibility_class": classification.reversibility_class,
+                "effect_kind": classification.kind,
+                "resource": classification.resource,
+                "reversible": classification.reversible,
             },
         )
     if name == "UserPromptSubmit":
@@ -185,14 +199,16 @@ def run_hook(
     adapter = JournalAdapter(journal)
     runtime = SpotterRuntime(config, adapter, gate)
     event = event_from_hook(payload)
+    if event.kind == "tool_result":
+        event.payload["checkpoint"] = journal.last_snapshot()
     if (
         config.snapshot_on_patch
         and event.kind in ("tool_proposal", "tool_result")
-        and event.payload.get("tool") == "apply_patch"
+        and event.payload.get("reversibility_class") == "B"
         and isinstance(cwd, str)
     ):
-        # PreToolUse captures the state before this patch; PostToolUse captures
-        # the state after it, keeping later rollout prefixes aligned with disk.
+        # PreToolUse captures the state before a reversible local mutation;
+        # PostToolUse captures the state after it, preserving its lineage.
         # The global lock closes the ref-created-but-not-yet-journaled window
         # a concurrent prune --apply could otherwise exploit.
         with global_lock():

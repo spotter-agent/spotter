@@ -44,6 +44,26 @@ def test_missing_goal_is_stated_not_hidden() -> None:
     assert "none recorded" in digest.body
 
 
+def test_external_effects_remain_visible_to_analysis() -> None:
+    digest = build(
+        [
+            _rec(0, "user_prompt", {"prompt": "publish the branch"}),
+            _rec(
+                1,
+                "external_effect",
+                {
+                    "kind": "git_remote_write",
+                    "resource": "origin",
+                    "result": "succeeded",
+                    "reversible": False,
+                },
+            ),
+        ]
+    )
+    assert "EXTERNAL EFFECT remains after restart" in digest.body
+    assert "resource=origin" in digest.body
+
+
 def test_spec_drift_is_discarded_when_no_goal_was_visible() -> None:
     """Instruction alone is not enforcement: a model asked not to answer
     spec_drift can still answer it."""

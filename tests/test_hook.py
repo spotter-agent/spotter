@@ -108,6 +108,26 @@ def test_post_tool_use_preserves_evidence() -> None:
     )
     assert event.payload["tool_use_id"] == "call-1"
     assert event.payload["tool_response"] == {"exit_code": 1, "output": "failed"}
+    assert event.payload["reversibility_class"] == "A"
+
+
+def test_git_push_records_class_and_external_effect(spotter_home: Path) -> None:
+    proposal = {**_payload("git push origin feature"), "tool_use_id": "push-1"}
+    assert run_hook(proposal, _config(observation_only=True)) is None
+    result = {
+        **proposal,
+        "hook_event_name": "PostToolUse",
+        "tool_response": {"exit_code": 0},
+    }
+    assert run_hook(result, _config(observation_only=True)) is None
+
+    records = StepJournal.load(journal_path(proposal))
+    assert records[0].event.payload["reversibility_class"] == "C"
+    effect = records[-1].event
+    assert effect.kind == "external_effect"
+    assert effect.payload["resource"] == "origin"
+    assert effect.payload["result"] == "succeeded"
+    assert effect.payload["tool_use_id"] == "push-1"
 
 
 def test_unknown_events_still_journal(spotter_home: Path) -> None:
