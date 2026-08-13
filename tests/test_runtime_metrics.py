@@ -66,11 +66,17 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
         IdentityProvenance("codex", "external-thread", "external-turn"),
     )
 
-    def app(kind: str, payload: dict[str, object], operation: str | None = None) -> TraceEvent:
+    def app(
+        kind: str,
+        payload: dict[str, object],
+        operation: str | None = None,
+        *,
+        occurred_at: float = 2.0,
+    ) -> TraceEvent:
         return TraceEvent(
             kind,
             payload,
-            occurred_at=2.0,
+            occurred_at=occurred_at,
             identity=identity,
             operation_id=operation,
             provenance=TraceProvenance("codex_app_server", "synthetic"),
@@ -78,17 +84,18 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
         )
 
     app_server = [
-        _record(0, app("command_started", {}, "command-1")),
+        _record(0, app("turn_started", {}, occurred_at=1.0)),
+        _record(1, app("command_started", {}, "command-1")),
         _record(
-            1,
+            2,
             app(
                 "command_result",
                 {"status": "completed", "exitCode": 0, "durationMs": 10},
                 "command-1",
             ),
         ),
-        _record(2, app("token_usage", {"total": {"totalTokens": 14}})),
-        _record(3, app("turn_completed", {"status": "completed"})),
+        _record(3, app("token_usage", {"total": {"totalTokens": 14}})),
+        _record(4, app("turn_completed", {"status": "completed"}, occurred_at=3.0)),
     ]
 
     report = measure_runtime_costs([(hook, 100), (app_server, 200)])
@@ -108,10 +115,11 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
     assert report.reviewer_jobs_queued == report.reviewer_jobs_started == 1
     assert report.reviewer_queue_ms == (4.0,)
     assert report.reviewer_inference_ms == (8.0,)
+    assert report.turn_wall_ms == (2000.0,)
     assert report.gate_calls == 1
     assert report.tool_duration_ms == (10.0,)
-    assert report.source_timestamps == 4
-    assert report.receipt_timestamps == report.events == 10
+    assert report.source_timestamps == 5
+    assert report.receipt_timestamps == report.events == 11
     assert report.journal_bytes == 300
 
     rendered = render_runtime_costs(report)
@@ -121,6 +129,7 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
         "app_server: actions=1 (from 2 observations), outcomes=1 (from 1 observation)" in rendered
     )
     assert "jobs=1/1/1 decided/started/queued" in rendered
+    assert "turn_wall(source)=avg=2000.00ms max=2000.00ms (1/1)" in rendered
 
 
 def test_unavailable_runtime_metrics_render_unknown_not_zero() -> None:
@@ -143,3 +152,28 @@ def test_uncorrelated_action_observations_do_not_invent_semantic_identity() -> N
     assert hook.actions == hook.outcomes == hook.classified_outcomes == 0
     assert hook.action_observations == 2
     assert hook.outcome_observations == 1
+
+
+def test_turn_duration_never_crosses_connection_epochs() -> None:
+    identity = RuntimeIdentity(
+        ThreadId("thread-1"),
+        TurnId("turn-1"),
+        None,
+        IdentityProvenance("codex", "external-thread", "external-turn"),
+    )
+    records = [
+        _record(
+            0,
+            TraceEvent("turn_started", occurred_at=10.0, identity=identity, connection_epoch=1),
+        ),
+        _record(
+            1,
+            TraceEvent("turn_completed", occurred_at=20.0, identity=identity, connection_epoch=2),
+        ),
+    ]
+
+    report = measure_runtime_costs([(records, 10)])
+
+    assert report.completed_turns == 1
+    assert report.turn_wall_ms == ()
+    assert "turn_wall(source)=unknown (0/1)" in render_runtime_costs(report)

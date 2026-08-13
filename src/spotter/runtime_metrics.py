@@ -37,6 +37,7 @@ class RuntimeCostReport:
     reviewer_jobs_started: int
     reviewer_queue_ms: tuple[float, ...]
     reviewer_inference_ms: tuple[float, ...]
+    turn_wall_ms: tuple[float, ...]
     tool_duration_ms: tuple[float, ...]
     gate_calls: int
     hook_ms: tuple[float, ...]
@@ -58,6 +59,7 @@ def measure_runtime_costs(
     tool_duration_ms: list[float] = []
     reviewer_queue_ms: list[float] = []
     reviewer_inference_ms: list[float] = []
+    turn_wall_ms: list[float] = []
     hook_ms: list[float] = []
     ipc_ms: list[float] = []
     daemon_evaluation_ms: list[float] = []
@@ -75,6 +77,7 @@ def measure_runtime_costs(
         failed: set[str] = set()
         completed: set[str] = set()
         token_covered: set[str] = set()
+        turn_starts: dict[tuple[str, int], float] = {}
         latest_main_tokens: int | None = None
         latest_reviewer_tokens: int | None = None
         for record in records:
@@ -100,8 +103,15 @@ def measure_runtime_costs(
             if duration is not None and event.kind in _OUTCOME_KINDS:
                 tool_duration_ms.append(duration)
             turn_id = _turn_id(record)
+            clock = _turn_clock(record)
+            if event.kind == "turn_started" and clock is not None:
+                turn_starts.setdefault(clock[:2], clock[2])
             if event.kind == "turn_completed" and turn_id is not None:
                 completed.add(turn_id)
+                if clock is not None and (started_at := turn_starts.get(clock[:2])) is not None:
+                    finished_at = clock[2]
+                    if finished_at >= started_at:
+                        turn_wall_ms.append((finished_at - started_at) * 1000)
             if event.kind == "token_usage":
                 token_observations += 1
                 if turn_id is not None:
@@ -163,6 +173,7 @@ def measure_runtime_costs(
         reviewer_jobs_started,
         tuple(reviewer_queue_ms),
         tuple(reviewer_inference_ms),
+        tuple(turn_wall_ms),
         tuple(tool_duration_ms),
         gate_calls,
         tuple(hook_ms),
@@ -213,6 +224,7 @@ def render_runtime_costs(report: RuntimeCostReport) -> str:
     lines.append(
         f"  Timing: receipt_wall={report.receipt_timestamps}/{report.events}, "
         f"source={report.source_timestamps}/{report.events}, "
+        f"turn_wall(source)={_sample(report.turn_wall_ms, report.completed_turns)}, "
         f"tool_duration={_sample(report.tool_duration_ms, tool_outcomes)}"
     )
     lines.append(
@@ -249,6 +261,17 @@ def _turn_id(record: StepRecord) -> str | None:
         return identity.turn_id.value
     value = record.event.payload.get("turn_id")
     return value if isinstance(value, str) and value else None
+
+
+def _turn_clock(record: StepRecord) -> tuple[str, int, float] | None:
+    """Identity for source-clock durations that must not cross reconnects."""
+
+    turn_id = _turn_id(record)
+    epoch = record.event.connection_epoch
+    occurred_at = record.event.occurred_at
+    if turn_id is None or epoch is None or occurred_at is None or not math.isfinite(occurred_at):
+        return None
+    return turn_id, epoch, occurred_at
 
 
 def _total_tokens(payload: Mapping[str, object]) -> int | None:
