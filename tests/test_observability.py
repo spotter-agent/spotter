@@ -104,7 +104,18 @@ def test_normalizer_and_audit_share_the_item_field_whitelist() -> None:
         assert source_audit_sample(raw, event).status == CoverageStatus.OBSERVED_EXACT
 
 
-def test_unencrypted_field_name_is_not_classified_as_ciphertext() -> None:
+@pytest.mark.parametrize(
+    ("field", "expected"),
+    [
+        ("encryptedContent", CoverageStatus.OBSERVED_ENCRYPTED),
+        ("childEncryptedContent", CoverageStatus.OBSERVED_ENCRYPTED),
+        ("isEncrypted", CoverageStatus.OBSERVED_ENCRYPTED),
+        ("unencryptedContent", CoverageStatus.UNKNOWN),
+    ],
+)
+def test_encrypted_field_names_follow_wire_name_segments(
+    field: str, expected: CoverageStatus
+) -> None:
     raw = _raw(
         "item/completed",
         {
@@ -113,13 +124,13 @@ def test_unencrypted_field_name_is_not_classified_as_ciphertext() -> None:
             "item": {
                 "id": "future-1",
                 "type": "futureItem",
-                "unencryptedContent": "synthetic",
+                field: "synthetic",
             },
         },
     )
     event = CodexTraceNormalizer().normalize(raw)
 
-    assert source_audit_sample(raw, event).status == CoverageStatus.UNKNOWN
+    assert source_audit_sample(raw, event).status == expected
 
 
 @pytest.mark.parametrize(

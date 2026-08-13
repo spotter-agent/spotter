@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from spotter.thread_state import ThreadState
 
 SOURCE_AUDIT_RELATIVE_PATH = Path("source-audit") / "samples.jsonl"
+_FIELD_SEGMENT = re.compile(r"[._-]|(?<=[a-z0-9])(?=[A-Z])")
 
 
 class ObservabilityError(ValueError):
@@ -537,7 +538,7 @@ def _source_status(
     source_fields: tuple[str, ...],
     event: TraceEvent,
 ) -> CoverageStatus:
-    if any(re.search(r"(?:^|[._-])encrypted(?:$|[._-]|[A-Z])", field) for field in source_fields):
+    if any(_is_encrypted_field(field) for field in source_fields):
         return CoverageStatus.OBSERVED_ENCRYPTED
     families = _families_for(raw_event.method, item_type)
     if not families or event.kind == "runtime_event_unknown":
@@ -678,6 +679,10 @@ def _path_has_value(raw: Mapping[str, Any], path: str) -> bool:
             return False
         value = value[component]
     return value is not None
+
+
+def _is_encrypted_field(field: str) -> bool:
+    return any(segment.casefold() == "encrypted" for segment in _FIELD_SEGMENT.split(field))
 
 
 def _required_string(raw: Mapping[str, Any], key: str) -> str:
