@@ -1,6 +1,7 @@
 import asyncio
 import json
 import shutil
+import socket
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -324,6 +325,25 @@ def test_second_daemon_cannot_take_the_live_socket(socket_path: Path) -> None:
         finally:
             await second.close()
             await first.close()
+
+    asyncio.run(scenario())
+
+
+def test_daemon_reclaims_a_stale_socket_without_a_live_process(
+    socket_path: Path,
+) -> None:
+    async def scenario() -> None:
+        stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        stale.bind(str(socket_path))
+        stale.close()
+        assert (await DaemonClient(socket_path).status()).health == RuntimeHealth.UNAVAILABLE
+
+        server = DaemonServer(socket_path)
+        await server.start()
+        try:
+            assert (await DaemonClient(socket_path).status()).health == RuntimeHealth.HEALTHY
+        finally:
+            await server.close()
 
     asyncio.run(scenario())
 
