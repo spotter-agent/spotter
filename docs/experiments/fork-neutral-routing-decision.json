@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "measured_at": "2026-08-13",
+  "source_session": "019ffb34-3373-7901-a3d1-b175d5616ac5",
+  "branch_step": 8,
+  "prefix_id": "2cd0da0338ed463361a7ef7cc0b96d375b7a4b3ff3715bf3c0f530de15a6c3a9",
+  "source_snapshot": "62d8b8d6b7b54cf14d6008bf97e494fabe5052ec",
+  "model": "gpt-5.6-sol",
+  "scorer": "python3 check.py",
+  "raw_result_sha256": "c954c58ee4e4e58b1f68bbbd8c7ff1c89c1aca3638cbf8a88e6c5a502957ac11",
+  "coverage": {
+    "candidates": 6,
+    "forkable_exact": 5,
+    "pre_mutation_candidates": 3,
+    "pre_mutation_forkable": 3,
+    "earliest_forkable_step": 2
+  },
+  "outcomes": {
+    "pairs": 5,
+    "judgeable_pairs": 5,
+    "mechanical_disagreements": 0,
+    "environment_mismatches": 0,
+    "infrastructure_failures": 0,
+    "passing_arms": 10
+  },
+  "continuations": [
+    {
+      "pair": 0,
+      "arm": "neutral_a",
+      "session_id": "4d2ec0b1-81ca-4ff0-a53b-469b14392428",
+      "elapsed_seconds": 28.722,
+      "tool_calls": 6,
+      "reported_tokens": 176402
+    },
+    {
+      "pair": 0,
+      "arm": "neutral_b",
+      "session_id": "93e6390b-5735-4109-bb05-4d18244d4da2",
+      "elapsed_seconds": 28.547,
+      "tool_calls": 6,
+      "reported_tokens": 176782
+    },
+    {
+      "pair": 1,
+      "arm": "neutral_b",
+      "session_id": "ee8120e3-7dce-40e2-87a8-832479b0ecee",
+      "elapsed_seconds": 22.737,
+      "tool_calls": 6,
+      "reported_tokens": 176526
+    },
+    {
+      "pair": 1,
+      "arm": "neutral_a",
+      "session_id": "ac1ae4a5-68ef-4493-a767-ed234a8ede39",
+      "elapsed_seconds": 21.972,
+      "tool_calls": 5,
+      "reported_tokens": 148449
+    },
+    {
+      "pair": 2,
+      "arm": "neutral_a",
+      "session_id": "bd889a93-93dc-400f-999a-fa86eab701e0",
+      "elapsed_seconds": 25.474,
+      "tool_calls": 6,
+      "reported_tokens": 177226
+    },
+    {
+      "pair": 2,
+      "arm": "neutral_b",
+      "session_id": "33a940a5-0cb0-4178-9355-c2e825ca6578",
+      "elapsed_seconds": 35.388,
+      "tool_calls": 7,
+      "reported_tokens": 179657
+    },
+    {
+      "pair": 3,
+      "arm": "neutral_b",
+      "session_id": "23c56a5c-7f74-4ffa-9047-155e9882b8b5",
+      "elapsed_seconds": 27.7,
+      "tool_calls": 6,
+      "reported_tokens": 176840
+    },
+    {
+      "pair": 3,
+      "arm": "neutral_a",
+      "session_id": "8a59ab0e-8eb6-43a0-9ebb-030d797fc17e",
+      "elapsed_seconds": 30.868,
+      "tool_calls": 6,
+      "reported_tokens": 176628
+    },
+    {
+      "pair": 4,
+      "arm": "neutral_a",
+      "session_id": "0ff99807-85ec-4e33-8188-7d4ef2a2b511",
+      "elapsed_seconds": 22.783,
+      "tool_calls": 6,
+      "reported_tokens": 176489
+    },
+    {
+      "pair": 4,
+      "arm": "neutral_b",
+      "session_id": "a0ccb8c2-2a7e-4bfc-a1e9-c04a32312043",
+      "elapsed_seconds": 28.236,
+      "tool_calls": 7,
+      "reported_tokens": 204601
+    }
+  ]
+}

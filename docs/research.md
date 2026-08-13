@@ -277,7 +277,12 @@ prefix. A second [early-prefix run](experiments/fork-neutral-early-prefix.md) ob
 at the earliest pre-mutation point of a different frozen task, after baseline capture and Code Mode
 correlation made both pre-mutation proposals exact. Together the fresh runs observed 0/6 mechanical
 disagreements, 0/6 environment mismatches, and 0/12 infrastructure failures, but remain too narrow
-to establish the representative noise bound.
+to establish the representative noise bound. A third
+[routing-decision run](experiments/fork-neutral-routing-decision.md) moved the prefix to a scored
+implementation decision and repeated five pairs, but all ten arms still passed. The cumulative
+result is 0/11 disagreements, 0/11 environment mismatches, and 0/22 infrastructure failures across
+three tasks. Further ceiling-task repetition is low-value; the next sample needs observed mechanical
+failures near an intervention opportunity.
 
 Intervention deltas smaller than the instrument noise floor should not be overinterpreted.
 
