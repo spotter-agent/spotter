@@ -3,6 +3,11 @@
 > **Validated:** 2026-08-13  
 > **Upstream snapshot:** [`openai/codex@b1373b7`](https://github.com/openai/codex/commit/b1373b74a27d1d9b65074a873202683355cae772)  
 > **Scope:** whether starting an external App Server makes an otherwise plain `codex` TUI attach to it automatically.
+>
+> **Follow-up:** The same-day runtime experiment in [App Server lifecycle / attach PoC](app-server-poc.md#first-local-result)
+> subsequently proved same-thread observation and same-turn steering for an explicitly connected,
+> Spotter-managed external server. This document remains the evidence for the narrower automatic-discovery
+> question; its original environment limitation and experiment plan below are historical context.
 
 ## Conclusion
 
@@ -71,9 +76,9 @@ multi-client steering, reconnect, and concurrency behavior.
 | An already-running external server is enough for plain `codex` | **Rejected** | Explicit `--remote` is documented and implemented |
 | A TUI can target an external server | **Supported interface** | `codex --remote ws://...` or `unix://...` |
 | Spotter can open a second connection | **Supported at protocol level** | Each connection initializes independently |
-| A second connection automatically observes a TUI-created thread | **Not established** | It must identify and resume/subscribe to the correct thread |
+| A second connection automatically observes a TUI-created thread | **Rejected** | The PoC had to discover and explicitly resume the thread |
 | `turn/steer` can target an active turn | **Supported interface** | Requires the correct `threadId` and `expectedTurnId` |
-| Steering changes the real user-visible TUI turn | **Runtime PoC required** | Must be demonstrated end to end |
+| Steering changes the real user-visible TUI turn | **Established for the tested explicit path** | See the [PoC result](app-server-poc.md#first-local-result) |
 | Plain `codex` UX can be preserved unchanged | **Rejected for the current interface** | The external endpoint must be selected explicitly |
 
 The protocol is multi-connection, but “two clients connected to one server” is not the
@@ -88,14 +93,15 @@ steering, it must also track the exact active turn because `turn/steer` requires
    Codex-managed-daemon design that depends on plain `codex` finding it.
 2. **Keep the external App Server PoC, but launch explicitly.** Test a Spotter-managed
    listener with `codex --remote <endpoint>`, preferably over a local Unix socket.
-3. **Treat transparent plain-command UX as a separate product problem.** Before P1,
+3. **Treat transparent plain-command UX as a separate product problem.** Before managed lifecycle
+   integration,
    choose and validate a supported launcher/alias/wrapper approach, including argument
    forwarding, `resume`, upgrades, failures, and teardown.
 4. **Retain degraded mode.** A user who runs unmodified plain `codex` is not attached to
    Spotter's external control plane; hooks may still provide deterministic enforcement,
    but live observation, steer, and interrupt must report unavailable.
 
-## Remaining runtime experiment
+## Original follow-up experiment (completed for the explicit single-TUI path)
 
 Use an environment with a current Codex CLI and authentication:
 
@@ -109,6 +115,6 @@ Use an environment with a current Codex CLI and authentication:
 7. Run plain `codex` as the negative control and verify Spotter reports degraded rather
    than silently claiming attachment.
 
-Record the Codex version, endpoint, config overrides, IDs, event ordering, latency,
-reconnect behavior, and logs. Passing this experiment—not merely opening two
-connections—is the gate for the standalone runtime migration.
+The recorded PoC passed steps 1–5 for one TUI. Multi-TUI concurrency, reconnect behavior, and the
+Codex-managed daemon path remain unproven; they are productization work rather than evidence that
+the explicit shared-server premise works.

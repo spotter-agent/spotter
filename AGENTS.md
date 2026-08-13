@@ -68,7 +68,7 @@ For behavior changes, add or update tests that demonstrate the contract rather t
 
 ## Change discipline
 
-- Avoid new dependencies unless they materially simplify the design; Spotter intentionally has no runtime dependencies today.
+- Avoid new dependencies unless they materially simplify the design; Spotter currently keeps its runtime dependency surface to `websockets`.
 - Keep Python 3.11 compatibility.
 - Keep public/user-facing behavior backward compatible unless the issue/PR explicitly introduces a migration.
 - Never write tests that depend on hidden reasoning or private chain-of-thought.

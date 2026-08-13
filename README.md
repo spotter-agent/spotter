@@ -289,6 +289,10 @@ source .venv/bin/activate
 python -m pip install -e '.[dev]'
 ```
 
+The package has one runtime dependency, `websockets`, which pip installs automatically. The `dev`
+extra adds only the repository's test, type-checking, and formatting tools; use `pip install -e .`
+when those tools are not needed.
+
 Configuration:
 
 ```bash
@@ -313,12 +317,15 @@ Plugin installation is the **current prototype path**, not the long-term product
 Useful commands:
 
 ```bash
+spotter observe
+spotter hook  # hook bridge; JSON payload on stdin
 spotter daemon start|stop|restart|status
 spotter analyze
 spotter review --session <id>
 spotter label --session <id> --step <n> --verdict fp
 spotter metrics
 spotter fork --session <id> --step <n>
+spotter prune --repo /path/to/repo  # dry-run unless --apply is supplied
 spotter experiment --session <id> --step <n> --guidance "..." --check "..."
 ```
 
