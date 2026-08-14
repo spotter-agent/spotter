@@ -246,9 +246,12 @@ def test_task_batch_runs_clean_control_and_guidance_arms(
         prompt: str,
         *,
         model: str | None,
+        reasoning_effort: str | None,
         sandbox: str,
         timeout: int,
     ) -> subprocess.CompletedProcess[str]:
+        assert model == "gpt-test"
+        assert reasoning_effort == "low"
         prompts.append(prompt)
         (workspace / "parser.py").write_text("def parse(): return 1\n")
         shutil.rmtree(workspace / "__pycache__", ignore_errors=True)
@@ -256,7 +259,12 @@ def test_task_batch_runs_clean_control_and_guidance_arms(
 
     monkeypatch.setattr(task_corpus, "_run_task_agent", solve)
 
-    output, results = run_task_batch(path, "Inspect the failing check first.")
+    output, results = run_task_batch(
+        path,
+        "Inspect the failing check first.",
+        model="gpt-test",
+        reasoning_effort="low",
+    )
 
     assert {result.arm for result in results} == {"control", "guidance"}
     assert all(result.classification == "PASS" for result in results)
@@ -269,6 +277,8 @@ def test_task_batch_runs_clean_control_and_guidance_arms(
     assert any("Inspect the failing check first." in prompt for prompt in prompts)
     rows = [json.loads(line) for line in output.read_text().splitlines()]
     assert rows[0]["task_set_sha256"] == file_digest(path)
+    assert rows[0]["model"] == "gpt-test"
+    assert rows[0]["reasoning_effort"] == "low"
     assert rows[-1]["complete"] is True
 
 
@@ -297,11 +307,13 @@ def test_task_batch_captures_replay_source_sessions(
         prompt: str,
         *,
         model: str | None,
+        reasoning_effort: str | None,
         sandbox: str,
         timeout: int,
         capture_replay_source: bool,
     ) -> subprocess.CompletedProcess[str]:
         assert capture_replay_source is True
+        assert reasoning_effort == "low"
         assert (
             subprocess.run(
                 ["git", "rev-parse", "--is-inside-work-tree"],
@@ -349,7 +361,12 @@ def test_task_batch_captures_replay_source_sessions(
 
     monkeypatch.setattr(task_corpus, "_run_task_agent", solve)
 
-    output, results = run_task_batch(path, "Inspect first.", capture_replay_sources=True)
+    output, results = run_task_batch(
+        path,
+        "Inspect first.",
+        reasoning_effort="low",
+        capture_replay_sources=True,
+    )
 
     assert {result.replay_source_session_id for result in results} == {
         "source-control",
@@ -400,6 +417,7 @@ def test_task_agent_capture_mode_enables_json_hooks_without_supervision(
         model=None,
         sandbox="workspace-write",
         timeout=30,
+        reasoning_effort="low",
         capture_replay_source=True,
     )
     task_corpus._run_task_agent(tmp_path, "task", model=None, sandbox="workspace-write", timeout=30)
@@ -407,6 +425,7 @@ def test_task_agent_capture_mode_enables_json_hooks_without_supervision(
     capture_args, capture_env = calls[0]
     assert "--json" in capture_args
     assert "--dangerously-bypass-hook-trust" in capture_args
+    assert capture_args[capture_args.index("--config") + 1] == 'model_reasoning_effort="low"'
     assert capture_env["SPOTTER_CAPTURE_ONLY"] == "1"
     assert "SPOTTER_DISABLE" not in capture_env
     normal_args, normal_env = calls[1]
@@ -441,6 +460,7 @@ def test_task_batch_resumes_without_rerunning_completed_arms(
         prompt: str,
         *,
         model: str | None,
+        reasoning_effort: str | None,
         sandbox: str,
         timeout: int,
     ) -> subprocess.CompletedProcess[str]:
@@ -453,7 +473,9 @@ def test_task_batch_resumes_without_rerunning_completed_arms(
     monkeypatch.setattr(task_corpus, "_run_task_agent", solve)
     output, _ = run_task_batch(path, "Verify first.")
     rows = output.read_text().splitlines()
-    output.write_text("\n".join(rows[:2]) + "\n")
+    header = json.loads(rows[0])
+    header.pop("reasoning_effort")
+    output.write_text(json.dumps(header) + "\n" + rows[1] + "\n")
     calls = 0
 
     resumed_output, results = run_task_batch(path, "Verify first.", resume=output)
@@ -476,6 +498,7 @@ def test_task_batch_repairs_a_torn_final_row_before_resuming(
         prompt: str,
         *,
         model: str | None,
+        reasoning_effort: str | None,
         sandbox: str,
         timeout: int,
     ) -> subprocess.CompletedProcess[str]:
@@ -506,6 +529,7 @@ def test_task_batch_refuses_resume_with_changed_conditions(
         prompt: str,
         *,
         model: str | None,
+        reasoning_effort: str | None,
         sandbox: str,
         timeout: int,
     ) -> subprocess.CompletedProcess[str]:
@@ -518,6 +542,8 @@ def test_task_batch_refuses_resume_with_changed_conditions(
         run_task_batch(path, "Changed guidance.", resume=output)
     with pytest.raises(TaskCorpusError, match="capture_replay_sources does not match"):
         run_task_batch(path, "Original guidance.", resume=output, capture_replay_sources=True)
+    with pytest.raises(TaskCorpusError, match="reasoning_effort does not match"):
+        run_task_batch(path, "Original guidance.", resume=output, reasoning_effort="low")
 
 
 def test_task_batch_classifies_agent_timeout_without_running_checks(
@@ -532,6 +558,7 @@ def test_task_batch_classifies_agent_timeout_without_running_checks(
         prompt: str,
         *,
         model: str | None,
+        reasoning_effort: str | None,
         sandbox: str,
         timeout: int,
     ) -> subprocess.CompletedProcess[str]:
@@ -593,10 +620,13 @@ def test_task_batch_cli_requires_paid_run_opt_in(
                 "--guidance",
                 "Verify first.",
                 "--capture-replay-sources",
+                "--reasoning-effort",
+                "low",
                 "--run",
             ]
         )
         == 0
     )
     assert captured["capture_replay_sources"] is True
+    assert captured["reasoning_effort"] == "low"
     assert f"results written to {output}" in capsys.readouterr().out

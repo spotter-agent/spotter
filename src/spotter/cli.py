@@ -180,9 +180,9 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="experiment: run identical neutral arms to measure the replay noise floor",
     )
-    parser.add_argument("--model", help="review/experiment: pin the Codex model")
+    parser.add_argument("--model", help="review/tasks run/experiment: pin the Codex model")
     parser.add_argument(
-        "--reasoning-effort", help="experiment: pin the Codex model reasoning effort"
+        "--reasoning-effort", help="tasks run/experiment: pin the Codex model reasoning effort"
     )
     parser.add_argument(
         "--reservation",
@@ -287,6 +287,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     args.guidance,
                     resume=args.resume,
                     model=args.model,
+                    reasoning_effort=args.reasoning_effort,
                     keep_artifacts=args.keep_artifacts,
                     capture_replay_sources=args.capture_replay_sources,
                 )

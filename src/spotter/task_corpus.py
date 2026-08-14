@@ -201,6 +201,7 @@ def run_task_batch(
     *,
     resume: Path | None = None,
     model: str | None = None,
+    reasoning_effort: str | None = None,
     sandbox: str = "workspace-write",
     keep_artifacts: bool = False,
     capture_replay_sources: bool = False,
@@ -232,6 +233,7 @@ def run_task_batch(
             "split": task_set.split,
             "guidance": guidance,
             "model": model or "codex-config-default",
+            "reasoning_effort": reasoning_effort or "codex-config-default",
             "sandbox": sandbox,
             "python": platform.python_version(),
             "platform": platform.platform(),
@@ -252,6 +254,7 @@ def run_task_batch(
             set_sha256=set_sha256,
             guidance=guidance,
             model=model,
+            reasoning_effort=reasoning_effort,
             sandbox=sandbox,
             capture_replay_sources=capture_replay_sources,
             existing=existing,
@@ -279,6 +282,7 @@ def run_task_batch(
                 arm,
                 prompt,
                 model=model,
+                reasoning_effort=reasoning_effort,
                 sandbox=sandbox,
                 keep_artifacts=keep_artifacts,
                 capture_replay_source=capture_replay_sources,
@@ -352,6 +356,7 @@ def _run_task_arm(
     prompt: str,
     *,
     model: str | None,
+    reasoning_effort: str | None,
     sandbox: str,
     keep_artifacts: bool,
     capture_replay_source: bool,
@@ -390,6 +395,7 @@ def _run_task_arm(
                             workspace,
                             prompt,
                             model=model,
+                            reasoning_effort=reasoning_effort,
                             sandbox=sandbox,
                             timeout=task.wall_time_s,
                             capture_replay_source=True,
@@ -399,6 +405,7 @@ def _run_task_arm(
                             workspace,
                             prompt,
                             model=model,
+                            reasoning_effort=reasoning_effort,
                             sandbox=sandbox,
                             timeout=task.wall_time_s,
                         )
@@ -473,11 +480,14 @@ def _run_task_agent(
     model: str | None,
     sandbox: str,
     timeout: int,
+    reasoning_effort: str | None = None,
     capture_replay_source: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     args = ["codex", "exec", "-C", str(workspace)]
     if model:
         args += ["--model", model]
+    if reasoning_effort:
+        args += ["--config", f'model_reasoning_effort="{reasoning_effort}"']
     args += ["--skip-git-repo-check", "--sandbox", sandbox]
     if capture_replay_source:
         args += ["--dangerously-bypass-hook-trust", "--json"]
@@ -669,6 +679,7 @@ def _validate_resume(
     set_sha256: str,
     guidance: str,
     model: str | None,
+    reasoning_effort: str | None,
     sandbox: str,
     capture_replay_sources: bool,
     existing: list[TaskArmResult],
@@ -689,6 +700,9 @@ def _validate_resume(
     for key, value in expected.items():
         if header.get(key) != value:
             raise TaskCorpusError(f"cannot resume {path}: {key} does not match")
+    expected_effort = reasoning_effort or "codex-config-default"
+    if header.get("reasoning_effort", "codex-config-default") != expected_effort:
+        raise TaskCorpusError(f"cannot resume {path}: reasoning_effort does not match")
     if bool(header.get("capture_replay_sources", False)) != capture_replay_sources:
         raise TaskCorpusError(f"cannot resume {path}: capture_replay_sources does not match")
     try:
