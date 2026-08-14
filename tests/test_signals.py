@@ -35,6 +35,29 @@ def _event(
     )
 
 
+def _tool_call(
+    event_id: str,
+    arguments: object,
+    *,
+    tool: str = "read",
+) -> TraceEvent:
+    event = _event(event_id, "completed")
+    return TraceEvent(
+        "tool_result",
+        {
+            "status": "completed",
+            "server": "fixture",
+            "tool": tool,
+            "arguments": arguments,
+        },
+        event_id=event.event_id,
+        occurred_at=event.occurred_at,
+        identity=event.identity,
+        provenance=event.provenance,
+        connection_epoch=event.connection_epoch,
+    )
+
+
 def test_failure_streak_emits_once_then_cools_down_until_success() -> None:
     engine = SignalEngine(failure_threshold=2)
     first = _event("event-1", "failed")
@@ -44,7 +67,11 @@ def test_failure_streak_emits_once_then_cools_down_until_success() -> None:
 
     assert engine.update(first, 1) == ()
     active = engine.update(second, 2)[0]
-    suppressed = engine.update(third, 3)[0]
+    suppressed = next(
+        candidate
+        for candidate in engine.update(third, 3)
+        if candidate.signal_type == SignalType.FAILURE_STREAK
+    )
     resolved = engine.update(success, 4)[0]
 
     assert active.signal_type == SignalType.FAILURE_STREAK
@@ -64,6 +91,59 @@ def test_failure_streak_emits_once_then_cools_down_until_success() -> None:
     assert trace.payload["status"] == "active"
     assert trace.payload["state_version"] == 2
     assert trace.payload["features"] == {"consecutive_failures": 2}
+
+
+def test_repeated_equivalent_tool_calls_emit_once_then_cool_down() -> None:
+    engine = SignalEngine(repeated_tool_threshold=3)
+    first = _tool_call("event-1", {"path": "src/example.py", "line": 1})
+    second = _tool_call("event-2", {"line": 1, "path": "src/example.py"})
+    third = _tool_call("event-3", {"path": "src/example.py", "line": 1})
+    fourth = _tool_call("event-4", {"path": "src/example.py", "line": 1})
+
+    assert engine.update(first, 1) == ()
+    assert engine.update(second, 2) == ()
+    active = engine.update(third, 3)[0]
+    suppressed = engine.update(fourth, 4)[0]
+
+    assert active.signal_type == SignalType.REPEATED_EQUIVALENT_TOOL_CALL
+    assert active.status == SignalStatus.ACTIVE
+    assert active.severity_hint == 3
+    assert active.evidence_event_ids == ("event-1", "event-2", "event-3")
+    assert active.involved_resources == ("tool:fixture/read",)
+    assert suppressed.signal_id == active.signal_id
+    assert suppressed.status == SignalStatus.COOLED_DOWN
+    assert suppressed.severity_hint == 4
+    assert active.to_trace_event(third).payload["features"] == {"consecutive_equivalent_calls": 3}
+
+
+def test_file_mutation_rearms_repeated_tool_call_detection() -> None:
+    engine = SignalEngine(repeated_tool_threshold=3)
+    identity = _event("event-3", "completed").identity
+    mutation = TraceEvent(
+        "file_edit",
+        {"status": "completed", "files": ["src/example.py"]},
+        event_id="event-3",
+        identity=identity,
+        connection_epoch=1,
+    )
+
+    assert engine.update(_tool_call("event-1", {"path": "src/example.py"}), 1) == ()
+    assert engine.update(_tool_call("event-2", {"path": "src/example.py"}), 2) == ()
+    assert engine.update(mutation, 3) == ()
+    assert engine.update(_tool_call("event-4", {"path": "src/example.py"}), 4) == ()
+    assert engine.update(_tool_call("event-5", {"path": "src/example.py"}), 5) == ()
+    candidate = engine.update(_tool_call("event-6", {"path": "src/example.py"}), 6)[0]
+
+    assert candidate.evidence_event_ids == ("event-4", "event-5", "event-6")
+
+
+def test_different_or_unknown_tool_arguments_do_not_collapse() -> None:
+    engine = SignalEngine(repeated_tool_threshold=2)
+
+    assert engine.update(_tool_call("event-1", {"path": "src/one.py"}), 1) == ()
+    assert engine.update(_tool_call("event-2", {"path": "src/two.py"}), 2) == ()
+    assert engine.update(_tool_call("event-3", object()), 3) == ()
+    assert engine.update(_tool_call("event-4", object()), 4) == ()
 
 
 def test_duplicate_event_does_not_rearm_or_inflate_streak() -> None:
@@ -134,7 +214,11 @@ def test_hydration_restores_cooldown_without_duplicate_candidate() -> None:
             StepRecord(2, candidate_event, None),
         ]
     )
-    next_update = recovered.update(_event("event-3", "failed"), 4)[0]
+    next_update = next(
+        candidate
+        for candidate in recovered.update(_event("event-3", "failed"), 4)
+        if candidate.signal_type == SignalType.FAILURE_STREAK
+    )
 
     assert missing == ()
     assert next_update.signal_id == active.signal_id

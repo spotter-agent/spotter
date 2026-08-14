@@ -1,6 +1,7 @@
 """Cheap incremental candidates derived from runtime-neutral Trace IR."""
 
 import hashlib
+import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -24,6 +25,7 @@ _EVIDENCE_LIMIT = 20
 
 class SignalType(StrEnum):
     FAILURE_STREAK = "failure_streak"
+    REPEATED_EQUIVALENT_TOOL_CALL = "repeated_equivalent_tool_call"
 
 
 class SignalStatus(StrEnum):
@@ -48,6 +50,7 @@ class SignalCandidate:
     involved_resources: tuple[str, ...]
     status: SignalStatus
     source_event_id: str
+    features: tuple[tuple[str, int], ...]
 
     def to_trace_event(self, trigger: TraceEvent) -> TraceEvent:
         suffix = hashlib.sha256(f"{self.status}:{self.source_event_id}".encode()).hexdigest()[:16]
@@ -69,7 +72,7 @@ class SignalCandidate:
                 "severity_hint": self.severity_hint,
                 "evidence_event_ids": list(self.evidence_event_ids),
                 "involved_resources": list(self.involved_resources),
-                "features": {"consecutive_failures": self.severity_hint},
+                "features": dict(self.features),
                 "status": self.status,
                 "source_event_id": self.source_event_id,
             },
@@ -95,14 +98,32 @@ class _FailureStreak:
     emitted: bool = False
 
 
+@dataclass(frozen=True)
+class _RepeatedToolCalls:
+    signal_id: str
+    key: str
+    identity: RuntimeIdentity
+    connection_epoch: int | None
+    first_seen_at: float | None
+    last_seen_at: float | None
+    count: int
+    evidence_event_ids: tuple[str, ...]
+    resources: tuple[str, ...]
+    emitted: bool = False
+
+
 class SignalEngine:
     """Incremental signal state; candidates are evidence, never semantic verdicts."""
 
-    def __init__(self, *, failure_threshold: int = 2) -> None:
+    def __init__(self, *, failure_threshold: int = 2, repeated_tool_threshold: int = 3) -> None:
         if failure_threshold < 2:
             raise ValueError("failure signal threshold must be >= 2")
+        if repeated_tool_threshold < 2:
+            raise ValueError("repeated tool signal threshold must be >= 2")
         self.failure_threshold = failure_threshold
+        self.repeated_tool_threshold = repeated_tool_threshold
         self._failure_streaks: dict[ThreadId, _FailureStreak] = {}
+        self._repeated_tools: dict[ThreadId, _RepeatedToolCalls] = {}
         self._seen_event_ids: dict[ThreadId, set[str]] = {}
 
     def update(self, event: TraceEvent, state_version: int) -> tuple[SignalCandidate, ...]:
@@ -117,15 +138,25 @@ class SignalEngine:
 
         candidates: list[SignalCandidate] = []
         streak = self._failure_streaks.get(thread_id)
+        repeated = self._repeated_tools.get(thread_id)
         if streak is not None and _target_changed(streak, event):
             candidates.extend(self._finish(streak, SignalStatus.STALE, event, state_version))
             self._failure_streaks.pop(thread_id, None)
             streak = None
+        if repeated is not None and _target_changed(repeated, event):
+            candidates.extend(self._finish(repeated, SignalStatus.STALE, event, state_version))
+            self._repeated_tools.pop(thread_id, None)
+            repeated = None
         if event.kind in _TERMINAL_KINDS:
             if streak is not None:
                 candidates.extend(self._finish(streak, SignalStatus.STALE, event, state_version))
                 self._failure_streaks.pop(thread_id, None)
+            if repeated is not None:
+                candidates.extend(self._finish(repeated, SignalStatus.STALE, event, state_version))
+                self._repeated_tools.pop(thread_id, None)
             return tuple(candidates)
+
+        candidates.extend(self._update_repeated_tool(event, state_version))
         if event.kind not in _OUTCOME_KINDS:
             return tuple(candidates)
 
@@ -147,7 +178,7 @@ class SignalEngine:
 
         if streak is None:
             streak = _FailureStreak(
-                _signal_id(event, key),
+                _signal_id(event, SignalType.FAILURE_STREAK, key),
                 key,
                 identity,
                 event.connection_epoch,
@@ -174,12 +205,72 @@ class SignalEngine:
                 self._failure_streaks[thread_id] = replace(streak, emitted=True)
         return tuple(candidates)
 
+    def _update_repeated_tool(
+        self, event: TraceEvent, state_version: int
+    ) -> tuple[SignalCandidate, ...]:
+        assert event.identity is not None and event.identity.thread_id is not None
+        assert event.event_id is not None
+        thread_id = event.identity.thread_id
+        repeated = self._repeated_tools.get(thread_id)
+        if event.kind != "tool_result":
+            if repeated is None or event.kind not in _OUTCOME_KINDS:
+                return ()
+            self._repeated_tools.pop(thread_id, None)
+            return self._finish(repeated, SignalStatus.STALE, event, state_version)
+
+        if outcome_failure(event.payload) is not False:
+            if repeated is None:
+                return ()
+            self._repeated_tools.pop(thread_id, None)
+            return self._finish(repeated, SignalStatus.STALE, event, state_version)
+
+        key, resources = _tool_call_equivalence(event)
+        candidates: list[SignalCandidate] = []
+        if key is None:
+            if repeated is not None:
+                candidates.extend(self._finish(repeated, SignalStatus.STALE, event, state_version))
+                self._repeated_tools.pop(thread_id, None)
+            return tuple(candidates)
+        if repeated is not None and repeated.key != key:
+            candidates.extend(self._finish(repeated, SignalStatus.STALE, event, state_version))
+            repeated = None
+
+        if repeated is None:
+            repeated = _RepeatedToolCalls(
+                _signal_id(event, SignalType.REPEATED_EQUIVALENT_TOOL_CALL, key),
+                key,
+                event.identity,
+                event.connection_epoch,
+                event.occurred_at,
+                event.occurred_at,
+                1,
+                (event.event_id,),
+                resources,
+            )
+        else:
+            repeated = replace(
+                repeated,
+                last_seen_at=event.occurred_at,
+                count=repeated.count + 1,
+                evidence_event_ids=(repeated.evidence_event_ids + (event.event_id,))[
+                    -_EVIDENCE_LIMIT:
+                ],
+            )
+        self._repeated_tools[thread_id] = repeated
+        if repeated.count >= self.repeated_tool_threshold:
+            status = SignalStatus.COOLED_DOWN if repeated.emitted else SignalStatus.ACTIVE
+            candidates.append(_candidate(repeated, status, event.event_id, state_version))
+            if not repeated.emitted:
+                self._repeated_tools[thread_id] = replace(repeated, emitted=True)
+        return tuple(candidates)
+
     def hydrate(
         self, records: Iterable[StepRecord]
     ) -> tuple[tuple[SignalCandidate, TraceEvent], ...]:
         """Rebuild state and return derived events missing after an interrupted append."""
 
         self._failure_streaks.clear()
+        self._repeated_tools.clear()
         self._seen_event_ids.clear()
         versions: dict[ThreadId, int] = {}
         pending: dict[str, tuple[SignalCandidate, TraceEvent]] = {}
@@ -202,7 +293,7 @@ class SignalEngine:
 
     def _finish(
         self,
-        streak: _FailureStreak,
+        streak: _FailureStreak | _RepeatedToolCalls,
         status: SignalStatus,
         event: TraceEvent,
         state_version: int,
@@ -213,16 +304,26 @@ class SignalEngine:
 
 
 def _candidate(
-    streak: _FailureStreak,
+    streak: _FailureStreak | _RepeatedToolCalls,
     status: SignalStatus,
     source_event_id: str,
     state_version: int,
 ) -> SignalCandidate:
     turn_id = streak.identity.turn_id.value if streak.identity.turn_id is not None else None
     assert streak.identity.thread_id is not None
+    signal_type = (
+        SignalType.FAILURE_STREAK
+        if isinstance(streak, _FailureStreak)
+        else SignalType.REPEATED_EQUIVALENT_TOOL_CALL
+    )
+    feature = (
+        "consecutive_failures"
+        if isinstance(streak, _FailureStreak)
+        else "consecutive_equivalent_calls"
+    )
     return SignalCandidate(
         streak.signal_id,
-        SignalType.FAILURE_STREAK,
+        signal_type,
         streak.identity.thread_id,
         turn_id,
         streak.connection_epoch,
@@ -234,10 +335,11 @@ def _candidate(
         streak.resources,
         status,
         source_event_id,
+        ((feature, streak.count),),
     )
 
 
-def _target_changed(streak: _FailureStreak, event: TraceEvent) -> bool:
+def _target_changed(streak: _FailureStreak | _RepeatedToolCalls, event: TraceEvent) -> bool:
     identity = event.identity
     return bool(
         identity is not None
@@ -282,12 +384,30 @@ def _resources(payload: Mapping[str, object]) -> tuple[str, ...]:
     return tuple(sorted(resources))
 
 
-def _signal_id(event: TraceEvent, key: str) -> str:
+def _tool_call_equivalence(event: TraceEvent) -> tuple[str | None, tuple[str, ...]]:
+    resources = _resources(event.payload)
+    if len(resources) != 1 or not resources[0].startswith("tool:"):
+        return None, ()
+    try:
+        arguments = json.dumps(
+            event.payload.get("arguments", {}),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+    except (TypeError, ValueError):
+        return None, ()
+    digest = hashlib.sha256(arguments.encode()).hexdigest()
+    return f"{resources[0]}:{digest}", resources
+
+
+def _signal_id(event: TraceEvent, signal_type: SignalType, key: str) -> str:
     assert event.identity is not None and event.identity.thread_id is not None
     turn_id = event.identity.turn_id.value if event.identity.turn_id is not None else "unknown"
     return hashlib.sha256(
         (
             f"{event.identity.thread_id.value}:{turn_id}:{event.connection_epoch}:"
-            f"{SignalType.FAILURE_STREAK}:{key}:{event.event_id}"
+            f"{signal_type}:{key}:{event.event_id}"
         ).encode()
     ).hexdigest()
