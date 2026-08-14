@@ -28,7 +28,14 @@ from pathlib import Path
 
 from spotter.hook import journal_path
 from spotter.paths import sanitize_session, spotter_home
-from spotter.replay import ForkPlan, compare_environments, fork, load_fork_manifest
+from spotter.replay import (
+    ForkPlan,
+    ReplayError,
+    compare_environments,
+    fingerprint_environment,
+    fork,
+    load_fork_manifest,
+)
 from spotter.snapshot import StepJournal
 
 CONTROL_PROMPT = "Continue the task."
@@ -132,6 +139,23 @@ def _pair_environment_preflight(prepared: list[tuple[str, str, ForkPlan]]) -> st
     return f"ENVIRONMENT_MISMATCH:{detail}"
 
 
+def _arm_environment_preflight(plan: ForkPlan) -> str:
+    try:
+        current = fingerprint_environment(Path(plan.worktree))
+        if current.fingerprint_sha256 == plan.environment_fingerprint:
+            return "MATCHED"
+        if not plan.manifest:
+            return "ENVIRONMENT_FINGERPRINT_MISMATCH"
+        expected = load_fork_manifest(Path(plan.manifest)).environment
+        if expected is None:
+            return "ENVIRONMENT_FINGERPRINT_MISSING"
+        comparison = compare_environments(expected, current)
+        detail = ",".join(comparison.drift) or "UNKNOWN_ENVIRONMENT_DRIFT"
+        return f"ENVIRONMENT_MISMATCH:{detail}"
+    except (OSError, ReplayError, ValueError) as error:
+        return f"ENVIRONMENT_PREFLIGHT_ERROR:{error}"
+
+
 def _execute_arm(
     plan: ForkPlan,
     prompt: str,
@@ -146,6 +170,10 @@ def _execute_arm(
 ) -> tuple[int | None, int | None, ArmClassification, str, str, str | None]:
     if environment_preflight != "MATCHED":
         return None, None, ArmClassification.INFRA_FAIL, "", "", environment_preflight
+    if plan.manifest:
+        environment_preflight = _arm_environment_preflight(plan)
+        if environment_preflight != "MATCHED":
+            return None, None, ArmClassification.INFRA_FAIL, "", "", environment_preflight
     try:
         agent_exit = _run_arm(
             plan.session_id,
@@ -281,6 +309,8 @@ def run_experiment(
             agent_exit, check_exit, classification, check_stdout, check_stderr, diagnostic = (
                 execution
             )
+            if diagnostic and diagnostic.startswith("ENVIRONMENT_"):
+                environment_preflight = diagnostic
             result = ArmResult(
                 experiment_id,
                 pair,

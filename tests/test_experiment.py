@@ -4,6 +4,7 @@ import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -208,6 +209,91 @@ def test_environment_mismatch_prevents_both_agent_arms(
     assert all(result.agent_exit is None for result in results)
     assert "environment mismatches=1/1" in summarize(results)
     assert "infrastructure failures=2/2" in summarize(results)
+
+
+def test_arm_rechecks_environment_immediately_before_agent_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = ForkPlan(
+        "fork",
+        5,
+        "/wt",
+        "/rollout",
+        "codex ...",
+        manifest="/manifest.json",
+        prefix_id="prefix",
+        environment_fingerprint="expected",
+    )
+    monkeypatch.setattr(
+        experiment,
+        "fingerprint_environment",
+        lambda path: SimpleNamespace(fingerprint_sha256="drifted"),
+    )
+    monkeypatch.setattr(
+        experiment,
+        "load_fork_manifest",
+        lambda path: SimpleNamespace(environment=object()),
+    )
+    monkeypatch.setattr(
+        experiment,
+        "compare_environments",
+        lambda expected, current: SimpleNamespace(
+            drift=("TRACKED_STATE_MISMATCH",), equivalent=False
+        ),
+    )
+    ran: list[str] = []
+    monkeypatch.setattr(experiment, "_run_arm", lambda *args, **kwargs: ran.append("run"))
+
+    result = experiment._execute_arm(
+        plan,
+        "Continue the task.",
+        "MATCHED",
+        check=None,
+        sandbox="workspace-write",
+        timeout=1,
+        model=None,
+        reasoning_effort=None,
+        codex_home=None,
+    )
+
+    assert ran == []
+    assert result[2] == ArmClassification.INFRA_FAIL
+    assert result[5] == "ENVIRONMENT_MISMATCH:TRACKED_STATE_MISMATCH"
+
+
+def test_arm_environment_drift_is_persisted_and_summarized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    counter: dict[str, int] = {}
+
+    def manifested_fork(session_id: str, step: int, *, codex_home: object = None) -> ForkPlan:
+        plan = _fake_fork(counter)(session_id, step, codex_home=codex_home)
+        return ForkPlan(
+            plan.session_id,
+            plan.branch_step,
+            plan.worktree,
+            plan.rollout,
+            plan.command,
+            manifest=f"/manifest-{plan.session_id}.json",
+            prefix_id=plan.prefix_id,
+            environment_fingerprint=plan.environment_fingerprint,
+        )
+
+    monkeypatch.setattr(experiment, "fork", manifested_fork)
+    monkeypatch.setattr(
+        experiment,
+        "_arm_environment_preflight",
+        lambda plan: "ENVIRONMENT_MISMATCH:TRACKED_STATE_MISMATCH",
+    )
+    monkeypatch.setattr(experiment, "_cleanup", lambda worktree: None)
+
+    results = run_experiment("s1", 5, None, run=True, neutral=True)
+
+    assert all(
+        result.environment_preflight == "ENVIRONMENT_MISMATCH:TRACKED_STATE_MISMATCH"
+        for result in results
+    )
+    assert "environment mismatches=1/1" in summarize(results)
 
 
 def test_empty_experiment_is_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
