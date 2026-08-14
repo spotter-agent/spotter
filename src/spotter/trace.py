@@ -27,6 +27,8 @@ class TraceEvent:
     provenance: TraceProvenance | None = None
     connection_epoch: int | None = None
     arrival_seq: int | None = None
+    observed_monotonic_ns: int | None = None
+    monotonic_clock_id: str | None = None
 
 
 # Judgment happens on semantic segments, enforcement on tool boundaries (plan Q8).

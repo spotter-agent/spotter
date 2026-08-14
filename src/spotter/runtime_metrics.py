@@ -71,10 +71,19 @@ class RuntimeCostReport:
     main_token_breakdown: TokenBreakdown
     reviewer_calls: int
     reviewer_tokens: int | None
+    signal_candidates_active: int
+    signal_detection_ms: tuple[float, ...]
     reviewer_jobs_queued: int
     reviewer_jobs_started: int
+    reviewer_jobs_decided: int
+    reviewer_jobs_errored: int
+    reviewer_jobs_capped: int
+    reviewer_jobs_discarded: int
+    reviewer_jobs_stale: int
     reviewer_queue_ms: tuple[float, ...]
+    reviewer_inference_finishes: int
     reviewer_inference_ms: tuple[float, ...]
+    reviewer_end_to_end_ms: tuple[float, ...]
     turn_wall_ms: tuple[float, ...]
     tool_duration_ms: tuple[float, ...]
     gate_calls: int
@@ -88,6 +97,8 @@ class RuntimeCostReport:
     receipt_timestamps: int
     arrival_ordered_events: int
     arrival_order_eligible_events: int
+    monotonic_receipt_events: int
+    monotonic_clock_domains: int
     journal_bytes: int
 
 
@@ -125,13 +136,33 @@ class _ObjectiveArm:
     elapsed_ms: float | None
 
 
+@dataclass(frozen=True)
+class _ReviewLifecycle:
+    active_signals: int
+    signal_detection_ms: tuple[float, ...]
+    jobs_queued: int
+    jobs_started: int
+    jobs_decided: int
+    jobs_errored: int
+    jobs_capped: int
+    jobs_discarded: int
+    jobs_stale: int
+    queue_ms: tuple[float, ...]
+    jobs_finished: int
+    inference_ms: tuple[float, ...]
+    end_to_end_ms: tuple[float, ...]
+
+
 def measure_runtime_costs(
     journals: Iterable[tuple[Iterable[StepRecord], int]],
 ) -> RuntimeCostReport:
     surfaces: dict[str, SurfaceCost] = {"hook": SurfaceCost(), "app_server": SurfaceCost()}
     sessions = events = completed_turns = token_turns = token_observations = 0
     reviewer_calls = reviewer_tokens = journal_bytes = gate_calls = 0
-    reviewer_jobs_queued = reviewer_jobs_started = 0
+    signal_candidates_active = reviewer_jobs_queued = reviewer_jobs_started = 0
+    reviewer_jobs_decided = reviewer_jobs_errored = reviewer_jobs_capped = 0
+    reviewer_jobs_discarded = reviewer_jobs_stale = 0
+    reviewer_inference_finishes = 0
     reviewer_tokens_known = False
     token_sums = {field: 0 for field in _TOKEN_FIELDS}
     token_sessions = {field: 0 for field in _TOKEN_FIELDS}
@@ -140,6 +171,8 @@ def measure_runtime_costs(
     tool_duration_ms: list[float] = []
     reviewer_queue_ms: list[float] = []
     reviewer_inference_ms: list[float] = []
+    signal_detection_ms: list[float] = []
+    reviewer_end_to_end_ms: list[float] = []
     turn_wall_ms: list[float] = []
     hook_ms: list[float] = []
     ipc_ms: list[float] = []
@@ -147,6 +180,8 @@ def measure_runtime_costs(
     daemon_samples: dict[tuple[str, int], tuple[float, int]] = {}
     source_timestamps = receipt_timestamps = 0
     arrival_ordered_events = arrival_order_eligible_events = 0
+    monotonic_receipt_events = 0
+    monotonic_clock_ids: set[str] = set()
 
     for records_iter, size in journals:
         records = tuple(records_iter)
@@ -175,6 +210,9 @@ def measure_runtime_costs(
             arrival_ordered_events += (
                 event.connection_epoch is not None and event.arrival_seq is not None
             )
+            if event.observed_monotonic_ns is not None and event.monotonic_clock_id is not None:
+                monotonic_receipt_events += 1
+                monotonic_clock_ids.add(event.monotonic_clock_id)
             key = _action_key(record)
             if event.kind in _START_KINDS | _OUTCOME_KINDS:
                 action_observations += 1
@@ -221,19 +259,31 @@ def measure_runtime_costs(
                     if isinstance(value, int) and not isinstance(value, bool):
                         latest_reviewer_tokens = value
                 timing = event.payload.get("timing")
-                if isinstance(timing, Mapping):
+                if _payload_id(event.payload, "review_job_id") is None and isinstance(
+                    timing, Mapping
+                ):
+                    reviewer_inference_finishes += 1
                     _append_number(reviewer_inference_ms, timing.get("inference_ms"))
-            if event.kind == "review_job_queued":
-                reviewer_jobs_queued += 1
-            if event.kind == "review_inference_started":
-                reviewer_jobs_started += 1
-                _append_number(reviewer_queue_ms, event.payload.get("queue_ms"))
             if event.kind == "gate_ipc":
                 gate_calls += 1
                 _append_number(hook_ms, event.payload.get("hook_ms"))
                 _append_number(ipc_ms, event.payload.get("ipc_ms"))
                 _append_number(daemon_evaluation_ms, event.payload.get("daemon_evaluation_ms"))
                 _append_daemon_sample(daemon_samples, event.payload.get("runtime_sample"))
+        lifecycle = _review_lifecycle(records)
+        signal_candidates_active += lifecycle.active_signals
+        signal_detection_ms.extend(lifecycle.signal_detection_ms)
+        reviewer_jobs_queued += lifecycle.jobs_queued
+        reviewer_jobs_started += lifecycle.jobs_started
+        reviewer_jobs_decided += lifecycle.jobs_decided
+        reviewer_jobs_errored += lifecycle.jobs_errored
+        reviewer_jobs_capped += lifecycle.jobs_capped
+        reviewer_jobs_discarded += lifecycle.jobs_discarded
+        reviewer_jobs_stale += lifecycle.jobs_stale
+        reviewer_queue_ms.extend(lifecycle.queue_ms)
+        reviewer_inference_finishes += lifecycle.jobs_finished
+        reviewer_inference_ms.extend(lifecycle.inference_ms)
+        reviewer_end_to_end_ms.extend(lifecycle.end_to_end_ms)
         current = surfaces[surface]
         surfaces[surface] = SurfaceCost(
             actions=current.actions + len(actions),
@@ -296,35 +346,174 @@ def measure_runtime_costs(
         for surface, cost in surfaces.items()
     }
     return RuntimeCostReport(
-        sessions,
-        events,
-        surfaces,
-        completed_turns,
-        token_turns,
-        token_observations,
-        token_breakdown.total.value,
-        token_breakdown,
-        reviewer_calls,
-        reviewer_tokens if reviewer_tokens_known else None,
-        reviewer_jobs_queued,
-        reviewer_jobs_started,
-        tuple(reviewer_queue_ms),
-        tuple(reviewer_inference_ms),
-        tuple(turn_wall_ms),
-        tuple(tool_duration_ms),
-        gate_calls,
-        tuple(hook_ms),
-        tuple(ipc_ms),
-        tuple(daemon_evaluation_ms),
-        len(daemon_samples),
-        sum(sample[1] for sample in latest_samples.values()) if latest_samples else None,
-        max((sample[2] for sample in latest_samples.values()), default=None),
-        source_timestamps,
-        receipt_timestamps,
-        arrival_ordered_events,
-        arrival_order_eligible_events,
-        journal_bytes,
+        sessions=sessions,
+        events=events,
+        surfaces=surfaces,
+        completed_turns=completed_turns,
+        token_turns=token_turns,
+        token_observations=token_observations,
+        cumulative_main_tokens=token_breakdown.total.value,
+        main_token_breakdown=token_breakdown,
+        reviewer_calls=reviewer_calls,
+        reviewer_tokens=reviewer_tokens if reviewer_tokens_known else None,
+        signal_candidates_active=signal_candidates_active,
+        signal_detection_ms=tuple(signal_detection_ms),
+        reviewer_jobs_queued=reviewer_jobs_queued,
+        reviewer_jobs_started=reviewer_jobs_started,
+        reviewer_jobs_decided=reviewer_jobs_decided,
+        reviewer_jobs_errored=reviewer_jobs_errored,
+        reviewer_jobs_capped=reviewer_jobs_capped,
+        reviewer_jobs_discarded=reviewer_jobs_discarded,
+        reviewer_jobs_stale=reviewer_jobs_stale,
+        reviewer_queue_ms=tuple(reviewer_queue_ms),
+        reviewer_inference_finishes=reviewer_inference_finishes,
+        reviewer_inference_ms=tuple(reviewer_inference_ms),
+        reviewer_end_to_end_ms=tuple(reviewer_end_to_end_ms),
+        turn_wall_ms=tuple(turn_wall_ms),
+        tool_duration_ms=tuple(tool_duration_ms),
+        gate_calls=gate_calls,
+        hook_ms=tuple(hook_ms),
+        ipc_ms=tuple(ipc_ms),
+        daemon_evaluation_ms=tuple(daemon_evaluation_ms),
+        daemon_resource_samples=len(daemon_samples),
+        daemon_cpu_seconds=(
+            sum(sample[1] for sample in latest_samples.values()) if latest_samples else None
+        ),
+        daemon_peak_rss_bytes=max((sample[2] for sample in latest_samples.values()), default=None),
+        source_timestamps=source_timestamps,
+        receipt_timestamps=receipt_timestamps,
+        arrival_ordered_events=arrival_ordered_events,
+        arrival_order_eligible_events=arrival_order_eligible_events,
+        monotonic_receipt_events=monotonic_receipt_events,
+        monotonic_clock_domains=len(monotonic_clock_ids),
+        journal_bytes=journal_bytes,
     )
+
+
+def _review_lifecycle(records: tuple[StepRecord, ...]) -> _ReviewLifecycle:
+    by_event_id = {
+        record.event.event_id: record for record in records if record.event.event_id is not None
+    }
+    signals: dict[str, tuple[StepRecord, StepRecord | None]] = {}
+    queued: dict[str, StepRecord] = {}
+    job_signals: dict[str, str] = {}
+    started: dict[str, StepRecord] = {}
+    decided: dict[str, StepRecord] = {}
+    errored: dict[str, StepRecord] = {}
+    capped: set[str] = set()
+    discarded: set[str] = set()
+    stale: set[str] = set()
+
+    for record in records:
+        event = record.event
+        payload = event.payload
+        if (
+            event.kind == "signal_candidate"
+            and payload.get("status") == "active"
+            and (signal_id := _payload_id(payload, "signal_id")) is not None
+        ):
+            evidence = payload.get("evidence_event_ids")
+            first = (
+                next(
+                    (
+                        by_event_id[event_id]
+                        for event_id in evidence
+                        if isinstance(event_id, str) and event_id in by_event_id
+                    ),
+                    None,
+                )
+                if isinstance(evidence, list)
+                else None
+            )
+            signals.setdefault(signal_id, (record, first))
+        job_id = _payload_id(payload, "review_job_id")
+        if job_id is None:
+            continue
+        if event.kind == "review_job_queued":
+            queued.setdefault(job_id, record)
+            if (signal_id := _payload_id(payload, "signal_id")) is not None:
+                job_signals.setdefault(job_id, signal_id)
+        elif event.kind == "review_inference_started":
+            started.setdefault(job_id, record)
+        elif event.kind == "reviewer_decision":
+            decided.setdefault(job_id, record)
+        elif event.kind == "reviewer_error":
+            errored.setdefault(job_id, record)
+        elif event.kind == "reviewer_capped":
+            capped.add(job_id)
+        elif event.kind == "review_job_discarded":
+            discarded.add(job_id)
+        elif event.kind == "review_job_stale":
+            stale.add(job_id)
+
+    signal_detection_ms = tuple(
+        duration
+        for emitted, first in signals.values()
+        if first is not None and (duration := _monotonic_elapsed_ms(first, emitted)) is not None
+    )
+    queue_ms: list[float] = []
+    for job_id, start in started.items():
+        duration = _monotonic_elapsed_ms(queued.get(job_id), start)
+        if duration is None:
+            duration = _number(start.event.payload.get("queue_ms"))
+        if duration is not None:
+            queue_ms.append(duration)
+    terminals = {**errored, **decided}
+    finished_job_ids = [job_id for job_id in started if job_id in terminals]
+    inference_ms: list[float] = []
+    for job_id in finished_job_ids:
+        terminal = terminals[job_id]
+        timing = terminal.event.payload.get("timing")
+        duration = _number(timing.get("inference_ms")) if isinstance(timing, Mapping) else None
+        if duration is None:
+            duration = _monotonic_elapsed_ms(started[job_id], terminal)
+        if duration is not None:
+            inference_ms.append(duration)
+    end_to_end_ms = tuple(
+        duration
+        for job_id, terminal in decided.items()
+        if (signal_id := job_signals.get(job_id)) is not None
+        and (signal := signals.get(signal_id)) is not None
+        and signal[1] is not None
+        and (duration := _monotonic_elapsed_ms(signal[1], terminal)) is not None
+    )
+    return _ReviewLifecycle(
+        active_signals=len(signals),
+        signal_detection_ms=signal_detection_ms,
+        jobs_queued=len(queued),
+        jobs_started=len(started),
+        jobs_decided=len(decided),
+        jobs_errored=len(errored),
+        jobs_capped=len(capped),
+        jobs_discarded=len(discarded),
+        jobs_stale=len(stale),
+        queue_ms=tuple(queue_ms),
+        jobs_finished=len(finished_job_ids),
+        inference_ms=tuple(inference_ms),
+        end_to_end_ms=end_to_end_ms,
+    )
+
+
+def _payload_id(payload: Mapping[str, object], key: str) -> str | None:
+    value = payload.get(key)
+    return value if isinstance(value, str) and value else None
+
+
+def _monotonic_elapsed_ms(start: StepRecord | None, end: StepRecord) -> float | None:
+    if start is None:
+        return None
+    started = start.event.observed_monotonic_ns
+    finished = end.event.observed_monotonic_ns
+    clock_id = start.event.monotonic_clock_id
+    if (
+        started is None
+        or finished is None
+        or clock_id is None
+        or clock_id != end.event.monotonic_clock_id
+        or finished < started
+    ):
+        return None
+    return (finished - started) / 1_000_000
 
 
 def render_runtime_costs(report: RuntimeCostReport) -> str:
@@ -360,12 +549,21 @@ def render_runtime_costs(report: RuntimeCostReport) -> str:
         str(report.reviewer_tokens) if report.reviewer_tokens is not None else "unknown"
     )
     queue = _sample(report.reviewer_queue_ms, report.reviewer_jobs_started)
-    inference = _sample(report.reviewer_inference_ms, report.reviewer_calls)
-    jobs = f"{report.reviewer_calls}/{report.reviewer_jobs_started}/{report.reviewer_jobs_queued}"
+    inference = _sample(report.reviewer_inference_ms, report.reviewer_inference_finishes)
+    end_to_end = _sample(report.reviewer_end_to_end_ms, report.reviewer_jobs_decided)
     lines.append(
         f"  Spotter semantic: reviewer_calls={report.reviewer_calls}, "
         f"recorded_session_tokens={reviewer_tokens}; queue={queue}, "
-        f"inference={inference}; jobs={jobs} decided/started/queued"
+        f"inference={inference}"
+    )
+    lines.append(
+        "  Supervision lifecycle: "
+        f"signal_delay={_sample(report.signal_detection_ms, report.signal_candidates_active)}, "
+        f"detection_to_decision={end_to_end}; "
+        f"jobs queued={report.reviewer_jobs_queued} started={report.reviewer_jobs_started} "
+        f"decided={report.reviewer_jobs_decided} errors={report.reviewer_jobs_errored} "
+        f"capped={report.reviewer_jobs_capped} discarded={report.reviewer_jobs_discarded} "
+        f"stale={report.reviewer_jobs_stale}"
     )
     lines.append(
         f"  Spotter deterministic: gate_calls={report.gate_calls}; "
@@ -390,6 +588,8 @@ def render_runtime_costs(report: RuntimeCostReport) -> str:
         f"  Timing: receipt_wall={report.receipt_timestamps}/{report.events}, "
         f"source={report.source_timestamps}/{report.events}, "
         f"arrival_order={report.arrival_ordered_events}/{report.arrival_order_eligible_events}, "
+        f"monotonic_receipt={report.monotonic_receipt_events}/{report.events} "
+        f"across {report.monotonic_clock_domains} clock domains, "
         f"turn_wall(source)={_sample(report.turn_wall_ms, report.completed_turns)}, "
         f"tool_duration={_sample(report.tool_duration_ms, tool_outcomes)}"
     )

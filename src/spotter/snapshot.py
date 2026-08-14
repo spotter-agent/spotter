@@ -13,6 +13,7 @@ import os
 import subprocess
 import tempfile
 import time
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -30,6 +31,8 @@ from spotter.identity import (
 from spotter.paths import secure_dir, spotter_home
 from spotter.redact import redact
 from spotter.trace import TraceEvent, TraceProvenance
+
+_MONOTONIC_CLOCK_ID = uuid.uuid4().hex
 
 
 class SnapshotError(RuntimeError):
@@ -213,6 +216,7 @@ class StepJournal:
                 if event.kind == "tool_proposal":
                     state["proposals"] = int(state["proposals"]) + 1
                     payload["proposal_number"] = state["proposals"]
+                recorded_at = time.time()
                 stored_event = TraceEvent(
                     event.kind,
                     payload,
@@ -224,8 +228,10 @@ class StepJournal:
                     provenance=event.provenance,
                     connection_epoch=event.connection_epoch,
                     arrival_seq=event.arrival_seq,
+                    observed_monotonic_ns=time.monotonic_ns(),
+                    monotonic_clock_id=_MONOTONIC_CLOCK_ID,
                 )
-                record = StepRecord(step, stored_event, snapshot, time.time(), SCHEMA_VERSION)
+                record = StepRecord(step, stored_event, snapshot, recorded_at, SCHEMA_VERSION)
                 line = json.dumps(
                     {
                         "v": record.version,
@@ -335,6 +341,8 @@ def _trace_metadata(event: TraceEvent) -> dict[str, Any]:
         "item_id",
         "connection_epoch",
         "arrival_seq",
+        "observed_monotonic_ns",
+        "monotonic_clock_id",
     ):
         value = getattr(event, name)
         if value is not None:
@@ -421,6 +429,14 @@ def _trace_event(raw: dict[str, Any]) -> TraceEvent:
             and metadata["arrival_seq"] > 0
             else None
         ),
+        observed_monotonic_ns=(
+            metadata["observed_monotonic_ns"]
+            if isinstance(metadata.get("observed_monotonic_ns"), int)
+            and not isinstance(metadata.get("observed_monotonic_ns"), bool)
+            and metadata["observed_monotonic_ns"] >= 0
+            else None
+        ),
+        monotonic_clock_id=_optional_string(metadata.get("monotonic_clock_id")),
     )
 
 

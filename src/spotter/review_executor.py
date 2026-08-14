@@ -39,7 +39,9 @@ class ReviewExecutor:
         if not self.config.on_signals or job.job_id in self._submitted:
             return
         self._submitted.add(job.job_id)
-        task = asyncio.create_task(self._run(job, time.time()), name=f"review-{job.job_id[:12]}")
+        task = asyncio.create_task(
+            self._run(job, time.perf_counter_ns()), name=f"review-{job.job_id[:12]}"
+        )
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
@@ -53,7 +55,7 @@ class ReviewExecutor:
         if self._tasks:
             await asyncio.gather(*tuple(self._tasks), return_exceptions=True)
 
-    async def _run(self, job: ReviewerJob, queued_at: float) -> None:
+    async def _run(self, job: ReviewerJob, queued_ns: int) -> None:
         async with self._lock:
             if not self.is_fresh(job):
                 return
@@ -82,7 +84,7 @@ class ReviewExecutor:
                 self.record(self._event(job, kind, {key: refusal, "review_job_id": job.job_id}))
                 return
             started_at = time.time()
-            queue_ms = max(0.0, (started_at - queued_at) * 1000)
+            queue_ms = _elapsed_ms(queued_ns)
             self.record(
                 self._event(
                     job,
@@ -91,9 +93,11 @@ class ReviewExecutor:
                     occurred_at=started_at,
                 )
             )
+            inference_started_ns = time.perf_counter_ns()
             try:
                 decision, tokens = await self.reviewer(job.reviewer_input, self.config.model)
             except asyncio.CancelledError:
+                inference_ms = _elapsed_ms(inference_started_ns)
                 spend = settle(session, token, 0) or charge(session, 0)
                 self.record(
                     self._event(
@@ -103,11 +107,13 @@ class ReviewExecutor:
                             "review_job_id": job.job_id,
                             "error": "review cancelled during daemon shutdown",
                             "spend": _spend(spend),
+                            "timing": {"queue_ms": queue_ms, "inference_ms": inference_ms},
                         },
                     )
                 )
                 raise
             except Exception as error:  # noqa: BLE001 — paid failure must remain observable
+                inference_ms = _elapsed_ms(inference_started_ns)
                 spend = settle(session, token, 0) or charge(session, 0)
                 self.record(
                     self._event(
@@ -117,10 +123,12 @@ class ReviewExecutor:
                             "review_job_id": job.job_id,
                             "error": str(error)[:300],
                             "spend": _spend(spend),
+                            "timing": {"queue_ms": queue_ms, "inference_ms": inference_ms},
                         },
                     )
                 )
                 return
+            inference_ms = _elapsed_ms(inference_started_ns)
             spend = settle(session, token, tokens) or charge(session, tokens)
             stale = not self.is_fresh(job)
             self.record(
@@ -143,7 +151,7 @@ class ReviewExecutor:
                         "inputs": job.reviewer_input.coverage(),
                         "timing": {
                             "queue_ms": queue_ms,
-                            "inference_ms": decision.inference_ms,
+                            "inference_ms": inference_ms,
                         },
                         "spend": _spend(spend),
                     },
@@ -174,3 +182,7 @@ def _spend(spend: Spend) -> dict[str, int]:
         "session_reviews": spend.session,
         "session_tokens": spend.tokens,
     }
+
+
+def _elapsed_ms(started_ns: int) -> float:
+    return max(0.0, (time.perf_counter_ns() - started_ns) / 1_000_000)

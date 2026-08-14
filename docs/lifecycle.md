@@ -809,6 +809,12 @@ bounded immutable job input asynchronously, records `review_inference_started` a
 the model was running. The option is off by default because enabling it spends model tokens; the
 configured per-session and per-day ceilings are enforced before inference.
 
+At journal append, each lifecycle record receives local receipt wall time plus a monotonic timestamp
+and process clock-domain ID. Metrics correlate evidence, candidate, queue, start, and terminal events
+by their stable IDs and derive sub-second latency only when both endpoints share that domain. A
+daemon restart leaves the affected duration unknown with incomplete coverage rather than crossing
+clocks.
+
 ## 7.6 Turn completion
 
 On `turn/completed`:

@@ -261,6 +261,7 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
     assert report.reviewer_tokens == 25
     assert report.reviewer_jobs_queued == report.reviewer_jobs_started == 1
     assert report.reviewer_queue_ms == (4.0,)
+    assert report.reviewer_inference_finishes == 1
     assert report.reviewer_inference_ms == (8.0,)
     assert report.turn_wall_ms == (2000.0,)
     assert report.gate_calls == 1
@@ -281,12 +282,156 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
     )
     assert "command actions=1 failed=0/1 classified" in rendered
     assert "resources=2 unique (1/1 actions declared)" in rendered
-    assert "jobs=1/1/1 decided/started/queued" in rendered
+    assert "jobs queued=1 started=1 decided=0 errors=0 capped=0 discarded=0 stale=0" in rendered
     assert "Main tokens: 14 (1/2 sessions) cumulative/unknown-scope" in rendered
     assert "input=10 (1/2 sessions)" in rendered
     assert "cpu=0.250s, peak_rss=1024 bytes; samples=1/1 gate calls" in rendered
     assert "arrival_order=5/5" in rendered
     assert "turn_wall(source)=avg=2000.00ms max=2000.00ms (1/1)" in rendered
+
+
+def test_supervision_lifecycle_uses_correlated_monotonic_receipts() -> None:
+    def event(
+        kind: str,
+        payload: dict[str, object],
+        *,
+        event_id: str,
+        monotonic_ns: int,
+        clock_id: str = "daemon-1",
+    ) -> TraceEvent:
+        return TraceEvent(
+            kind,
+            payload,
+            event_id=event_id,
+            observed_monotonic_ns=monotonic_ns,
+            monotonic_clock_id=clock_id,
+        )
+
+    events = [
+        event("tool_result", {}, event_id="evidence-1", monotonic_ns=1_000_000_000),
+        event("tool_result", {}, event_id="evidence-2", monotonic_ns=2_000_000_000),
+        event(
+            "signal_candidate",
+            {
+                "signal_id": "signal-1",
+                "status": "active",
+                "evidence_event_ids": ["evidence-1", "evidence-2"],
+            },
+            event_id="signal-event-1",
+            monotonic_ns=2_100_000_000,
+        ),
+        event(
+            "review_job_queued",
+            {"review_job_id": "job-1", "signal_id": "signal-1"},
+            event_id="queued-1",
+            monotonic_ns=2_200_000_000,
+        ),
+        event(
+            "review_inference_started",
+            {"review_job_id": "job-1", "queue_ms": 999.0},
+            event_id="started-1",
+            monotonic_ns=2_300_000_000,
+        ),
+        event(
+            "reviewer_decision",
+            {
+                "review_job_id": "job-1",
+                "timing": {"inference_ms": 500.0},
+            },
+            event_id="decision-1",
+            monotonic_ns=2_800_000_000,
+        ),
+        event(
+            "review_job_queued",
+            {"review_job_id": "job-2", "signal_id": "signal-1"},
+            event_id="queued-2",
+            monotonic_ns=3_000_000_000,
+        ),
+        event(
+            "reviewer_capped",
+            {"review_job_id": "job-2"},
+            event_id="capped-2",
+            monotonic_ns=3_100_000_000,
+        ),
+        event(
+            "review_job_queued",
+            {"review_job_id": "job-3", "signal_id": "signal-1"},
+            event_id="queued-3",
+            monotonic_ns=3_200_000_000,
+        ),
+        event(
+            "review_job_discarded",
+            {"review_job_id": "job-3"},
+            event_id="discarded-3",
+            monotonic_ns=3_300_000_000,
+        ),
+        event(
+            "review_job_queued",
+            {"review_job_id": "job-4", "signal_id": "signal-1"},
+            event_id="queued-4",
+            monotonic_ns=3_400_000_000,
+        ),
+        event(
+            "review_inference_started",
+            {"review_job_id": "job-4"},
+            event_id="started-4",
+            monotonic_ns=3_500_000_000,
+        ),
+        event(
+            "review_job_stale",
+            {"review_job_id": "job-4"},
+            event_id="stale-4",
+            monotonic_ns=3_600_000_000,
+        ),
+        event(
+            "reviewer_error",
+            {"review_job_id": "job-4", "timing": {"inference_ms": 200.0}},
+            event_id="error-4",
+            monotonic_ns=3_700_000_000,
+        ),
+        event(
+            "tool_result",
+            {},
+            event_id="foreign-evidence",
+            monotonic_ns=4_000_000_000,
+            clock_id="daemon-before-restart",
+        ),
+        event(
+            "signal_candidate",
+            {
+                "signal_id": "signal-2",
+                "status": "active",
+                "evidence_event_ids": ["foreign-evidence"],
+            },
+            event_id="signal-event-2",
+            monotonic_ns=100_000_000,
+        ),
+    ]
+    records = [_record(index, item) for index, item in enumerate(events)]
+
+    report = measure_runtime_costs([(records, 10)])
+
+    assert report.signal_candidates_active == 2
+    assert report.signal_detection_ms == (1100.0,)
+    assert report.reviewer_jobs_queued == 4
+    assert report.reviewer_jobs_started == 2
+    assert report.reviewer_jobs_decided == 1
+    assert report.reviewer_jobs_errored == 1
+    assert report.reviewer_jobs_capped == 1
+    assert report.reviewer_jobs_discarded == 1
+    assert report.reviewer_jobs_stale == 1
+    assert report.reviewer_queue_ms == (100.0, 100.0)
+    assert report.reviewer_inference_finishes == 2
+    assert report.reviewer_inference_ms == (500.0, 200.0)
+    assert report.reviewer_end_to_end_ms == (1800.0,)
+    assert report.monotonic_receipt_events == len(records)
+    assert report.monotonic_clock_domains == 2
+
+    rendered = render_runtime_costs(report)
+    assert "signal_delay=avg=1100.00ms max=1100.00ms (1/2)" in rendered
+    assert "detection_to_decision=avg=1800.00ms max=1800.00ms (1/1)" in rendered
+    assert "jobs queued=4 started=2 decided=1 errors=1 capped=1 discarded=1 stale=1" in rendered
+    assert "monotonic_receipt=16/16 across 2 clock domains" in rendered
 
 
 def test_unavailable_runtime_metrics_render_unknown_not_zero() -> None:
@@ -297,6 +442,7 @@ def test_unavailable_runtime_metrics_render_unknown_not_zero() -> None:
     assert "resources=unknown (0/0 actions declared)" in rendered
     assert "hook=unknown (0/0)" in rendered
     assert "receipt_wall=0/1" in rendered
+    assert "monotonic_receipt=0/1 across 0 clock domains" in rendered
 
 
 def test_cumulative_token_updates_use_latest_and_report_field_coverage() -> None:

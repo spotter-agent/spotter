@@ -75,7 +75,7 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 | Fork / continuation replay | ✅ | Same-prefix continuation machinery |
 | Shadow reviewer | ✅ | Produces `CONTINUE / VERIFY / NUDGE`; periodic and opted-in signal reviews remain shadow-only |
 | Claim/evidence audit ledger | 🟡 | Works where observable outcomes exist |
-| Evaluation labels / metrics | 🟡 | Coverage-aware labels and durable action/token/timing, reviewer, gate-latency, and storage metrics; live resource, delivery, and outcome joins remain |
+| Evaluation labels / metrics | 🟡 | Coverage-aware action/token, clock-domain-safe supervision lifecycle, reviewer, gate-latency, resource, and storage metrics; delivery/adoption joins remain |
 | Counterfactual experiment harness | ✅ | Control/guidance same-prefix pairs |
 | Standalone `spotterd` runtime | 🟡 | Process, gate IPC, per-thread immutable state, and App Server recovery ownership implemented; setup endpoint selection remains |
 | Packaging / release | 🟡 | Tags publish verified artifacts; the dedicated Homebrew tap installs immutable releases and opens Formula-update PRs; macOS CI covers live G1→G2 upgrade/reconcile, teardown-less fail-open uninstall, retained data, and reinstall; broader #89/#90 lifecycle work remains |

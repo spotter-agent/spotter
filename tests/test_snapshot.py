@@ -93,6 +93,23 @@ def test_journal_roundtrips_connection_epoch(tmp_path: Path) -> None:
     assert event.arrival_seq == 3
 
 
+def test_journal_stamps_monotonic_receipt_clock_domain(tmp_path: Path) -> None:
+    path = tmp_path / "journal.jsonl"
+    journal = StepJournal(path)
+    first = journal.record(TraceEvent("first"))
+    second = journal.record(TraceEvent("second"))
+
+    loaded = StepJournal.load(path)
+
+    assert first.event.observed_monotonic_ns is not None
+    assert second.event.observed_monotonic_ns is not None
+    assert first.event.observed_monotonic_ns <= second.event.observed_monotonic_ns
+    assert first.event.monotonic_clock_id
+    assert first.event.monotonic_clock_id == second.event.monotonic_clock_id
+    assert loaded[0].event.observed_monotonic_ns == first.event.observed_monotonic_ns
+    assert loaded[0].event.monotonic_clock_id == first.event.monotonic_clock_id
+
+
 def test_proposal_number_does_not_mutate_input_event(tmp_path: Path) -> None:
     journal = StepJournal(tmp_path / "journal.jsonl")
     event = TraceEvent("tool_proposal", {"tool": "Bash"})

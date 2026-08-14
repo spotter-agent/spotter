@@ -365,8 +365,12 @@ latency, timing coverage, and journal storage. Hook and App Server action surfac
 separately during migration rather than summed. Token totals remain `cumulative/unknown-scope`, and
 the latest total per session is used so cumulative updates are not double-counted. Input, cached
 input, cache-write input, output, and reasoning-output fields each retain their own session coverage;
-missing token/timing/latency data is printed as unknown with an explicit denominator. Source wall
-time is never subtracted from receipt wall time to manufacture a latency across clock domains.
+missing token/timing/latency data is printed as unknown with an explicit denominator. Every new
+durable record carries receipt wall time plus a process-local monotonic timestamp and clock-domain
+ID. Signal, queue, and detection-to-decision latency is correlated through evidence, signal, and
+review-job IDs and is subtracted only within one monotonic domain; daemon restarts therefore reduce
+coverage instead of manufacturing a duration. Source wall time is never subtracted from receipt
+wall time to manufacture a latency across clock domains.
 App Server events also retain a monotonically increasing arrival sequence within each connection
 epoch, so equal source timestamps remain durably ordered across journal reloads.
 

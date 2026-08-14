@@ -125,3 +125,39 @@ def test_running_review_is_recorded_stale_after_target_turn_ends(
         assert decision.payload["decision"] == "nudge"
 
     asyncio.run(scenario())
+
+
+def test_failed_review_records_monotonic_queue_and_inference_timing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SPOTTER_HOME", str(tmp_path / "home"))
+
+    async def scenario() -> None:
+        runtime = AppServerRecoveryLoop("ws://unused", tmp_path / "sessions", ThreadStateStore())
+
+        async def reviewer(input_: object, model: str) -> tuple[ReviewerDecision, int]:
+            raise RuntimeError("model unavailable")
+
+        executor = ReviewExecutor(
+            ReviewerConfig(on_signals=True),
+            runtime.record_review_event,
+            runtime.review_job_is_fresh,
+            reviewer=reviewer,
+        )
+        runtime.set_review_job_callback(executor.submit)
+
+        _trigger(runtime)
+        await executor.drain()
+
+        error = next(
+            record.event
+            for record in runtime.ingestor.records()
+            if record.event.kind == "reviewer_error"
+        )
+        timing = error.payload["timing"]
+        assert isinstance(timing, dict)
+        assert float(timing["queue_ms"]) >= 0
+        assert float(timing["inference_ms"]) >= 0
+        assert runtime.review_scheduler.pending() == ()
+
+    asyncio.run(scenario())
