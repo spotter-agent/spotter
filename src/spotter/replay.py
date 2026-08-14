@@ -62,6 +62,7 @@ class EnvironmentDrift(StrEnum):
     MISSING_IGNORED_FILE = "MISSING_IGNORED_FILE"
     MISSING_UNTRACKED_FILE = "MISSING_UNTRACKED_FILE"
     ENVIRONMENT_VARIABLE_MISMATCH = "ENVIRONMENT_VARIABLE_MISMATCH"
+    SYMLINK_OR_SUBMODULE_MISMATCH = "SYMLINK_OR_SUBMODULE_MISMATCH"
     TOOL_VERSION_DRIFT = "TOOL_VERSION_DRIFT"
     UNKNOWN_ENVIRONMENT_DRIFT = "UNKNOWN_ENVIRONMENT_DRIFT"
 
@@ -677,16 +678,16 @@ def compare_environments(
         left.status_sha256,
         left.index_diff_sha256,
         left.tracked_diff_sha256,
-        left.submodule_status_sha256,
     ) != (
         right.snapshot_sha,
         right.tree_sha,
         right.status_sha256,
         right.index_diff_sha256,
         right.tracked_diff_sha256,
-        right.submodule_status_sha256,
     ):
         drift.append(EnvironmentDrift.TRACKED_STATE_MISMATCH)
+    if left.submodule_status_sha256 != right.submodule_status_sha256:
+        drift.append(EnvironmentDrift.SYMLINK_OR_SUBMODULE_MISMATCH)
     if (left.git_version, left.python_version) != (right.git_version, right.python_version):
         drift.append(EnvironmentDrift.TOOL_VERSION_DRIFT)
     if (

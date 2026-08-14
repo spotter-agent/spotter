@@ -347,6 +347,8 @@ not captured rather than assumed equal. Prefixes preserve the rollout model,
 runtime, and a secret-free subset of turn configuration; experiments can pin both the Codex model
 and reasoning effort and persist both values in result provenance. When those values are pinned and
 source provenance is available, a mismatch is rejected before either arm starts.
+Submodule status divergence is reported separately from ordinary tracked-state drift; declared
+resource trees containing symbolic links remain rejected before continuation.
 Neutral mode gives both arms the exact control prompt and reports mechanically judgeable outcome
 disagreement, environment-preflight mismatch, and infrastructure-failure rates separately. The
 command provides the measurement path; a representative executed corpus is still required before

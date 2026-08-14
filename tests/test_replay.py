@@ -691,6 +691,27 @@ def test_environment_comparison_classifies_tool_and_platform_drift(
     )
 
 
+def test_environment_comparison_classifies_submodule_drift_separately(repo: Path) -> None:
+    sha = snapshot_worktree(repo)
+    worktree = repo.parent / "submodule-fingerprint"
+    subprocess.run(["git", "worktree", "add", "--detach", str(worktree), sha], cwd=repo, check=True)
+    baseline = fingerprint_environment(worktree)
+    submodule_changed = replace(baseline, submodule_status_sha256="different")
+
+    assert compare_environments(baseline, submodule_changed).drift == (
+        EnvironmentDrift.SYMLINK_OR_SUBMODULE_MISMATCH,
+    )
+
+    tracked_and_submodule_changed = replace(
+        submodule_changed,
+        tracked_diff_sha256="different",
+    )
+    assert compare_environments(baseline, tracked_and_submodule_changed).drift == (
+        EnvironmentDrift.TRACKED_STATE_MISMATCH,
+        EnvironmentDrift.SYMLINK_OR_SUBMODULE_MISMATCH,
+    )
+
+
 def test_declared_ignored_resource_is_not_hidden_by_matching_forks(
     repo: Path, codex_home: Path
 ) -> None:
