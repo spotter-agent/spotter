@@ -497,6 +497,11 @@ explicitly. Hook records carry legacy-session provenance with unknown thread, tu
 dimensions, so consumers never need Codex transport objects and never infer that a Hook session is an
 App Server thread.
 
+Runtime metrics count unique resources only from explicit normalized fields: file paths, classified
+Hook resources, and MCP server/tool identities. Lifecycle observations for one correlated action are
+deduplicated, and reports include the number of semantic actions that declared a resource. Commands
+and opaque tool arguments are not parsed to invent resource identity.
+
 The daemon also writes a bounded, value-free source-shape audit beside session journals. It records
 which App Server field paths existed, which normalized fields and evidence families survived, and
 whether the fact remained available in live `ThreadState`. Source values, raw reasoning, command

@@ -3,7 +3,7 @@
 import math
 from collections import Counter
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from statistics import mean
 
 from spotter.outcomes import outcome_failure
@@ -24,6 +24,8 @@ class SurfaceCost:
     actions_by_family: Mapping[str, int] = field(default_factory=dict)
     classified_outcomes_by_family: Mapping[str, int] = field(default_factory=dict)
     failed_outcomes_by_family: Mapping[str, int] = field(default_factory=dict)
+    unique_resources: int | None = None
+    resource_actions: int = 0
 
 
 @dataclass(frozen=True)
@@ -84,6 +86,8 @@ def measure_runtime_costs(
     reviewer_tokens_known = False
     token_sums = {field: 0 for field in _TOKEN_FIELDS}
     token_sessions = {field: 0 for field in _TOKEN_FIELDS}
+    resources_by_surface: dict[str, set[str]] = {"hook": set(), "app_server": set()}
+    resource_actions_by_surface = {"hook": 0, "app_server": 0}
     tool_duration_ms: list[float] = []
     reviewer_queue_ms: list[float] = []
     reviewer_inference_ms: list[float] = []
@@ -104,6 +108,7 @@ def measure_runtime_costs(
         outcomes: set[str] = set()
         action_families: dict[str, str] = {}
         outcome_families: dict[str, str] = {}
+        action_resources: dict[str, set[str]] = {}
         action_observations = outcome_observations = 0
         classified: set[str] = set()
         failed: set[str] = set()
@@ -127,6 +132,8 @@ def measure_runtime_costs(
                 if key is not None:
                     actions.add(key)
                     action_families.setdefault(key, _action_family(event.kind))
+                    if resources := _event_resources(event.payload):
+                        action_resources.setdefault(key, set()).update(resources)
             if event.kind in _OUTCOME_KINDS:
                 outcome_observations += 1
                 if key is not None:
@@ -198,6 +205,10 @@ def measure_runtime_costs(
                 Counter(outcome_families[key] for key in failed),
             ),
         )
+        resources_by_surface[surface].update(
+            resource for resources in action_resources.values() for resource in resources
+        )
+        resource_actions_by_surface[surface] += len(action_resources)
         completed_turns += len(completed)
         token_turns += len(completed & token_covered)
         if latest_main_tokens is not None:
@@ -225,6 +236,16 @@ def measure_runtime_costs(
         _covered_field("outputTokens", token_sums, token_sessions),
         _covered_field("reasoningOutputTokens", token_sums, token_sessions),
     )
+    surfaces = {
+        surface: replace(
+            cost,
+            unique_resources=(
+                len(resources_by_surface[surface]) if resource_actions_by_surface[surface] else None
+            ),
+            resource_actions=resource_actions_by_surface[surface],
+        )
+        for surface, cost in surfaces.items()
+    }
     return RuntimeCostReport(
         sessions,
         events,
@@ -265,6 +286,12 @@ def render_runtime_costs(report: RuntimeCostReport) -> str:
             f"(from {_observations(cost.action_observations)}), outcomes={cost.outcomes} "
             f"(from {_observations(cost.outcome_observations)}), "
             f"failed={cost.failed_outcomes}/{cost.classified_outcomes} classified"
+        )
+        resources = (
+            f"{cost.unique_resources} unique" if cost.unique_resources is not None else "unknown"
+        )
+        lines.append(
+            f"      resources={resources} ({cost.resource_actions}/{cost.actions} actions declared)"
         )
         if cost.actions_by_family:
             lines.append(f"      families: {_render_families(cost)}")
@@ -351,6 +378,21 @@ def _action_family(kind: str) -> str:
     if kind in {"file_change_started", "file_edit"}:
         return "file_change"
     return "tool"
+
+
+def _event_resources(payload: Mapping[str, object]) -> set[str]:
+    resources: set[str] = set()
+    files = payload.get("files")
+    if isinstance(files, list):
+        resources.update(f"file:{value}" for value in files if isinstance(value, str) and value)
+    resource = payload.get("resource")
+    if isinstance(resource, str) and resource:
+        resources.add(f"resource:{resource}")
+    server = payload.get("server") or payload.get("namespace")
+    tool = payload.get("tool")
+    if isinstance(server, str) and server and isinstance(tool, str) and tool:
+        resources.add(f"tool:{server}/{tool}")
+    return resources
 
 
 def _merge_counts(left: Mapping[str, int], right: Mapping[str, int]) -> dict[str, int]:

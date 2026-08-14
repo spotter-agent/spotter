@@ -14,7 +14,12 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
             0,
             TraceEvent(
                 "tool_proposal",
-                {"tool_use_id": "call-1", "turn_id": "legacy-turn"},
+                {
+                    "tool_use_id": "call-1",
+                    "turn_id": "legacy-turn",
+                    "files": ["src/a.py"],
+                    "resource": "workspace",
+                },
                 provenance=TraceProvenance("codex_hook", "PreToolUse"),
             ),
         ),
@@ -143,6 +148,8 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
     assert report.surfaces["hook"].failed_outcomes == 1
     assert report.surfaces["hook"].actions_by_family == {"tool": 1}
     assert report.surfaces["hook"].failed_outcomes_by_family == {"tool": 1}
+    assert report.surfaces["hook"].unique_resources == 2
+    assert report.surfaces["hook"].resource_actions == 1
     assert report.surfaces["app_server"].actions == 1
     assert report.surfaces["app_server"].action_observations == 2
     assert report.surfaces["app_server"].outcomes == 1
@@ -176,6 +183,7 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
         "app_server: actions=1 (from 2 observations), outcomes=1 (from 1 observation)" in rendered
     )
     assert "command actions=1 failed=0/1 classified" in rendered
+    assert "resources=2 unique (1/1 actions declared)" in rendered
     assert "jobs=1/1/1 decided/started/queued" in rendered
     assert "Main tokens: 14 (1/2 sessions) cumulative/unknown-scope" in rendered
     assert "input=10 (1/2 sessions)" in rendered
@@ -189,6 +197,7 @@ def test_unavailable_runtime_metrics_render_unknown_not_zero() -> None:
 
     rendered = render_runtime_costs(report)
     assert "Main tokens: unknown" in rendered
+    assert "resources=unknown (0/0 actions declared)" in rendered
     assert "hook=unknown (0/0)" in rendered
     assert "receipt_wall=0/1" in rendered
 
@@ -265,10 +274,28 @@ def test_semantic_action_families_reuse_correlated_action_identity() -> None:
         ),
         _record(
             2,
-            TraceEvent("file_edit", {"status": "failed"}, operation_id="edit-1"),
+            TraceEvent(
+                "file_edit",
+                {"status": "failed", "files": ["src/a.py", "src/a.py"]},
+                operation_id="edit-1",
+            ),
         ),
-        _record(3, TraceEvent("tool_started", operation_id="mcp-1")),
-        _record(4, TraceEvent("tool_result", operation_id="mcp-1")),
+        _record(
+            3,
+            TraceEvent(
+                "tool_started",
+                {"server": "github", "tool": "create_issue"},
+                operation_id="mcp-1",
+            ),
+        ),
+        _record(
+            4,
+            TraceEvent(
+                "tool_result",
+                {"server": "github", "tool": "create_issue"},
+                operation_id="mcp-1",
+            ),
+        ),
     ]
 
     cost = measure_runtime_costs([(records, 10)]).surfaces["hook"]
@@ -277,6 +304,8 @@ def test_semantic_action_families_reuse_correlated_action_identity() -> None:
     assert cost.actions_by_family == {"command": 1, "file_change": 1, "tool": 1}
     assert cost.classified_outcomes_by_family == {"command": 1, "file_change": 1}
     assert cost.failed_outcomes_by_family == {"file_change": 1}
+    assert cost.unique_resources == 2
+    assert cost.resource_actions == 2
 
 
 def test_turn_duration_never_crosses_connection_epochs() -> None:
