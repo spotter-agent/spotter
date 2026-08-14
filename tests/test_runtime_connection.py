@@ -8,6 +8,7 @@ from typing import Any, cast
 import pytest
 from websockets.asyncio.server import ServerConnection, serve
 
+from spotter.app_server import AppServerRpcError, AppServerTransportError
 from spotter.runtime_connection import (
     AppServerRecoveryLoop,
     RecoveryState,
@@ -31,6 +32,20 @@ async def _receive(connection: ServerConnection, method: str) -> dict[str, Any]:
 
 async def _reply(connection: ServerConnection, request: dict[str, Any], result: Any) -> None:
     await connection.send(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}))
+
+
+async def _reply_error(
+    connection: ServerConnection, request: dict[str, Any], code: int, message: str
+) -> None:
+    await connection.send(
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "error": {"code": code, "message": message},
+            }
+        )
+    )
 
 
 async def _initialize(connection: ServerConnection) -> None:
@@ -104,7 +119,22 @@ def test_reconnect_reconciles_epoch_gap_and_stale_control(tmp_path: Path) -> Non
             assert first.control_ready is True
             assert first.coverage.history == HistoryStatus.PARTIAL
             target = RuntimeControlTarget(first.identity, 1)
-            assert (await recovery.steer(target, "verify"))["turnId"] == "turn-1"
+            assert (await recovery.steer(target, "verify", control_id="control-1"))[
+                "turnId"
+            ] == "turn-1"
+            controls = [
+                record.event
+                for record in recovery.ingestor.records()
+                if record.event.kind.startswith("control_")
+            ]
+            assert [event.kind for event in controls] == [
+                "control_dispatch_started",
+                "control_rpc_accepted",
+            ]
+            assert {event.payload["control_id"] for event in controls} == {"control-1"}
+            assert controls[0].payload["target_connection_epoch"] == 1
+            assert controls[0].payload["target_turn_id"] == "turn-1"
+            assert controls[0].payload["client_user_message_id"] == "control-1"
 
             await connections[0].close()
             await _wait_until(
@@ -125,7 +155,16 @@ def test_reconnect_reconciles_epoch_gap_and_stale_control(tmp_path: Path) -> Non
             assert RecoveryState.RECONCILING in recovery.transitions
             assert RecoveryState.BACKING_OFF in recovery.transitions
             with pytest.raises(StaleControlTarget):
-                await recovery.steer(target, "late")
+                await recovery.steer(target, "late", control_id="control-2")
+            stale = [
+                record.event
+                for record in recovery.ingestor.records()
+                if record.event.payload.get("control_id") == "control-2"
+            ]
+            assert len(stale) == 1
+            assert stale[0].kind == "control_terminal"
+            assert stale[0].payload["outcome"] == "stale"
+            assert stale[0].payload["reason_code"] == "stale_target"
             await recovery.close()
 
     asyncio.run(scenario())
@@ -175,6 +214,65 @@ def test_restart_hydrates_without_control_until_live_reconciliation(tmp_path: Pa
             assert reconciled.active_turn_id is not None
             assert reconciled.control_ready is True
             await recovered.close()
+
+    asyncio.run(scenario())
+
+
+def test_control_rejection_and_unknown_acceptance_are_distinct(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        async def handler(connection: ServerConnection) -> None:
+            await _initialize(connection)
+            listed = await _receive(connection, "thread/list")
+            await _reply(
+                connection,
+                listed,
+                {"data": [{"id": "thread-1"}], "nextCursor": None},
+            )
+            read = await _receive(connection, "thread/read")
+            await _reply(
+                connection,
+                read,
+                {
+                    "thread": {
+                        "id": "thread-1",
+                        "turns": [{"id": "turn-1", "status": "active"}],
+                    }
+                },
+            )
+            rejected = await _receive(connection, "turn/steer")
+            await _reply_error(connection, rejected, -32000, "not steerable")
+            await _receive(connection, "turn/steer")
+            await connection.close()
+
+        async with _server(handler) as endpoint:
+            store = ThreadStateStore()
+            recovery = AppServerRecoveryLoop(
+                endpoint,
+                tmp_path / "sessions",
+                store,
+                initial_backoff=1,
+                maximum_backoff=1,
+            )
+            await recovery.start()
+            await _wait_until(lambda: recovery.state == RecoveryState.READY)
+            state = store.snapshots()[0]
+            target = RuntimeControlTarget(state.identity, state.connection_epoch or 0)
+
+            with pytest.raises(AppServerRpcError):
+                await recovery.steer(target, "verify", control_id="control-rejected")
+            with pytest.raises(AppServerTransportError):
+                await recovery.steer(target, "verify", control_id="control-unknown")
+
+            terminals = {
+                record.event.payload["control_id"]: record.event.payload["outcome"]
+                for record in recovery.ingestor.records()
+                if record.event.kind == "control_terminal"
+            }
+            assert terminals == {
+                "control-rejected": "failed",
+                "control-unknown": "unknown",
+            }
+            await recovery.close()
 
     asyncio.run(scenario())
 

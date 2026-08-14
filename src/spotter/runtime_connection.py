@@ -17,6 +17,7 @@ from uuid import uuid4
 from spotter.app_server import (
     AppServerCapabilities,
     AppServerError,
+    AppServerRpcError,
     AppServerTransportError,
     CapabilityStatus,
     CodexAppServerClient,
@@ -220,13 +221,140 @@ class AppServerRecoveryLoop:
             and state.connection_epoch == job.target_connection_epoch
         )
 
-    async def steer(self, target: RuntimeControlTarget, text: str) -> Mapping[str, Any]:
-        client, thread_id, turn_id = self._validate_target(target)
-        return await client.steer(thread_id, turn_id, text)
+    async def steer(
+        self,
+        target: RuntimeControlTarget,
+        text: str,
+        *,
+        control_id: str | None = None,
+        review_job_id: str | None = None,
+    ) -> Mapping[str, Any]:
+        return await self._dispatch_control(
+            target,
+            "steer",
+            text=text,
+            control_id=control_id,
+            review_job_id=review_job_id,
+        )
 
-    async def interrupt(self, target: RuntimeControlTarget) -> Mapping[str, Any]:
-        client, thread_id, turn_id = self._validate_target(target)
-        return await client.interrupt(thread_id, turn_id)
+    async def interrupt(
+        self,
+        target: RuntimeControlTarget,
+        *,
+        control_id: str | None = None,
+        review_job_id: str | None = None,
+    ) -> Mapping[str, Any]:
+        return await self._dispatch_control(
+            target,
+            "interrupt",
+            control_id=control_id,
+            review_job_id=review_job_id,
+        )
+
+    async def _dispatch_control(
+        self,
+        target: RuntimeControlTarget,
+        control_kind: str,
+        *,
+        text: str | None = None,
+        control_id: str | None = None,
+        review_job_id: str | None = None,
+    ) -> Mapping[str, Any]:
+        request_id = _control_request_id(control_id)
+        payload = _control_payload(target, request_id, control_kind, review_job_id)
+        try:
+            client, thread_id, turn_id = self._validate_target(target)
+        except StaleControlTarget as error:
+            self._record_control_event(
+                "control_terminal",
+                target,
+                payload,
+                outcome="stale",
+                reason_code="stale_target",
+                error=error,
+            )
+            raise
+
+        self._record_control_event("control_dispatch_started", target, payload)
+        try:
+            if control_kind == "steer":
+                assert text is not None
+                result = await client.steer(
+                    thread_id,
+                    turn_id,
+                    text,
+                    client_user_message_id=request_id,
+                )
+            else:
+                result = await client.interrupt(thread_id, turn_id)
+        except asyncio.CancelledError as error:
+            self._record_control_event(
+                "control_terminal",
+                target,
+                payload,
+                outcome="unknown",
+                reason_code="cancelled_after_dispatch",
+                error=error,
+            )
+            raise
+        except AppServerRpcError as error:
+            self._record_control_event(
+                "control_terminal",
+                target,
+                payload,
+                outcome="failed",
+                reason_code="rpc_rejected",
+                error=error,
+            )
+            raise
+        except AppServerError as error:
+            self._record_control_event(
+                "control_terminal",
+                target,
+                payload,
+                outcome="unknown",
+                reason_code="acceptance_unknown",
+                error=error,
+            )
+            raise
+
+        accepted = dict(payload)
+        accepted_turn_id = result.get("turnId")
+        if isinstance(accepted_turn_id, str) and accepted_turn_id:
+            accepted["accepted_turn_id"] = accepted_turn_id
+        self._record_control_event("control_rpc_accepted", target, accepted)
+        return result
+
+    def _record_control_event(
+        self,
+        kind: str,
+        target: RuntimeControlTarget,
+        payload: Mapping[str, object],
+        *,
+        outcome: str | None = None,
+        reason_code: str | None = None,
+        error: BaseException | None = None,
+    ) -> StepRecord | None:
+        event_payload = dict(payload)
+        if outcome is not None:
+            event_payload["outcome"] = outcome
+        if reason_code is not None:
+            event_payload["reason_code"] = reason_code
+        if error is not None:
+            event_payload["error_type"] = type(error).__name__
+        control_id = event_payload["control_id"]
+        phase = outcome or kind.removeprefix("control_")
+        return self.ingestor.record(
+            TraceEvent(
+                kind,
+                event_payload,
+                event_id=f"spotter:control:{control_id}:{phase}",
+                occurred_at=time.time(),
+                identity=target.identity,
+                provenance=TraceProvenance("spotterd", "runtime_control"),
+                connection_epoch=target.connection_epoch,
+            )
+        )
 
     async def _run(self) -> None:
         delay = self.initial_backoff
@@ -599,6 +727,39 @@ async def _cancel_task(task: asyncio.Task[Any]) -> None:
         task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await task
+
+
+def _control_request_id(value: str | None) -> str:
+    if value is None:
+        return f"spotter-{uuid4().hex}"
+    if not value.strip():
+        raise ValueError("control_id must be non-empty")
+    return value
+
+
+def _control_payload(
+    target: RuntimeControlTarget,
+    control_id: str,
+    control_kind: str,
+    review_job_id: str | None,
+) -> dict[str, object]:
+    if review_job_id is not None and not review_job_id.strip():
+        raise ValueError("review_job_id must be non-empty")
+    identity = target.identity
+    payload: dict[str, object] = {
+        "control_id": control_id,
+        "control_kind": control_kind,
+        "target_connection_epoch": target.connection_epoch,
+    }
+    if identity.turn_id is not None:
+        payload["target_turn_id"] = identity.turn_id.value
+    if identity.attachment_id is not None:
+        payload["runtime_attachment_id"] = identity.attachment_id.value
+    if review_job_id is not None:
+        payload["review_job_id"] = review_job_id
+    if control_kind == "steer":
+        payload["client_user_message_id"] = control_id
+    return payload
 
 
 def _active_turn_id(thread: Mapping[str, Any]) -> str | None:
