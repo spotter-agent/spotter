@@ -42,6 +42,34 @@ def _active_candidate() -> tuple[list[TraceEvent], TraceEvent]:
     return [turn, first, second], candidate
 
 
+def _signal_candidate(
+    event_id: str,
+    signal_id: str,
+    signal_type: str,
+    evidence_id: str,
+    feature: str,
+    *,
+    state_version: int = 1,
+) -> TraceEvent:
+    return _event(
+        event_id,
+        "signal_candidate",
+        {
+            "signal_id": signal_id,
+            "signal_type": signal_type,
+            "thread_id": "thread-1",
+            "turn_id": "turn-1",
+            "target_connection_epoch": 1,
+            "state_version": state_version,
+            "severity_hint": 3,
+            "evidence_event_ids": [evidence_id],
+            "involved_resources": [f"resource:{signal_id}"],
+            "features": {feature: 3},
+            "status": "active",
+        },
+    )
+
+
 def test_active_candidate_queues_one_immutable_snapshot() -> None:
     source_events, candidate = _active_candidate()
     states = ThreadStateStore()
@@ -59,6 +87,45 @@ def test_active_candidate_queues_one_immutable_snapshot() -> None:
     assert len(scheduler.pending()) == 1
     assert scheduler.pending()[0].snapshot is snapshot
     assert scheduler.pending()[0].state_version == 3
+
+
+def test_related_candidates_merge_into_one_bounded_reviewer_job() -> None:
+    turn = _event("turn-start", "turn_started", {})
+    first = _signal_candidate(
+        "candidate-1", "signal-1", "failure_streak", "failure-2", "consecutive_failures"
+    )
+    second = _signal_candidate(
+        "candidate-2",
+        "signal-2",
+        "repeated_equivalent_tool_call",
+        "read-4",
+        "consecutive_equivalent_calls",
+    )
+    states = ThreadStateStore()
+    snapshot = states.observe(turn)
+    states.observe(first)
+    state_after = states.observe(second)
+    scheduler = ReviewScheduler()
+
+    queued = scheduler.update_candidates((first, second), snapshot, state_after)
+    job = scheduler.pending()[0]
+
+    assert len(queued) == 1
+    assert len(scheduler.pending()) == 1
+    assert job.signal_ids == ("signal-1", "signal-2")
+    assert job.signal_types == ("failure_streak", "repeated_equivalent_tool_call")
+    assert job.candidate_event_ids == ("candidate-1", "candidate-2")
+    assert job.reviewer_input.evidence_event_ids == ("failure-2", "read-4")
+    assert job.reviewer_input.involved_resources == (
+        "resource:signal-1",
+        "resource:signal-2",
+    )
+    assert job.reviewer_input.features == (
+        ("failure_streak.consecutive_failures", 3),
+        ("repeated_equivalent_tool_call.consecutive_equivalent_calls", 3),
+    )
+    assert queued[0].payload["signal_ids"] == ["signal-1", "signal-2"]
+    assert queued[0].payload["candidate_event_ids"] == ["candidate-1", "candidate-2"]
 
 
 def test_target_change_discards_pending_job() -> None:
@@ -119,6 +186,36 @@ def test_hydration_backfills_only_missing_queue_transition() -> None:
     assert len(recovered.pending()) == 1
     assert recovered.pending()[0].snapshot.version == 3
     assert recovered.pending()[0].reviewer_input == scheduler.pending()[0].reviewer_input
+
+
+def test_hydration_preserves_merged_candidate_evidence() -> None:
+    turn = _event("turn-start", "turn_started", {})
+    first = _signal_candidate(
+        "candidate-1", "signal-1", "failure_streak", "failure-2", "consecutive_failures"
+    )
+    second = _signal_candidate(
+        "candidate-2",
+        "signal-2",
+        "repeated_equivalent_tool_call",
+        "read-4",
+        "consecutive_equivalent_calls",
+    )
+    records = [
+        StepRecord(0, turn, None),
+        StepRecord(1, first, None),
+        StepRecord(2, second, None),
+    ]
+    scheduler = ReviewScheduler()
+    queued = scheduler.hydrate(records)[0]
+    recovered = ReviewScheduler()
+
+    assert recovered.hydrate([*records, StepRecord(3, queued, None)]) == ()
+    assert len(recovered.pending()) == 1
+    assert recovered.pending()[0].signal_ids == ("signal-1", "signal-2")
+    assert recovered.pending()[0].reviewer_input.evidence_event_ids == (
+        "failure-2",
+        "read-4",
+    )
 
 
 def test_hydration_recovers_running_job_as_stale_not_discarded() -> None:

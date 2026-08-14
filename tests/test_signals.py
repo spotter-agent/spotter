@@ -1,8 +1,9 @@
 from pathlib import Path
 
 from spotter.identity import IdentityProvenance, RuntimeIdentity, ThreadId, TurnId
+from spotter.review_scheduler import ReviewerJob
 from spotter.runtime_connection import AppServerRecoveryLoop
-from spotter.signals import SignalEngine, SignalStatus, SignalType
+from spotter.signals import SignalCandidate, SignalEngine, SignalStatus, SignalType
 from spotter.snapshot import StepRecord
 from spotter.thread_state import ThreadStateStore
 from spotter.trace import TraceEvent, TraceProvenance
@@ -261,6 +262,69 @@ def test_runtime_journals_signal_candidates_and_recovers_cooldown(tmp_path: Path
     ]
     assert len(suppressed) == 1
     assert suppressed[0].payload["status"] == "cooled_down"
+
+
+def test_runtime_batches_same_source_candidates_before_submitting_review(tmp_path: Path) -> None:
+    class TwoSignalEngine(SignalEngine):
+        def update(self, event: TraceEvent, state_version: int) -> tuple[SignalCandidate, ...]:
+            if event.event_id != "event-1" or event.identity is None:
+                return ()
+            assert event.identity.thread_id is not None
+            return tuple(
+                SignalCandidate(
+                    f"signal-{index}",
+                    signal_type,
+                    event.identity.thread_id,
+                    event.identity.turn_id.value if event.identity.turn_id else None,
+                    event.connection_epoch,
+                    state_version,
+                    event.occurred_at,
+                    event.occurred_at,
+                    index,
+                    (f"evidence-{index}",),
+                    (f"resource:{index}",),
+                    SignalStatus.ACTIVE,
+                    event.event_id,
+                    ((feature, index),),
+                )
+                for index, signal_type, feature in (
+                    (2, SignalType.FAILURE_STREAK, "consecutive_failures"),
+                    (
+                        3,
+                        SignalType.REPEATED_EQUIVALENT_TOOL_CALL,
+                        "consecutive_equivalent_calls",
+                    ),
+                )
+            )
+
+    submitted: list[ReviewerJob] = []
+    runtime = AppServerRecoveryLoop(
+        "ws://unused",
+        tmp_path / "sessions",
+        ThreadStateStore(),
+        signals=TwoSignalEngine(),
+        on_review_job=submitted.append,
+    )
+    runtime._record(
+        TraceEvent(
+            "turn_started",
+            {},
+            event_id="turn-start",
+            identity=_event("event-1", "completed").identity,
+            connection_epoch=1,
+        )
+    )
+    runtime._record(_event("event-1", "completed"))
+
+    records = runtime.ingestor.records()
+    candidates = [record.event for record in records if record.event.kind == "signal_candidate"]
+    queued = [record.event for record in records if record.event.kind == "review_job_queued"]
+
+    assert len(candidates) == 2
+    assert len(queued) == 1
+    assert queued[0].payload["signal_ids"] == ["signal-2", "signal-3"]
+    assert len(submitted) == 1
+    assert submitted[0].reviewer_input.evidence_event_ids == ("evidence-2", "evidence-3")
 
 
 def test_runtime_backfills_candidate_after_interrupted_derived_append(tmp_path: Path) -> None:

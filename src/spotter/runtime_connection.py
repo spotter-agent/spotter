@@ -405,7 +405,23 @@ class AppServerRecoveryLoop:
         except ThreadStateError:
             state_before = None
         state = self.thread_states.observe(record.event)
-        for transition in self.review_scheduler.update(record.event, state_before, state):
+        self._record_review_transitions(
+            self.review_scheduler.update(record.event, state_before, state)
+        )
+        candidate_events: list[TraceEvent] = []
+        for candidate in self.signals.update(record.event, state.version):
+            candidate_record = self._append_derived(candidate.to_trace_event(record.event))
+            if candidate_record is not None:
+                candidate_events.append(candidate_record.event)
+        if candidate_events:
+            current = self.thread_states.snapshot(event.identity.thread_id)
+            self._record_review_transitions(
+                self.review_scheduler.update_candidates(candidate_events, state, current)
+            )
+        return record
+
+    def _record_review_transitions(self, transitions: tuple[TraceEvent, ...]) -> None:
+        for transition in transitions:
             self._record(transition)
             job_id = transition.payload.get("review_job_id")
             if (
@@ -415,9 +431,6 @@ class AppServerRecoveryLoop:
                 and (job := self.review_scheduler.get(job_id)) is not None
             ):
                 self.on_review_job(job)
-        for candidate in self.signals.update(record.event, state.version):
-            self._record(candidate.to_trace_event(record.event))
-        return record
 
     def _append_derived(self, event: TraceEvent) -> StepRecord | None:
         """Recover one already-derived event without running producers out of order."""
