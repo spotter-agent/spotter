@@ -60,7 +60,19 @@ def codex_home(tmp_path: Path) -> Path:
             "payload": {"call_id": "call_A", "name": "exec", "model": "gpt-test"},
         },
         {"ordinal": 2, "type": "response_item", "payload": {"call_id": "call_A", "output": "ok"}},
-        {"ordinal": 3, "type": "response_item", "payload": {"call_id": "call_B", "name": "exec"}},
+        {
+            "ordinal": 3,
+            "type": "turn_context",
+            "payload": {
+                "model": "gpt-test",
+                "effort": "low",
+                "approval_policy": "never",
+                "personality": "pragmatic",
+                "sandbox_policy": {"type": "workspace-write", "writable_roots": ["secret"]},
+                "collaboration_mode": {"mode": "default", "developer_instructions": "secret"},
+            },
+        },
+        {"ordinal": 4, "type": "response_item", "payload": {"call_id": "call_B", "name": "exec"}},
     ]
     rollout = day / f"rollout-2026-08-11T10-00-00-{OLD_ID}.jsonl"
     rollout.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
@@ -77,7 +89,7 @@ def test_fork_rollout_truncates_and_renames(codex_home: Path) -> None:
     rollout = next((codex_home / "sessions").rglob("*.jsonl"))
     forked = fork_rollout(rollout, "call_B", "new-id-1234")
     lines = forked.read_text().splitlines()
-    assert len(lines) == 3  # cut strictly before call_B
+    assert len(lines) == 4  # cut strictly before call_B
     assert OLD_ID not in forked.name and "new-id-1234" in forked.name
     assert all(OLD_ID not in line for line in lines)
     assert rollout.read_text().count("call_B") == 1  # original untouched
@@ -263,7 +275,14 @@ def test_fork_end_to_end(repo: Path, codex_home: Path) -> None:
     assert manifest.prefix.agent == "codex"
     assert manifest.prefix.model == "gpt-test"
     assert manifest.prefix.runtime_version == "test-1"
-    assert manifest.prefix.agent_config == "not_captured"
+    assert json.loads(manifest.prefix.agent_config) == {
+        "approval_policy": "never",
+        "collaboration_mode": "default",
+        "effort": "low",
+        "personality": "pragmatic",
+        "sandbox_policy": "workspace-write",
+    }
+    assert "secret" not in manifest.prefix.agent_config
     assert manifest.environment is not None
     assert manifest.environment.snapshot_sha == sha
     assert manifest.environment.fingerprint_sha256 == plan.environment_fingerprint
@@ -369,7 +388,7 @@ def test_fork_rollout_matches_event_msg_item_ids(codex_home: Path) -> None:
     )
     rollout.write_text("\n".join(lines) + "\n")
     forked = fork_rollout(rollout, "exec-1234", "new-id")
-    assert len(forked.read_text().splitlines()) == 4  # cut before the event_msg
+    assert len(forked.read_text().splitlines()) == 5  # cut before the event_msg
 
 
 def test_code_mode_correlates_hook_ids_to_exact_pre_call_cut(repo: Path, codex_home: Path) -> None:

@@ -370,9 +370,10 @@ snapshots. `spotter fork` writes a durable manifest under `~/.spotter/fork-manif
 source event, snapshot, rollout-prefix digest, external-effect warnings, and captured environment
 fingerprint. Counterfactual pairs are fully prepared and must pass shared-prefix and captured-
 environment parity checks before either agent arm runs, then rechecks each arm against its immutable
-manifest immediately before model continuation. Ignored files, environment variables, and
-agent configuration are explicitly marked as not captured rather than assumed equal. Experiments
-can pin both the Codex model and reasoning effort, and persist both values in result provenance.
+manifest immediately before model continuation. Ignored files and environment variables are
+explicitly marked as not captured rather than assumed equal. Prefixes preserve the rollout model,
+runtime, and a secret-free subset of turn configuration; experiments can pin both the Codex model
+and reasoning effort and persist both values in result provenance.
 Neutral mode gives both arms the exact control prompt and reports mechanically judgeable outcome
 disagreement, environment-preflight mismatch, and infrastructure-failure rates separately. The
 command provides the measurement path; a representative executed corpus is still required before
