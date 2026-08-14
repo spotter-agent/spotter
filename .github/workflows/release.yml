@@ -164,16 +164,21 @@ jobs:
     needs: publish
     runs-on: ubuntu-latest
     steps:
+      - name: Create the Homebrew tap installation token
+        id: tap-app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.HOMEBREW_TAP_APP_CLIENT_ID }}
+          private-key: ${{ secrets.HOMEBREW_TAP_APP_PRIVATE_KEY }}
+          owner: spotter-agent
+          repositories: homebrew-spotter
+          permission-contents: write
       - name: Dispatch the published tag to the Homebrew tap
         env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          GH_TOKEN: ${{ steps.tap-app-token.outputs.token }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "$GH_TOKEN" ]]; then
-            echo "HOMEBREW_TAP_TOKEN is required to dispatch the Formula update" >&2
-            exit 1
-          fi
           jq -n \
             --arg release_tag "$GITHUB_REF_NAME" \
             '{

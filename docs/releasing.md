@@ -64,10 +64,22 @@ on an existing draft, but the workflow refuses to alter an already-published rel
 
 The published release exposes both the versioned source-distribution URL and its SHA256 in
 `spotter-agent-X.Y.Z-SHA256SUMS` and `spotter-agent-X.Y.Z-release.json`. After publication succeeds,
-the release workflow sends the exact tag to the Homebrew tap. This cross-repository dispatch uses
-the `HOMEBREW_TAP_TOKEN` repository secret, scoped to `spotter-agent/homebrew-spotter` with Contents
-write permission. The tap update flow can use the published values directly; it does not need to
-rebuild or inspect a moving branch.
+the release workflow sends the exact tag to the Homebrew tap. The workflow creates a short-lived
+GitHub App installation token scoped to `spotter-agent/homebrew-spotter` with Contents write
+permission; no maintainer personal access token is stored. The tap update flow can use the published
+values directly; it does not need to rebuild or inspect a moving branch.
+
+Configure the dispatcher GitHub App once before publishing a release:
+
+1. Create a GitHub App with webhooks disabled and repository **Contents: Read and write** permission.
+2. Install it for the `spotter-agent` organization with access only to `homebrew-spotter`.
+3. Add its Client ID to the `spotter` Actions repository variable
+   `HOMEBREW_TAP_APP_CLIENT_ID`.
+4. Generate a private key for the App and add the complete PEM value to the `spotter` Actions
+   repository secret `HOMEBREW_TAP_APP_PRIVATE_KEY`.
+
+The release job narrows each generated installation token to the tap repository and Contents write
+permission again. The token is revoked automatically when the job finishes.
 
 ## Publish through Homebrew
 
