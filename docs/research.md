@@ -287,7 +287,12 @@ failures near an intervention opportunity. A fourth
 branched after the source session made an incomplete patch that subsequently failed the scorer and
 required recovery. Its three pairs again produced no disagreement, environment mismatch, or
 infrastructure failure. Because effort changes the continuation distribution, this 0/3 result is a
-separate low-effort cohort and is not pooled into the prior default-effort 0/11 noise estimate.
+separate low-effort cohort and is not pooled into the prior unpinned-effort 0/11 noise estimate.
+
+The consolidated [fork fidelity qualification v1](experiments/fork-fidelity-v1.md) records a
+**NO-GO for representative causal use** by #34/#23. It publishes raw strata, coverage, instrument
+controls, and the remaining evidence gaps; development experiments may continue, but v1 is not a
+representative neutral-noise bound.
 
 Intervention deltas smaller than the instrument noise floor should not be overinterpreted.
 
