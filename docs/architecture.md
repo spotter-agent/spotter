@@ -296,8 +296,12 @@ derived candidate if the process stopped after the source outcome append. Active
 queue one durable reviewer job per signal lifecycle, bound to the exact immutable `ThreadState`
 snapshot named by the candidate. Queue recovery replays that snapshot and backfills an interrupted
 derived append; target turn/epoch changes discard pending jobs before execution. Reviewer model
-execution, candidate merging/budget policy, and the remaining signal families are not implemented
-yet, so the periodic reviewer remains the only trigger that actually calls a model.
+input is now an immutable bounded slice of that snapshot: candidate features/evidence references,
+goal and constraints, touched/unvalidated files, recent failures, validation state, and known
+coverage gaps. Per-field truncation is explicit in the durable queue event; the full transcript is
+not copied into the job. Reviewer model execution, candidate merging/budget policy, and the remaining
+signal families are not implemented yet, so the periodic reviewer remains the only trigger that
+actually calls a model.
 
 ## 4.3 Semantic review
 

@@ -5,6 +5,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
 from spotter.identity import ThreadId, TurnId
+from spotter.reviewer_input import ReviewerInput, build_reviewer_input
 from spotter.snapshot import StepRecord
 from spotter.thread_state import ThreadState, ThreadStateError, ThreadStateStore
 from spotter.trace import TraceEvent, TraceProvenance
@@ -22,6 +23,7 @@ class ReviewerJob:
     candidate_event_id: str
     created_at: float | None
     snapshot: ThreadState
+    reviewer_input: ReviewerInput
 
     def queued_event(self, trigger: TraceEvent) -> TraceEvent:
         return TraceEvent(
@@ -35,6 +37,7 @@ class ReviewerJob:
                 "target_connection_epoch": self.target_connection_epoch,
                 "state_version": self.state_version,
                 "candidate_event_id": self.candidate_event_id,
+                "input_coverage": self.reviewer_input.coverage(),
             },
             event_id=f"spotter:review-job:{self.job_id}:queued",
             occurred_at=self.created_at,
@@ -204,6 +207,7 @@ def _job(event: TraceEvent, snapshot: ThreadState, signal_id: str) -> ReviewerJo
         candidate_event_id,
         event.occurred_at,
         snapshot,
+        build_reviewer_input(event.payload, snapshot),
     )
 
 

@@ -118,3 +118,4 @@ def test_hydration_backfills_only_missing_queue_transition() -> None:
     assert complete == ()
     assert len(recovered.pending()) == 1
     assert recovered.pending()[0].snapshot.version == 3
+    assert recovered.pending()[0].reviewer_input == scheduler.pending()[0].reviewer_input
