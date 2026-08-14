@@ -125,6 +125,8 @@ def test_reconnect_reconciles_epoch_gap_and_stale_control(tmp_path: Path) -> Non
             assert (await recovery.steer(target, "verify", control_id="control-1"))[
                 "turnId"
             ] == "turn-1"
+            with pytest.raises(ValueError, match="unique across durable runtime history"):
+                await recovery.steer(target, "duplicate", control_id="control-1")
             await recovery.flush_control_telemetry()
             controls = [
                 record.event

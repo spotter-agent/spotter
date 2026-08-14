@@ -110,6 +110,7 @@ class RuntimeCostReport:
     control_failed: int
     control_unknown: int
     control_stale: int
+    control_ambiguous_ids: int
     control_adoption_eligible: int
     control_adoptions: int
     control_dispatch_ms: tuple[float, ...]
@@ -208,6 +209,7 @@ class _ControlLifecycle:
     failed: int
     unknown: int
     stale: int
+    ambiguous_ids: int
     adoption_eligible: int
     adoptions: int
     dispatch_ms: tuple[float, ...]
@@ -231,6 +233,7 @@ def measure_runtime_costs(
     reviewer_jobs_discarded = reviewer_jobs_stale = 0
     control_dispatches = control_dispatch_finishes = control_rpc_accepted = 0
     control_failed = control_unknown = control_stale = 0
+    control_ambiguous_ids = 0
     control_adoption_eligible = control_adoptions = 0
     reviewer_inference_finishes = 0
     token_sums = {field: 0 for field in _TOKEN_FIELDS}
@@ -378,6 +381,7 @@ def measure_runtime_costs(
         control_failed += controls.failed
         control_unknown += controls.unknown
         control_stale += controls.stale
+        control_ambiguous_ids += controls.ambiguous_ids
         control_adoption_eligible += controls.adoption_eligible
         control_adoptions += controls.adoptions
         control_dispatch_ms.extend(controls.dispatch_ms)
@@ -486,6 +490,7 @@ def measure_runtime_costs(
         control_failed=control_failed,
         control_unknown=control_unknown,
         control_stale=control_stale,
+        control_ambiguous_ids=control_ambiguous_ids,
         control_adoption_eligible=control_adoption_eligible,
         control_adoptions=control_adoptions,
         control_dispatch_ms=tuple(control_dispatch_ms),
@@ -664,9 +669,9 @@ def _control_lifecycle(records: tuple[StepRecord, ...]) -> _ControlLifecycle:
     job_signals: dict[str, str] = {}
     decisions: dict[str, StepRecord] = {}
     turn_boundaries: dict[tuple[str, str, int], StepRecord] = {}
-    dispatches: dict[str, StepRecord] = {}
-    accepted: dict[str, StepRecord] = {}
-    terminals: dict[str, StepRecord] = {}
+    dispatch_observations: dict[str, dict[str, StepRecord]] = {}
+    accepted_observations: dict[str, dict[str, StepRecord]] = {}
+    terminal_observations: dict[str, dict[str, StepRecord]] = {}
     prompts: dict[str, list[StepRecord]] = {}
 
     for record in records:
@@ -708,16 +713,34 @@ def _control_lifecycle(records: tuple[StepRecord, ...]) -> _ControlLifecycle:
         if control_id is None:
             continue
         if event.kind == "control_dispatch_started":
-            dispatches.setdefault(control_id, record)
+            _append_control_observation(dispatch_observations, control_id, record)
         elif event.kind == "control_rpc_accepted":
-            accepted.setdefault(control_id, record)
+            _append_control_observation(accepted_observations, control_id, record)
         elif event.kind == "control_terminal":
-            terminals.setdefault(control_id, record)
+            _append_control_observation(terminal_observations, control_id, record)
+
+    ambiguous_ids = {
+        control_id
+        for control_id, observations in dispatch_observations.items()
+        if len(observations) > 1
+    }
+    dispatches = {
+        control_id: next(iter(observations.values()))
+        for control_id, observations in dispatch_observations.items()
+    }
+    accepted = {
+        control_id: next(iter(observations.values()))
+        for control_id, observations in accepted_observations.items()
+    }
+    terminals = {
+        control_id: next(iter(observations.values()))
+        for control_id, observations in terminal_observations.items()
+    }
 
     dispatch_endpoints = {
         control_id: accepted.get(control_id) or terminals[control_id]
         for control_id in dispatches
-        if control_id in accepted or control_id in terminals
+        if control_id not in ambiguous_ids and (control_id in accepted or control_id in terminals)
     }
     dispatch_ms = tuple(
         duration
@@ -730,18 +753,23 @@ def _control_lifecycle(records: tuple[StepRecord, ...]) -> _ControlLifecycle:
     detection_to_adoption_ms: list[float] = []
     adoption_lead_ms: list[float] = []
     adoption_lag_ms: list[float] = []
-    for control in accepted.values():
+    for control_id, control in accepted.items():
         payload = control.event.payload
         client_id = _payload_id(payload, "client_user_message_id")
         if payload.get("control_kind") != "steer" or client_id is None:
             continue
         adoption_eligible += 1
+        dispatch = dispatches.get(control_id)
+        if dispatch is None or control_id in ambiguous_ids:
+            continue
         turn_key = _review_turn_key(control)
         prompt = next(
             (
                 candidate
                 for candidate in prompts.get(client_id, ())
-                if turn_key is not None and _review_turn_key(candidate) == turn_key
+                if turn_key is not None
+                and _review_turn_key(candidate) == turn_key
+                and _observed_after_dispatch(dispatch, candidate)
             ),
             None,
         )
@@ -779,6 +807,7 @@ def _control_lifecycle(records: tuple[StepRecord, ...]) -> _ControlLifecycle:
         failed=sum(outcome == "failed" for outcome in terminal_outcomes.values()),
         unknown=sum(outcome == "unknown" for outcome in terminal_outcomes.values()),
         stale=sum(outcome == "stale" for outcome in terminal_outcomes.values()),
+        ambiguous_ids=len(ambiguous_ids),
         adoption_eligible=adoption_eligible,
         adoptions=adoptions,
         dispatch_ms=dispatch_ms,
@@ -788,6 +817,20 @@ def _control_lifecycle(records: tuple[StepRecord, ...]) -> _ControlLifecycle:
         adoption_lag_ms=tuple(adoption_lag_ms),
         stale_delivery_ms=stale_delivery_ms,
     )
+
+
+def _append_control_observation(
+    target: dict[str, dict[str, StepRecord]], control_id: str, record: StepRecord
+) -> None:
+    observation_id = record.event.event_id or f"step:{record.step}"
+    target.setdefault(control_id, {}).setdefault(observation_id, record)
+
+
+def _observed_after_dispatch(dispatch: StepRecord, candidate: StepRecord) -> bool:
+    if candidate.step <= dispatch.step:
+        return False
+    monotonic_delta = _monotonic_delta_ms(dispatch, candidate)
+    return monotonic_delta is None or monotonic_delta >= 0
 
 
 def _covered_signal_count(
@@ -914,7 +957,7 @@ def render_runtime_costs(report: RuntimeCostReport) -> str:
         "  Runtime control: "
         f"dispatches={report.control_dispatches} accepted={report.control_rpc_accepted} "
         f"failed={report.control_failed} unknown={report.control_unknown} "
-        f"stale={report.control_stale}; "
+        f"stale={report.control_stale} ambiguous_ids={report.control_ambiguous_ids}; "
         f"dispatch={_sample(report.control_dispatch_ms, report.control_dispatch_finishes)}, "
         f"adoption={_sample(report.control_adoption_ms, report.control_adoptions)} "
         f"({report.control_adoptions}/"

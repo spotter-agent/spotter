@@ -685,6 +685,12 @@ def test_runtime_control_metrics_require_correlated_adoption_evidence() -> None:
         "target_connection_epoch": 1,
     }
     events = [
+        event(
+            "user_prompt",
+            {"client_user_message_id": "control-1"},
+            event_id="prompt-before-dispatch",
+            monotonic_ns=1_650_000_000,
+        ),
         event("tool_result", {}, event_id="evidence-1", monotonic_ns=1_000_000_000),
         event(
             "signal_candidate",
@@ -831,6 +837,7 @@ def test_runtime_control_metrics_require_correlated_adoption_evidence() -> None:
     assert report.control_failed == 1
     assert report.control_unknown == 1
     assert report.control_stale == 1
+    assert report.control_ambiguous_ids == 0
     assert report.control_adoption_eligible == 2
     assert report.control_adoptions == 1
     assert report.control_dispatch_ms == (100.0, 100.0, 100.0)
@@ -844,6 +851,69 @@ def test_runtime_control_metrics_require_correlated_adoption_evidence() -> None:
     assert "adoption=avg=200.00ms max=200.00ms (1/1) (1/2 accepted steers observed)" in rendered
     assert "detection_to_adoption=avg=900.00ms max=900.00ms (1/1)" in rendered
     assert "stale_delivery=avg=300.00ms max=300.00ms (1/1)" in rendered
+
+
+def test_reused_control_id_is_ambiguous_and_cannot_adopt() -> None:
+    identity = RuntimeIdentity(
+        ThreadId("thread-1"),
+        TurnId("turn-1"),
+        None,
+        IdentityProvenance("codex", "external-thread", "external-turn"),
+    )
+
+    def event(kind: str, event_id: str, monotonic_ns: int) -> TraceEvent:
+        return TraceEvent(
+            kind,
+            {
+                "control_id": "control-reused",
+                "control_kind": "steer",
+                "client_user_message_id": "control-reused",
+                "target_turn_id": "turn-1",
+                "target_connection_epoch": 1,
+            },
+            event_id=event_id,
+            identity=identity,
+            connection_epoch=1,
+            observed_monotonic_ns=monotonic_ns,
+            monotonic_clock_id="daemon-1",
+        )
+
+    events = [
+        event("control_dispatch_started", "dispatch-1", 1_000_000_000),
+        event("control_rpc_accepted", "accepted-1", 1_100_000_000),
+        TraceEvent(
+            "user_prompt",
+            {"client_user_message_id": "control-reused"},
+            event_id="prompt-1",
+            identity=identity,
+            connection_epoch=1,
+            observed_monotonic_ns=1_200_000_000,
+            monotonic_clock_id="daemon-1",
+        ),
+        event("control_dispatch_started", "dispatch-2", 1_300_000_000),
+        event("control_rpc_accepted", "accepted-2", 1_400_000_000),
+        TraceEvent(
+            "user_prompt",
+            {"client_user_message_id": "control-reused"},
+            event_id="prompt-2",
+            identity=identity,
+            connection_epoch=1,
+            observed_monotonic_ns=1_500_000_000,
+            monotonic_clock_id="daemon-1",
+        ),
+    ]
+
+    report = measure_runtime_costs(
+        [([_record(index, item) for index, item in enumerate(events)], 10)]
+    )
+
+    assert report.control_dispatches == 1
+    assert report.control_rpc_accepted == 1
+    assert report.control_ambiguous_ids == 1
+    assert report.control_adoption_eligible == 1
+    assert report.control_adoptions == 0
+    assert report.control_adoption_ms == ()
+    assert "ambiguous_ids=1" in render_runtime_costs(report)
 
 
 def test_raw_control_correlation_reaches_metrics_without_double_counting() -> None:
@@ -887,7 +957,20 @@ def test_raw_control_correlation_reaches_metrics_without_double_counting() -> No
         observed_monotonic_ns=1_000_000_000,
         monotonic_clock_id="daemon-1",
     )
-    records = [_record(0, accepted), _record(1, accepted), _record(2, prompt), _record(3, prompt)]
+    dispatch = replace(
+        accepted,
+        kind="control_dispatch_started",
+        event_id="dispatch-1",
+        observed_monotonic_ns=900_000_000,
+    )
+    records = [
+        _record(0, dispatch),
+        _record(1, dispatch),
+        _record(2, accepted),
+        _record(3, accepted),
+        _record(4, prompt),
+        _record(5, prompt),
+    ]
 
     report = measure_runtime_costs([(records, 10)])
 

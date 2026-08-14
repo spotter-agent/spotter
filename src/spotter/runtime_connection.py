@@ -135,8 +135,21 @@ class AppServerRecoveryLoop:
         self._control_telemetry_queue: asyncio.Queue[_QueuedControlEvent] | None = None
         self._control_telemetry_writer: asyncio.Task[None] | None = None
         self._control_telemetry_ids: set[str] = set()
+        self._control_request_ids: set[str] = set()
 
         records = self.ingestor.records()
+        self._control_telemetry_ids.update(
+            record.event.event_id
+            for record in records
+            if record.event.event_id is not None and record.event.kind.startswith("control_")
+        )
+        self._control_request_ids.update(
+            control_id
+            for record in records
+            if (control_id := record.event.payload.get("control_id")) is not None
+            and isinstance(control_id, str)
+            and control_id
+        )
         if records:
             self.thread_states.hydrate(records)
             for candidate, trigger in self.signals.hydrate(records):
@@ -291,7 +304,12 @@ class AppServerRecoveryLoop:
         review_job_id: str | None = None,
     ) -> Mapping[str, Any]:
         request_id = _control_request_id(control_id)
+        while control_id is None and request_id in self._control_request_ids:
+            request_id = _control_request_id(None)
         payload = _control_payload(target, request_id, control_kind, review_job_id)
+        if request_id in self._control_request_ids:
+            raise ValueError("control_id must be unique across durable runtime history")
+        self._control_request_ids.add(request_id)
         try:
             client, thread_id, turn_id = self._validate_target(target)
         except StaleControlTarget as error:
