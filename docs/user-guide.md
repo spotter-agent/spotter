@@ -269,7 +269,10 @@ spotter analyze
 ```
 
 Use `--session <id>` with `analyze`, `metrics`, or `observability` to limit output to one recorded
-session. Treat journals and diagnostics as potentially sensitive: they can contain repository
+session. `metrics` keeps Main, semantic-reviewer, deterministic-runtime, control-lifecycle, and
+experiment costs separate and prints explicit coverage for unavailable observations. `analyze`
+places a compact version of those costs beside each session's recorded interventions. Treat
+journals and diagnostics as potentially sensitive: they can contain repository
 paths, prompts, tool payloads, and other work context.
 
 ### Storage maintenance

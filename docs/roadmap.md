@@ -121,7 +121,7 @@ The journal remains durable history and recovery input; it is not the normal hot
 
 - normalize App Server events into identity-rich Trace IR and durable history ([#85](https://github.com/spotter-agent/spotter/issues/85), implemented);
 - maintain live state from that stream ([#31](https://github.com/spotter-agent/spotter/issues/31), implemented);
-- record runtime cost/timing/provenance ([#33](https://github.com/spotter-agent/spotter/issues/33)); durable records now project correlated Main action-family/failure counts, unique-resource and field-level token coverage, reviewer cost, gate latency, clock-domain-safe signal/queue/detection-to-decision lifecycle timing, decision lead/lag against the target turn boundary, terminal-job coverage, bounded daemon resources, storage, and separately-scoped paired objective outcomes with per-arm parsed-token and monotonic-duration coverage, while control delivery/adoption telemetry remains;
+- record runtime cost/timing/provenance ([#33](https://github.com/spotter-agent/spotter/issues/33), implemented); durable records now project correlated Main action-family/failure counts, unique-resource and field-level token coverage, reviewer cost, gate latency, clock-domain-safe signal/queue/detection-to-decision lifecycle timing, decision and observed-adoption lead/lag against the target turn boundary, control dispatch/acceptance/adoption/stale-delivery coverage, terminal-job coverage, bounded daemon resources, storage, and separately-scoped paired objective outcomes with per-arm parsed-token and monotonic-duration coverage;
 - measure the actual observability ceiling after migration ([#37](https://github.com/spotter-agent/spotter/issues/37)); the [measurement instrument and current zero-sample baseline](observability-baseline.md) are documented, but labeled App Server failures are still required;
 - remove `SessionStart`, `UserPromptSubmit`, and `PostToolUse` only after parity is demonstrated, leaving the minimal enforcement bridge ([#86](https://github.com/spotter-agent/spotter/issues/86)).
 
@@ -163,10 +163,10 @@ A signal is a hypothesis, not a verdict.
 
 ## Work
 
-- event-driven candidate signals ([#28](https://github.com/spotter-agent/spotter/issues/28)); all eight initial families now journal active/suppressed/resolved/stale candidates, and opted-in active candidates deduplicate into restart-safe bounded-input jobs that run asynchronously under existing spend caps; comparative precision, miss-rate, delay, and cost evidence against periodic review remains in #38/#24/#33;
+- event-driven candidate signals ([#28](https://github.com/spotter-agent/spotter/issues/28)); all eight initial families now journal active/suppressed/resolved/stale candidates, and opted-in active candidates deduplicate into restart-safe bounded-input jobs that run asynchronously under existing spend caps; comparative precision, miss-rate, and delay evidence against periodic review remains in #38/#24 using #33 cost telemetry;
 - precision and miss-rate measurement ([#38](https://github.com/spotter-agent/spotter/issues/38));
 - detection delay and wasted-action measurement ([#24](https://github.com/spotter-agent/spotter/issues/24));
-- keep reviewer cost visible alongside detection benefit ([#33](https://github.com/spotter-agent/spotter/issues/33)).
+- keep reviewer cost visible alongside detection benefit ([#33](https://github.com/spotter-agent/spotter/issues/33), implemented).
 
 ## Evidence gate
 
@@ -294,7 +294,7 @@ Some work supports several stages. Its Milestone indicates the stage by which it
 
 - [#21](https://github.com/spotter-agent/spotter/issues/21) — reproducible mechanically scored task set.
 - [#42](https://github.com/spotter-agent/spotter/issues/42) — replay/fork noise floor and environmental fidelity.
-- [#33](https://github.com/spotter-agent/spotter/issues/33) — Main cost, Spotter cost, timing, and outcome telemetry.
+- [#33](https://github.com/spotter-agent/spotter/issues/33) — Main cost, Spotter cost, timing, and outcome telemetry (implemented).
 
 Do not make causal intervention claims from fork deltas before #42 establishes an instrument noise bound, and do not report benefit without its cost.
 

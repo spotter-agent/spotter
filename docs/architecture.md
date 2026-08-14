@@ -385,6 +385,17 @@ boundaries, and cross-restart clock domains remain uncovered rather than falling
 App Server events also retain a monotonically increasing arrival sequence within each connection
 epoch, so equal source timestamps remain durably ordered across journal reloads.
 
+Runtime control uses a stable Spotter control ID across dispatch, RPC acceptance, and terminal
+failure records. Terminal outcomes distinguish an RPC rejection (`failed`), loss of transport after
+dispatch (`unknown`), and an epoch/turn freshness rejection (`stale`). For steering, the same ID is
+sent as App Server `clientUserMessageId`; the normalized `userMessage.clientId` becomes
+`client_user_message_id`. Only a matching ID on the same thread, turn, and connection epoch counts
+as an observed adoption. RPC acceptance alone does not. `spotter metrics` reports same-clock
+dispatch and adoption latency, evidence-to-adoption latency, adoption lead/lag against the target
+turn boundary, and decision-to-stale-delivery latency with coverage denominators. Stable control
+IDs prevent replayed or duplicate observations from being counted twice. Until live reviewer
+delivery is connected, these fields remain explicitly uncovered rather than implying a zero cost.
+
 Objective task outcomes remain outside ordinary user-session telemetry. For global reports,
 `spotter metrics` reads versioned counterfactual and frozen-task result journals, joins each
 mechanical classification to costs carried by the same stable run/pair/arm identity, and reports
