@@ -285,6 +285,17 @@ SignalEngine
 
 Normal observation should not require a Hook process.
 
+The first implemented `SignalEngine` family incrementally detects consecutive classified failures
+for the same explicit normalized resource. It requires stable event identity and explicit file,
+resource, test, or MCP tool scope; opaque shell commands remain unknown rather than being parsed or
+guessed. The second failure journals an `active` candidate, later failures in the same streak journal
+`cooled_down` suppression, and success or a turn/epoch/gap boundary records `resolved` or `stale`.
+Candidate identity, target turn/epoch, triggering state version, bounded evidence IDs, resource scope,
+and deterministic magnitude are durable. Recovery reconstructs cooldown state and backfills a
+derived candidate if the process stopped after the source outcome append. Candidate-driven reviewer
+scheduling and the remaining signal families are not implemented yet; the periodic reviewer remains
+the active review trigger.
+
 ## 4.3 Semantic review
 
 ```text

@@ -24,6 +24,7 @@ from spotter.app_server import (
 from spotter.identity import AttachmentId, RuntimeIdentity, ThreadId
 from spotter.ingestion import AppServerTraceIngestor, IngestionError
 from spotter.observability import state_coverage_status
+from spotter.signals import SignalEngine
 from spotter.snapshot import StepRecord
 from spotter.thread_state import ThreadState, ThreadStateError, ThreadStateStore
 from spotter.trace import TraceEvent, TraceProvenance
@@ -82,6 +83,7 @@ class AppServerRecoveryLoop:
         *,
         on_state: StateCallback | None = None,
         client_factory: ClientFactory | None = None,
+        signals: SignalEngine | None = None,
         initial_backoff: float = 0.1,
         maximum_backoff: float = 30,
     ) -> None:
@@ -94,6 +96,7 @@ class AppServerRecoveryLoop:
         self.ingestor = AppServerTraceIngestor(journals_dir)
         self.on_state = on_state
         self.client_factory = client_factory or (lambda value: CodexAppServerClient(value))
+        self.signals = signals or SignalEngine()
         self.initial_backoff = initial_backoff
         self.maximum_backoff = maximum_backoff
         self.state = RecoveryState.DISCONNECTED
@@ -112,6 +115,8 @@ class AppServerRecoveryLoop:
         records = self.ingestor.records()
         if records:
             self.thread_states.hydrate(records)
+            for candidate, trigger in self.signals.hydrate(records):
+                self._record(candidate.to_trace_event(trigger))
 
     async def start(self) -> None:
         if self._task is not None and not self._task.done():
@@ -369,7 +374,9 @@ class AppServerRecoveryLoop:
         record = self.ingestor.record(event)
         if record is None or event.identity is None or event.identity.thread_id is None:
             return record
-        self.thread_states.observe(record.event)
+        state = self.thread_states.observe(record.event)
+        for candidate in self.signals.update(record.event, state.version):
+            self._record(candidate.to_trace_event(record.event))
         return record
 
     def _runtime_identity(
