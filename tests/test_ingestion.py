@@ -100,6 +100,27 @@ def test_normalizes_lifecycle_and_authoritative_item_families() -> None:
     assert "content" not in reasoning.payload
 
 
+def test_normalizes_user_message_control_correlation() -> None:
+    event = CodexTraceNormalizer().normalize(
+        _item_event(
+            "item/completed",
+            {
+                "id": "message-1",
+                "type": "userMessage",
+                "clientId": "spotter-control-1",
+                "content": [{"type": "text", "text": "verify this"}],
+            },
+        )
+    )
+
+    assert event.kind == "user_prompt"
+    assert event.payload == {
+        "content": [{"type": "text", "text": "verify this"}],
+        "client_user_message_id": "spotter-control-1",
+        "lifecycle": "completed",
+    }
+
+
 def test_correlates_operation_by_item_id_not_event_adjacency(tmp_path: Path) -> None:
     ingestor = AppServerTraceIngestor(tmp_path)
     command = {

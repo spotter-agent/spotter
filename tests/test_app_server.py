@@ -108,6 +108,7 @@ def test_thread_queries_and_controls_hide_codex_method_names() -> None:
                         "threadId": "thread-1",
                         "expectedTurnId": "turn-1",
                         "input": [{"type": "text", "text": "verify this"}],
+                        "clientUserMessageId": "spotter-control-1",
                     }
                 await _reply(connection, request, result)
             await connection.wait_closed()
@@ -117,7 +118,14 @@ def test_thread_queries_and_controls_hide_codex_method_names() -> None:
             await client.connect()
             assert (await client.read_thread("thread-1"))["thread"] == {"id": "thread-1"}
             await client.resume_thread("thread-1")
-            assert (await client.steer("thread-1", "turn-1", "verify this"))["turnId"] == "turn-1"
+            assert (
+                await client.steer(
+                    "thread-1",
+                    "turn-1",
+                    "verify this",
+                    client_user_message_id="spotter-control-1",
+                )
+            )["turnId"] == "turn-1"
             await client.interrupt("thread-1", "turn-1")
             assert client.capabilities.observation == CapabilityStatus.AVAILABLE
             assert client.capabilities.steer == CapabilityStatus.AVAILABLE

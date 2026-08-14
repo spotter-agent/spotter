@@ -172,7 +172,7 @@ APP_SERVER_ITEM_FIELDS: dict[str, tuple[str, ...]] = {
     ),
     "reasoning": ("summary",),
     "plan": ("text",),
-    "userMessage": ("content",),
+    "userMessage": ("content", "clientId"),
     "webSearch": ("query", "action", "results"),
 }
 
@@ -206,6 +206,7 @@ _PRESERVED_FIELDS = {
     item_type: {f"params.item.{field}": field for field in fields}
     for item_type, fields in APP_SERVER_ITEM_FIELDS.items()
 }
+_PRESERVED_FIELDS["userMessage"]["params.item.clientId"] = "client_user_message_id"
 
 
 def source_audit_sample(

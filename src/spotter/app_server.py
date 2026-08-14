@@ -255,15 +255,24 @@ class CodexAppServerClient:
     async def resume_thread(self, thread_id: str) -> Mapping[str, Any]:
         return await self._object_request("thread/resume", {"threadId": thread_id})
 
-    async def steer(self, thread_id: str, turn_id: str, text: str) -> Mapping[str, Any]:
-        return await self._object_request(
-            "turn/steer",
-            {
-                "threadId": thread_id,
-                "expectedTurnId": turn_id,
-                "input": [{"type": "text", "text": text}],
-            },
-        )
+    async def steer(
+        self,
+        thread_id: str,
+        turn_id: str,
+        text: str,
+        *,
+        client_user_message_id: str | None = None,
+    ) -> Mapping[str, Any]:
+        params: JsonObject = {
+            "threadId": thread_id,
+            "expectedTurnId": turn_id,
+            "input": [{"type": "text", "text": text}],
+        }
+        if client_user_message_id is not None:
+            if not client_user_message_id.strip():
+                raise ValueError("client_user_message_id must be non-empty")
+            params["clientUserMessageId"] = client_user_message_id
+        return await self._object_request("turn/steer", params)
 
     async def interrupt(self, thread_id: str, turn_id: str) -> Mapping[str, Any]:
         return await self._object_request(

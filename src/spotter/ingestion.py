@@ -403,7 +403,10 @@ class AppServerTraceIngestor:
 def _normalize_item(item: Mapping[str, Any], completed: bool) -> tuple[str, dict[str, Any]]:
     item_type = _optional_string(item.get("type")) or "unknown"
     if item_type == "userMessage":
-        return "user_prompt", {"content": _user_content(item.get("content"))}
+        payload: dict[str, Any] = {"content": _user_content(item.get("content"))}
+        if (client_id := _optional_string(item.get("clientId"))) is not None:
+            payload["client_user_message_id"] = client_id
+        return "user_prompt", payload
     if item_type == "agentMessage":
         return "agent_message", _known(item, "text", "phase")
     if item_type == "plan":
