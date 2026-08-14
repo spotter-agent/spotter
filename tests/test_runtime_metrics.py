@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from spotter.app_server import AppServerEvent
+from spotter.hook import event_from_hook
 from spotter.identity import IdentityProvenance, RuntimeIdentity, ThreadId, TurnId
 from spotter.ingestion import CodexTraceNormalizer
 from spotter.runtime_metrics import (
@@ -365,6 +366,91 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
     assert "cpu=0.250s, peak_rss=1024 bytes; samples=1/1 gate calls" in rendered
     assert "arrival_order=5/5" in rendered
     assert "turn_wall(source)=avg=2000.00ms max=2000.00ms (1/1)" in rendered
+
+
+def test_runtime_costs_deduplicate_hook_and_app_server_semantic_actions() -> None:
+    hook_identity = RuntimeIdentity.legacy_hook("codex", "session-1")
+    hook_provenance = TraceProvenance("codex_hook", "PreToolUse")
+    hook = [
+        _record(
+            0,
+            replace(
+                event_from_hook(
+                    {
+                        "hook_event_name": "PreToolUse",
+                        "tool_name": "Bash",
+                        "tool_use_id": "call-shared",
+                        "tool_input": {"command": "python check.py", "files": ["src/a.py"]},
+                    }
+                ),
+                identity=hook_identity,
+                provenance=hook_provenance,
+            ),
+        ),
+        _record(
+            1,
+            replace(
+                event_from_hook(
+                    {
+                        "hook_event_name": "PostToolUse",
+                        "tool_name": "Bash",
+                        "tool_use_id": "call-shared",
+                        "tool_input": {"command": "python check.py"},
+                        "tool_response": {"exit_code": 1},
+                    }
+                ),
+                identity=hook_identity,
+                provenance=TraceProvenance("codex_hook", "PostToolUse"),
+            ),
+        ),
+    ]
+    normalizer = CodexTraceNormalizer()
+
+    def app_item(method: str, status: str) -> TraceEvent:
+        return replace(
+            normalizer.normalize(
+                AppServerEvent(
+                    method,
+                    {
+                        "method": method,
+                        "params": {
+                            "threadId": "external-thread",
+                            "turnId": "external-turn",
+                            "item": {
+                                "id": "call-shared",
+                                "type": "commandExecution",
+                                "command": "python check.py",
+                                "status": status,
+                                "durationMs": 10,
+                            },
+                        },
+                    },
+                )
+            ),
+            connection_epoch=1,
+        )
+
+    app_server = [
+        _record(0, app_item("item/started", "inProgress")),
+        _record(1, app_item("item/completed", "completed")),
+    ]
+
+    report = measure_runtime_costs([(hook, 10), (app_server, 10)])
+
+    assert report.cross_surface_action_overlaps == 1
+    assert report.surfaces["hook"].actions == 0
+    assert report.surfaces["hook"].action_observations == 2
+    assert report.surfaces["hook"].outcome_observations == 1
+    assert report.surfaces["app_server"].actions == 1
+    assert report.surfaces["app_server"].outcomes == 1
+    assert report.surfaces["app_server"].failed_outcomes == 0
+    assert report.surfaces["app_server"].actions_by_family == {"command": 1}
+    assert report.surfaces["app_server"].unique_resources == 2
+    assert report.tool_duration_ms == (10.0,)
+    rendered = render_runtime_costs(report)
+    assert "cross_surface_overlap=1" in rendered
+    assert "hook: actions=0 (from 2 observations)" in rendered
+    assert "app_server: actions=1 (from 2 observations)" in rendered
 
 
 def test_supervision_lifecycle_uses_correlated_monotonic_receipts() -> None:
