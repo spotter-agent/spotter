@@ -3,7 +3,13 @@ from pathlib import Path
 from spotter.identity import IdentityProvenance, RuntimeIdentity, ThreadId, TurnId
 from spotter.review_scheduler import ReviewerJob
 from spotter.runtime_connection import AppServerRecoveryLoop
-from spotter.signals import SignalCandidate, SignalEngine, SignalStatus, SignalType
+from spotter.signals import (
+    SignalCandidate,
+    SignalEngine,
+    SignalStatus,
+    SignalType,
+    deterministic_block_equivalence,
+)
 from spotter.snapshot import StepRecord
 from spotter.thread_state import ThreadStateStore
 from spotter.trace import TraceEvent, TraceProvenance
@@ -57,6 +63,21 @@ def _tool_call(
         occurred_at=event.occurred_at,
         identity=event.identity,
         provenance=event.provenance,
+        connection_epoch=event.connection_epoch,
+    )
+
+
+def _blocked_action(event_id: str, key: str, resources: list[str] | None = None) -> TraceEvent:
+    event = _event(event_id, "completed")
+    return TraceEvent(
+        "deterministic_gate_block",
+        {
+            "equivalence_key": key,
+            "involved_resources": resources or ["gate-rule:git_reset_hard"],
+        },
+        event_id=event.event_id,
+        occurred_at=event.occurred_at,
+        identity=event.identity,
         connection_epoch=event.connection_epoch,
     )
 
@@ -117,6 +138,53 @@ def test_repeated_equivalent_tool_calls_emit_once_then_cool_down() -> None:
     assert suppressed.status == SignalStatus.COOLED_DOWN
     assert suppressed.severity_hint == 4
     assert active.to_trace_event(third).payload["features"] == {"consecutive_equivalent_calls": 3}
+
+
+def test_recurrence_after_deterministic_block_emits_once_and_hydrates_cooldown() -> None:
+    first = _blocked_action("event-1", "git_reset_hard:gate-rule:git_reset_hard")
+    second = _blocked_action("event-2", "git_reset_hard:gate-rule:git_reset_hard")
+    third = _blocked_action("event-3", "git_reset_hard:gate-rule:git_reset_hard")
+    engine = SignalEngine()
+
+    assert engine.update(first, 1) == ()
+    active = engine.update(second, 2)[0]
+
+    assert active.signal_type == SignalType.RECURRENCE_AFTER_DETERMINISTIC_BLOCK
+    assert active.status == SignalStatus.ACTIVE
+    assert active.evidence_event_ids == ("event-1", "event-2")
+    assert active.to_trace_event(second).payload["features"] == {"equivalent_blocked_attempts": 2}
+
+    recovered = SignalEngine()
+    assert (
+        recovered.hydrate(
+            [
+                StepRecord(0, first, None),
+                StepRecord(1, second, None),
+                StepRecord(2, active.to_trace_event(second), None),
+            ]
+        )
+        == ()
+    )
+    cooled = recovered.update(third, 4)[0]
+    assert cooled.signal_id == active.signal_id
+    assert cooled.status == SignalStatus.COOLED_DOWN
+    assert cooled.severity_hint == 3
+
+
+def test_block_recurrence_does_not_guess_across_resources_or_unknown_shapes() -> None:
+    engine = SignalEngine()
+    first = _blocked_action("event-1", "forbidden_path:file:a", ["file:a"])
+    different = _blocked_action("event-2", "forbidden_path:file:b", ["file:b"])
+    unknown = _blocked_action("event-3", "", [])
+
+    assert engine.update(first, 1) == ()
+    assert engine.update(different, 2) == ()
+    assert engine.update(unknown, 3) == ()
+    assert deterministic_block_equivalence(
+        "git_reset_hard", {"command": "git reset --hard"}
+    ) == deterministic_block_equivalence(
+        "git_reset_hard", {"command": "bash -c 'git reset --hard'"}
+    )
 
 
 def test_file_mutation_rearms_repeated_tool_call_detection() -> None:
@@ -416,6 +484,56 @@ def test_runtime_journals_signal_candidates_and_recovers_cooldown(tmp_path: Path
     ]
     assert len(suppressed) == 1
     assert suppressed[0].payload["status"] == "cooled_down"
+
+
+def test_runtime_correlates_live_hook_blocks_to_exact_app_server_turn(tmp_path: Path) -> None:
+    runtime = AppServerRecoveryLoop("ws://unused", tmp_path / "sessions", ThreadStateStore())
+    identity = runtime._runtime_identity("external-thread", "external-turn", "attachment-1")
+    runtime._record(
+        TraceEvent(
+            "turn_started",
+            {},
+            event_id="turn-start",
+            identity=identity,
+            connection_epoch=1,
+        )
+    )
+    runtime._record(
+        TraceEvent(
+            "runtime_reconciled",
+            {"active_turn": True},
+            event_id="runtime-ready",
+            identity=identity,
+            connection_epoch=1,
+        )
+    )
+    proposal: dict[str, object] = {
+        "tool_use_id": "call-1",
+        "command": "git reset --hard",
+        "files": [],
+    }
+    base: dict[str, object] = {
+        "identity": {"thread_id": "external-thread", "turn_id": "external-turn"},
+        "proposal": proposal,
+    }
+    decision = {"allowed": False, "rule": "git_reset_hard"}
+
+    runtime.record_gate_decision(
+        {**base, "identity": {"thread_id": "external-thread", "turn_id": "other-turn"}},
+        decision,
+    )
+    runtime.record_gate_decision(base, decision)
+    runtime.record_gate_decision(
+        {**base, "proposal": {**proposal, "tool_use_id": "call-2"}}, decision
+    )
+
+    records = runtime.ingestor.records()
+    blocks = [record.event for record in records if record.event.kind == "deterministic_gate_block"]
+    candidates = [record.event for record in records if record.event.kind == "signal_candidate"]
+    assert len(blocks) == 2
+    assert len(candidates) == 1
+    assert candidates[0].payload["signal_type"] == "recurrence_after_deterministic_block"
+    assert candidates[0].payload["target_connection_epoch"] == 1
 
 
 def test_runtime_batches_same_source_candidates_before_submitting_review(tmp_path: Path) -> None:

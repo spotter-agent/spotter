@@ -109,6 +109,10 @@ class RuntimeRecovery(Protocol):
 
     async def close(self) -> None: ...
 
+    def record_gate_decision(
+        self, params: dict[str, object], decision: dict[str, object]
+    ) -> None: ...
+
 
 def runtime_socket(layout: RuntimeLayout | None = None) -> Path:
     return (layout or RuntimeLayout.discover()).control_socket
@@ -203,12 +207,28 @@ class DaemonClient:
     async def gate(
         self, event: TraceEvent, gates: GatesConfig, root: str | None
     ) -> tuple[GateDecision, float, dict[str, int | float | str] | None]:
+        provenance = event.identity.provenance if event.identity is not None else None
         response = await self.request(
             "gate",
             {
                 "proposal": {
                     "command": event.payload.get("command"),
                     "files": event.payload.get("files") or [],
+                    "tool": event.payload.get("tool"),
+                    "tool_use_id": event.payload.get("tool_use_id"),
+                    "resource": event.payload.get("resource"),
+                },
+                "identity": {
+                    "thread_id": (
+                        provenance.agent_thread_id or provenance.legacy_session_id
+                        if provenance is not None
+                        else None
+                    ),
+                    "turn_id": (
+                        provenance.agent_turn_id or event.payload.get("turn_id")
+                        if provenance is not None
+                        else event.payload.get("turn_id")
+                    ),
                 },
                 "gates": {
                     "forbidden_paths": list(gates.forbidden_paths),
@@ -406,6 +426,7 @@ class DaemonServer:
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         shutdown = False
+        gate_observation: tuple[dict[str, object], dict[str, object]] | None = None
         try:
             raw = await asyncio.wait_for(reader.readline(), CONTROL_TIMEOUT)
             request = json.loads(raw)
@@ -427,7 +448,17 @@ class DaemonServer:
             if self.health_detail is not None:
                 response["detail"] = self.health_detail
             if method == "gate":
-                response.update(_evaluate_gate(request.get("params")))
+                params = request.get("params")
+                evaluation = _evaluate_gate(params)
+                response.update(evaluation)
+                decision = evaluation.get("decision")
+                if (
+                    self.recovery is not None
+                    and isinstance(params, dict)
+                    and isinstance(decision, dict)
+                    and decision.get("allowed") is False
+                ):
+                    gate_observation = (params, decision)
                 if sample := self._maybe_sample_resources():
                     response["runtime_sample"] = sample
         except (
@@ -451,6 +482,11 @@ class DaemonServer:
             writer.close()
             with suppress(ConnectionError, OSError):
                 await writer.wait_closed()
+        if gate_observation is not None and self.recovery is not None:
+            try:
+                self.recovery.record_gate_decision(*gate_observation)
+            except Exception as error:  # noqa: BLE001 — optional observation cannot break gating
+                self.set_health(RuntimeHealth.DEGRADED, f"gate observation failed: {error}")
         if shutdown:
             self._shutdown.set()
 

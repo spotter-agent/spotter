@@ -229,6 +229,63 @@ def test_gate_roundtrip_preserves_policy_and_concurrency(socket_path: Path) -> N
     asyncio.run(scenario())
 
 
+def test_gate_request_carries_hook_identity_for_live_signal_correlation(
+    socket_path: Path,
+) -> None:
+    class Recovery:
+        def __init__(self) -> None:
+            self.observations: list[tuple[dict[str, object], dict[str, object]]] = []
+
+        async def start(self) -> None:
+            pass
+
+        async def close(self) -> None:
+            pass
+
+        def record_gate_decision(
+            self, params: dict[str, object], decision: dict[str, object]
+        ) -> None:
+            self.observations.append((params, decision))
+
+    async def scenario() -> None:
+        recovery = Recovery()
+        server = DaemonServer(socket_path)
+        server.recovery = recovery
+        await server.start()
+        event = TraceEvent(
+            "tool_proposal",
+            {
+                "command": "git reset --hard",
+                "files": [],
+                "tool": "Bash",
+                "tool_use_id": "call-1",
+                "turn_id": "turn-1",
+                "resource": "workspace",
+            },
+            identity=RuntimeIdentity.legacy_hook("codex", "thread-1"),
+        )
+        try:
+            await DaemonClient(socket_path).gate(event, GatesConfig(), "/repo")
+            async with asyncio.timeout(1):
+                while not recovery.observations:
+                    await asyncio.sleep(0)
+        finally:
+            await server.close()
+
+        params, decision = recovery.observations[0]
+        assert decision["rule"] == "git_reset_hard"
+        assert params["identity"] == {"thread_id": "thread-1", "turn_id": "turn-1"}
+        assert params["proposal"] == {
+            "command": "git reset --hard",
+            "files": [],
+            "tool": "Bash",
+            "tool_use_id": "call-1",
+            "resource": "workspace",
+        }
+
+    asyncio.run(scenario())
+
+
 def test_resource_sampling_is_bounded_and_runtime_addressable(socket_path: Path) -> None:
     server = DaemonServer(socket_path)
 

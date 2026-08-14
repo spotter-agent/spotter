@@ -25,7 +25,7 @@ from spotter.identity import AttachmentId, RuntimeIdentity, ThreadId
 from spotter.ingestion import AppServerTraceIngestor, IngestionError
 from spotter.observability import state_coverage_status
 from spotter.review_scheduler import ReviewerJob, ReviewScheduler
-from spotter.signals import SignalEngine
+from spotter.signals import SignalEngine, deterministic_block_equivalence
 from spotter.snapshot import StepRecord
 from spotter.thread_state import ThreadState, ThreadStateError, ThreadStateStore
 from spotter.trace import TraceEvent, TraceProvenance
@@ -154,6 +154,59 @@ class AppServerRecoveryLoop:
 
     def record_review_event(self, event: TraceEvent) -> StepRecord | None:
         return self._record(event)
+
+    def record_gate_decision(
+        self, params: Mapping[str, object], decision: Mapping[str, object]
+    ) -> None:
+        """Project an exact live Hook gate rejection into the signal timeline."""
+
+        identity = params.get("identity")
+        proposal = params.get("proposal")
+        if not isinstance(identity, Mapping) or not isinstance(proposal, Mapping):
+            return
+        external_thread_id = identity.get("thread_id")
+        external_turn_id = identity.get("turn_id")
+        tool_use_id = proposal.get("tool_use_id")
+        rule = decision.get("rule")
+        if not all(
+            isinstance(value, str) and value
+            for value in (external_thread_id, external_turn_id, tool_use_id, rule)
+        ):
+            return
+        equivalence = deterministic_block_equivalence(rule, proposal)
+        if equivalence is None:
+            return
+        key, resources = equivalence
+        states = [
+            state
+            for state in self.thread_states.snapshots()
+            if state.control_ready
+            and state.active_turn_id == state.identity.turn_id
+            and state.identity.provenance.agent_thread_id == external_thread_id
+            and state.identity.provenance.agent_turn_id == external_turn_id
+        ]
+        if len(states) != 1 or states[0].connection_epoch is None:
+            return
+        state = states[0]
+        source_id = hashlib.sha256(
+            f"{state.thread_id.value}:{external_turn_id}:{tool_use_id}".encode()
+        ).hexdigest()[:24]
+        self._record(
+            TraceEvent(
+                "deterministic_gate_block",
+                {
+                    "rule": rule,
+                    "tool_use_id": tool_use_id,
+                    "equivalence_key": key,
+                    "involved_resources": list(resources),
+                },
+                event_id=f"spotter:gate-block:{source_id}",
+                occurred_at=time.time(),
+                identity=state.identity,
+                provenance=TraceProvenance("spotterd", "gate_bridge"),
+                connection_epoch=state.connection_epoch,
+            )
+        )
 
     def review_job_is_fresh(self, job: ReviewerJob) -> bool:
         if self.review_scheduler.get(job.job_id) is None:

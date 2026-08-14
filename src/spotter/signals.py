@@ -45,10 +45,12 @@ _READ_RESOURCE_KEYS = {
 }
 _EVIDENCE_LIMIT = 20
 _FRONTIER_LIMIT = 128
+_BLOCK_LIMIT = 128
 
 
 class SignalType(StrEnum):
     FAILURE_STREAK = "failure_streak"
+    RECURRENCE_AFTER_DETERMINISTIC_BLOCK = "recurrence_after_deterministic_block"
     REPEATED_EQUIVALENT_TOOL_CALL = "repeated_equivalent_tool_call"
     REPEATED_READ_NO_FRONTIER = "repeated_read_no_frontier"
 
@@ -155,6 +157,7 @@ class SignalEngine:
         self._repeated_tools: dict[ThreadId, _SignalStreak] = {}
         self._read_streaks: dict[ThreadId, _SignalStreak] = {}
         self._read_frontiers: dict[ThreadId, _ReadFrontier] = {}
+        self._blocked_actions: dict[tuple[ThreadId, str], _SignalStreak] = {}
         self._seen_event_ids: dict[ThreadId, set[str]] = {}
 
     def update(self, event: TraceEvent, state_version: int) -> tuple[SignalCandidate, ...]:
@@ -172,6 +175,7 @@ class SignalEngine:
         repeated = self._repeated_tools.get(thread_id)
         reading = self._read_streaks.get(thread_id)
         frontier = self._read_frontiers.get(thread_id)
+        blocked_keys = [key for key in self._blocked_actions if key[0] == thread_id]
         if streak is not None and _target_changed(streak, event):
             candidates.extend(self._finish(streak, SignalStatus.STALE, event, state_version))
             self._failure_streaks.pop(thread_id, None)
@@ -186,6 +190,11 @@ class SignalEngine:
             reading = None
         if frontier is not None and _target_changed(frontier, event):
             self._read_frontiers.pop(thread_id, None)
+        for blocked_key in blocked_keys:
+            blocked = self._blocked_actions[blocked_key]
+            if _target_changed(blocked, event):
+                candidates.extend(self._finish(blocked, SignalStatus.STALE, event, state_version))
+                self._blocked_actions.pop(blocked_key)
         if event.kind in _TERMINAL_KINDS:
             if streak is not None:
                 candidates.extend(self._finish(streak, SignalStatus.STALE, event, state_version))
@@ -197,8 +206,14 @@ class SignalEngine:
                 candidates.extend(self._finish(reading, SignalStatus.STALE, event, state_version))
                 self._read_streaks.pop(thread_id, None)
             self._read_frontiers.pop(thread_id, None)
+            for blocked_key in tuple(self._blocked_actions):
+                if blocked_key[0] != thread_id:
+                    continue
+                blocked = self._blocked_actions.pop(blocked_key)
+                candidates.extend(self._finish(blocked, SignalStatus.STALE, event, state_version))
             return tuple(candidates)
 
+        candidates.extend(self._update_block_recurrence(event, state_version))
         candidates.extend(self._update_repeated_tool(event, state_version))
         candidates.extend(self._update_no_frontier_reads(event, state_version))
         if event.kind not in _OUTCOME_KINDS:
@@ -249,6 +264,64 @@ class SignalEngine:
             candidates.append(_candidate(streak, status, event.event_id, state_version))
             if not streak.emitted:
                 self._failure_streaks[thread_id] = replace(streak, emitted=True)
+        return tuple(candidates)
+
+    def _update_block_recurrence(
+        self, event: TraceEvent, state_version: int
+    ) -> tuple[SignalCandidate, ...]:
+        if event.kind != "deterministic_gate_block":
+            return ()
+        assert event.identity is not None and event.identity.thread_id is not None
+        assert event.event_id is not None
+        key = event.payload.get("equivalence_key")
+        raw_resources = event.payload.get("involved_resources")
+        if not isinstance(key, str) or not key or not isinstance(raw_resources, list):
+            return ()
+        resources = tuple(
+            sorted(
+                {resource for resource in raw_resources if isinstance(resource, str) and resource}
+            )
+        )
+        if not resources:
+            return ()
+
+        thread_id = event.identity.thread_id
+        blocked_key = (thread_id, key)
+        blocked = self._blocked_actions.get(blocked_key)
+        candidates: list[SignalCandidate] = []
+        if blocked is None:
+            thread_keys = [item for item in self._blocked_actions if item[0] == thread_id]
+            if len(thread_keys) >= _BLOCK_LIMIT:
+                evicted = self._blocked_actions.pop(thread_keys[0])
+                candidates.extend(self._finish(evicted, SignalStatus.STALE, event, state_version))
+            blocked = _SignalStreak(
+                _signal_id(event, SignalType.RECURRENCE_AFTER_DETERMINISTIC_BLOCK, key),
+                SignalType.RECURRENCE_AFTER_DETERMINISTIC_BLOCK,
+                "equivalent_blocked_attempts",
+                key,
+                event.identity,
+                event.connection_epoch,
+                event.occurred_at,
+                event.occurred_at,
+                1,
+                (event.event_id,),
+                resources,
+            )
+        else:
+            blocked = replace(
+                blocked,
+                last_seen_at=event.occurred_at,
+                count=blocked.count + 1,
+                evidence_event_ids=(blocked.evidence_event_ids + (event.event_id,))[
+                    -_EVIDENCE_LIMIT:
+                ],
+            )
+        self._blocked_actions[blocked_key] = blocked
+        if blocked.count >= 2:
+            status = SignalStatus.COOLED_DOWN if blocked.emitted else SignalStatus.ACTIVE
+            candidates.append(_candidate(blocked, status, event.event_id, state_version))
+            if not blocked.emitted:
+                self._blocked_actions[blocked_key] = replace(blocked, emitted=True)
         return tuple(candidates)
 
     def _update_repeated_tool(
@@ -384,6 +457,7 @@ class SignalEngine:
         self._repeated_tools.clear()
         self._read_streaks.clear()
         self._read_frontiers.clear()
+        self._blocked_actions.clear()
         self._seen_event_ids.clear()
         versions: dict[ThreadId, int] = {}
         pending: dict[str, tuple[SignalCandidate, TraceEvent]] = {}
@@ -485,6 +559,27 @@ def _resources(payload: Mapping[str, object]) -> tuple[str, ...]:
     if isinstance(server, str) and server and isinstance(tool, str) and tool:
         resources.add(f"tool:{server}/{tool}")
     return tuple(sorted(resources))
+
+
+def deterministic_block_equivalence(
+    rule: object, proposal: Mapping[str, object]
+) -> tuple[str, tuple[str, ...]] | None:
+    """Return a conservative semantic key for one deterministic gate rejection."""
+
+    if not isinstance(rule, str) or not rule:
+        return None
+    files = proposal.get("files")
+    resources = (
+        tuple(sorted({f"file:{path}" for path in files if isinstance(path, str) and path}))
+        if isinstance(files, list)
+        else ()
+    )
+    if not resources:
+        # The rule is the only proven semantic operation for command gates.
+        # In particular this keeps supported shell wrappers equivalent without
+        # guessing at arbitrary command text.
+        resources = (f"gate-rule:{rule}",)
+    return f"{rule}:{'|'.join(resources)}", resources
 
 
 def _tool_call_equivalence(event: TraceEvent) -> tuple[str | None, tuple[str, ...]]:
