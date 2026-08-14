@@ -1,19 +1,35 @@
 <div align="center">
 
-# Spotter
+<p>
+  <strong>English</strong> ·
+  <a href="README.ko.md">한국어</a> ·
+  <a href="README.zh-CN.md">简体中文</a>
+</p>
+
+<h1>Spotter</h1>
 
 <picture>
   <img alt="Spotter" src="docs/assets/main-ts.png" width="250" />
 </picture>
 
-### Catch bad coding-agent trajectories before they become expensive.
+<h3>Catch bad coding-agent trajectories before they become expensive.</h3>
 
-Spotter is a local runtime supervisor for coding agents. It watches how work unfolds—not only the
-final diff—so loops, scope drift, weak assumptions, and missing validation can be noticed while
-they are still cheap to correct.
+<p>
+  Spotter is a local runtime supervisor for coding agents.<br />
+  It watches how work unfolds—not only the final diff—so costly deviations can be caught early.
+</p>
 
-[Install](#install) · [Quick start](#connect-spotter-to-codex) ·
-[Current status](docs/status.md) · [Documentation](docs/README.md)
+<p>
+  <code>local-first</code> · <code>bounded gates</code> · <code>trajectory-aware</code>
+</p>
+
+<p>
+  <a href="#install"><strong>Install</strong></a>&nbsp;&nbsp;·&nbsp;&nbsp;
+  <a href="#connect-spotter-to-codex"><strong>Quick start</strong></a>&nbsp;&nbsp;·&nbsp;&nbsp;
+  <a href="docs/user-guide.md"><strong>Detailed guide</strong></a>&nbsp;&nbsp;·&nbsp;&nbsp;
+  <a href="docs/status.md">Current status</a>&nbsp;&nbsp;·&nbsp;&nbsp;
+  <a href="docs/README.md">Documentation</a>
+</p>
 
 </div>
 
@@ -24,6 +40,23 @@ they are still cheap to correct.
 Coding agents rarely fail in one obvious step. A weak assumption can shape the next search, edit,
 and test; repeated local decisions then turn a recoverable mistake into wasted time, tokens, and
 repository churn.
+
+<table>
+  <tr>
+    <td width="33%" valign="top">
+      <strong>🔭 Trajectory-aware</strong><br />
+      <sub>Observe decisions, evidence, edits, and validation—not only the final diff.</sub>
+    </td>
+    <td width="33%" valign="top">
+      <strong>⚡ Bounded safety</strong><br />
+      <sub>Keep deterministic checks local and fast before risky tool use.</sub>
+    </td>
+    <td width="33%" valign="top">
+      <strong>🩺 Visible degradation</strong><br />
+      <sub>Make unavailable observation or control diagnosable without blocking Codex.</sub>
+    </td>
+  </tr>
+</table>
 
 Spotter maintains an independent view of the running trajectory and helps answer:
 
@@ -169,6 +202,9 @@ that needs more than the common path above.
 
 ## Operational guarantees
 
+<details>
+<summary><strong>Show the safety and ownership guarantees</strong></summary>
+
 - `brew install` and `brew upgrade` do not silently modify Codex configuration.
 - `spotter setup codex` and `spotter teardown codex` change only exact owned integration state.
 - Generated Hooks use stable executable paths and fail open when Spotter is unavailable.
@@ -180,12 +216,15 @@ These contracts are covered by fast fixtures and a real macOS Homebrew install �
 uninstall → reinstall lifecycle smoke. See
 [Homebrew lifecycle smoke](docs/homebrew-lifecycle-smoke.md) for the evidence and reproduction path.
 
+</details>
+
 ## Documentation
 
 | If you want to… | Read |
 | --- | --- |
 | See what works today and what is still experimental | [Status](docs/status.md) |
-| Install, configure, upgrade, recover, or uninstall | [Lifecycle](docs/lifecycle.md) |
+| Install, configure, operate, troubleshoot, or uninstall | [Detailed user guide](docs/user-guide.md) |
+| Understand the complete package and integration contract | [Lifecycle](docs/lifecycle.md) |
 | Understand the product idea and intervention model | [Concept](docs/concept.md) |
 | Understand runtime boundaries and durable state | [Architecture](docs/architecture.md) |
 | Follow upcoming work and evidence gates | [Roadmap](docs/roadmap.md) |
@@ -193,11 +232,10 @@ uninstall → reinstall lifecycle smoke. See
 | Build or contribute to Spotter | [Contributing](CONTRIBUTING.md) |
 | Browse every project document | [Documentation index](docs/README.md) |
 
-## Maintainers
+---
 
-Maintained by [@bogyie / Bogyoeng Kim](https://github.com/Bogyie) and
-[@zerone / Youngjin Jung](https://github.com/YoungJinJung).
-
-## License
-
-[MIT](LICENSE)
+<p align="center">
+  Maintained by <a href="https://github.com/Bogyie">@bogyie / Bogyoeng Kim</a> and
+  <a href="https://github.com/YoungJinJung">@zerone / Youngjin Jung</a>.<br />
+  Released under the <a href="LICENSE">MIT License</a>.
+</p>

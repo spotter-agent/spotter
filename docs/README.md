@@ -1,12 +1,25 @@
-# Spotter Documentation
+<div align="center">
 
-Start here if you are reading the repository for the first time.
+<h1>Spotter Documentation</h1>
+
+<p>Find the shortest path from product overview to operations, architecture, or research.</p>
+
+<p>
+  <a href="../README.md">← Product overview</a>&nbsp;&nbsp;·&nbsp;&nbsp;
+  <a href="user-guide.md"><strong>Detailed user guide</strong></a>&nbsp;&nbsp;·&nbsp;&nbsp;
+  <a href="status.md">Current status</a>
+</p>
+
+</div>
+
+---
 
 ## Which document should I read?
 
 | Question | Document | What you get |
 | --- | --- | --- |
 | What works today, what is blocked, what happens next? | **[Status](status.md)** | implementation dashboard + immediate blocker |
+| How do I install, configure, operate, troubleshoot, or remove Spotter? | [Detailed user guide](user-guide.md) ([한국어](user-guide.ko.md) · [简体中文](user-guide.zh-CN.md)) | advanced user operations + issue reporting |
 | What problem is Spotter trying to solve? | [Concept](concept.md) | mental model, principles, intervention semantics |
 | What processes/components/state should exist? | [Architecture](architecture.md) | component, state, IPC, and failure contracts |
 | What happens from install through uninstall/reinstall? | [Lifecycle](lifecycle.md) | command-by-command operational lifecycle |
@@ -96,6 +109,7 @@ To avoid maintaining duplicate specifications:
 - **Status** owns “where are we now?”
 - **Concept** owns “what problem and principles define Spotter?”
 - **Architecture** owns runtime components, process/data flow, state ownership, IPC, and failure contracts.
+- **Detailed user guide** owns user-facing installation, operation, troubleshooting, and issue reporting.
 - **Lifecycle** owns package/service/integration/session/update/removal behavior.
 - **Roadmap** owns named stages, dependencies, and evidence gates.
 - **Reference** owns prior papers/systems, what they demonstrate, implementation precedents, and what Spotter should or should not borrow.

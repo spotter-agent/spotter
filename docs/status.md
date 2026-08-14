@@ -1,9 +1,40 @@
-# Spotter Status
+<div align="center">
+
+<h1>Spotter Status</h1>
+
+<p><strong>What works today, what remains partial, and what is not live yet.</strong></p>
+
+<p>
+  <a href="../README.md">← README</a>&nbsp;&nbsp;·&nbsp;&nbsp;
+  <a href="#30-second-summary">30-second summary</a>&nbsp;&nbsp;·&nbsp;&nbsp;
+  <a href="#quick-capability-status">Capabilities</a>&nbsp;&nbsp;·&nbsp;&nbsp;
+  <a href="#evidence-status">Evidence</a>&nbsp;&nbsp;·&nbsp;&nbsp;
+  <a href="roadmap.md">Roadmap</a>
+</p>
+
+</div>
 
 > **Purpose:** the fastest way to answer three questions: **What works today? What blocks the project now? What comes next?**  
 > Runtime details: [Architecture](architecture.md) · Sequence and evidence gates: [Roadmap](roadmap.md)
 
 ---
+
+<table>
+  <tr>
+    <td width="33%" valign="top">
+      <strong>✅ Active today</strong><br />
+      <sub>Hook ingestion, deterministic gates, journals, snapshots, replay, and diagnostics.</sub>
+    </td>
+    <td width="33%" valign="top">
+      <strong>🟡 Partial or shadow</strong><br />
+      <sub>App Server observation, live state, event-driven detection, and semantic review.</sub>
+    </td>
+    <td width="33%" valign="top">
+      <strong>❌ Not live yet</strong><br />
+      <sub>Delivered <code>VERIFY</code>/<code>NUDGE</code> and live recovery interventions.</sub>
+    </td>
+  </tr>
+</table>
 
 ## 30-second summary
 
