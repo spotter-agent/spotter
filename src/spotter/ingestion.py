@@ -239,6 +239,7 @@ class AppServerTraceIngestor:
         self._operations: dict[tuple[str, str, str, str], tuple[str, str | None]] = {}
         self._terminal_turns: set[str] = set()
         self._last_at: dict[tuple[str, str, str], float] = {}
+        self._last_arrival_seq: dict[int, int] = {}
         self.last_connection_epoch = 0
         # ponytail: recovery is O(all App Server history); #89 should checkpoint per-thread
         # reconciliation state when retained histories become measurably expensive.
@@ -324,6 +325,15 @@ class AppServerTraceIngestor:
             if last_at is not None and event.occurred_at < last_at:
                 event = replace(event, payload={**event.payload, "out_of_order": True})
 
+        if event.connection_epoch is not None:
+            previous_seq = self._last_arrival_seq.get(event.connection_epoch, 0)
+            if event.arrival_seq is not None and event.arrival_seq <= previous_seq:
+                raise IngestionError(
+                    f"arrival sequence {event.arrival_seq} did not advance "
+                    f"connection epoch {event.connection_epoch}"
+                )
+            event = replace(event, arrival_seq=event.arrival_seq or previous_seq + 1)
+
         record = StepJournal(self.journals_dir / route).record(event)
         self._remember(record.event, route)
         return record
@@ -384,6 +394,10 @@ class AppServerTraceIngestor:
             )
         if event.connection_epoch is not None:
             self.last_connection_epoch = max(self.last_connection_epoch, event.connection_epoch)
+            if event.arrival_seq is not None:
+                self._last_arrival_seq[event.connection_epoch] = max(
+                    self._last_arrival_seq.get(event.connection_epoch, 0), event.arrival_seq
+                )
 
 
 def _normalize_item(item: Mapping[str, Any], completed: bool) -> tuple[str, dict[str, Any]]:

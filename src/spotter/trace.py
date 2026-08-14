@@ -26,6 +26,7 @@ class TraceEvent:
     item_id: str | None = None
     provenance: TraceProvenance | None = None
     connection_epoch: int | None = None
+    arrival_seq: int | None = None
 
 
 # Judgment happens on semantic segments, enforcement on tool boundaries (plan Q8).

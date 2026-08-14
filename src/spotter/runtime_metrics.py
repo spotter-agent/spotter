@@ -48,6 +48,8 @@ class RuntimeCostReport:
     daemon_peak_rss_bytes: int | None
     source_timestamps: int
     receipt_timestamps: int
+    arrival_ordered_events: int
+    arrival_order_eligible_events: int
     journal_bytes: int
 
 
@@ -68,6 +70,7 @@ def measure_runtime_costs(
     daemon_evaluation_ms: list[float] = []
     daemon_samples: dict[tuple[str, int], tuple[float, int]] = {}
     source_timestamps = receipt_timestamps = 0
+    arrival_ordered_events = arrival_order_eligible_events = 0
 
     for records_iter, size in journals:
         records = tuple(records_iter)
@@ -89,6 +92,10 @@ def measure_runtime_costs(
             events += 1
             source_timestamps += event.occurred_at is not None
             receipt_timestamps += record.at is not None
+            arrival_order_eligible_events += event.connection_epoch is not None
+            arrival_ordered_events += (
+                event.connection_epoch is not None and event.arrival_seq is not None
+            )
             key = _action_key(record)
             if event.kind in _START_KINDS | _OUTCOME_KINDS:
                 action_observations += 1
@@ -195,6 +202,8 @@ def measure_runtime_costs(
         max((sample[2] for sample in latest_samples.values()), default=None),
         source_timestamps,
         receipt_timestamps,
+        arrival_ordered_events,
+        arrival_order_eligible_events,
         journal_bytes,
     )
 
@@ -250,6 +259,7 @@ def render_runtime_costs(report: RuntimeCostReport) -> str:
     lines.append(
         f"  Timing: receipt_wall={report.receipt_timestamps}/{report.events}, "
         f"source={report.source_timestamps}/{report.events}, "
+        f"arrival_order={report.arrival_ordered_events}/{report.arrival_order_eligible_events}, "
         f"turn_wall(source)={_sample(report.turn_wall_ms, report.completed_turns)}, "
         f"tool_duration={_sample(report.tool_duration_ms, tool_outcomes)}"
     )

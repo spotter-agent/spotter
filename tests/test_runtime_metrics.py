@@ -82,6 +82,7 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
         operation: str | None = None,
         *,
         occurred_at: float = 2.0,
+        arrival_seq: int,
     ) -> TraceEvent:
         return TraceEvent(
             kind,
@@ -91,21 +92,34 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
             operation_id=operation,
             provenance=TraceProvenance("codex_app_server", "synthetic"),
             connection_epoch=1,
+            arrival_seq=arrival_seq,
         )
 
     app_server = [
-        _record(0, app("turn_started", {}, occurred_at=1.0)),
-        _record(1, app("command_started", {}, "command-1")),
+        _record(0, app("turn_started", {}, occurred_at=1.0, arrival_seq=1)),
+        _record(1, app("command_started", {}, "command-1", arrival_seq=2)),
         _record(
             2,
             app(
                 "command_result",
                 {"status": "completed", "exitCode": 0, "durationMs": 10},
                 "command-1",
+                arrival_seq=3,
             ),
         ),
-        _record(3, app("token_usage", {"total": {"totalTokens": 14}})),
-        _record(4, app("turn_completed", {"status": "completed"}, occurred_at=3.0)),
+        _record(
+            3,
+            app("token_usage", {"total": {"totalTokens": 14}}, arrival_seq=4),
+        ),
+        _record(
+            4,
+            app(
+                "turn_completed",
+                {"status": "completed"},
+                occurred_at=3.0,
+                arrival_seq=5,
+            ),
+        ),
     ]
 
     report = measure_runtime_costs([(hook, 100), (app_server, 200)])
@@ -133,6 +147,7 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
     assert report.tool_duration_ms == (10.0,)
     assert report.source_timestamps == 5
     assert report.receipt_timestamps == report.events == 11
+    assert report.arrival_ordered_events == report.arrival_order_eligible_events == 5
     assert report.journal_bytes == 300
 
     rendered = render_runtime_costs(report)
@@ -143,6 +158,7 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
     )
     assert "jobs=1/1/1 decided/started/queued" in rendered
     assert "cpu=0.250s, peak_rss=1024 bytes; samples=1/1 gate calls" in rendered
+    assert "arrival_order=5/5" in rendered
     assert "turn_wall(source)=avg=2000.00ms max=2000.00ms (1/1)" in rendered
 
 
@@ -190,4 +206,6 @@ def test_turn_duration_never_crosses_connection_epochs() -> None:
 
     assert report.completed_turns == 1
     assert report.turn_wall_ms == ()
-    assert "turn_wall(source)=unknown (0/1)" in render_runtime_costs(report)
+    rendered = render_runtime_costs(report)
+    assert "arrival_order=0/2" in rendered
+    assert "turn_wall(source)=unknown (0/1)" in rendered

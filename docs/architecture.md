@@ -344,6 +344,8 @@ latency, timing coverage, and journal storage. Hook and App Server action surfac
 separately during migration rather than summed. Token totals remain `cumulative/unknown-scope`, and
 missing token/timing/latency data is printed as unknown with an explicit coverage denominator. Source
 wall time is never subtracted from receipt wall time to manufacture a latency across clock domains.
+App Server events also retain a monotonically increasing arrival sequence within each connection
+epoch, so equal source timestamps remain durably ordered across journal reloads.
 
 ## 4.5 Turn completion
 
@@ -455,6 +457,7 @@ TraceEvent
   turn_id
   item/tool_id
   timestamp
+  connection_epoch / arrival_seq
   kind
   operation
   files/resources
