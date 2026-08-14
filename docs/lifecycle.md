@@ -877,15 +877,18 @@ model/runtime metadata available in the rollout, external-effect warnings, obser
 captured environment fingerprint. The fingerprint covers tracked/untracked Git status, submodule
 status, Git/Python versions, and platform identity. A fork or experiment may additionally declare
 relative non-secret files or directories with `--environment-resource`, and non-secret environment
-variables with `--environment-variable`. Spotter records only resource paths/types/Git state and
-content/tree hashes, plus variable names, presence, and value hashes; raw variable values are never
-persisted. Source-to-fork loss or value drift is classified before either arm runs and rechecked
+variables with `--environment-variable`. Virtualenv or cache directories whose absence has distinct
+meaning can be declared with `--environment-venv-or-cache`; Spotter does not infer their purpose
+from path names. Spotter records only resource paths/purpose/types/Git state and content/tree hashes,
+plus variable names, presence, and value hashes; raw variable values are never persisted.
+Source-to-fork loss or value drift is classified before either arm runs and rechecked
 immediately before continuation. A boolean records whether a declared value contains the current
 worktree's absolute path, without persisting that value; a copied source path is classified as
 `ABSOLUTE_PATH_MISMATCH`. Directory trees containing symbolic links are rejected instead of being
 followed. Undeclared ignored resources, environment variables, and agent configuration remain
-explicitly uncaptured limitations. Fork manifest schema v5 persists worktree-path references;
-schema v1 through v4 manifests remain readable, with v1 providing no declared-resource coverage.
+explicitly uncaptured limitations. Fork manifest schema v6 persists resource purpose so a missing
+declared virtualenv/cache becomes `MISSING_VENV_OR_CACHE`; schema v1 through v5 manifests remain
+readable, with v1 providing no declared-resource coverage.
 
 With snapshotting enabled, the Codex `SessionStart` Hook pins a baseline snapshot for the reported
 Git working directory. Read-only proposals before the first mutation can therefore reuse that one

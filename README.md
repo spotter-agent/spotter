@@ -316,6 +316,8 @@ spotter observability [--session <id>]
 spotter fork --session <id> --step <n>
 # require an ignored/non-secret fixture file to survive into the fork:
 spotter fork --session <id> --step <n> --environment-resource .fixture-config
+# classify loss of an explicitly required virtualenv/cache separately:
+spotter fork --session <id> --step <n> --environment-venv-or-cache .venv
 spotter fork-coverage --session <id>
 spotter prune --repo /path/to/repo  # dry-run unless --apply is supplied
 spotter tasks validate path/to/task-set.toml
@@ -339,10 +341,11 @@ source event, snapshot, rollout-prefix digest, external-effect warnings, and cap
 fingerprint. Counterfactual pairs are fully prepared and must pass shared-prefix and captured-
 environment parity checks before either agent arm runs. The arms must use distinct worktrees, and
 each is rechecked against its immutable manifest immediately before model continuation. Explicitly
-declared relative non-secret files, directories, and non-secret environment variables are hashed
-and checked from source to fork and again immediately before continuation; missing ignored or
-untracked resources, changed variables, and copied values that still reference the source worktree's
-absolute path block both arms. Directory trees containing symbolic links are rejected. Undeclared
+declared relative non-secret files, directories, virtualenv/cache paths, and non-secret environment
+variables are hashed and checked from source to fork and again immediately before continuation;
+missing ignored or untracked resources, missing declared virtualenv/caches, changed variables, and
+copied values that still reference the source worktree's absolute path block both arms. Directory
+trees containing symbolic links are rejected. Undeclared
 ignored resources and environment variables are explicitly marked as not captured rather than
 assumed equal. Prefixes preserve the rollout model,
 runtime, and a secret-free subset of turn configuration; experiments can pin both the Codex model

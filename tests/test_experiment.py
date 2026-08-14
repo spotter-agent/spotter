@@ -5,6 +5,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -257,7 +258,9 @@ def test_arm_rechecks_environment_immediately_before_agent_run(
     monkeypatch.setattr(
         experiment,
         "fingerprint_environment",
-        lambda path, resources, variables: SimpleNamespace(fingerprint_sha256="drifted"),
+        lambda path, resources, variables, venv_or_cache: SimpleNamespace(
+            fingerprint_sha256="drifted"
+        ),
     )
     monkeypatch.setattr(
         experiment,
@@ -306,13 +309,22 @@ def test_unchanged_declared_inputs_recheck_reaches_agent_run(
     )
     expected = SimpleNamespace(
         fingerprint_sha256="expected",
-        declared_resources=(SimpleNamespace(path=".fixture-config"),),
+        declared_resources=(
+            SimpleNamespace(path=".fixture-config", purpose="resource"),
+            SimpleNamespace(path=".venv", purpose="venv_or_cache"),
+        ),
         declared_environment_variables=(SimpleNamespace(name="SPOTTER_FIXTURE_MODE"),),
     )
 
-    def fingerprint(path: Path, resources: tuple[str, ...], variables: tuple[str, ...]) -> object:
+    def fingerprint(
+        path: Path,
+        resources: tuple[str, ...],
+        variables: tuple[str, ...],
+        venv_or_cache: tuple[str, ...],
+    ) -> object:
         assert resources == (".fixture-config",)
         assert variables == ("SPOTTER_FIXTURE_MODE",)
+        assert venv_or_cache == (".venv",)
         return expected
 
     monkeypatch.setattr(
@@ -426,6 +438,30 @@ def test_source_environment_drift_blocks_both_arms_before_agent_run(
     )
 
 
+def test_experiment_passes_declared_venv_or_cache_to_each_fork(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[tuple[str, ...]] = []
+    counter: dict[str, int] = {}
+
+    def record_fork(*args: object, **kwargs: object) -> ForkPlan:
+        captured.append(cast(tuple[str, ...], kwargs["environment_venv_or_cache"]))
+        return _fake_fork(counter)("s1", 5)
+
+    monkeypatch.setattr(experiment, "fork", record_fork)
+
+    run_experiment(
+        "s1",
+        5,
+        "hint",
+        environment_venv_or_cache=(".venv", ".cache"),
+    )
+
+    assert captured == [(".venv", ".cache"), (".venv", ".cache")]
+    meta = json.loads(results_path("s1", 5).read_text().splitlines()[0])
+    assert meta["environment_venv_or_cache"] == [".venv", ".cache"]
+
+
 def test_explicit_source_config_mismatch_prevents_agent_runs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -514,6 +550,8 @@ def test_cli_accepts_neutral_mode_without_guidance(monkeypatch: pytest.MonkeyPat
                 ".fixture-config",
                 "--environment-variable",
                 "SPOTTER_FIXTURE_MODE",
+                "--environment-venv-or-cache",
+                ".venv",
             ]
         )
         == 0
@@ -523,6 +561,7 @@ def test_cli_accepts_neutral_mode_without_guidance(monkeypatch: pytest.MonkeyPat
     assert captured["reasoning_effort"] == "low"
     assert captured["environment_resources"] == (".fixture-config",)
     assert captured["environment_variables"] == ("SPOTTER_FIXTURE_MODE",)
+    assert captured["environment_venv_or_cache"] == (".venv",)
 
 
 def test_cli_rejects_neutral_mode_with_guidance() -> None:

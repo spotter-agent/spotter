@@ -212,6 +212,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--environment-venv-or-cache",
+        action="append",
+        default=[],
+        help=(
+            "fork/experiment: relative non-secret virtualenv or cache directory whose loss "
+            "must be classified separately (repeatable)"
+        ),
+    )
+    parser.add_argument(
         "--run",
         action="store_true",
         help="experiment: actually execute the 2*pairs agent runs (costs real tokens)",
@@ -378,6 +387,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 neutral=args.neutral,
                 environment_resources=tuple(args.environment_resource),
                 environment_variables=tuple(args.environment_variable),
+                environment_venv_or_cache=tuple(args.environment_venv_or_cache),
             )
         except (ReplayError, SnapshotError, OSError, subprocess.SubprocessError) as error:
             print(f"experiment failed: {error}", file=sys.stderr)
@@ -418,6 +428,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 guidance=args.guidance,
                 environment_resources=tuple(args.environment_resource),
                 environment_variables=tuple(args.environment_variable),
+                environment_venv_or_cache=tuple(args.environment_venv_or_cache),
             )
         except (ReplayError, SnapshotError) as error:
             print(f"fork failed: {error}", file=sys.stderr)

@@ -48,7 +48,7 @@ class ReplayError(RuntimeError):
     """Raised when a fork cannot be assembled from the recorded ingredients."""
 
 
-FORK_MANIFEST_SCHEMA_VERSION = 5
+FORK_MANIFEST_SCHEMA_VERSION = 6
 
 
 class ForkStatus(StrEnum):
@@ -61,6 +61,7 @@ class EnvironmentDrift(StrEnum):
     TRACKED_STATE_MISMATCH = "TRACKED_STATE_MISMATCH"
     MISSING_IGNORED_FILE = "MISSING_IGNORED_FILE"
     MISSING_UNTRACKED_FILE = "MISSING_UNTRACKED_FILE"
+    MISSING_VENV_OR_CACHE = "MISSING_VENV_OR_CACHE"
     ENVIRONMENT_VARIABLE_MISMATCH = "ENVIRONMENT_VARIABLE_MISMATCH"
     ABSOLUTE_PATH_MISMATCH = "ABSOLUTE_PATH_MISMATCH"
     SYMLINK_OR_SUBMODULE_MISMATCH = "SYMLINK_OR_SUBMODULE_MISMATCH"
@@ -132,6 +133,7 @@ class DeclaredResourceFingerprint:
     sha256: str | None
     kind: str = "file"
     worktree_path_reference: bool = False
+    purpose: str = "resource"
 
 
 @dataclass(frozen=True)
@@ -515,17 +517,24 @@ def _resource_digest(candidate: Path, value: str, worktree: Path) -> tuple[str, 
 
 
 def _fingerprint_resources(
-    worktree: Path, values: Sequence[str]
+    worktree: Path,
+    values: Sequence[str],
+    venv_or_cache_values: Sequence[str] = (),
 ) -> tuple[DeclaredResourceFingerprint, ...]:
     root = worktree.resolve()
     resources: list[DeclaredResourceFingerprint] = []
-    for value in _environment_resource_paths(values):
+    venv_or_cache_paths = set(_environment_resource_paths(venv_or_cache_values))
+    paths = set(_environment_resource_paths(values)) | venv_or_cache_paths
+    for value in sorted(paths):
+        purpose = "venv_or_cache" if value in venv_or_cache_paths else "resource"
         candidate = worktree / value
         resolved = candidate.resolve()
         if not resolved.is_relative_to(root) or candidate.is_symlink():
             raise ReplayError(f"environment resource escapes the worktree: {value!r}")
         if not candidate.exists():
-            resources.append(DeclaredResourceFingerprint(value, "missing", None, "missing"))
+            resources.append(
+                DeclaredResourceFingerprint(value, "missing", None, "missing", purpose=purpose)
+            )
             continue
         kind, sha256, worktree_path_reference = _resource_digest(candidate, value, worktree)
         resources.append(
@@ -535,6 +544,7 @@ def _fingerprint_resources(
                 sha256,
                 kind,
                 worktree_path_reference,
+                purpose,
             )
         )
     return tuple(resources)
@@ -572,11 +582,15 @@ def _declared_resource_drift(
     left: tuple[DeclaredResourceFingerprint, ...],
     right: tuple[DeclaredResourceFingerprint, ...],
 ) -> tuple[EnvironmentDrift, ...]:
-    if tuple(resource.path for resource in left) != tuple(resource.path for resource in right):
+    if tuple((resource.path, resource.purpose) for resource in left) != tuple(
+        (resource.path, resource.purpose) for resource in right
+    ):
         return (EnvironmentDrift.UNKNOWN_ENVIRONMENT_DRIFT,)
     drift: list[EnvironmentDrift] = []
     for source, restored in zip(left, right, strict=True):
-        if source.state == "ignored" and restored.state == "missing":
+        if source.purpose == "venv_or_cache" and restored.state == "missing":
+            category = EnvironmentDrift.MISSING_VENV_OR_CACHE
+        elif source.state == "ignored" and restored.state == "missing":
             category = EnvironmentDrift.MISSING_IGNORED_FILE
         elif source.state == "untracked" and restored.state == "missing":
             category = EnvironmentDrift.MISSING_UNTRACKED_FILE
@@ -621,11 +635,13 @@ def fingerprint_environment(
     worktree: Path,
     environment_resources: Sequence[str] = (),
     environment_variables: Sequence[str] = (),
+    environment_venv_or_cache: Sequence[str] = (),
 ) -> EnvironmentFingerprint:
     """Fingerprint Git/tool state and only explicitly declared extra inputs."""
 
     resource_paths = _environment_resource_paths(environment_resources)
     variable_names = _environment_variable_names(environment_variables)
+    venv_or_cache_paths = _environment_resource_paths(environment_venv_or_cache)
     snapshot_sha = _git_output(worktree, "rev-parse", "HEAD")
     tree_sha = _git_output(worktree, "rev-parse", "HEAD^{tree}")
     status = _git_output(worktree, "status", "--porcelain=v1", "--untracked-files=all")
@@ -637,7 +653,7 @@ def fingerprint_environment(
     )
     submodules = _git_output(worktree, "submodule", "status", "--recursive", allow_failure=True)
     git_version = _command_version(["git", "--version"])
-    declared_resources = _fingerprint_resources(worktree, resource_paths)
+    declared_resources = _fingerprint_resources(worktree, resource_paths, venv_or_cache_paths)
     declared_environment_variables = _fingerprint_environment_variables(variable_names, worktree)
     status_sha256 = _digest(status.encode())
     index_diff_sha256 = _digest(index_diff.encode())
@@ -780,6 +796,7 @@ def fork(
     guidance: str | None = None,
     environment_resources: Sequence[str] = (),
     environment_variables: Sequence[str] = (),
+    environment_venv_or_cache: Sequence[str] = (),
 ) -> ForkPlan:
     journal_file = journal_path({"session_id": session_id})
     records = StepJournal.load(journal_file)
@@ -803,7 +820,8 @@ def fork(
         raise ReplayError("journal has no cwd for this step; pass repo explicitly")
     resource_paths = _environment_resource_paths(environment_resources)
     variable_names = _environment_variable_names(environment_variables)
-    source_resources = _fingerprint_resources(repo_path, resource_paths)
+    venv_or_cache_paths = _environment_resource_paths(environment_venv_or_cache)
+    source_resources = _fingerprint_resources(repo_path, resource_paths, venv_or_cache_paths)
     source_variables = _fingerprint_environment_variables(variable_names, repo_path)
 
     source_rollout = find_rollout(session_id, codex_home)
@@ -854,7 +872,12 @@ def fork(
         forked_rollout = fork_rollout(source_rollout, call_id, new_id)
         restore_snapshot(repo_path, snapshot, worktree)
         restored = True
-        environment = fingerprint_environment(worktree, resource_paths, variable_names)
+        environment = fingerprint_environment(
+            worktree,
+            resource_paths,
+            variable_names,
+            venv_or_cache_paths,
+        )
         environment_drift = tuple(
             dict.fromkeys(
                 (
@@ -939,7 +962,7 @@ def load_fork_manifest(path: Path) -> ForkManifest:
     try:
         raw = json.loads(path.read_text())
         schema_version = raw.get("schema_version")
-        if schema_version not in {1, 2, 3, 4, FORK_MANIFEST_SCHEMA_VERSION}:
+        if schema_version not in {1, 2, 3, 4, 5, FORK_MANIFEST_SCHEMA_VERSION}:
             raise ReplayError(f"unsupported fork manifest schema in {path}")
         prefix_raw = raw["prefix"]
         prefix = PrefixManifest(

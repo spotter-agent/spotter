@@ -193,10 +193,16 @@ def _arm_environment_preflight(plan: ForkPlan) -> str:
         if expected is None:
             return "ENVIRONMENT_FINGERPRINT_MISSING"
         resources = tuple(resource.path for resource in getattr(expected, "declared_resources", ()))
+        venv_or_cache = tuple(
+            resource.path
+            for resource in getattr(expected, "declared_resources", ())
+            if getattr(resource, "purpose", "resource") == "venv_or_cache"
+        )
+        resources = tuple(path for path in resources if path not in venv_or_cache)
         variables = tuple(
             variable.name for variable in getattr(expected, "declared_environment_variables", ())
         )
-        current = fingerprint_environment(Path(plan.worktree), resources, variables)
+        current = fingerprint_environment(Path(plan.worktree), resources, variables, venv_or_cache)
         if current.fingerprint_sha256 == plan.environment_fingerprint:
             return "MATCHED"
         comparison = compare_environments(expected, current)
@@ -295,6 +301,7 @@ def run_experiment(
     neutral: bool = False,
     environment_resources: Sequence[str] = (),
     environment_variables: Sequence[str] = (),
+    environment_venv_or_cache: Sequence[str] = (),
 ) -> list[ArmResult]:
     """Build (and with run=True, execute) n counterfactual pairs."""
     if pairs < 1:
@@ -330,6 +337,7 @@ def run_experiment(
         "source_snapshot": source_snapshot,
         "environment_resources": list(environment_resources),
         "environment_variables": list(environment_variables),
+        "environment_venv_or_cache": list(environment_venv_or_cache),
         "started_at": datetime.now(UTC).isoformat(),
     }
     with out.open("a", encoding="utf-8") as sink:
@@ -343,7 +351,7 @@ def run_experiment(
         )
         if (pair + uuid.UUID(experiment_id).int) % 2:  # randomize pair 0, then alternate
             arms.reverse()
-        if environment_resources or environment_variables:
+        if environment_resources or environment_variables or environment_venv_or_cache:
             prepared = [
                 (
                     arm,
@@ -354,6 +362,7 @@ def run_experiment(
                         codex_home=codex_home,
                         environment_resources=environment_resources,
                         environment_variables=environment_variables,
+                        environment_venv_or_cache=environment_venv_or_cache,
                     ),
                 )
                 for arm, prompt in arms

@@ -902,7 +902,47 @@ def test_declared_ignored_directory_loss_is_caught_before_fork_runs(
     assert manifest.environment.declared_resources[0].kind == "missing"
 
 
-def test_fork_manifest_v1_through_v4_remain_readable(
+def test_declared_venv_or_cache_loss_has_specific_drift_category(
+    repo: Path, codex_home: Path
+) -> None:
+    _commit_baseline(repo)
+    (repo / ".gitignore").write_text(".venv/\n")
+    venv = repo / ".venv"
+    venv.mkdir()
+    (venv / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    sha = snapshot_worktree(repo)
+    _journal(
+        OLD_ID,
+        [
+            (
+                TraceEvent(
+                    "tool_proposal",
+                    {"tool_use_id": "call_A", "cwd": str(repo), "reversibility_class": "A"},
+                ),
+                sha,
+            )
+        ],
+    )
+
+    plan = fork(
+        OLD_ID,
+        0,
+        codex_home=codex_home,
+        environment_venv_or_cache=(".venv",),
+    )
+    manifest = load_fork_manifest(Path(plan.manifest or ""))
+
+    assert plan.source_environment_preflight == (
+        "SOURCE_ENVIRONMENT_MISMATCH:MISSING_VENV_OR_CACHE"
+    )
+    assert manifest.environment is not None
+    resource = manifest.environment.declared_resources[0]
+    assert resource.path == ".venv"
+    assert resource.purpose == "venv_or_cache"
+    assert resource.state == "missing"
+
+
+def test_fork_manifest_v1_through_v5_remain_readable(
     repo: Path, codex_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("SPOTTER_FIXTURE_MODE", "safe-value")
@@ -946,6 +986,17 @@ def test_fork_manifest_v1_through_v4_remain_readable(
     )
 
     raw = json.loads(manifest_path.read_text())
+
+    raw["schema_version"] = 5
+    for resource in raw["environment"]["declared_resources"]:
+        resource.pop("purpose")
+    manifest_path.write_text(json.dumps(raw))
+
+    manifest = load_fork_manifest(manifest_path)
+
+    assert manifest.schema_version == 5
+    assert manifest.environment is not None
+    assert manifest.environment.declared_resources[0].purpose == "resource"
 
     raw["schema_version"] = 4
     for resource in raw["environment"]["declared_resources"]:
