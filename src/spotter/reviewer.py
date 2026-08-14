@@ -9,17 +9,21 @@ digest fed to the reviewer contains observable actions only — commands, files,
 exit codes, gate flags — never Main's own summaries as facts (plan Q2).
 """
 
+import asyncio
 import json
 import os
+import signal
 import subprocess
 import tempfile
 import time
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
+from contextlib import suppress
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from spotter.audit import build_state, stale_summary
 from spotter.digest import DEFAULT_BUDGET, FENCE, FENCE_END, Digest, build
+from spotter.reviewer_input import ReviewerInput
 from spotter.snapshot import StepRecord
 
 DECISIONS = ("continue", "verify", "nudge")
@@ -110,24 +114,10 @@ def codex_runner(model: str, prompt: str) -> str:
         # earlier default gpt-5.3-spark simply did not exist; the real slug is
         # gpt-5.3-codex-spark. Delegating avoids pinning an id that is only
         # valid for some accounts.
-        model_args = [] if model in ("", "default") else ["-m", model]
+        global _LAST_USAGE
+        _LAST_USAGE = 0
         result = subprocess.run(
-            [
-                "codex",
-                "exec",
-                "-C",
-                scratch,
-                "--skip-git-repo-check",
-                "--sandbox",
-                "read-only",
-                *model_args,
-                "--output-schema",
-                str(schema),
-                "--output-last-message",
-                str(answer),
-                "--json",
-                prompt,
-            ],
+            _codex_command(model, scratch, schema, answer, prompt),
             capture_output=True,
             text=True,
             timeout=300,
@@ -137,9 +127,64 @@ def codex_runner(model: str, prompt: str) -> str:
         )
         if result.returncode != 0:
             raise RuntimeError(f"codex exec failed: {result.stderr.strip()[:300]}")
-        global _LAST_USAGE
         _LAST_USAGE = _usage_from(result.stdout)
         return answer.read_text(encoding="utf-8")
+
+
+async def async_codex_runner(model: str, prompt: str) -> tuple[str, int]:
+    """Cancellation-safe Codex subprocess for daemon-owned reviewer jobs."""
+
+    with tempfile.TemporaryDirectory(prefix="spotter-review-") as scratch:
+        schema = Path(scratch) / "schema.json"
+        schema.write_text(json.dumps(_SCHEMA))
+        answer = Path(scratch) / "answer.txt"
+        process = await asyncio.create_subprocess_exec(
+            *_codex_command(model, scratch, schema, answer, prompt),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env={**os.environ, "SPOTTER_DISABLE": "1"},
+            start_new_session=True,
+        )
+        try:
+            async with asyncio.timeout(300):
+                stdout, stderr = await process.communicate()
+        except (TimeoutError, asyncio.CancelledError):
+            await _stop_process_group(process)
+            raise
+        if process.returncode != 0:
+            raise RuntimeError(f"codex exec failed: {stderr.decode(errors='replace')[:300]}")
+        return answer.read_text(encoding="utf-8"), _usage_from(stdout.decode(errors="replace"))
+
+
+async def _stop_process_group(process: asyncio.subprocess.Process) -> None:
+    with suppress(ProcessLookupError):
+        os.killpg(process.pid, signal.SIGTERM)
+    try:
+        await asyncio.wait_for(process.wait(), 2)
+    except TimeoutError:
+        with suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+        await process.wait()
+
+
+def _codex_command(model: str, scratch: str, schema: Path, answer: Path, prompt: str) -> list[str]:
+    model_args = [] if model in ("", "default") else ["-m", model]
+    return [
+        "codex",
+        "exec",
+        "-C",
+        scratch,
+        "--skip-git-repo-check",
+        "--sandbox",
+        "read-only",
+        *model_args,
+        "--output-schema",
+        str(schema),
+        "--output-last-message",
+        str(answer),
+        "--json",
+        prompt,
+    ]
 
 
 _LAST_USAGE = 0
@@ -225,3 +270,42 @@ def review(
             inference_ms=decision.inference_ms,
         )
     return decision, digest
+
+
+AsyncReviewerRunner = Callable[[str, str], Awaitable[tuple[str, int]]]
+
+
+async def review_bounded_input(
+    reviewer_input: ReviewerInput,
+    model: str,
+    *,
+    runner: AsyncReviewerRunner = async_codex_runner,
+) -> tuple[ReviewerDecision, int]:
+    """Judge the immutable signal package without rereading an unbounded journal."""
+
+    serialized = json.dumps(asdict(reviewer_input), sort_keys=True, separators=(",", ":"))
+    serialized = serialized.replace(FENCE, "").replace(FENCE_END, "")
+    body = f"{FENCE}\n{serialized}\n{FENCE_END}"
+    prompt = _PROMPT.format(digest=body, fence=FENCE, fence_end=FENCE_END)
+    if len(prompt) > DEFAULT_BUDGET * 2:
+        raise RuntimeError(f"reviewer prompt exceeds budget: {len(prompt)} chars")
+    started = time.perf_counter_ns()
+    raw, tokens = await runner(model, prompt)
+    decision = parse_decision(raw)
+    decision = ReviewerDecision(
+        decision.decision,
+        decision.failure_class,
+        decision.reason,
+        decision.confidence,
+        decision.hypothesis,
+        (time.perf_counter_ns() - started) / 1_000_000,
+    )
+    if reviewer_input.goal is None and decision.failure_class == "spec_drift":
+        decision = ReviewerDecision(
+            "continue",
+            "none",
+            "spec_drift claimed with no goal recorded; discarded",
+            0.0,
+            inference_ms=decision.inference_ms,
+        )
+    return decision, tokens

@@ -64,6 +64,24 @@ class ReviewerJob:
             connection_epoch=trigger.connection_epoch,
         )
 
+    def stale_event(self, trigger: TraceEvent, reason: str) -> TraceEvent:
+        return TraceEvent(
+            "review_job_stale",
+            {
+                "review_job_id": self.job_id,
+                "signal_id": self.signal_id,
+                "reason": reason,
+                "target_turn_id": self.target_turn_id.value,
+                "target_connection_epoch": self.target_connection_epoch,
+                "state_version": self.state_version,
+            },
+            event_id=f"spotter:review-job:{self.job_id}:stale",
+            occurred_at=trigger.occurred_at,
+            identity=trigger.identity,
+            provenance=TraceProvenance("spotterd", "review_scheduler"),
+            connection_epoch=trigger.connection_epoch,
+        )
+
 
 class ReviewSchedulingError(ValueError):
     """A candidate cannot be bound to the immutable state it names."""
@@ -76,9 +94,13 @@ class ReviewScheduler:
         self._jobs: dict[str, ReviewerJob] = {}
         self._job_by_signal: dict[str, str] = {}
         self._seen_signal_ids: set[str] = set()
+        self._started_job_ids: set[str] = set()
 
     def pending(self) -> tuple[ReviewerJob, ...]:
         return tuple(self._jobs.values())
+
+    def get(self, job_id: str) -> ReviewerJob | None:
+        return self._jobs.get(job_id)
 
     def update(
         self,
@@ -87,6 +109,13 @@ class ReviewScheduler:
         state_after: ThreadState,
     ) -> tuple[TraceEvent, ...]:
         transitions: list[TraceEvent] = []
+        job_id = event.payload.get("review_job_id")
+        if isinstance(job_id, str):
+            if event.kind == "review_inference_started" and job_id in self._jobs:
+                self._started_job_ids.add(job_id)
+            elif event.kind in {"reviewer_decision", "reviewer_error", "reviewer_capped"}:
+                self._remove(job_id)
+                return ()
         for job in tuple(self._jobs.values()):
             if job.thread_id != state_after.thread_id:
                 continue
@@ -135,6 +164,7 @@ class ReviewScheduler:
         self._jobs.clear()
         self._job_by_signal.clear()
         self._seen_signal_ids.clear()
+        self._started_job_ids.clear()
         replay = ThreadStateStore()
         snapshots: dict[tuple[ThreadId, int], ThreadState] = {}
         missing: dict[str, TraceEvent] = {}
@@ -163,9 +193,15 @@ class ReviewScheduler:
         return tuple(missing.values())
 
     def _discard(self, job: ReviewerJob, trigger: TraceEvent, reason: str) -> TraceEvent:
-        self._jobs.pop(job.job_id, None)
-        self._job_by_signal.pop(job.signal_id, None)
-        return job.discarded_event(trigger, reason)
+        started = job.job_id in self._started_job_ids
+        self._remove(job.job_id)
+        return job.stale_event(trigger, reason) if started else job.discarded_event(trigger, reason)
+
+    def _remove(self, job_id: str) -> None:
+        job = self._jobs.pop(job_id, None)
+        self._started_job_ids.discard(job_id)
+        if job is not None:
+            self._job_by_signal.pop(job.signal_id, None)
 
 
 def _job(event: TraceEvent, snapshot: ThreadState, signal_id: str) -> ReviewerJob:

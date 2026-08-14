@@ -21,11 +21,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from spotter.build_identity import RuntimeComponent, current_build_identity, version_line
-from spotter.config import GatesConfig
+from spotter.config import GatesConfig, ReviewerConfig, SpotterConfig
 from spotter.gates import Gate, GateDecision
 from spotter.identity import ThreadId
 from spotter.paths import RuntimeLayout, RuntimeLayoutError, secure_dir
 from spotter.protocol import CONTROL_PROTOCOL_VERSION
+from spotter.review_executor import ReviewExecutor
 from spotter.snapshot import StepRecord
 from spotter.thread_state import ThreadState, ThreadStateStore
 from spotter.trace import TraceEvent
@@ -243,6 +244,7 @@ class DaemonServer:
         app_server_endpoint: str | None = None,
         journals_dir: Path | None = None,
         layout: RuntimeLayout | None = None,
+        reviewer_config: ReviewerConfig | None = None,
         package_watch_interval: float = _PACKAGE_WATCH_INTERVAL,
         package_missing_grace: float = _PACKAGE_MISSING_GRACE,
     ) -> None:
@@ -258,6 +260,8 @@ class DaemonServer:
         self.app_server_endpoint = app_server_endpoint
         self.journals_dir = journals_dir or self.layout.user_data_dir / "sessions"
         self.recovery: RuntimeRecovery | None = None
+        self.review_executor: ReviewExecutor | None = None
+        self.reviewer_config = reviewer_config or ReviewerConfig()
         self._runtime_id = uuid.uuid4().hex
         self._gate_requests = 0
         self._resource_sample_seq = 0
@@ -312,13 +316,20 @@ class DaemonServer:
             # Keep websockets and the App Server stack off the Hook import path.
             from spotter.runtime_connection import AppServerRecoveryLoop
 
-            self.recovery = AppServerRecoveryLoop(
+            recovery = AppServerRecoveryLoop(
                 self.app_server_endpoint,
                 self.journals_dir,
                 self.thread_states,
                 on_state=self._on_recovery_state,
             )
-            await self.recovery.start()
+            self.recovery = recovery
+            self.review_executor = ReviewExecutor(
+                self.reviewer_config,
+                recovery.record_review_event,
+                recovery.review_job_is_fresh,
+            )
+            recovery.set_review_job_callback(self.review_executor.submit)
+            await recovery.start()
         if self.layout.daemon_executable is not None:
             self._package_watch_task = asyncio.create_task(self._watch_package_boundary())
 
@@ -338,6 +349,9 @@ class DaemonServer:
             with suppress(asyncio.CancelledError):
                 await self._package_watch_task
             self._package_watch_task = None
+        if self.review_executor is not None:
+            await self.review_executor.close()
+            self.review_executor = None
         if self.recovery is not None:
             await self.recovery.close()
             self.recovery = None
@@ -845,9 +859,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.parse_args(argv)
     try:
         layout = RuntimeLayout.discover()
+        reviewer_config = _configured_reviewer(layout)
         asyncio.run(
             DaemonServer(
-                app_server_endpoint=_configured_app_server_endpoint(layout), layout=layout
+                app_server_endpoint=_configured_app_server_endpoint(layout),
+                reviewer_config=reviewer_config,
+                layout=layout,
             ).serve()
         )
     except DaemonAlreadyRunning as error:
@@ -866,6 +883,29 @@ def _configured_app_server_endpoint(layout: RuntimeLayout | None = None) -> str 
         return None
     endpoint = raw.get("app_server_endpoint") if isinstance(raw, dict) else None
     return endpoint if isinstance(endpoint, str) and endpoint.strip() else None
+
+
+def _configured_reviewer(layout: RuntimeLayout | None = None) -> ReviewerConfig:
+    runtime_layout = layout or RuntimeLayout.discover()
+    manifest_path = runtime_layout.integration_manifest
+    try:
+        raw = json.loads(manifest_path.read_bytes())
+    except (OSError, ValueError):
+        raw = {}
+    configured = raw.get("config_path") if isinstance(raw, dict) else None
+    config_path = Path(configured) if isinstance(configured, str) and configured else None
+    default_path = runtime_layout.user_config_dir / "spotter.toml"
+    config_path = config_path or (default_path if default_path.exists() else None)
+    if config_path is None:
+        return ReviewerConfig()
+    try:
+        return SpotterConfig.from_toml(config_path).reviewer
+    except (OSError, ValueError) as error:
+        print(
+            f"spotterd: unusable reviewer config {config_path} ({error}); signal reviews disabled",
+            file=sys.stderr,
+        )
+        return ReviewerConfig()
 
 
 if __name__ == "__main__":

@@ -24,7 +24,7 @@ from spotter.app_server import (
 from spotter.identity import AttachmentId, RuntimeIdentity, ThreadId
 from spotter.ingestion import AppServerTraceIngestor, IngestionError
 from spotter.observability import state_coverage_status
-from spotter.review_scheduler import ReviewScheduler
+from spotter.review_scheduler import ReviewerJob, ReviewScheduler
 from spotter.signals import SignalEngine
 from spotter.snapshot import StepRecord
 from spotter.thread_state import ThreadState, ThreadStateError, ThreadStateStore
@@ -71,6 +71,7 @@ class StaleControlTarget(AppServerError):
 
 StateCallback = Callable[[RecoveryState, str | None], None]
 ClientFactory = Callable[[str], CodexAppServerClient]
+ReviewJobCallback = Callable[[ReviewerJob], None]
 
 
 class AppServerRecoveryLoop:
@@ -86,6 +87,7 @@ class AppServerRecoveryLoop:
         client_factory: ClientFactory | None = None,
         signals: SignalEngine | None = None,
         review_scheduler: ReviewScheduler | None = None,
+        on_review_job: ReviewJobCallback | None = None,
         initial_backoff: float = 0.1,
         maximum_backoff: float = 30,
     ) -> None:
@@ -100,6 +102,7 @@ class AppServerRecoveryLoop:
         self.client_factory = client_factory or (lambda value: CodexAppServerClient(value))
         self.signals = signals or SignalEngine()
         self.review_scheduler = review_scheduler or ReviewScheduler()
+        self.on_review_job = on_review_job
         self.initial_backoff = initial_backoff
         self.maximum_backoff = maximum_backoff
         self.state = RecoveryState.DISCONNECTED
@@ -145,6 +148,24 @@ class AppServerRecoveryLoop:
 
     def retry_now(self) -> None:
         self._retry.set()
+
+    def set_review_job_callback(self, callback: ReviewJobCallback) -> None:
+        self.on_review_job = callback
+
+    def record_review_event(self, event: TraceEvent) -> StepRecord | None:
+        return self._record(event)
+
+    def review_job_is_fresh(self, job: ReviewerJob) -> bool:
+        if self.review_scheduler.get(job.job_id) is None:
+            return False
+        try:
+            state = self.thread_states.snapshot(job.thread_id)
+        except ThreadStateError:
+            return False
+        return (
+            state.active_turn_id == job.target_turn_id
+            and state.connection_epoch == job.target_connection_epoch
+        )
 
     async def steer(self, target: RuntimeControlTarget, text: str) -> Mapping[str, Any]:
         client, thread_id, turn_id = self._validate_target(target)
@@ -386,6 +407,14 @@ class AppServerRecoveryLoop:
         state = self.thread_states.observe(record.event)
         for transition in self.review_scheduler.update(record.event, state_before, state):
             self._record(transition)
+            job_id = transition.payload.get("review_job_id")
+            if (
+                transition.kind == "review_job_queued"
+                and isinstance(job_id, str)
+                and self.on_review_job is not None
+                and (job := self.review_scheduler.get(job_id)) is not None
+            ):
+                self.on_review_job(job)
         for candidate in self.signals.update(record.event, state.version):
             self._record(candidate.to_trace_event(record.event))
         return record

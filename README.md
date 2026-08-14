@@ -73,14 +73,14 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 | Crash-tolerant journal | ✅ | Locking, fsync, torn-tail recovery |
 | Git snapshot / detached restore | ✅ | User HEAD/index remain untouched |
 | Fork / continuation replay | ✅ | Same-prefix continuation machinery |
-| Shadow reviewer | ✅ | Produces `CONTINUE / VERIFY / NUDGE`; no live delivery |
+| Shadow reviewer | ✅ | Produces `CONTINUE / VERIFY / NUDGE`; periodic and opted-in signal reviews remain shadow-only |
 | Claim/evidence audit ledger | 🟡 | Works where observable outcomes exist |
 | Evaluation labels / metrics | 🟡 | Coverage-aware labels and durable action/token/timing, reviewer, gate-latency, and storage metrics; live resource, delivery, and outcome joins remain |
 | Counterfactual experiment harness | ✅ | Control/guidance same-prefix pairs |
 | Standalone `spotterd` runtime | 🟡 | Process, gate IPC, per-thread immutable state, and App Server recovery ownership implemented; setup endpoint selection remains |
 | Packaging / release | 🟡 | Tags publish verified artifacts; the dedicated Homebrew tap installs immutable releases and opens Formula-update PRs; macOS CI covers live G1→G2 upgrade/reconcile, teardown-less fail-open uninstall, retained data, and reinstall; broader #89/#90 lifecycle work remains |
 | App Server primary observation | 🟡 | Configured endpoints route through daemon-owned epoch/reconciliation into durable Trace IR and ThreadState; setup does not select an endpoint yet |
-| Event-driven signal engine | ❌ | Current reviewer trigger is periodic |
+| Event-driven signal engine | 🟡 | Failure-streak candidates queue bounded async reviews when explicitly enabled; remaining families/merge policy remain |
 | Live `VERIFY / NUDGE` | ❌ | Target: `turn/steer` |
 | `INTERRUPT` | ❌ | Target: `turn/interrupt` |
 | `RESTART` | ❌ | Requires verified-state + side-effect-aware recovery |
@@ -312,6 +312,9 @@ Configuration:
 cp spotter.example.toml spotter.toml
 spotter --config spotter.toml
 ```
+
+Signal-driven reviews spend model tokens and are off by default. Enable them deliberately with
+`reviewer.on_signals = true`; the existing `max_per_session` and `max_per_day` ceilings apply.
 
 Current plugin compatibility path:
 

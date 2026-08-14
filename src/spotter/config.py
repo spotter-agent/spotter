@@ -25,6 +25,8 @@ class MainAgentConfig:
 @dataclass(frozen=True)
 class ReviewerConfig:
     model: str = DEFAULT_REVIEWER_MODEL
+    # Signal-triggered reviews spend tokens too, so they require an explicit opt-in.
+    on_signals: bool = False
     # Auto-run the SHADOW reviewer every N tool proposals (0 = off). Off by
     # default: even shadow judgments spend the user's model tokens, and silent
     # spending is not "safe" just because nothing is injected.
@@ -67,6 +69,7 @@ class SpotterConfig:
             main_agent=MainAgentConfig(adapter=_string(main_agent, "adapter")),
             reviewer=ReviewerConfig(
                 model=_optional_string(reviewer, "model", DEFAULT_REVIEWER_MODEL),
+                on_signals=_bool(reviewer, "on_signals", False),
                 every_steps=_int(reviewer, "every_steps", 0),
                 max_per_session=_int(reviewer, "max_per_session", 20),
                 max_per_day=_int(reviewer, "max_per_day", 100),

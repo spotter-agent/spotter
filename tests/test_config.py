@@ -10,6 +10,7 @@ def test_loads_example_configuration() -> None:
 
     assert config.main_agent.adapter == "codex"
     assert config.reviewer.model == "default"
+    assert config.reviewer.on_signals is False
     assert config.observation_only is True
 
 
@@ -22,3 +23,15 @@ def test_uses_default_reviewer_model_when_reviewer_is_omitted() -> None:
 def test_rejects_invalid_reviewer_table() -> None:
     with pytest.raises(ConfigurationError, match="reviewer must be a table"):
         SpotterConfig.from_mapping({"main_agent": {"adapter": "codex"}, "reviewer": "invalid"})
+
+
+def test_signal_reviews_require_an_explicit_boolean_opt_in() -> None:
+    config = SpotterConfig.from_mapping(
+        {"main_agent": {"adapter": "codex"}, "reviewer": {"on_signals": True}}
+    )
+
+    assert config.reviewer.on_signals is True
+    with pytest.raises(ConfigurationError, match="on_signals must be a boolean"):
+        SpotterConfig.from_mapping(
+            {"main_agent": {"adapter": "codex"}, "reviewer": {"on_signals": "yes"}}
+        )

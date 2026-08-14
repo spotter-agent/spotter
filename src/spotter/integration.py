@@ -195,6 +195,7 @@ class IntegrationManifest:
     hooks_file: str
     hooks_file_created: bool
     owned_hooks: list[dict[str, Any]]
+    config_path: str | None = None
     legacy_hooks_removed: list[dict[str, Any]] = field(default_factory=list)
     legacy_plugins_removed: list[str] = field(default_factory=list)
     config_fingerprint_before: str | None = None
@@ -597,6 +598,7 @@ class IntegrationManager:
                     hooks_before is None if existing is None else existing.hooks_file_created
                 ),
                 owned_hooks=self._owned_hooks(),
+                config_path=str(self.config_path) if self.config_path is not None else None,
                 legacy_hooks_removed=previous_hooks + removed_hooks,
                 legacy_plugins_removed=list(
                     dict.fromkeys([*previous_plugins, *plan.legacy_plugins])

@@ -500,7 +500,7 @@ def check_runtime(*, deep: bool = False) -> list[Check]:
             Check(
                 "review queue",
                 INFO,
-                "signal-driven jobs are durable; reviewer execution is not connected",
+                "signal-driven jobs are durable; execution requires reviewer.on_signals opt-in",
             ),
         ]
     )

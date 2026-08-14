@@ -671,6 +671,27 @@ def test_invalid_spotter_config_fails_before_external_mutation(
     assert service.starts == 0
 
 
+def test_setup_records_custom_config_for_daemon_review_execution(
+    homes: tuple[Path, Path],
+) -> None:
+    spotter_home, codex_home = homes
+    spotter_home.mkdir()
+    config = spotter_home / "custom.toml"
+    config.write_text('[main_agent]\nadapter = "codex"\n[reviewer]\non_signals = true\n')
+    manager = IntegrationManager(
+        codex_home=codex_home,
+        codex=CodexInstall("/bin/codex", "codex 1.0", True, True),
+        service=FakeService(spotter_home / "service"),
+        spotter_executable="/bin/spotter",
+        config_path=config,
+        verifier=lambda _: True,
+    )
+
+    manifest = manager.setup()
+
+    assert manifest.config_path == str(config)
+
+
 @pytest.mark.parametrize("platform,suffix", [("darwin", ".plist"), ("linux", ".service")])
 def test_managed_service_definition_is_private_and_idempotent(
     homes: tuple[Path, Path], platform: str, suffix: str

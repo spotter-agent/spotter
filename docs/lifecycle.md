@@ -803,6 +803,12 @@ U7 still active?
 
 Every delivery decision is journaled.
 
+Current behavior stops before delivery: with `reviewer.on_signals = true`, `spotterd` executes the
+bounded immutable job input asynchronously, records `review_inference_started` and a shadow
+`reviewer_decision` (or visible cap/error), and marks a result stale when its turn/epoch ended while
+the model was running. The option is off by default because enabling it spends model tokens; the
+configured per-session and per-day ceilings are enforced before inference.
+
 ## 7.6 Turn completion
 
 On `turn/completed`:

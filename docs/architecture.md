@@ -299,9 +299,11 @@ derived append; target turn/epoch changes discard pending jobs before execution.
 input is now an immutable bounded slice of that snapshot: candidate features/evidence references,
 goal and constraints, touched/unvalidated files, recent failures, validation state, and known
 coverage gaps. Per-field truncation is explicit in the durable queue event; the full transcript is
-not copied into the job. Reviewer model execution, candidate merging/budget policy, and the remaining
-signal families are not implemented yet, so the periodic reviewer remains the only trigger that
-actually calls a model.
+not copied into the job. With explicit `reviewer.on_signals = true`, `spotterd` now runs these jobs
+asynchronously through a cancellation-safe Codex subprocess, serializes paid calls, enforces the
+existing session/day budget ledger before inference, and journals queue latency, inference timing,
+token spend, errors/caps, and stale decisions. The decision remains shadow-only and cannot steer the
+agent. Candidate merging/priority policy and the remaining signal families are not implemented yet.
 
 ## 4.3 Semantic review
 

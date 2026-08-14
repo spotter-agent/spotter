@@ -20,6 +20,7 @@ from spotter.daemon import (
     DaemonServer,
     DaemonTimeout,
     RuntimeHealth,
+    _configured_reviewer,
     _PackageBoundaryMonitor,
     runtime_socket,
 )
@@ -75,6 +76,21 @@ def test_package_boundary_monitor_requires_continuous_absence() -> None:
     assert not monitor.observe(available=True, now=12.0), "an upgrade relink resets the fence"
     assert not monitor.observe(available=False, now=20.0)
     assert monitor.observe(available=False, now=22.0)
+
+
+def test_daemon_loads_signal_review_opt_in_from_manifest_config(tmp_path: Path) -> None:
+    layout = RuntimeLayout.discover(spotter_root=tmp_path / "home")
+    config = tmp_path / "custom.toml"
+    config.write_text(
+        '[main_agent]\nadapter = "codex"\n[reviewer]\nmodel = "review-model"\non_signals = true\n'
+    )
+    layout.integration_manifest.parent.mkdir(parents=True)
+    layout.integration_manifest.write_text(json.dumps({"config_path": str(config)}))
+
+    reviewer = _configured_reviewer(layout)
+
+    assert reviewer.model == "review-model"
+    assert reviewer.on_signals is True
 
 
 def test_daemon_stops_cleanly_after_the_stable_package_is_removed(

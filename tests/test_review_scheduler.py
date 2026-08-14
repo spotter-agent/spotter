@@ -119,3 +119,45 @@ def test_hydration_backfills_only_missing_queue_transition() -> None:
     assert len(recovered.pending()) == 1
     assert recovered.pending()[0].snapshot.version == 3
     assert recovered.pending()[0].reviewer_input == scheduler.pending()[0].reviewer_input
+
+
+def test_hydration_recovers_running_job_as_stale_not_discarded() -> None:
+    source_events, candidate = _active_candidate()
+    scheduler = ReviewScheduler()
+    initial = [
+        StepRecord(index, event, None) for index, event in enumerate([*source_events, candidate])
+    ]
+    queued = scheduler.hydrate(initial)[0]
+    job_id = queued.payload["review_job_id"]
+    assert isinstance(job_id, str)
+    started = _event(
+        "review-started",
+        "review_inference_started",
+        {"review_job_id": job_id},
+    )
+    completed = _event("turn-done", "turn_completed", {"status": "completed"})
+    records = [
+        *initial,
+        StepRecord(4, queued, None),
+        StepRecord(5, started, None),
+        StepRecord(6, completed, None),
+    ]
+    recovered = ReviewScheduler()
+
+    missing = recovered.hydrate(records)
+
+    assert len(missing) == 1
+    assert missing[0].kind == "review_job_stale"
+    decision = _event(
+        "review-decision",
+        "reviewer_decision",
+        {"review_job_id": job_id, "stale": True},
+    )
+    complete = ReviewScheduler().hydrate(
+        [
+            *records,
+            StepRecord(7, missing[0], None),
+            StepRecord(8, decision, None),
+        ]
+    )
+    assert complete == ()
