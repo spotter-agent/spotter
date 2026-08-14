@@ -350,6 +350,13 @@ time is never subtracted from receipt wall time to manufacture a latency across 
 App Server events also retain a monotonically increasing arrival sequence within each connection
 epoch, so equal source timestamps remain durably ordered across journal reloads.
 
+Objective task outcomes remain outside ordinary user-session telemetry. For global reports,
+`spotter metrics` reads versioned counterfactual and frozen-task result journals, joins each
+mechanical classification to costs carried by the same stable run/pair/arm identity, and reports
+coverage when agent-reported tokens or elapsed timestamps are unavailable. Unsupported newer result
+schemas fail visibly instead of being guessed; a torn final JSONL row is treated as an interrupted
+append. This projection does not label unscored user sessions as success or failure.
+
 ## 4.5 Turn completion
 
 ```text

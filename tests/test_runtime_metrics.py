@@ -1,11 +1,108 @@
+import json
+from pathlib import Path
+
+import pytest
+
 from spotter.identity import IdentityProvenance, RuntimeIdentity, ThreadId, TurnId
-from spotter.runtime_metrics import measure_runtime_costs, render_runtime_costs
+from spotter.runtime_metrics import (
+    ObjectiveOutcomeError,
+    measure_objective_outcomes,
+    measure_runtime_costs,
+    render_objective_outcomes,
+    render_runtime_costs,
+)
 from spotter.snapshot import StepRecord
 from spotter.trace import TraceEvent, TraceProvenance
 
 
 def _record(step: int, event: TraceEvent, *, at: float | None = 1.0) -> StepRecord:
     return StepRecord(step, event, None, at)
+
+
+def _write_rows(path: Path, *rows: dict[str, object]) -> None:
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+
+def test_objective_outcomes_join_costs_by_durable_arm_identity(tmp_path: Path) -> None:
+    task = tmp_path / "task.jsonl"
+    _write_rows(
+        task,
+        {"meta": True, "result_schema_version": 1, "run_id": "run-1"},
+        {
+            "result_schema_version": 1,
+            "run_id": "run-1",
+            "experiment_pair_id": "run-1:task-1",
+            "arm": "control",
+            "classification": "PASS",
+            "agent_stderr": "tokens used\n100\n",
+            "started_at": "2026-01-01T00:00:00+00:00",
+            "ended_at": "2026-01-01T00:00:01+00:00",
+        },
+        {
+            "result_schema_version": 1,
+            "run_id": "run-1",
+            "experiment_pair_id": "run-1:task-1",
+            "arm": "guidance",
+            "classification": "TASK_FAIL",
+            "agent_stderr": "tokens used\n200\n",
+            "started_at": "2026-01-01T00:00:00+00:00",
+            "ended_at": "2026-01-01T00:00:02+00:00",
+        },
+    )
+    experiment = tmp_path / "experiment.jsonl"
+    _write_rows(
+        experiment,
+        {"meta": True, "result_schema_version": 2, "experiment_id": "experiment-1"},
+        {
+            "result_schema_version": 2,
+            "experiment_id": "experiment-1",
+            "pair": 0,
+            "arm": "neutral_a",
+            "classification": "PASS",
+        },
+        {
+            "result_schema_version": 2,
+            "experiment_id": "experiment-1",
+            "pair": 0,
+            "arm": "neutral_b",
+            "classification": "TASK_FAIL",
+        },
+    )
+
+    report = measure_objective_outcomes([task, experiment])
+
+    assert report.artifacts == 2
+    assert report.arms == report.judgeable_arms == 4
+    assert report.passing_arms == report.failing_arms == 2
+    assert report.judgeable_guidance_pairs == report.guidance_pairs == 1
+    assert report.control_better == 1
+    assert report.guidance_better == report.guidance_tied == 0
+    assert report.judgeable_neutral_pairs == report.neutral_pairs == 1
+    assert report.neutral_disagreements == 1
+    assert report.reported_tokens == 300
+    assert report.token_arms == 2
+    assert report.elapsed_ms == (1000.0, 2000.0)
+    rendered = render_objective_outcomes(report)
+    assert "agent_reported_tokens=300 (2/4 arms)" in rendered
+    assert "guidance_better=0, control_better=1, tied=0" in rendered
+    assert "disagreements=1" in rendered
+
+
+def test_objective_outcomes_reject_unknown_persisted_schema(tmp_path: Path) -> None:
+    path = tmp_path / "future.jsonl"
+    _write_rows(
+        path,
+        {
+            "result_schema_version": 99,
+            "experiment_id": "future",
+            "pair": 0,
+            "arm": "neutral_a",
+            "classification": "PASS",
+        },
+    )
+
+    with pytest.raises(ObjectiveOutcomeError, match="unsupported experiment result schema 99"):
+        measure_objective_outcomes([path])
 
 
 def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:

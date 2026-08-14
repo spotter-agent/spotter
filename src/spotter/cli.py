@@ -59,7 +59,13 @@ from spotter.replay import (
     plan_to_json,
 )
 from spotter.reviewer import last_usage, review
-from spotter.runtime_metrics import measure_runtime_costs, render_runtime_costs
+from spotter.runtime_metrics import (
+    ObjectiveOutcomeError,
+    measure_objective_outcomes,
+    measure_runtime_costs,
+    render_objective_outcomes,
+    render_runtime_costs,
+)
 from spotter.snapshot import (
     SnapshotError,
     StepJournal,
@@ -940,6 +946,17 @@ def _metrics_main(session: str | None) -> int:
         reviewer = merge(reviewer, session_reviewer)
         ceiling = merge(ceiling, session_ceiling)
 
+    objective_report = None
+    if session is None:
+        experiment_dir = spotter_home() / "experiments"
+        try:
+            objective_report = measure_objective_outcomes(
+                sorted(experiment_dir.rglob("*.jsonl")) if experiment_dir.exists() else ()
+            )
+        except ObjectiveOutcomeError as error:
+            print(f"metrics aborted: {error}", file=sys.stderr)
+            return 1
+
     print("P3 gate false positives (label each flag tp|fp):")
     if not gates:
         print("  no gate flags recorded")
@@ -955,6 +972,8 @@ def _metrics_main(session: str | None) -> int:
     print("P1 observability ceiling (label failed sessions visible|invisible):")
     print("  " + ceiling.rate_line("sessions", "visible"))
     print(render_runtime_costs(measure_runtime_costs(runtime_journals)))
+    if objective_report is not None:
+        print(render_objective_outcomes(objective_report))
     return 0
 
 

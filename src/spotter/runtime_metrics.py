@@ -1,9 +1,13 @@
-"""Coverage-aware cost and timing projection from durable trajectory records."""
+"""Coverage-aware cost, timing, and objective-outcome projections."""
 
+import json
 import math
+import re
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
+from datetime import datetime
+from pathlib import Path
 from statistics import mean
 
 from spotter.outcomes import outcome_failure
@@ -11,6 +15,17 @@ from spotter.snapshot import StepRecord
 
 _START_KINDS = {"tool_proposal", "command_started", "tool_started", "file_change_started"}
 _OUTCOME_KINDS = {"tool_result", "command_result", "file_edit"}
+_ARM_CLASSIFICATIONS = {
+    "PASS",
+    "TASK_FAIL",
+    "SETUP_FAIL",
+    "INFRA_FAIL",
+    "TIMEOUT_AGENT",
+    "TIMEOUT_CHECK",
+    "CHECK_ERROR",
+    "UNJUDGEABLE",
+}
+_TOKENS_USED_RE = re.compile(r"tokens used\s*\n\s*([0-9][0-9,]*)", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -74,6 +89,40 @@ class RuntimeCostReport:
     arrival_ordered_events: int
     arrival_order_eligible_events: int
     journal_bytes: int
+
+
+@dataclass(frozen=True)
+class ObjectiveOutcomeReport:
+    artifacts: int
+    arms: int
+    judgeable_arms: int
+    passing_arms: int
+    failing_arms: int
+    guidance_pairs: int
+    judgeable_guidance_pairs: int
+    guidance_better: int
+    control_better: int
+    guidance_tied: int
+    neutral_pairs: int
+    judgeable_neutral_pairs: int
+    neutral_disagreements: int
+    reported_tokens: int | None
+    token_arms: int
+    elapsed_ms: tuple[float, ...]
+
+
+class ObjectiveOutcomeError(ValueError):
+    """A durable experiment result cannot be projected safely."""
+
+
+@dataclass(frozen=True)
+class _ObjectiveArm:
+    key: str
+    pair_key: str
+    arm: str
+    classification: str
+    reported_tokens: int | None
+    elapsed_ms: float | None
 
 
 def measure_runtime_costs(
@@ -348,6 +397,191 @@ def render_runtime_costs(report: RuntimeCostReport) -> str:
         f"  Storage: journals={report.journal_bytes} bytes across {report.sessions} sessions"
     )
     return "\n".join(lines)
+
+
+def measure_objective_outcomes(paths: Iterable[Path]) -> ObjectiveOutcomeReport:
+    """Join durable mechanical outcomes with costs carried by the same arm row."""
+
+    artifacts = 0
+    arms: dict[str, _ObjectiveArm] = {}
+    for path in paths:
+        found = False
+        for row in _result_rows(path):
+            arm = _objective_arm(row, path)
+            if arm is None:
+                continue
+            found = True
+            previous = arms.get(arm.key)
+            if previous is not None and previous != arm:
+                raise ObjectiveOutcomeError(f"{path}: conflicting objective result {arm.key}")
+            arms[arm.key] = arm
+        artifacts += found
+
+    judgeable = {"PASS", "TASK_FAIL"}
+    values = tuple(arms.values())
+    groups: dict[str, dict[str, _ObjectiveArm]] = {}
+    for arm in values:
+        groups.setdefault(arm.pair_key, {})[arm.arm] = arm
+
+    guidance_pairs = judgeable_guidance_pairs = 0
+    guidance_better = control_better = guidance_tied = 0
+    neutral_pairs = judgeable_neutral_pairs = neutral_disagreements = 0
+    for pair in groups.values():
+        if set(pair) == {"control", "guidance"}:
+            guidance_pairs += 1
+            if all(row.classification in judgeable for row in pair.values()):
+                judgeable_guidance_pairs += 1
+                control_passed = pair["control"].classification == "PASS"
+                guidance_passed = pair["guidance"].classification == "PASS"
+                guidance_better += guidance_passed and not control_passed
+                control_better += control_passed and not guidance_passed
+                guidance_tied += guidance_passed == control_passed
+        elif set(pair) == {"neutral_a", "neutral_b"}:
+            neutral_pairs += 1
+            if all(row.classification in judgeable for row in pair.values()):
+                judgeable_neutral_pairs += 1
+                neutral_disagreements += (
+                    pair["neutral_a"].classification != pair["neutral_b"].classification
+                )
+
+    tokens = [arm.reported_tokens for arm in values if arm.reported_tokens is not None]
+    elapsed = tuple(arm.elapsed_ms for arm in values if arm.elapsed_ms is not None)
+    return ObjectiveOutcomeReport(
+        artifacts,
+        len(values),
+        sum(arm.classification in judgeable for arm in values),
+        sum(arm.classification == "PASS" for arm in values),
+        sum(arm.classification == "TASK_FAIL" for arm in values),
+        guidance_pairs,
+        judgeable_guidance_pairs,
+        guidance_better,
+        control_better,
+        guidance_tied,
+        neutral_pairs,
+        judgeable_neutral_pairs,
+        neutral_disagreements,
+        sum(tokens) if tokens else None,
+        len(tokens),
+        elapsed,
+    )
+
+
+def render_objective_outcomes(report: ObjectiveOutcomeReport) -> str:
+    lines = ["Objective experiment/scorer outcomes (separate from user sessions):"]
+    if not report.arms:
+        lines.append("  no versioned objective result rows found")
+        return "\n".join(lines)
+    lines.append(
+        f"  arms: pass={report.passing_arms}, task_fail={report.failing_arms}, "
+        f"judgeable={report.judgeable_arms}/{report.arms} across {report.artifacts} artifacts"
+    )
+    lines.append(
+        f"  guidance pairs: n={report.judgeable_guidance_pairs}/{report.guidance_pairs} "
+        f"judgeable; guidance_better={report.guidance_better}, "
+        f"control_better={report.control_better}, tied={report.guidance_tied}"
+    )
+    lines.append(
+        f"  neutral pairs: n={report.judgeable_neutral_pairs}/{report.neutral_pairs} "
+        f"judgeable; disagreements={report.neutral_disagreements}"
+    )
+    tokens = str(report.reported_tokens) if report.reported_tokens is not None else "unknown"
+    lines.append(
+        f"  per-arm cost join: agent_reported_tokens={tokens} "
+        f"({report.token_arms}/{report.arms} arms), "
+        f"elapsed={_sample(report.elapsed_ms, report.arms)}; "
+        "identity=run/pair/arm from durable result rows"
+    )
+    return "\n".join(lines)
+
+
+def _result_rows(path: Path) -> tuple[Mapping[str, object], ...]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as error:
+        raise ObjectiveOutcomeError(f"cannot read objective results {path}: {error}") from error
+    rows: list[Mapping[str, object]] = []
+    for index, line in enumerate(lines):
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as error:
+            if index == len(lines) - 1:
+                break
+            raise ObjectiveOutcomeError(f"{path}: corrupt row {index + 1}") from error
+        if not isinstance(row, Mapping):
+            raise ObjectiveOutcomeError(f"{path}: row {index + 1} is not an object")
+        rows.append(row)
+    return tuple(rows)
+
+
+def _objective_arm(row: Mapping[str, object], path: Path) -> _ObjectiveArm | None:
+    classification = row.get("classification")
+    if classification is None:
+        return None
+    if classification not in _ARM_CLASSIFICATIONS:
+        raise ObjectiveOutcomeError(f"{path}: unknown arm classification {classification!r}")
+    schema = row.get("result_schema_version")
+    if not isinstance(schema, int) or isinstance(schema, bool):
+        raise ObjectiveOutcomeError(f"{path}: objective result has no schema version")
+
+    arm = row.get("arm")
+    if not isinstance(arm, str) or arm not in {"control", "guidance", "neutral_a", "neutral_b"}:
+        raise ObjectiveOutcomeError(f"{path}: invalid objective arm {arm!r}")
+    run_id = row.get("run_id")
+    experiment_pair_id = row.get("experiment_pair_id")
+    experiment_id = row.get("experiment_id")
+    pair = row.get("pair")
+    if (
+        isinstance(run_id, str)
+        and run_id
+        and isinstance(experiment_pair_id, str)
+        and experiment_pair_id
+    ):
+        if schema != 1:
+            raise ObjectiveOutcomeError(f"{path}: unsupported task result schema {schema}")
+        pair_key = f"task:{run_id}:{experiment_pair_id}"
+        key = f"{pair_key}:{arm}"
+    elif (
+        isinstance(experiment_id, str)
+        and experiment_id
+        and isinstance(pair, int)
+        and not isinstance(pair, bool)
+        and pair >= 0
+    ):
+        if schema not in {1, 2}:
+            raise ObjectiveOutcomeError(f"{path}: unsupported experiment result schema {schema}")
+        pair_key = f"experiment:{experiment_id}:{pair}"
+        key = f"{pair_key}:{arm}"
+    else:
+        raise ObjectiveOutcomeError(f"{path}: objective result has no stable run/pair identity")
+    return _ObjectiveArm(
+        key,
+        pair_key,
+        arm,
+        classification,
+        _agent_reported_tokens(row),
+        _elapsed(row.get("started_at"), row.get("ended_at")),
+    )
+
+
+def _agent_reported_tokens(row: Mapping[str, object]) -> int | None:
+    explicit = row.get("agent_reported_tokens")
+    if isinstance(explicit, int) and not isinstance(explicit, bool) and explicit >= 0:
+        return explicit
+    stderr = row.get("agent_stderr")
+    if not isinstance(stderr, str):
+        return None
+    matches = _TOKENS_USED_RE.findall(stderr)
+    return int(matches[-1].replace(",", "")) if matches else None
+
+
+def _elapsed(started: object, ended: object) -> float | None:
+    if not isinstance(started, str) or not isinstance(ended, str):
+        return None
+    try:
+        duration = (datetime.fromisoformat(ended) - datetime.fromisoformat(started)).total_seconds()
+    except (TypeError, ValueError):
+        return None
+    return duration * 1000 if duration >= 0 else None
 
 
 def _surface(records: tuple[StepRecord, ...]) -> str:
