@@ -526,17 +526,10 @@ def _run_task_agent(
 def _prepare_replay_repo(workspace: Path) -> str | None:
     commands = (
         ("git", "init", "-q"),
+        ("git", "config", "--local", "user.name", "Spotter fixture"),
+        ("git", "config", "--local", "user.email", "fixture@spotter.invalid"),
         ("git", "add", "-A"),
-        (
-            "git",
-            "-c",
-            "user.name=Spotter fixture",
-            "-c",
-            "user.email=fixture@spotter.invalid",
-            "commit",
-            "-qm",
-            "fixture baseline",
-        ),
+        ("git", "commit", "-qm", "fixture baseline"),
     )
     for command in commands:
         try:

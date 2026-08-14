@@ -280,6 +280,15 @@ def test_task_batch_captures_replay_source_sessions(
     codex_home = tmp_path / "codex"
     monkeypatch.setenv("SPOTTER_HOME", str(home))
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "no-global-gitconfig"))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    for name in (
+        "GIT_AUTHOR_NAME",
+        "GIT_AUTHOR_EMAIL",
+        "GIT_COMMITTER_NAME",
+        "GIT_COMMITTER_EMAIL",
+    ):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(task_corpus, "_codex_version", lambda: "codex-test")
     sessions = iter(("source-control", "source-guidance"))
 
