@@ -951,6 +951,23 @@ def render_runtime_costs(report: RuntimeCostReport) -> str:
     return "\n".join(lines)
 
 
+def render_runtime_cost_summary(report: RuntimeCostReport) -> str:
+    """Render one coverage-aware line for per-session intervention review."""
+
+    reviewer_tokens = (
+        str(report.reviewer_tokens) if report.reviewer_tokens is not None else "unknown"
+    )
+    main_tokens = _covered_tokens(report.main_token_breakdown.total, report.sessions)
+    return (
+        f"costs: main_tokens={main_tokens}; "
+        f"semantic reviewer_calls={report.reviewer_calls} reviewer_tokens={reviewer_tokens}; "
+        f"deterministic gate_calls={report.gate_calls}; "
+        f"control accepted={report.control_rpc_accepted} "
+        f"adoption={report.control_adoptions}/{report.control_adoption_eligible}; "
+        f"turn_wall={_sample(report.turn_wall_ms, report.completed_turns)}"
+    )
+
+
 def measure_objective_outcomes(paths: Iterable[Path]) -> ObjectiveOutcomeReport:
     """Join durable mechanical outcomes with costs carried by the same arm row."""
 

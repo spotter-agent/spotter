@@ -64,6 +64,7 @@ from spotter.runtime_metrics import (
     measure_objective_outcomes,
     measure_runtime_costs,
     render_objective_outcomes,
+    render_runtime_cost_summary,
     render_runtime_costs,
 )
 from spotter.snapshot import (
@@ -500,6 +501,8 @@ def _analyze_main(session: str | None) -> int:
             f"snapshots={snapshots} flagged={len(flagged)} reviews={len(verdicts)}"
             f"{_span_of(records)}"
         )
+        report = measure_runtime_costs([(records, journal.stat().st_size)])
+        print(f"  {render_runtime_cost_summary(report)}")
         for record in verdicts:
             payload = record.event.payload
             print(

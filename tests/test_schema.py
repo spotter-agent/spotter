@@ -67,6 +67,37 @@ def test_analyze_reports_span_and_admits_when_it_cannot() -> None:
     assert _span_of(StepJournal.load(other)) == " span=unknown"
 
 
+def test_analyze_joins_coverage_aware_costs_with_review_results(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from spotter.cli import _analyze_main
+
+    journal = StepJournal(_journal())
+    journal.record(TraceEvent("token_usage", {"total": {"totalTokens": 12}}))
+    journal.record(
+        TraceEvent(
+            "reviewer_decision",
+            {
+                "decision": "warn",
+                "failure_class": "loop",
+                "confidence": 0.8,
+                "reason": "repeated action",
+                "spend": {"session_tokens": 3},
+            },
+        )
+    )
+
+    assert _analyze_main("s") == 0
+
+    output = capsys.readouterr().out
+    assert "reviews=1" in output
+    assert "main_tokens=12 (1/1 sessions)" in output
+    assert "semantic reviewer_calls=1 reviewer_tokens=3" in output
+    assert "deterministic gate_calls=0" in output
+    assert "control accepted=0 adoption=0/0" in output
+    assert "reviewer         warn/loop" in output
+
+
 def test_a_partially_timed_journal_says_how_many_are_missing() -> None:
     from spotter.cli import _span_of
 
