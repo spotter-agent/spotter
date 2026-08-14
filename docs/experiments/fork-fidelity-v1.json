@@ -11,11 +11,11 @@
     "pre_mutation_forkable": 0
   },
   "fresh_coverage": {
-    "sessions": 5,
-    "candidates": 27,
-    "forkable_exact": 17,
-    "pre_mutation_candidates": 11,
-    "pre_mutation_forkable": 9
+    "sessions": 11,
+    "candidates": 59,
+    "forkable_exact": 40,
+    "pre_mutation_candidates": 25,
+    "pre_mutation_forkable": 22
   },
   "strata": [
     {
@@ -57,6 +57,20 @@
       "infrastructure_failures": 0,
       "naive_pair_level_one_sided_95_percent_upper_bound": 0.6316,
       "inferential_use": "not valid outside one deliberately induced failure prefix"
+    },
+    {
+      "id": "pinned-low-effort-validation-v2-pass",
+      "tasks": 3,
+      "prefixes": 3,
+      "pairs": 3,
+      "arms": 6,
+      "passing_arms": 6,
+      "failing_arms": 0,
+      "mechanical_disagreements": 0,
+      "environment_mismatches": 0,
+      "infrastructure_failures": 0,
+      "naive_pair_level_one_sided_95_percent_upper_bound": 0.6316,
+      "inferential_use": "not representative outside three passing synthetic task prefixes"
     }
   ],
   "instrument_controls": {
@@ -71,7 +85,8 @@
     "no neutral disagreement has been observed",
     "legacy effort provenance is unavailable for the 12-pair stratum",
     "the only final-outcome-failure cohort is deliberately induced",
-    "fresh sample contains only five synthetic Python tasks",
+    "validation-v2 added three passing prefixes but no naturally occurring failure",
+    "fresh sample remains a small synthetic Python corpus with repeated task families",
     "undeclared ignored files and environment variables remain explicitly uncaptured"
   ],
   "downstream": {

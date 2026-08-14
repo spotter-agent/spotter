@@ -1,0 +1,136 @@
+{
+  "schema_version": 1,
+  "measured_at": "2026-08-14",
+  "source_batch": {
+    "run_id": "801912d3-9eb5-408d-a958-ba3be34ed62f",
+    "task_set": "spotter-validation-v2",
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "low",
+    "arms": 6,
+    "passing_arms": 6,
+    "replay_sources_captured": 6,
+    "exact_prompt_pairs": false,
+    "raw_sha256": "944009c55d1c0871040f97793cd5f0017e575f048542fdd561690c9f48c21f5c"
+  },
+  "source_coverage": {
+    "sessions": 6,
+    "candidates": 32,
+    "forkable_exact": 23,
+    "pre_mutation_candidates": 14,
+    "pre_mutation_forkable": 13,
+    "earliest_forkable_step": 2
+  },
+  "neutral_runs": [
+    {
+      "task_id": "fixture/profile-contract-001",
+      "experiment_id": "adc4ebd0-19c1-4c45-bd0d-e121d45b190a",
+      "source_session": "019fff1f-feab-70a0-8689-b22eb9d08088",
+      "branch_step": 2,
+      "source_snapshot": "da641d691766736d51ab0dd90accabf1847728db",
+      "prefix_id": "e9367519e21d75c2814f25fbd4f4c74d279cf687fe23685f0ce2b88b83ade351",
+      "environment_fingerprint": "0b3fc9856ebd63354cd58327724e0f395fdea28c7562f3bc7bb7d8d65b75e142",
+      "raw_result_sha256": "55a680f9d2cf8f130512cc8aa68d6820691ff8e71e23f661cc359f7471a6cff7",
+      "coverage": {
+        "candidates": 5,
+        "forkable_exact": 4,
+        "pre_mutation_candidates": 2,
+        "pre_mutation_forkable": 2
+      },
+      "continuations": [
+        {
+          "arm": "neutral_a",
+          "session_id": "013814b5-cee6-4ac9-9195-8f54b4c1a3be",
+          "elapsed_seconds": 39,
+          "tool_calls": 6,
+          "reported_tokens": 154435
+        },
+        {
+          "arm": "neutral_b",
+          "session_id": "22c3a4d9-7d20-42a8-a80d-a455569c20ca",
+          "elapsed_seconds": 41,
+          "tool_calls": 6,
+          "reported_tokens": 154263
+        }
+      ]
+    },
+    {
+      "task_id": "fixture/routing-investigation-001",
+      "experiment_id": "845b58ba-8e27-4a99-a32e-65aa6031c130",
+      "source_session": "019fff20-6b17-74d3-a295-5dd881a3de7f",
+      "branch_step": 2,
+      "source_snapshot": "7ea690a96a28df00c4a320c14c15fd19f88efe7a",
+      "prefix_id": "01649a55359648e64aa6148d557331fe759a859272da42080532c1dedbab4b77",
+      "environment_fingerprint": "1a3863678517aacc3a3f90a5659334e54a677abf40caa217101ed25ebebf60ae",
+      "raw_result_sha256": "ea940c3d27bc26e8234a26994e0a801c4b54d2878990cad7f45b705018a94f7a",
+      "coverage": {
+        "candidates": 6,
+        "forkable_exact": 5,
+        "pre_mutation_candidates": 3,
+        "pre_mutation_forkable": 3
+      },
+      "continuations": [
+        {
+          "arm": "neutral_a",
+          "session_id": "54e7898d-ad78-46d6-9e0a-32618a4953b8",
+          "elapsed_seconds": 47,
+          "tool_calls": 7,
+          "reported_tokens": 220721
+        },
+        {
+          "arm": "neutral_b",
+          "session_id": "2648547f-4f50-4c08-8956-68182b9db2bb",
+          "elapsed_seconds": 65,
+          "tool_calls": 9,
+          "reported_tokens": 227376
+        }
+      ]
+    },
+    {
+      "task_id": "fixture/record-contract-001",
+      "experiment_id": "f3ef6807-ced3-4ca0-8022-2d3d5d997258",
+      "source_session": "019fff22-19b3-7810-a5b7-dc6f8e6c54a0",
+      "branch_step": 2,
+      "source_snapshot": "f03f4e5f8cbf6275db33b31676726a8bcd9b64d4",
+      "prefix_id": "402c8a6ba81833735a9a0aa8ee1151547a86fcef1d107c66d158981abd0f1c5d",
+      "environment_fingerprint": "60f8c76c1b30bb24b82fd21f4655e51c79c3a4e07df9d118991b9542eb62c2f2",
+      "raw_result_sha256": "b0aff7eda1c4b16d8bcaeb8a8f82d853212486434413152dc9736a9f05ce4954",
+      "coverage": {
+        "candidates": 4,
+        "forkable_exact": 4,
+        "pre_mutation_candidates": 2,
+        "pre_mutation_forkable": 2
+      },
+      "continuations": [
+        {
+          "arm": "neutral_a",
+          "session_id": "2ac8211d-d76d-4409-9a45-4a98deceae56",
+          "elapsed_seconds": 60,
+          "tool_calls": 8,
+          "reported_tokens": 202734
+        },
+        {
+          "arm": "neutral_b",
+          "session_id": "b5f465e6-822c-48b0-a5a8-2f6cfdeb6f8e",
+          "elapsed_seconds": 29,
+          "tool_calls": 5,
+          "reported_tokens": 123787
+        }
+      ]
+    }
+  ],
+  "aggregate_outcomes": {
+    "tasks": 3,
+    "prefixes": 3,
+    "pairs": 3,
+    "judgeable_pairs": 3,
+    "passing_arms": 6,
+    "failing_arms": 0,
+    "mechanical_disagreements": 0,
+    "environment_mismatches": 0,
+    "infrastructure_failures": 0
+  },
+  "qualification": {
+    "natural_final_failures_observed": 0,
+    "decision": "NO_GO_REPRESENTATIVE_CAUSAL_USE"
+  }
+}

@@ -6,7 +6,8 @@
 
 ## Scope
 
-This report consolidates the historical coverage baseline and six fresh identical-arm runs. It is
+This report consolidates the historical coverage baseline and fresh identical-arm evidence through
+the validation-v2 run. It is
 the versioned fidelity artifact downstream experiments can cite instead of assuming replay validity.
 The decision applies to representative causal claims, not to continued development experiments.
 
@@ -15,7 +16,7 @@ The decision applies to representative causal claims, not to continued developme
 | Cohort | Sessions | Candidates | Exact | Pre-mutation exact |
 | --- | ---: | ---: | ---: | ---: |
 | Historical retained journals | 8 | 1,246 | 0 | 0/120 |
-| Fresh Hook-observed tasks | 5 | 27 | 17 | 9/11 |
+| Fresh Hook-observed sessions | 11 | 59 | 40 | 22/25 |
 
 The historical cohort is not executable evidence: missing snapshots/context and unknown external
 effects make every candidate ineligible. Fresh baseline capture and call correlation reach early
@@ -29,17 +30,18 @@ the scorer and required recovery.
 | Legacy unpinned effort | 3 / 4 | 12 | 24/24 | 0/12 | 0/12 | 0/24 |
 | Pinned `low` recovery | 1 / 1 | 3 | 6/6 | 0/3 | 0/3 | 0/6 |
 | Pinned `low` induced final failure | 1 / 1 | 3 | 0/6 | 0/3 | 0/3 | 0/6 |
+| Pinned `low` validation-v2 pass | 3 / 3 | 3 | 6/6 | 0/3 | 0/3 | 0/6 |
 
 The strata are not pooled. Reasoning effort was not persisted for the first three experiments, while
-the recovery and induced-failure cohorts pin and prove `low` effort on both source and
-continuations. The induced cohort also changes the source context deliberately, so it is not pooled
-with the naturally recovered prefix despite sharing model and effort.
+the recovery, induced-failure, and validation-v2 cohorts pin and prove `low` effort on both source
+and continuations. The induced cohort also changes the source context deliberately. Validation-v2
+uses three naturally passing control sources and one pair per prefix, adding breadth rather than
+repeat precision.
 
 For orientation only, treating repeated pairs as independent Bernoulli observations gives one-sided
 95% zero-event upper bounds of 22.09% for 0/12 and 63.16% for each 0/3 stratum. Those bounds are
-**not valid cross-task qualification bounds** because pairs repeat the same prefixes. With only
-three, one, and one independent task families respectively, no useful hierarchical estimate is
-identifiable.
+**not representative qualification bounds**: some strata repeat prefixes, validation-v2 has only
+three task-prefix observations, and all tasks are synthetic Python fixtures.
 
 ## Instrument controls now enforced
 
@@ -59,7 +61,8 @@ causal deltas:
 - no neutral pair has disagreed, so the failure region remains uncalibrated;
 - the first six final-outcome-failure arms all failed, but their source failure was deliberately
   induced rather than naturally observed;
-- the fresh sample is five synthetic Python tasks;
+- validation-v2 added three passing prefixes but no naturally occurring source failure;
+- the fresh sample remains a small synthetic Python corpus with repeated task families;
 - the largest stratum lacks persisted effort provenance;
 - undeclared ignored files and environment variables remain explicitly uncaptured.
 
@@ -77,4 +80,5 @@ environment-resource/drift cases.
 - [Pinned low-effort recovery-prefix run](fork-neutral-recovery-prefix.md)
 - [Edit-decision run](fork-neutral-edit-decision.md)
 - [Induced final-outcome-failure run](fork-neutral-final-outcome-failure.md)
+- [Validation-v2 passing-prefix run](fork-neutral-validation-v2.md)
 - [Machine-readable qualification](fork-fidelity-v1.json)

@@ -298,6 +298,11 @@ continuations also failed, with 0/3 disagreements, 0/3 environment mismatches, a
 infrastructure failures. Because the source guidance deliberately constrained the implementation,
 this proves final-failure capture and classification but does not qualify naturally occurring
 failure noise.
+The [validation-v2 passing-prefix run](experiments/fork-neutral-validation-v2.md) then captured six
+new source sessions and replayed one exact neutral pair from the earliest pre-mutation control
+prefix of each of three tasks. All six continuations passed, again with zero disagreement,
+environment mismatch, or infrastructure failure. This broadens the pinned-low passing stratum but
+still contributes no naturally occurring failure-region evidence.
 
 The consolidated [fork fidelity qualification v1](experiments/fork-fidelity-v1.md) records a
 **NO-GO for representative causal use** by #34/#23. It publishes raw strata, coverage, instrument
