@@ -369,8 +369,9 @@ before the first mutation has a fork anchor; mutation boundaries continue to add
 snapshots. `spotter fork` writes a durable manifest under `~/.spotter/fork-manifests/`. The manifest links the
 source event, snapshot, rollout-prefix digest, external-effect warnings, and captured environment
 fingerprint. Counterfactual pairs are fully prepared and must pass shared-prefix and captured-
-environment parity checks before either agent arm runs, then rechecks each arm against its immutable
-manifest immediately before model continuation. Ignored files and environment variables are
+environment parity checks before either agent arm runs. The arms must use distinct worktrees, and
+each is rechecked against its immutable manifest immediately before model continuation. Ignored
+files and environment variables are
 explicitly marked as not captured rather than assumed equal. Prefixes preserve the rollout model,
 runtime, and a secret-free subset of turn configuration; experiments can pin both the Codex model
 and reasoning effort and persist both values in result provenance. When those values are pinned and

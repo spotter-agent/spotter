@@ -124,6 +124,8 @@ def _pair_environment_preflight(prepared: list[tuple[str, str, ForkPlan]]) -> st
         plan.prefix_id is None or plan.environment_fingerprint is None for plan in plans
     ):
         return "FORK_PROVENANCE_UNAVAILABLE"
+    if Path(plans[0].worktree).resolve() == Path(plans[1].worktree).resolve():
+        return "SHARED_ARM_WORKTREE"
     if plans[0].prefix_id != plans[1].prefix_id:
         return "PREFIX_MISMATCH"
     if plans[0].environment_fingerprint == plans[1].environment_fingerprint:

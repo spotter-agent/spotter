@@ -211,6 +211,36 @@ def test_environment_mismatch_prevents_both_agent_arms(
     assert "infrastructure failures=2/2" in summarize(results)
 
 
+def test_shared_arm_worktree_prevents_both_agent_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    counter = 0
+
+    def shared_fork(*args: object, **kwargs: object) -> ForkPlan:
+        nonlocal counter
+        counter += 1
+        return ForkPlan(
+            f"fork-{counter}",
+            5,
+            "/same/worktree",
+            f"/rollout/{counter}",
+            "codex ...",
+            prefix_id="same-prefix",
+            environment_fingerprint="same-environment",
+        )
+
+    ran: list[str] = []
+    monkeypatch.setattr(experiment, "fork", shared_fork)
+    monkeypatch.setattr(experiment, "_run_arm", lambda *args, **kwargs: ran.append("run"))
+    monkeypatch.setattr(experiment, "_cleanup", lambda worktree: None)
+
+    results = run_experiment("s1", 5, None, run=True, neutral=True)
+
+    assert ran == []
+    assert all(result.classification == ArmClassification.INFRA_FAIL for result in results)
+    assert all(result.environment_preflight == "SHARED_ARM_WORKTREE" for result in results)
+
+
 def test_arm_rechecks_environment_immediately_before_agent_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
