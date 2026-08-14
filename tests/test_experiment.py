@@ -296,6 +296,51 @@ def test_arm_environment_drift_is_persisted_and_summarized(
     assert "environment mismatches=1/1" in summarize(results)
 
 
+def test_explicit_source_config_mismatch_prevents_agent_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    counter: dict[str, int] = {}
+
+    def manifested_fork(session_id: str, step: int, *, codex_home: object = None) -> ForkPlan:
+        plan = _fake_fork(counter)(session_id, step, codex_home=codex_home)
+        return ForkPlan(
+            plan.session_id,
+            plan.branch_step,
+            plan.worktree,
+            plan.rollout,
+            plan.command,
+            manifest=f"/manifest-{plan.session_id}.json",
+            prefix_id=plan.prefix_id,
+            environment_fingerprint=plan.environment_fingerprint,
+        )
+
+    monkeypatch.setattr(experiment, "fork", manifested_fork)
+    monkeypatch.setattr(
+        experiment,
+        "load_fork_manifest",
+        lambda path: SimpleNamespace(
+            prefix=SimpleNamespace(model="gpt-test", agent_config='{"effort":"high"}')
+        ),
+    )
+    monkeypatch.setattr(experiment, "_cleanup", lambda worktree: None)
+    ran: list[str] = []
+    monkeypatch.setattr(experiment, "_run_arm", lambda *args, **kwargs: ran.append("run"))
+
+    results = run_experiment(
+        "s1",
+        5,
+        None,
+        run=True,
+        neutral=True,
+        model="gpt-test",
+        reasoning_effort="low",
+    )
+
+    assert ran == []
+    assert all(result.classification == ArmClassification.SETUP_FAIL for result in results)
+    assert all(result.infra_diagnostic == "SOURCE_REASONING_EFFORT_MISMATCH" for result in results)
+
+
 def test_empty_experiment_is_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """PR #15 review P2: --pairs 0 must not succeed with zero data."""
     with pytest.raises(ValueError, match="pairs must be >= 1"):

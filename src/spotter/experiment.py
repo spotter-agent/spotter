@@ -139,6 +139,34 @@ def _pair_environment_preflight(prepared: list[tuple[str, str, ForkPlan]]) -> st
     return f"ENVIRONMENT_MISMATCH:{detail}"
 
 
+def _source_config_preflight(
+    prepared: list[tuple[str, str, ForkPlan]],
+    model: str | None,
+    reasoning_effort: str | None,
+) -> str:
+    if model is None and reasoning_effort is None:
+        return "MATCHED"
+    manifest_path = next((plan.manifest for _, _, plan in prepared if plan.manifest), None)
+    if manifest_path is None:
+        return "SOURCE_CONFIG_UNAVAILABLE"
+    try:
+        prefix = load_fork_manifest(Path(manifest_path)).prefix
+        if model is not None and prefix.model != model:
+            return "SOURCE_MODEL_MISMATCH" if prefix.model else "SOURCE_MODEL_UNAVAILABLE"
+        if reasoning_effort is not None:
+            if prefix.agent_config == "not_captured":
+                return "SOURCE_REASONING_EFFORT_UNAVAILABLE"
+            config = json.loads(prefix.agent_config)
+            source_effort = config.get("effort") if isinstance(config, dict) else None
+            if not isinstance(source_effort, str):
+                return "SOURCE_REASONING_EFFORT_UNAVAILABLE"
+            if source_effort != reasoning_effort:
+                return "SOURCE_REASONING_EFFORT_MISMATCH"
+    except (OSError, ReplayError, ValueError) as error:
+        return f"SOURCE_CONFIG_ERROR:{error}"
+    return "MATCHED"
+
+
 def _arm_environment_preflight(plan: ForkPlan) -> str:
     try:
         current = fingerprint_environment(Path(plan.worktree))
@@ -291,19 +319,31 @@ def run_experiment(
             (arm, prompt, fork(session_id, step, codex_home=codex_home)) for arm, prompt in arms
         ]
         environment_preflight = _pair_environment_preflight(prepared)
+        source_config_preflight = _source_config_preflight(prepared, model, reasoning_effort)
         for arm, prompt, plan in prepared:
+            execution: tuple[int | None, int | None, ArmClassification, str, str, str | None]
             if run:
-                execution = _execute_arm(
-                    plan,
-                    prompt,
-                    environment_preflight,
-                    check=check,
-                    sandbox=sandbox,
-                    timeout=timeout,
-                    model=model,
-                    reasoning_effort=reasoning_effort,
-                    codex_home=codex_home,
-                )
+                if source_config_preflight != "MATCHED":
+                    execution = (
+                        None,
+                        None,
+                        ArmClassification.SETUP_FAIL,
+                        "",
+                        "",
+                        source_config_preflight,
+                    )
+                else:
+                    execution = _execute_arm(
+                        plan,
+                        prompt,
+                        environment_preflight,
+                        check=check,
+                        sandbox=sandbox,
+                        timeout=timeout,
+                        model=model,
+                        reasoning_effort=reasoning_effort,
+                        codex_home=codex_home,
+                    )
             else:
                 execution = (None, None, ArmClassification.UNJUDGEABLE, "", "", None)
             agent_exit, check_exit, classification, check_stdout, check_stderr, diagnostic = (
