@@ -135,6 +135,15 @@ class ObjectiveOutcomeReport:
     reported_tokens: int | None
     token_arms: int
     elapsed_ms: tuple[float, ...]
+    paired_arm_costs: Mapping[str, "ObjectiveArmCost"]
+
+
+@dataclass(frozen=True)
+class ObjectiveArmCost:
+    arms: int
+    reported_tokens: int | None
+    token_arms: int
+    elapsed_ms: tuple[float, ...]
 
 
 class ObjectiveOutcomeError(ValueError):
@@ -749,9 +758,12 @@ def measure_objective_outcomes(paths: Iterable[Path]) -> ObjectiveOutcomeReport:
     guidance_pairs = judgeable_guidance_pairs = 0
     guidance_better = control_better = guidance_tied = 0
     neutral_pairs = judgeable_neutral_pairs = neutral_disagreements = 0
+    paired_arms: dict[str, list[_ObjectiveArm]] = {}
     for pair in groups.values():
         if set(pair) == {"control", "guidance"}:
             guidance_pairs += 1
+            for arm in pair.values():
+                paired_arms.setdefault(arm.arm, []).append(arm)
             if all(row.classification in judgeable for row in pair.values()):
                 judgeable_guidance_pairs += 1
                 control_passed = pair["control"].classification == "PASS"
@@ -761,6 +773,8 @@ def measure_objective_outcomes(paths: Iterable[Path]) -> ObjectiveOutcomeReport:
                 guidance_tied += guidance_passed == control_passed
         elif set(pair) == {"neutral_a", "neutral_b"}:
             neutral_pairs += 1
+            for arm in pair.values():
+                paired_arms.setdefault(arm.arm, []).append(arm)
             if all(row.classification in judgeable for row in pair.values()):
                 judgeable_neutral_pairs += 1
                 neutral_disagreements += (
@@ -786,6 +800,7 @@ def measure_objective_outcomes(paths: Iterable[Path]) -> ObjectiveOutcomeReport:
         sum(tokens) if tokens else None,
         len(tokens),
         elapsed,
+        {name: _objective_arm_cost(rows) for name, rows in paired_arms.items()},
     )
 
 
@@ -803,10 +818,12 @@ def render_objective_outcomes(report: ObjectiveOutcomeReport) -> str:
         f"judgeable; guidance_better={report.guidance_better}, "
         f"control_better={report.control_better}, tied={report.guidance_tied}"
     )
+    _append_paired_costs(lines, report, "guidance", ("control", "guidance"))
     lines.append(
         f"  neutral pairs: n={report.judgeable_neutral_pairs}/{report.neutral_pairs} "
         f"judgeable; disagreements={report.neutral_disagreements}"
     )
+    _append_paired_costs(lines, report, "neutral", ("neutral_a", "neutral_b"))
     tokens = str(report.reported_tokens) if report.reported_tokens is not None else "unknown"
     lines.append(
         f"  per-arm cost join: agent_reported_tokens={tokens} "
@@ -815,6 +832,34 @@ def render_objective_outcomes(report: ObjectiveOutcomeReport) -> str:
         "identity=run/pair/arm from durable result rows"
     )
     return "\n".join(lines)
+
+
+def _objective_arm_cost(arms: Iterable[_ObjectiveArm]) -> ObjectiveArmCost:
+    values = tuple(arms)
+    tokens = [arm.reported_tokens for arm in values if arm.reported_tokens is not None]
+    elapsed = tuple(arm.elapsed_ms for arm in values if arm.elapsed_ms is not None)
+    return ObjectiveArmCost(len(values), sum(tokens) if tokens else None, len(tokens), elapsed)
+
+
+def _append_paired_costs(
+    lines: list[str],
+    report: ObjectiveOutcomeReport,
+    pair_type: str,
+    arm_names: tuple[str, str],
+) -> None:
+    costs = [report.paired_arm_costs.get(name) for name in arm_names]
+    if not any(cost is not None for cost in costs):
+        return
+    rendered = []
+    for name, cost in zip(arm_names, costs, strict=True):
+        if cost is None:
+            continue
+        tokens = str(cost.reported_tokens) if cost.reported_tokens is not None else "unknown"
+        rendered.append(
+            f"{name} tokens={tokens} ({cost.token_arms}/{cost.arms} arms), "
+            f"elapsed={_sample(cost.elapsed_ms, cost.arms)}"
+        )
+    lines.append(f"    {pair_type} arm costs: " + "; ".join(rendered))
 
 
 def _result_rows(path: Path) -> tuple[Mapping[str, object], ...]:

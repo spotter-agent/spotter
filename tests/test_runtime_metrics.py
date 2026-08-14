@@ -83,9 +83,18 @@ def test_objective_outcomes_join_costs_by_durable_arm_identity(tmp_path: Path) -
     assert report.reported_tokens == 300
     assert report.token_arms == 2
     assert report.elapsed_ms == (1000.0, 2000.0)
+    assert report.paired_arm_costs["control"].reported_tokens == 100
+    assert report.paired_arm_costs["control"].elapsed_ms == (1000.0,)
+    assert report.paired_arm_costs["guidance"].reported_tokens == 200
+    assert report.paired_arm_costs["guidance"].elapsed_ms == (2000.0,)
+    assert report.paired_arm_costs["neutral_a"].reported_tokens is None
+    assert report.paired_arm_costs["neutral_a"].arms == 1
     rendered = render_objective_outcomes(report)
     assert "agent_reported_tokens=300 (2/4 arms)" in rendered
     assert "guidance_better=0, control_better=1, tied=0" in rendered
+    assert "control tokens=100 (1/1 arms), elapsed=avg=1000.00ms" in rendered
+    assert "guidance tokens=200 (1/1 arms), elapsed=avg=2000.00ms" in rendered
+    assert "neutral_a tokens=unknown (0/1 arms), elapsed=unknown (0/1)" in rendered
     assert "disagreements=1" in rendered
 
 
@@ -135,7 +144,39 @@ def test_objective_outcomes_project_v3_experiment_agent_costs(tmp_path: Path) ->
     assert report.reported_tokens == 3579
     assert report.token_arms == 2
     assert report.elapsed_ms == (125.5, 250.0)
-    assert "agent_reported_tokens=3579 (2/2 arms)" in render_objective_outcomes(report)
+    rendered = render_objective_outcomes(report)
+    assert "agent_reported_tokens=3579 (2/2 arms)" in rendered
+    assert "control tokens=1234 (1/1 arms), elapsed=avg=125.50ms" in rendered
+    assert "guidance tokens=2345 (1/1 arms), elapsed=avg=250.00ms" in rendered
+
+
+def test_objective_arm_costs_do_not_pair_rows_with_different_pair_ids(tmp_path: Path) -> None:
+    path = tmp_path / "incomplete-pairs.jsonl"
+    _write_rows(
+        path,
+        {
+            "result_schema_version": 3,
+            "experiment_id": "experiment-3",
+            "pair": 0,
+            "arm": "control",
+            "classification": "PASS",
+            "agent_reported_tokens": 100,
+        },
+        {
+            "result_schema_version": 3,
+            "experiment_id": "experiment-3",
+            "pair": 1,
+            "arm": "guidance",
+            "classification": "PASS",
+            "agent_reported_tokens": 200,
+        },
+    )
+
+    report = measure_objective_outcomes([path])
+
+    assert report.guidance_pairs == 0
+    assert report.paired_arm_costs == {}
+    assert "guidance arm costs" not in render_objective_outcomes(report)
 
 
 def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
