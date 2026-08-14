@@ -133,7 +133,8 @@ def test_reconnect_reconciles_epoch_gap_and_stale_control(tmp_path: Path) -> Non
             ]
             assert {event.payload["control_id"] for event in controls} == {"control-1"}
             assert controls[0].payload["target_connection_epoch"] == 1
-            assert controls[0].payload["target_turn_id"] == "turn-1"
+            assert first.identity.turn_id is not None
+            assert controls[0].payload["target_turn_id"] == first.identity.turn_id.value
             assert controls[0].payload["client_user_message_id"] == "control-1"
 
             await connections[0].close()

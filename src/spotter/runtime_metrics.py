@@ -99,6 +99,20 @@ class RuntimeCostReport:
     reviewer_end_to_end_ms: tuple[float, ...]
     reviewer_decision_lead_ms: tuple[float, ...]
     reviewer_decision_lag_ms: tuple[float, ...]
+    control_dispatches: int
+    control_dispatch_finishes: int
+    control_rpc_accepted: int
+    control_failed: int
+    control_unknown: int
+    control_stale: int
+    control_adoption_eligible: int
+    control_adoptions: int
+    control_dispatch_ms: tuple[float, ...]
+    control_adoption_ms: tuple[float, ...]
+    control_detection_to_adoption_ms: tuple[float, ...]
+    control_adoption_lead_ms: tuple[float, ...]
+    control_adoption_lag_ms: tuple[float, ...]
+    control_stale_delivery_ms: tuple[float, ...]
     turn_wall_ms: tuple[float, ...]
     tool_duration_ms: tuple[float, ...]
     gate_calls: int
@@ -181,6 +195,24 @@ class _ReviewLifecycle:
     decision_lag_ms: tuple[float, ...]
 
 
+@dataclass(frozen=True)
+class _ControlLifecycle:
+    dispatches: int
+    dispatch_finishes: int
+    rpc_accepted: int
+    failed: int
+    unknown: int
+    stale: int
+    adoption_eligible: int
+    adoptions: int
+    dispatch_ms: tuple[float, ...]
+    adoption_ms: tuple[float, ...]
+    detection_to_adoption_ms: tuple[float, ...]
+    adoption_lead_ms: tuple[float, ...]
+    adoption_lag_ms: tuple[float, ...]
+    stale_delivery_ms: tuple[float, ...]
+
+
 def measure_runtime_costs(
     journals: Iterable[tuple[Iterable[StepRecord], int]],
 ) -> RuntimeCostReport:
@@ -192,6 +224,9 @@ def measure_runtime_costs(
     no_frontier_reads = [0, 0, 0]
     reviewer_jobs_decided = reviewer_jobs_errored = reviewer_jobs_capped = 0
     reviewer_jobs_discarded = reviewer_jobs_stale = 0
+    control_dispatches = control_dispatch_finishes = control_rpc_accepted = 0
+    control_failed = control_unknown = control_stale = 0
+    control_adoption_eligible = control_adoptions = 0
     reviewer_inference_finishes = 0
     reviewer_tokens_known = False
     token_sums = {field: 0 for field in _TOKEN_FIELDS}
@@ -205,6 +240,12 @@ def measure_runtime_costs(
     reviewer_end_to_end_ms: list[float] = []
     reviewer_decision_lead_ms: list[float] = []
     reviewer_decision_lag_ms: list[float] = []
+    control_dispatch_ms: list[float] = []
+    control_adoption_ms: list[float] = []
+    control_detection_to_adoption_ms: list[float] = []
+    control_adoption_lead_ms: list[float] = []
+    control_adoption_lag_ms: list[float] = []
+    control_stale_delivery_ms: list[float] = []
     turn_wall_ms: list[float] = []
     hook_ms: list[float] = []
     ipc_ms: list[float] = []
@@ -320,6 +361,21 @@ def measure_runtime_costs(
         reviewer_end_to_end_ms.extend(lifecycle.end_to_end_ms)
         reviewer_decision_lead_ms.extend(lifecycle.decision_lead_ms)
         reviewer_decision_lag_ms.extend(lifecycle.decision_lag_ms)
+        controls = _control_lifecycle(records)
+        control_dispatches += controls.dispatches
+        control_dispatch_finishes += controls.dispatch_finishes
+        control_rpc_accepted += controls.rpc_accepted
+        control_failed += controls.failed
+        control_unknown += controls.unknown
+        control_stale += controls.stale
+        control_adoption_eligible += controls.adoption_eligible
+        control_adoptions += controls.adoptions
+        control_dispatch_ms.extend(controls.dispatch_ms)
+        control_adoption_ms.extend(controls.adoption_ms)
+        control_detection_to_adoption_ms.extend(controls.detection_to_adoption_ms)
+        control_adoption_lead_ms.extend(controls.adoption_lead_ms)
+        control_adoption_lag_ms.extend(controls.adoption_lag_ms)
+        control_stale_delivery_ms.extend(controls.stale_delivery_ms)
         current = surfaces[surface]
         surfaces[surface] = SurfaceCost(
             actions=current.actions + len(actions),
@@ -409,6 +465,20 @@ def measure_runtime_costs(
         reviewer_end_to_end_ms=tuple(reviewer_end_to_end_ms),
         reviewer_decision_lead_ms=tuple(reviewer_decision_lead_ms),
         reviewer_decision_lag_ms=tuple(reviewer_decision_lag_ms),
+        control_dispatches=control_dispatches,
+        control_dispatch_finishes=control_dispatch_finishes,
+        control_rpc_accepted=control_rpc_accepted,
+        control_failed=control_failed,
+        control_unknown=control_unknown,
+        control_stale=control_stale,
+        control_adoption_eligible=control_adoption_eligible,
+        control_adoptions=control_adoptions,
+        control_dispatch_ms=tuple(control_dispatch_ms),
+        control_adoption_ms=tuple(control_adoption_ms),
+        control_detection_to_adoption_ms=tuple(control_detection_to_adoption_ms),
+        control_adoption_lead_ms=tuple(control_adoption_lead_ms),
+        control_adoption_lag_ms=tuple(control_adoption_lag_ms),
+        control_stale_delivery_ms=tuple(control_stale_delivery_ms),
         turn_wall_ms=tuple(turn_wall_ms),
         tool_duration_ms=tuple(tool_duration_ms),
         gate_calls=gate_calls,
@@ -571,6 +641,140 @@ def _review_lifecycle(records: tuple[StepRecord, ...]) -> _ReviewLifecycle:
     )
 
 
+def _control_lifecycle(records: tuple[StepRecord, ...]) -> _ControlLifecycle:
+    by_event_id = {
+        record.event.event_id: record for record in records if record.event.event_id is not None
+    }
+    signal_evidence: dict[str, StepRecord] = {}
+    job_signals: dict[str, str] = {}
+    decisions: dict[str, StepRecord] = {}
+    turn_boundaries: dict[tuple[str, str, int], StepRecord] = {}
+    dispatches: dict[str, StepRecord] = {}
+    accepted: dict[str, StepRecord] = {}
+    terminals: dict[str, StepRecord] = {}
+    prompts: dict[str, list[StepRecord]] = {}
+
+    for record in records:
+        event = record.event
+        payload = event.payload
+        if event.kind == "turn_completed" and (turn_key := _review_turn_key(record)) is not None:
+            turn_boundaries.setdefault(turn_key, record)
+        if (
+            event.kind == "signal_candidate"
+            and payload.get("status") == "active"
+            and (signal_id := _payload_id(payload, "signal_id")) is not None
+        ):
+            evidence = payload.get("evidence_event_ids")
+            first = (
+                next(
+                    (
+                        by_event_id[event_id]
+                        for event_id in evidence
+                        if isinstance(event_id, str) and event_id in by_event_id
+                    ),
+                    None,
+                )
+                if isinstance(evidence, list)
+                else None
+            )
+            if first is not None:
+                signal_evidence.setdefault(signal_id, first)
+        job_id = _payload_id(payload, "review_job_id")
+        if event.kind == "review_job_queued" and job_id is not None:
+            if (signal_id := _payload_id(payload, "signal_id")) is not None:
+                job_signals.setdefault(job_id, signal_id)
+        elif event.kind == "reviewer_decision" and job_id is not None:
+            decisions.setdefault(job_id, record)
+        if event.kind == "user_prompt":
+            client_id = _payload_id(payload, "client_user_message_id")
+            if client_id is not None:
+                prompts.setdefault(client_id, []).append(record)
+        control_id = _payload_id(payload, "control_id")
+        if control_id is None:
+            continue
+        if event.kind == "control_dispatch_started":
+            dispatches.setdefault(control_id, record)
+        elif event.kind == "control_rpc_accepted":
+            accepted.setdefault(control_id, record)
+        elif event.kind == "control_terminal":
+            terminals.setdefault(control_id, record)
+
+    dispatch_endpoints = {
+        control_id: accepted.get(control_id) or terminals[control_id]
+        for control_id in dispatches
+        if control_id in accepted or control_id in terminals
+    }
+    dispatch_ms = tuple(
+        duration
+        for control_id, terminal in dispatch_endpoints.items()
+        if (duration := _monotonic_elapsed_ms(dispatches[control_id], terminal)) is not None
+    )
+    adoption_eligible = 0
+    adoptions = 0
+    adoption_ms: list[float] = []
+    detection_to_adoption_ms: list[float] = []
+    adoption_lead_ms: list[float] = []
+    adoption_lag_ms: list[float] = []
+    for control in accepted.values():
+        payload = control.event.payload
+        client_id = _payload_id(payload, "client_user_message_id")
+        if payload.get("control_kind") != "steer" or client_id is None:
+            continue
+        adoption_eligible += 1
+        turn_key = _review_turn_key(control)
+        prompt = next(
+            (
+                candidate
+                for candidate in prompts.get(client_id, ())
+                if turn_key is not None and _review_turn_key(candidate) == turn_key
+            ),
+            None,
+        )
+        if prompt is None:
+            continue
+        adoptions += 1
+        if (duration := _monotonic_elapsed_ms(control, prompt)) is not None:
+            adoption_ms.append(duration)
+        job_id = _payload_id(payload, "review_job_id")
+        signal_id = job_signals.get(job_id) if job_id is not None else None
+        first = signal_evidence.get(signal_id) if signal_id is not None else None
+        if first is not None and (duration := _monotonic_elapsed_ms(first, prompt)) is not None:
+            detection_to_adoption_ms.append(duration)
+        boundary = turn_boundaries.get(turn_key) if turn_key is not None else None
+        delta = _monotonic_delta_ms(prompt, boundary) if boundary is not None else None
+        if delta is not None:
+            (adoption_lead_ms if delta >= 0 else adoption_lag_ms).append(abs(delta))
+
+    terminal_outcomes = {
+        control_id: terminal.event.payload.get("outcome")
+        for control_id, terminal in terminals.items()
+    }
+    stale_delivery_ms = tuple(
+        duration
+        for terminal in terminals.values()
+        if terminal.event.payload.get("outcome") == "stale"
+        and (job_id := _payload_id(terminal.event.payload, "review_job_id")) is not None
+        and (decision := decisions.get(job_id)) is not None
+        and (duration := _monotonic_elapsed_ms(decision, terminal)) is not None
+    )
+    return _ControlLifecycle(
+        dispatches=len(dispatches),
+        dispatch_finishes=len(dispatch_endpoints),
+        rpc_accepted=len(accepted),
+        failed=sum(outcome == "failed" for outcome in terminal_outcomes.values()),
+        unknown=sum(outcome == "unknown" for outcome in terminal_outcomes.values()),
+        stale=sum(outcome == "stale" for outcome in terminal_outcomes.values()),
+        adoption_eligible=adoption_eligible,
+        adoptions=adoptions,
+        dispatch_ms=dispatch_ms,
+        adoption_ms=tuple(adoption_ms),
+        detection_to_adoption_ms=tuple(detection_to_adoption_ms),
+        adoption_lead_ms=tuple(adoption_lead_ms),
+        adoption_lag_ms=tuple(adoption_lag_ms),
+        stale_delivery_ms=stale_delivery_ms,
+    )
+
+
 def _covered_signal_count(
     signal_ids: set[str], counts: Mapping[str, int], *, first_is_not_repeated: bool = False
 ) -> CoveredCount:
@@ -689,6 +893,22 @@ def render_runtime_costs(report: RuntimeCostReport) -> str:
         f"decided={report.reviewer_jobs_decided} errors={report.reviewer_jobs_errored} "
         f"capped={report.reviewer_jobs_capped} discarded={report.reviewer_jobs_discarded} "
         f"stale={report.reviewer_jobs_stale}"
+    )
+    lines.append(
+        "  Runtime control: "
+        f"dispatches={report.control_dispatches} accepted={report.control_rpc_accepted} "
+        f"failed={report.control_failed} unknown={report.control_unknown} "
+        f"stale={report.control_stale}; "
+        f"dispatch={_sample(report.control_dispatch_ms, report.control_dispatch_finishes)}, "
+        f"adoption={_sample(report.control_adoption_ms, report.control_adoptions)} "
+        f"({report.control_adoptions}/"
+        f"{report.control_adoption_eligible} accepted steers observed), "
+        "detection_to_adoption="
+        f"{_sample(report.control_detection_to_adoption_ms, report.control_adoptions)}; "
+        "adoption_boundary "
+        f"lead={_sample(report.control_adoption_lead_ms, report.control_adoptions)}, "
+        f"lag={_sample(report.control_adoption_lag_ms, report.control_adoptions)}; "
+        f"stale_delivery={_sample(report.control_stale_delivery_ms, report.control_stale)}"
     )
     lines.append(
         "  Detected repetition: "

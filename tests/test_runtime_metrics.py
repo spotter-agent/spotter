@@ -1,9 +1,12 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from spotter.app_server import AppServerEvent
 from spotter.identity import IdentityProvenance, RuntimeIdentity, ThreadId, TurnId
+from spotter.ingestion import CodexTraceNormalizer
 from spotter.runtime_metrics import (
     CoveredCount,
     ObjectiveOutcomeError,
@@ -561,6 +564,249 @@ def test_supervision_lead_and_lag_use_the_target_turn_monotonic_boundary() -> No
     rendered = render_runtime_costs(report)
     assert "decision_boundary lead=avg=200.00ms max=200.00ms (1/3)" in rendered
     assert "lag=avg=300.00ms max=300.00ms (1/3)" in rendered
+
+
+def test_runtime_control_metrics_require_correlated_adoption_evidence() -> None:
+    identity = RuntimeIdentity(
+        ThreadId("thread-1"),
+        TurnId("turn-1"),
+        None,
+        IdentityProvenance("codex", "external-thread", "external-turn"),
+    )
+
+    def event(
+        kind: str,
+        payload: dict[str, object],
+        *,
+        event_id: str,
+        monotonic_ns: int,
+    ) -> TraceEvent:
+        return TraceEvent(
+            kind,
+            payload,
+            event_id=event_id,
+            identity=identity,
+            connection_epoch=1,
+            observed_monotonic_ns=monotonic_ns,
+            monotonic_clock_id="daemon-1",
+        )
+
+    target = {
+        "target_turn_id": "turn-1",
+        "target_connection_epoch": 1,
+    }
+    events = [
+        event("tool_result", {}, event_id="evidence-1", monotonic_ns=1_000_000_000),
+        event(
+            "signal_candidate",
+            {
+                "signal_id": "signal-1",
+                "status": "active",
+                "evidence_event_ids": ["evidence-1"],
+            },
+            event_id="signal-1",
+            monotonic_ns=1_100_000_000,
+        ),
+        event(
+            "review_job_queued",
+            {"review_job_id": "job-1", "signal_id": "signal-1"},
+            event_id="queued-1",
+            monotonic_ns=1_200_000_000,
+        ),
+        event(
+            "reviewer_decision",
+            {"review_job_id": "job-1", **target},
+            event_id="decision-1",
+            monotonic_ns=1_500_000_000,
+        ),
+        event(
+            "control_dispatch_started",
+            {
+                "control_id": "control-1",
+                "control_kind": "steer",
+                "client_user_message_id": "control-1",
+                "review_job_id": "job-1",
+                **target,
+            },
+            event_id="dispatch-1",
+            monotonic_ns=1_600_000_000,
+        ),
+        event(
+            "control_rpc_accepted",
+            {
+                "control_id": "control-1",
+                "control_kind": "steer",
+                "client_user_message_id": "control-1",
+                "review_job_id": "job-1",
+                **target,
+            },
+            event_id="accepted-1",
+            monotonic_ns=1_700_000_000,
+        ),
+        event(
+            "control_rpc_accepted",
+            {
+                "control_id": "control-1",
+                "control_kind": "steer",
+                "client_user_message_id": "control-1",
+                "review_job_id": "job-1",
+                **target,
+            },
+            event_id="accepted-1-duplicate",
+            monotonic_ns=1_750_000_000,
+        ),
+        event(
+            "control_terminal",
+            {
+                "control_id": "control-stale",
+                "control_kind": "steer",
+                "review_job_id": "job-1",
+                "outcome": "stale",
+                **target,
+            },
+            event_id="stale-1",
+            monotonic_ns=1_800_000_000,
+        ),
+        event(
+            "user_prompt",
+            {"client_user_message_id": "control-1"},
+            event_id="prompt-1",
+            monotonic_ns=1_900_000_000,
+        ),
+        event(
+            "user_prompt",
+            {"client_user_message_id": "control-1"},
+            event_id="prompt-1-duplicate",
+            monotonic_ns=1_950_000_000,
+        ),
+        event(
+            "turn_completed",
+            {},
+            event_id="completed-1",
+            monotonic_ns=2_100_000_000,
+        ),
+        event(
+            "control_rpc_accepted",
+            {
+                "control_id": "control-2",
+                "control_kind": "steer",
+                "client_user_message_id": "control-2",
+                **target,
+            },
+            event_id="accepted-2",
+            monotonic_ns=2_200_000_000,
+        ),
+        event(
+            "control_dispatch_started",
+            {"control_id": "control-3", "control_kind": "interrupt", **target},
+            event_id="dispatch-3",
+            monotonic_ns=2_300_000_000,
+        ),
+        event(
+            "control_terminal",
+            {
+                "control_id": "control-3",
+                "control_kind": "interrupt",
+                "outcome": "failed",
+                **target,
+            },
+            event_id="failed-3",
+            monotonic_ns=2_400_000_000,
+        ),
+        event(
+            "control_dispatch_started",
+            {"control_id": "control-4", "control_kind": "interrupt", **target},
+            event_id="dispatch-4",
+            monotonic_ns=2_500_000_000,
+        ),
+        event(
+            "control_terminal",
+            {
+                "control_id": "control-4",
+                "control_kind": "interrupt",
+                "outcome": "unknown",
+                **target,
+            },
+            event_id="unknown-4",
+            monotonic_ns=2_600_000_000,
+        ),
+    ]
+
+    report = measure_runtime_costs(
+        [([_record(index, item) for index, item in enumerate(events)], 10)]
+    )
+
+    assert report.control_dispatches == 3
+    assert report.control_dispatch_finishes == 3
+    assert report.control_rpc_accepted == 2
+    assert report.control_failed == 1
+    assert report.control_unknown == 1
+    assert report.control_stale == 1
+    assert report.control_adoption_eligible == 2
+    assert report.control_adoptions == 1
+    assert report.control_dispatch_ms == (100.0, 100.0, 100.0)
+    assert report.control_adoption_ms == (200.0,)
+    assert report.control_detection_to_adoption_ms == (900.0,)
+    assert report.control_adoption_lead_ms == (200.0,)
+    assert report.control_adoption_lag_ms == ()
+    assert report.control_stale_delivery_ms == (300.0,)
+    rendered = render_runtime_costs(report)
+    assert "dispatches=3 accepted=2 failed=1 unknown=1 stale=1" in rendered
+    assert "adoption=avg=200.00ms max=200.00ms (1/1) (1/2 accepted steers observed)" in rendered
+    assert "detection_to_adoption=avg=900.00ms max=900.00ms (1/1)" in rendered
+    assert "stale_delivery=avg=300.00ms max=300.00ms (1/1)" in rendered
+
+
+def test_raw_control_correlation_reaches_metrics_without_double_counting() -> None:
+    raw = AppServerEvent(
+        "item/completed",
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "external-thread",
+                "turnId": "external-turn",
+                "item": {
+                    "id": "message-1",
+                    "type": "userMessage",
+                    "clientId": "control-1",
+                    "content": [{"type": "text", "text": "verify this"}],
+                },
+                "completedAtMs": 1_000,
+            },
+        },
+    )
+    normalized = CodexTraceNormalizer().normalize(raw)
+    assert normalized.identity is not None and normalized.identity.turn_id is not None
+    prompt = replace(
+        normalized,
+        connection_epoch=1,
+        observed_monotonic_ns=1_200_000_000,
+        monotonic_clock_id="daemon-1",
+    )
+    accepted = TraceEvent(
+        "control_rpc_accepted",
+        {
+            "control_id": "control-1",
+            "control_kind": "steer",
+            "client_user_message_id": "control-1",
+            "target_turn_id": normalized.identity.turn_id.value,
+            "target_connection_epoch": 1,
+        },
+        event_id="accepted-1",
+        identity=normalized.identity,
+        connection_epoch=1,
+        observed_monotonic_ns=1_000_000_000,
+        monotonic_clock_id="daemon-1",
+    )
+    records = [_record(0, accepted), _record(1, accepted), _record(2, prompt), _record(3, prompt)]
+
+    report = measure_runtime_costs([(records, 10)])
+
+    assert prompt.payload["client_user_message_id"] == "control-1"
+    assert report.control_rpc_accepted == 1
+    assert report.control_adoption_eligible == 1
+    assert report.control_adoptions == 1
+    assert report.control_adoption_ms == (200.0,)
 
 
 def test_repeated_action_metrics_reuse_durable_signal_features() -> None:
