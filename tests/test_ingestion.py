@@ -311,8 +311,14 @@ def test_unknown_and_token_events_keep_identity_without_wire_shapes() -> None:
                 "threadId": "thread-1",
                 "turnId": "turn-1",
                 "tokenUsage": {
-                    "last": {"inputTokens": 10, "outputTokens": 4, "futureCount": 99},
-                    "total": {"totalTokens": 14},
+                    "last": {
+                        "inputTokens": 10,
+                        "cachedInputTokens": 2,
+                        "outputTokens": 4,
+                        "reasoningOutputTokens": 1,
+                        "futureCount": 99,
+                    },
+                    "total": {"totalTokens": 14, "cacheWriteInputTokens": 3},
                     "modelContextWindow": 200_000,
                 },
             },
@@ -324,8 +330,13 @@ def test_unknown_and_token_events_keep_identity_without_wire_shapes() -> None:
     assert unknown.item_id == "future-1"
     assert unknown.identity is not None and unknown.identity.turn_id is not None
     assert usage.payload == {
-        "last": {"inputTokens": 10, "outputTokens": 4},
-        "total": {"totalTokens": 14},
+        "last": {
+            "inputTokens": 10,
+            "cachedInputTokens": 2,
+            "outputTokens": 4,
+            "reasoningOutputTokens": 1,
+        },
+        "total": {"cacheWriteInputTokens": 3, "totalTokens": 14},
         "modelContextWindow": 200_000,
     }
 

@@ -109,7 +109,20 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
         ),
         _record(
             3,
-            app("token_usage", {"total": {"totalTokens": 14}}, arrival_seq=4),
+            app(
+                "token_usage",
+                {
+                    "total": {
+                        "totalTokens": 14,
+                        "inputTokens": 10,
+                        "cachedInputTokens": 2,
+                        "cacheWriteInputTokens": 1,
+                        "outputTokens": 4,
+                        "reasoningOutputTokens": 1,
+                    }
+                },
+                arrival_seq=4,
+            ),
         ),
         _record(
             4,
@@ -134,6 +147,9 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
     assert report.surfaces["app_server"].classified_outcomes == 1
     assert report.completed_turns == report.token_turns == 1
     assert report.cumulative_main_tokens == 14
+    assert report.main_token_breakdown.input.value == 10
+    assert report.main_token_breakdown.input.covered_sessions == 1
+    assert report.main_token_breakdown.reasoning_output.value == 1
     assert report.reviewer_calls == 1
     assert report.reviewer_tokens == 25
     assert report.reviewer_jobs_queued == report.reviewer_jobs_started == 1
@@ -157,6 +173,8 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
         "app_server: actions=1 (from 2 observations), outcomes=1 (from 1 observation)" in rendered
     )
     assert "jobs=1/1/1 decided/started/queued" in rendered
+    assert "Main tokens: 14 (1/2 sessions) cumulative/unknown-scope" in rendered
+    assert "input=10 (1/2 sessions)" in rendered
     assert "cpu=0.250s, peak_rss=1024 bytes; samples=1/1 gate calls" in rendered
     assert "arrival_order=5/5" in rendered
     assert "turn_wall(source)=avg=2000.00ms max=2000.00ms (1/1)" in rendered
@@ -169,6 +187,52 @@ def test_unavailable_runtime_metrics_render_unknown_not_zero() -> None:
     assert "Main tokens: unknown" in rendered
     assert "hook=unknown (0/0)" in rendered
     assert "receipt_wall=0/1" in rendered
+
+
+def test_cumulative_token_updates_use_latest_and_report_field_coverage() -> None:
+    first_session = [
+        _record(0, TraceEvent("token_usage", {"total": {"totalTokens": 5}})),
+        _record(
+            1,
+            TraceEvent(
+                "token_usage",
+                {
+                    "total": {
+                        "totalTokens": 14,
+                        "inputTokens": 10,
+                        "cachedInputTokens": 2,
+                        "outputTokens": 4,
+                    }
+                },
+            ),
+        ),
+    ]
+    second_session = [
+        _record(
+            0,
+            TraceEvent(
+                "token_usage",
+                {"total": {"totalTokens": 6, "inputTokens": 3}},
+            ),
+        )
+    ]
+
+    report = measure_runtime_costs([(first_session, 10), (second_session, 10)])
+
+    assert report.token_observations == 3
+    assert report.cumulative_main_tokens == 20
+    assert report.main_token_breakdown.total.covered_sessions == 2
+    assert report.main_token_breakdown.input.value == 13
+    assert report.main_token_breakdown.input.covered_sessions == 2
+    assert report.main_token_breakdown.cached_input.value == 2
+    assert report.main_token_breakdown.cached_input.covered_sessions == 1
+    assert report.main_token_breakdown.cache_write_input.value is None
+    assert report.main_token_breakdown.cache_write_input.covered_sessions == 0
+
+    rendered = render_runtime_costs(report)
+    assert "Main tokens: 20 (2/2 sessions)" in rendered
+    assert "cached_input=2 (1/2 sessions)" in rendered
+    assert "cache_write_input=unknown (0/2 sessions)" in rendered
 
 
 def test_uncorrelated_action_observations_do_not_invent_semantic_identity() -> None:

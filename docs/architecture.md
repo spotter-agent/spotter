@@ -342,8 +342,10 @@ aggregation on the synchronous path.
 actions and token observations, Spotter semantic reviewer calls/tokens, deterministic Hook/IPC
 latency, timing coverage, and journal storage. Hook and App Server action surfaces are reported
 separately during migration rather than summed. Token totals remain `cumulative/unknown-scope`, and
-missing token/timing/latency data is printed as unknown with an explicit coverage denominator. Source
-wall time is never subtracted from receipt wall time to manufacture a latency across clock domains.
+the latest total per session is used so cumulative updates are not double-counted. Input, cached
+input, cache-write input, output, and reasoning-output fields each retain their own session coverage;
+missing token/timing/latency data is printed as unknown with an explicit denominator. Source wall
+time is never subtracted from receipt wall time to manufacture a latency across clock domains.
 App Server events also retain a monotonically increasing arrival sequence within each connection
 epoch, so equal source timestamps remain durably ordered across journal reloads.
 

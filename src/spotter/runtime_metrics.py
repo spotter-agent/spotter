@@ -23,6 +23,22 @@ class SurfaceCost:
 
 
 @dataclass(frozen=True)
+class CoveredTokens:
+    value: int | None
+    covered_sessions: int
+
+
+@dataclass(frozen=True)
+class TokenBreakdown:
+    total: CoveredTokens
+    input: CoveredTokens
+    cached_input: CoveredTokens
+    cache_write_input: CoveredTokens
+    output: CoveredTokens
+    reasoning_output: CoveredTokens
+
+
+@dataclass(frozen=True)
 class RuntimeCostReport:
     sessions: int
     events: int
@@ -31,6 +47,7 @@ class RuntimeCostReport:
     token_turns: int
     token_observations: int
     cumulative_main_tokens: int | None
+    main_token_breakdown: TokenBreakdown
     reviewer_calls: int
     reviewer_tokens: int | None
     reviewer_jobs_queued: int
@@ -58,9 +75,11 @@ def measure_runtime_costs(
 ) -> RuntimeCostReport:
     surfaces: dict[str, SurfaceCost] = {"hook": SurfaceCost(), "app_server": SurfaceCost()}
     sessions = events = completed_turns = token_turns = token_observations = 0
-    cumulative_main_tokens = reviewer_calls = reviewer_tokens = journal_bytes = gate_calls = 0
+    reviewer_calls = reviewer_tokens = journal_bytes = gate_calls = 0
     reviewer_jobs_queued = reviewer_jobs_started = 0
-    main_tokens_known = reviewer_tokens_known = False
+    reviewer_tokens_known = False
+    token_sums = {field: 0 for field in _TOKEN_FIELDS}
+    token_sessions = {field: 0 for field in _TOKEN_FIELDS}
     tool_duration_ms: list[float] = []
     reviewer_queue_ms: list[float] = []
     reviewer_inference_ms: list[float] = []
@@ -85,7 +104,7 @@ def measure_runtime_costs(
         completed: set[str] = set()
         token_covered: set[str] = set()
         turn_starts: dict[tuple[str, int], float] = {}
-        latest_main_tokens: int | None = None
+        latest_main_tokens: Mapping[str, object] | None = None
         latest_reviewer_tokens: int | None = None
         for record in records:
             event = record.event
@@ -127,9 +146,9 @@ def measure_runtime_costs(
                 token_observations += 1
                 if turn_id is not None:
                     token_covered.add(turn_id)
-                observed_tokens = _total_tokens(event.payload)
-                if observed_tokens is not None:
-                    latest_main_tokens = observed_tokens
+                total = event.payload.get("total")
+                if isinstance(total, Mapping):
+                    latest_main_tokens = total
             if event.kind == "reviewer_decision":
                 reviewer_calls += 1
                 spend = event.payload.get("spend")
@@ -165,8 +184,10 @@ def measure_runtime_costs(
         if latest_main_tokens is not None:
             # Each journal represents one session; use only its latest cumulative
             # observation so repeated token updates are not double-counted.
-            main_tokens_known = True
-            cumulative_main_tokens += latest_main_tokens
+            for field in _TOKEN_FIELDS:
+                if (value := _token_count(latest_main_tokens.get(field))) is not None:
+                    token_sums[field] += value
+                    token_sessions[field] += 1
         if latest_reviewer_tokens is not None:
             reviewer_tokens_known = True
             reviewer_tokens += latest_reviewer_tokens
@@ -177,6 +198,14 @@ def measure_runtime_costs(
         if previous is None or sample_seq > previous[0]:
             latest_samples[runtime_id] = (sample_seq, cpu_seconds, peak_rss_bytes)
 
+    token_breakdown = TokenBreakdown(
+        _covered_field("totalTokens", token_sums, token_sessions),
+        _covered_field("inputTokens", token_sums, token_sessions),
+        _covered_field("cachedInputTokens", token_sums, token_sessions),
+        _covered_field("cacheWriteInputTokens", token_sums, token_sessions),
+        _covered_field("outputTokens", token_sums, token_sessions),
+        _covered_field("reasoningOutputTokens", token_sums, token_sessions),
+    )
     return RuntimeCostReport(
         sessions,
         events,
@@ -184,7 +213,8 @@ def measure_runtime_costs(
         completed_turns,
         token_turns,
         token_observations,
-        cumulative_main_tokens if main_tokens_known else None,
+        token_breakdown.total.value,
+        token_breakdown,
         reviewer_calls,
         reviewer_tokens if reviewer_tokens_known else None,
         reviewer_jobs_queued,
@@ -217,13 +247,16 @@ def render_runtime_costs(report: RuntimeCostReport) -> str:
             f"(from {_observations(cost.outcome_observations)}), "
             f"failed={cost.failed_outcomes}/{cost.classified_outcomes} classified"
         )
-    tokens = (
-        f"{report.cumulative_main_tokens} cumulative/unknown-scope tokens"
-        if report.cumulative_main_tokens is not None
-        else "unknown"
-    )
+    tokens = report.main_token_breakdown
     lines.append(
-        f"  Main tokens: {tokens}; turn coverage "
+        f"  Main tokens: {_covered_tokens(tokens.total, report.sessions)} "
+        "cumulative/unknown-scope; breakdown "
+        f"input={_covered_tokens(tokens.input, report.sessions)}, "
+        f"cached_input={_covered_tokens(tokens.cached_input, report.sessions)}, "
+        f"cache_write_input={_covered_tokens(tokens.cache_write_input, report.sessions)}, "
+        f"output={_covered_tokens(tokens.output, report.sessions)}, "
+        f"reasoning_output={_covered_tokens(tokens.reasoning_output, report.sessions)}; "
+        "source=durable token_usage provenance; turn coverage "
         f"{report.token_turns}/{report.completed_turns}; observations={report.token_observations}"
     )
     reviewer_tokens = (
@@ -310,10 +343,27 @@ def _turn_clock(record: StepRecord) -> tuple[str, int, float] | None:
     return turn_id, epoch, occurred_at
 
 
-def _total_tokens(payload: Mapping[str, object]) -> int | None:
-    total = payload.get("total")
-    value = total.get("totalTokens") if isinstance(total, Mapping) else None
+_TOKEN_FIELDS = (
+    "totalTokens",
+    "inputTokens",
+    "cachedInputTokens",
+    "cacheWriteInputTokens",
+    "outputTokens",
+    "reasoningOutputTokens",
+)
+
+
+def _token_count(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _covered_field(
+    field: str,
+    sums: Mapping[str, int],
+    sessions: Mapping[str, int],
+) -> CoveredTokens:
+    coverage = sessions[field]
+    return CoveredTokens(sums[field] if coverage else None, coverage)
 
 
 def _number(value: object) -> float | None:
@@ -358,3 +408,8 @@ def _sample(values: tuple[float, ...], eligible: int) -> str:
 
 def _observations(count: int) -> str:
     return f"{count} observation{'s' if count != 1 else ''}"
+
+
+def _covered_tokens(metric: CoveredTokens, eligible: int) -> str:
+    value = str(metric.value) if metric.value is not None else "unknown"
+    return f"{value} ({metric.covered_sessions}/{eligible} sessions)"
