@@ -6,7 +6,7 @@
 
 ## Scope
 
-This report consolidates the historical coverage baseline and four fresh identical-arm runs. It is
+This report consolidates the historical coverage baseline and five fresh identical-arm runs. It is
 the versioned fidelity artifact downstream experiments can cite instead of assuming replay validity.
 The decision applies to representative causal claims, not to continued development experiments.
 
@@ -26,16 +26,16 @@ the scorer and required recovery.
 
 | Stratum | Tasks / prefixes | Pairs | Passing arms | Disagreements | Env mismatch | Infra failure |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Legacy unpinned effort | 3 / 3 | 11 | 22/22 | 0/11 | 0/11 | 0/22 |
+| Legacy unpinned effort | 3 / 4 | 12 | 24/24 | 0/12 | 0/12 | 0/24 |
 | Pinned `low` recovery | 1 / 1 | 3 | 6/6 | 0/3 | 0/3 | 0/6 |
 
 The strata are not pooled. Reasoning effort was not persisted for the first three experiments, while
 the recovery cohort pins and proves `low` effort on both source and continuations.
 
 For orientation only, treating repeated pairs as independent Bernoulli observations gives one-sided
-95% zero-event upper bounds of 23.84% for 0/11 and 63.16% for 0/3. Those bounds are **not valid
+95% zero-event upper bounds of 22.09% for 0/12 and 63.16% for 0/3. Those bounds are **not valid
 cross-task qualification bounds** because pairs repeat the same prefixes. With only three and one
-independent prefixes per stratum, no useful hierarchical estimate is identifiable.
+independent task families per stratum, no useful hierarchical estimate is identifiable.
 
 ## Instrument controls now enforced
 
@@ -53,10 +53,10 @@ on eligible fresh prefixes. It does not establish that the true neutral noise is
 causal deltas:
 
 - no neutral pair has disagreed, so the failure region remains uncalibrated;
-- all 28 neutral arms ended in mechanical success, despite one source session's recovered failure;
+- all 30 neutral arms ended in mechanical success, despite one source session's recovered failure;
 - the fresh sample is four synthetic Python tasks;
 - the largest stratum lacks persisted effort provenance;
-- ignored files and environment variables remain explicitly uncaptured.
+- undeclared ignored files and environment variables remain explicitly uncaptured.
 
 #34 and #23 may use this instrument for development runs, but must not cite v1 as a representative
 noise bound or interpret an intervention delta as causal. Qualification needs final-outcome failure
@@ -69,4 +69,5 @@ prefixes, more independent task families, and explicit environment-resource/drif
 - [Early pre-mutation run](fork-neutral-early-prefix.md)
 - [Routing-decision run](fork-neutral-routing-decision.md)
 - [Pinned low-effort recovery-prefix run](fork-neutral-recovery-prefix.md)
+- [Edit-decision run](fork-neutral-edit-decision.md)
 - [Machine-readable qualification](fork-fidelity-v1.json)

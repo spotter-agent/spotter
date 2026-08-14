@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "measured_at": "2026-08-14",
+  "experiment_id": "1d3fd4cc-07da-4929-ae18-96ef2034e53c",
+  "source_session": "019ffb20-aa92-7f32-857d-e3bcf7f3ebb2",
+  "branch_step": 8,
+  "prefix_id": "e55f9f877357634da889ce9b062b104e2131369571bf9b46fc38423734877072",
+  "source_snapshot": "406d113ee4920bc07b45b6e8f96776c34f9f31b4",
+  "model": "gpt-5.6-sol",
+  "reasoning_effort": "codex-config-default",
+  "scorer": "python3 check.py",
+  "raw_result_sha256": "a7dd3324d05cff4c063bf5efd781be5113b0a5c544830fd8d79270f8ebeb8c8e",
+  "coverage": {
+    "candidates": 5,
+    "forkable_exact": 4,
+    "pre_mutation_candidates": 2,
+    "pre_mutation_forkable": 2,
+    "earliest_forkable_step": 2
+  },
+  "outcomes": {
+    "pairs": 1,
+    "judgeable_pairs": 1,
+    "mechanical_disagreements": 0,
+    "environment_mismatches": 0,
+    "infrastructure_failures": 0,
+    "passing_arms": 2
+  },
+  "continuations": [
+    {
+      "pair": 0,
+      "arm": "neutral_a",
+      "session_id": "b89749b2-fa88-47b8-8909-c265c2ac560e",
+      "elapsed_seconds": 23.241,
+      "tool_calls": 4,
+      "reported_tokens": 142888
+    },
+    {
+      "pair": 0,
+      "arm": "neutral_b",
+      "session_id": "8b41cf07-e891-4e5b-b106-447addb2495d",
+      "elapsed_seconds": 21.389,
+      "tool_calls": 4,
+      "reported_tokens": 142596
+    }
+  ]
+}
