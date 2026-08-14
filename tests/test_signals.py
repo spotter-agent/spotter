@@ -206,6 +206,139 @@ def test_block_recurrence_does_not_guess_across_resources_or_unknown_shapes() ->
     )
 
 
+def test_context_window_budget_uses_explicit_relative_capacity_and_cools_down() -> None:
+    engine = SignalEngine(context_window_threshold_percent=80)
+    unknown = _trace("token_usage", "event-1", {"total": {"totalTokens": 90}})
+    low = _trace(
+        "token_usage",
+        "event-2",
+        {"total": {"totalTokens": 79}, "modelContextWindow": 100},
+    )
+    threshold = _trace(
+        "token_usage",
+        "event-3",
+        {"total": {"totalTokens": 80}, "modelContextWindow": 100},
+    )
+    higher = _trace(
+        "token_usage",
+        "event-4",
+        {"total": {"totalTokens": 90}, "modelContextWindow": 100},
+    )
+    expanded = _trace(
+        "token_usage",
+        "event-5",
+        {"total": {"totalTokens": 90}, "modelContextWindow": 200},
+    )
+
+    assert engine.update(unknown, 1) == ()
+    assert engine.update(low, 2) == ()
+    active = engine.update(threshold, 3)[0]
+    cooled = engine.update(higher, 4)[0]
+    resolved = engine.update(expanded, 5)[0]
+
+    assert active.signal_type == SignalType.BUDGET_ANOMALY
+    assert active.status == SignalStatus.ACTIVE
+    assert active.severity_hint == 80
+    assert active.involved_resources == ("budget:context-window",)
+    assert active.to_trace_event(threshold).payload["features"] == {
+        "context_window_utilization_percent": 80,
+        "model_context_window_tokens": 100,
+        "total_tokens": 80,
+    }
+    assert cooled.signal_id == active.signal_id
+    assert cooled.status == SignalStatus.COOLED_DOWN
+    assert cooled.severity_hint == 90
+    assert resolved.signal_id == active.signal_id
+    assert resolved.status == SignalStatus.RESOLVED
+
+
+def test_duration_budget_uses_per_operation_median_baseline() -> None:
+    engine = SignalEngine(
+        repeated_tool_threshold=999,
+        duration_anomaly_factor_percent=300,
+    )
+
+    def outcome(event_id: str, duration_ms: object, tool: str = "lookup") -> TraceEvent:
+        return _trace(
+            "tool_result",
+            event_id,
+            {
+                "status": "completed",
+                "server": "fixture",
+                "tool": tool,
+                "durationMs": duration_ms,
+            },
+        )
+
+    for version, duration in enumerate((10, 11, 9), start=1):
+        assert engine.update(outcome(f"event-{version}", duration), version) == ()
+    assert engine.update(outcome("event-4", 1_000, "other"), 4) == ()
+    assert engine.update(outcome("event-5", "unknown"), 5) == ()
+    active = engine.update(outcome("event-6", 31), 6)[0]
+    cooled = engine.update(outcome("event-7", 40), 7)[0]
+    resolved = engine.update(outcome("event-8", 12), 8)[0]
+
+    assert active.signal_type == SignalType.BUDGET_ANOMALY
+    assert active.status == SignalStatus.ACTIVE
+    assert active.severity_hint == 310
+    assert active.involved_resources == (
+        "budget:duration",
+        "tool:fixture/lookup",
+    )
+    assert active.to_trace_event(outcome("event-6", 31)).payload["features"] == {
+        "duration_vs_median_percent": 310,
+        "duration_baseline_samples": 3,
+        "duration_baseline_median_ms": 10,
+    }
+    assert cooled.signal_id == active.signal_id
+    assert cooled.status == SignalStatus.COOLED_DOWN
+    assert cooled.severity_hint == 400
+    assert resolved.signal_id == active.signal_id
+    assert resolved.status == SignalStatus.RESOLVED
+    for version, duration in enumerate((1, 1, 1, 1_000), start=9):
+        assert (
+            engine.update(
+                _trace(
+                    "test_result",
+                    f"event-{version}",
+                    {"status": "passed", "durationMs": duration},
+                ),
+                version,
+            )
+            == ()
+        )
+
+
+def test_budget_anomaly_hydrates_context_cooldown() -> None:
+    first = _trace(
+        "token_usage",
+        "event-1",
+        {"total": {"totalTokens": 80}, "modelContextWindow": 100},
+    )
+    original = SignalEngine()
+    active = original.update(first, 1)[0]
+    recovered = SignalEngine()
+
+    assert (
+        recovered.hydrate(
+            [
+                StepRecord(0, first, None),
+                StepRecord(1, active.to_trace_event(first), None),
+            ]
+        )
+        == ()
+    )
+    second = _trace(
+        "token_usage",
+        "event-2",
+        {"total": {"totalTokens": 90}, "modelContextWindow": 100},
+    )
+    cooled = recovered.update(second, 3)[0]
+
+    assert cooled.signal_id == active.signal_id
+    assert cooled.status == SignalStatus.COOLED_DOWN
+
+
 def test_stale_hypothesis_reuse_requires_explicit_causal_action_link() -> None:
     engine = SignalEngine()
     store = ThreadStateStore()

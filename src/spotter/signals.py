@@ -2,10 +2,12 @@
 
 import hashlib
 import json
+import math
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from enum import StrEnum
+from statistics import median
 
 from spotter.identity import RuntimeIdentity, ThreadId
 from spotter.outcomes import outcome_failure
@@ -59,9 +61,13 @@ _CAUSAL_ACTION_KINDS = {
 }
 _HYPOTHESIS_LIMIT = 128
 _HYPOTHESIS_ID_LIMIT = 300
+_BUDGET_BASELINE_SAMPLES = 3
+_BUDGET_BASELINE_LIMIT = 20
+_BUDGET_PERCENT_LIMIT = 1_000_000
 
 
 class SignalType(StrEnum):
+    BUDGET_ANOMALY = "budget_anomaly"
     EDITS_WITHOUT_VALIDATION = "edits_without_validation"
     FAILURE_STREAK = "failure_streak"
     RECURRENCE_AFTER_DETERMINISTIC_BLOCK = "recurrence_after_deterministic_block"
@@ -157,6 +163,13 @@ class _DeclaredScope:
     paths: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class _DurationBaseline:
+    identity: RuntimeIdentity
+    connection_epoch: int | None
+    values_ms: tuple[float, ...]
+
+
 class SignalEngine:
     """Incremental signal state; candidates are evidence, never semantic verdicts."""
 
@@ -168,6 +181,8 @@ class SignalEngine:
         no_frontier_threshold: int = 3,
         scope_growth_threshold: int = 3,
         unvalidated_edit_threshold: int = 3,
+        context_window_threshold_percent: int = 80,
+        duration_anomaly_factor_percent: int = 300,
     ) -> None:
         if failure_threshold < 2:
             raise ValueError("failure signal threshold must be >= 2")
@@ -179,11 +194,17 @@ class SignalEngine:
             raise ValueError("scope-growth signal threshold must be >= 2")
         if unvalidated_edit_threshold < 2:
             raise ValueError("unvalidated-edit signal threshold must be >= 2")
+        if not 1 <= context_window_threshold_percent <= 100:
+            raise ValueError("context-window threshold must be between 1 and 100")
+        if duration_anomaly_factor_percent <= 100:
+            raise ValueError("duration anomaly factor must be > 100")
         self.failure_threshold = failure_threshold
         self.repeated_tool_threshold = repeated_tool_threshold
         self.no_frontier_threshold = no_frontier_threshold
         self.scope_growth_threshold = scope_growth_threshold
         self.unvalidated_edit_threshold = unvalidated_edit_threshold
+        self.context_window_threshold_percent = context_window_threshold_percent
+        self.duration_anomaly_factor_percent = duration_anomaly_factor_percent
         self._failure_streaks: dict[ThreadId, _SignalStreak] = {}
         self._repeated_tools: dict[ThreadId, _SignalStreak] = {}
         self._read_streaks: dict[ThreadId, _SignalStreak] = {}
@@ -194,6 +215,8 @@ class SignalEngine:
         self._unvalidated_edits: dict[ThreadId, _SignalStreak] = {}
         self._unvalidated_sources: dict[ThreadId, dict[str, str]] = {}
         self._stale_hypothesis_reuses: dict[tuple[ThreadId, str], _SignalStreak] = {}
+        self._budget_streaks: dict[tuple[ThreadId, str], _SignalStreak] = {}
+        self._duration_baselines: dict[tuple[ThreadId, str], _DurationBaseline] = {}
         self._seen_event_ids: dict[ThreadId, set[str]] = {}
 
     def update(
@@ -221,6 +244,8 @@ class SignalEngine:
         unvalidated_edits = self._unvalidated_edits.get(thread_id)
         blocked_keys = [key for key in self._blocked_actions if key[0] == thread_id]
         stale_reuse_keys = [key for key in self._stale_hypothesis_reuses if key[0] == thread_id]
+        budget_keys = [key for key in self._budget_streaks if key[0] == thread_id]
+        duration_keys = [key for key in self._duration_baselines if key[0] == thread_id]
         if streak is not None and _target_changed(streak, event):
             candidates.extend(self._finish(streak, SignalStatus.STALE, event, state_version))
             self._failure_streaks.pop(thread_id, None)
@@ -258,6 +283,15 @@ class SignalEngine:
                     self._finish(stale_reuse, SignalStatus.STALE, event, state_version)
                 )
                 self._stale_hypothesis_reuses.pop(stale_reuse_key)
+        for budget_key in budget_keys:
+            budget = self._budget_streaks[budget_key]
+            if _target_changed(budget, event):
+                candidates.extend(self._finish(budget, SignalStatus.STALE, event, state_version))
+                self._budget_streaks.pop(budget_key)
+        for duration_key in duration_keys:
+            baseline = self._duration_baselines[duration_key]
+            if _target_changed(baseline, event):
+                self._duration_baselines.pop(duration_key)
         if event.kind in _TERMINAL_KINDS:
             if streak is not None:
                 candidates.extend(self._finish(streak, SignalStatus.STALE, event, state_version))
@@ -293,8 +327,17 @@ class SignalEngine:
                 candidates.extend(
                     self._finish(stale_reuse, SignalStatus.STALE, event, state_version)
                 )
+            for budget_key in tuple(self._budget_streaks):
+                if budget_key[0] != thread_id:
+                    continue
+                budget = self._budget_streaks.pop(budget_key)
+                candidates.extend(self._finish(budget, SignalStatus.STALE, event, state_version))
+            for duration_key in tuple(self._duration_baselines):
+                if duration_key[0] == thread_id:
+                    self._duration_baselines.pop(duration_key)
             return tuple(candidates)
 
+        candidates.extend(self._update_budget_anomaly(event, state_version))
         candidates.extend(self._update_scope_growth(event, state_version))
         candidates.extend(self._update_unvalidated_edits(event, state_version))
         candidates.extend(self._update_stale_hypothesis_reuse(event, state_version, state))
@@ -350,6 +393,158 @@ class SignalEngine:
             if not streak.emitted:
                 self._failure_streaks[thread_id] = replace(streak, emitted=True)
         return tuple(candidates)
+
+    def _update_budget_anomaly(
+        self, event: TraceEvent, state_version: int
+    ) -> tuple[SignalCandidate, ...]:
+        return (
+            *self._update_context_budget(event, state_version),
+            *self._update_duration_budget(event, state_version),
+        )
+
+    def _update_context_budget(
+        self, event: TraceEvent, state_version: int
+    ) -> tuple[SignalCandidate, ...]:
+        if event.kind != "token_usage":
+            return ()
+        assert event.identity is not None and event.identity.thread_id is not None
+        assert event.event_id is not None
+        if event.identity.turn_id is None:
+            return ()
+        total_group = event.payload.get("total")
+        total = (
+            _nonnegative_int(total_group.get("totalTokens"))
+            if isinstance(total_group, Mapping)
+            else None
+        )
+        window = _positive_int(event.payload.get("modelContextWindow"))
+        if total is None or window is None:
+            return ()
+        percent = min(_BUDGET_PERCENT_LIMIT, total * 100 // window)
+        thread_id = event.identity.thread_id
+        key = (thread_id, "context-window")
+        streak = self._budget_streaks.get(key)
+        if percent < self.context_window_threshold_percent:
+            if streak is None:
+                return ()
+            self._budget_streaks.pop(key)
+            return self._finish(streak, SignalStatus.RESOLVED, event, state_version)
+        if streak is None:
+            streak = _SignalStreak(
+                _signal_id(event, SignalType.BUDGET_ANOMALY, key[1]),
+                SignalType.BUDGET_ANOMALY,
+                "context_window_utilization_percent",
+                key[1],
+                event.identity,
+                event.connection_epoch,
+                event.occurred_at,
+                event.occurred_at,
+                percent,
+                (event.event_id,),
+                ("budget:context-window",),
+                True,
+            )
+            status = SignalStatus.ACTIVE
+        else:
+            streak = replace(
+                streak,
+                last_seen_at=event.occurred_at,
+                count=percent,
+                evidence_event_ids=(streak.evidence_event_ids + (event.event_id,))[
+                    -_EVIDENCE_LIMIT:
+                ],
+            )
+            status = SignalStatus.COOLED_DOWN
+        self._budget_streaks[key] = streak
+        candidate = _candidate(streak, status, event.event_id, state_version)
+        return (
+            replace(
+                candidate,
+                features=(
+                    ("context_window_utilization_percent", percent),
+                    ("model_context_window_tokens", window),
+                    ("total_tokens", total),
+                ),
+            ),
+        )
+
+    def _update_duration_budget(
+        self, event: TraceEvent, state_version: int
+    ) -> tuple[SignalCandidate, ...]:
+        if event.kind not in _OUTCOME_KINDS:
+            return ()
+        assert event.identity is not None and event.identity.thread_id is not None
+        assert event.event_id is not None
+        if event.identity.turn_id is None:
+            return ()
+        duration = _duration_ms(event.payload.get("durationMs"))
+        equivalence, resources = _equivalence(event)
+        if duration is None or equivalence is None or not _resources(event.payload):
+            return ()
+        thread_id = event.identity.thread_id
+        baseline_key = (thread_id, f"duration:{equivalence}")
+        baseline = self._duration_baselines.get(baseline_key)
+        values = baseline.values_ms if baseline is not None else ()
+        if len(values) < _BUDGET_BASELINE_SAMPLES or (reference := median(values)) <= 0:
+            self._duration_baselines[baseline_key] = _DurationBaseline(
+                event.identity,
+                event.connection_epoch,
+                (*values, duration)[-_BUDGET_BASELINE_LIMIT:],
+            )
+            return ()
+        percent = min(_BUDGET_PERCENT_LIMIT, int(duration * 100 / reference))
+        streak = self._budget_streaks.get(baseline_key)
+        if percent < self.duration_anomaly_factor_percent:
+            finished = (
+                self._finish(streak, SignalStatus.RESOLVED, event, state_version)
+                if streak is not None
+                else ()
+            )
+            self._budget_streaks.pop(baseline_key, None)
+            self._duration_baselines[baseline_key] = _DurationBaseline(
+                event.identity,
+                event.connection_epoch,
+                (*values, duration)[-_BUDGET_BASELINE_LIMIT:],
+            )
+            return finished
+        if streak is None:
+            streak = _SignalStreak(
+                _signal_id(event, SignalType.BUDGET_ANOMALY, baseline_key[1]),
+                SignalType.BUDGET_ANOMALY,
+                "duration_vs_median_percent",
+                baseline_key[1],
+                event.identity,
+                event.connection_epoch,
+                event.occurred_at,
+                event.occurred_at,
+                percent,
+                (event.event_id,),
+                ("budget:duration", *resources),
+                True,
+            )
+            status = SignalStatus.ACTIVE
+        else:
+            streak = replace(
+                streak,
+                last_seen_at=event.occurred_at,
+                count=percent,
+                evidence_event_ids=(streak.evidence_event_ids + (event.event_id,))[
+                    -_EVIDENCE_LIMIT:
+                ],
+            )
+            status = SignalStatus.COOLED_DOWN
+        self._budget_streaks[baseline_key] = streak
+        candidate = _candidate(streak, status, event.event_id, state_version)
+        return (
+            replace(
+                candidate,
+                features=(
+                    ("duration_vs_median_percent", percent),
+                    ("duration_baseline_samples", len(values)),
+                    ("duration_baseline_median_ms", round(reference)),
+                ),
+            ),
+        )
 
     def _update_stale_hypothesis_reuse(
         self,
@@ -807,6 +1002,8 @@ class SignalEngine:
         self._unvalidated_edits.clear()
         self._unvalidated_sources.clear()
         self._stale_hypothesis_reuses.clear()
+        self._budget_streaks.clear()
+        self._duration_baselines.clear()
         self._seen_event_ids.clear()
         states = ThreadStateStore()
         pending: dict[str, tuple[SignalCandidate, TraceEvent]] = {}
@@ -865,7 +1062,8 @@ def _candidate(
 
 
 def _target_changed(
-    streak: _SignalStreak | _ReadFrontier | _DeclaredScope, event: TraceEvent
+    streak: _SignalStreak | _ReadFrontier | _DeclaredScope | _DurationBaseline,
+    event: TraceEvent,
 ) -> bool:
     identity = event.identity
     return bool(
@@ -985,6 +1183,21 @@ def _hypothesis_ids(raw: object) -> tuple[str, ...]:
             and len(value.strip()) <= _HYPOTHESIS_ID_LIMIT
         )
     )
+
+
+def _nonnegative_int(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _positive_int(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def _duration_ms(value: object) -> float | None:
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        return None
+    duration = float(value)
+    return duration if duration >= 0 and math.isfinite(duration) else None
 
 
 def _within_scope(path: str, expected: str) -> bool:

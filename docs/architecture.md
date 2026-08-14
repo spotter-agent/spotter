@@ -522,6 +522,11 @@ Absent validation scope remains unknown: a passing test outcome does not clear u
 `edits_since_validation` entries. Likewise, an action without `hypothesis_ids` does not prove that
 it reused or ignored any hypothesis.
 
+Budget candidates also stay relative to observed capacity: token pressure uses an explicit model
+context window, and duration anomalies require a same-operation/resource median baseline. Missing
+capacity, duration, or resource identity remains unknown rather than falling back to one global
+repository threshold.
+
 Normalization must not discard provenance. Live control, replay, and causal analysis must be able to reconnect normalized records to the underlying runtime item/turn.
 
 ## Implemented App Server ingestion
