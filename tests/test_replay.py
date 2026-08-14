@@ -715,9 +715,11 @@ def test_environment_comparison_classifies_submodule_drift_separately(repo: Path
 def test_declared_ignored_resource_is_not_hidden_by_matching_forks(
     repo: Path, codex_home: Path
 ) -> None:
+    _commit_baseline(repo)
     (repo / ".gitignore").write_text(".env\n")
-    (repo / ".env").write_text("fixture-secret")
+    (repo / ".env").write_text(str(repo.resolve()))
     (repo / "fixture.json").write_text('{"version": 1}')
+    source = fingerprint_environment(repo, (".env",)).declared_resources[0]
     sha = snapshot_worktree(repo)
     _journal(
         OLD_ID,
@@ -744,6 +746,7 @@ def test_declared_ignored_resource_is_not_hidden_by_matching_forks(
     )
     manifest = load_fork_manifest(Path(plan.manifest or ""))
 
+    assert source.worktree_path_reference is True
     assert plan.source_environment_preflight == ("SOURCE_ENVIRONMENT_MISMATCH:MISSING_IGNORED_FILE")
     assert manifest.source_environment_preflight == plan.source_environment_preflight
     assert manifest.environment is not None

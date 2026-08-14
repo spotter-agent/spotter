@@ -576,7 +576,11 @@ def _declared_resource_drift(
         return (EnvironmentDrift.UNKNOWN_ENVIRONMENT_DRIFT,)
     drift: list[EnvironmentDrift] = []
     for source, restored in zip(left, right, strict=True):
-        if source.worktree_path_reference != restored.worktree_path_reference:
+        if source.state == "ignored" and restored.state == "missing":
+            category = EnvironmentDrift.MISSING_IGNORED_FILE
+        elif source.state == "untracked" and restored.state == "missing":
+            category = EnvironmentDrift.MISSING_UNTRACKED_FILE
+        elif source.worktree_path_reference != restored.worktree_path_reference:
             category = EnvironmentDrift.ABSOLUTE_PATH_MISMATCH
         elif (
             source.sha256 is not None
@@ -584,10 +588,6 @@ def _declared_resource_drift(
             and source.sha256 == restored.sha256
         ):
             continue
-        elif source.state == "ignored" and restored.state == "missing":
-            category = EnvironmentDrift.MISSING_IGNORED_FILE
-        elif source.state == "untracked" and restored.state == "missing":
-            category = EnvironmentDrift.MISSING_UNTRACKED_FILE
         elif source.state == "tracked":
             category = EnvironmentDrift.TRACKED_STATE_MISMATCH
         else:
