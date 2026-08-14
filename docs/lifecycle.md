@@ -880,10 +880,12 @@ relative non-secret files or directories with `--environment-resource`, and non-
 variables with `--environment-variable`. Spotter records only resource paths/types/Git state and
 content/tree hashes, plus variable names, presence, and value hashes; raw variable values are never
 persisted. Source-to-fork loss or value drift is classified before either arm runs and rechecked
-immediately before continuation. Directory trees containing symbolic links are rejected instead of
-being followed. Undeclared ignored resources, environment variables, and agent configuration remain
-explicitly uncaptured limitations. Fork manifest schema v4 persists declared variable fingerprints;
-schema v1 through v3 manifests remain readable, with v1 providing no declared-resource coverage.
+immediately before continuation. A boolean records whether a declared value contains the current
+worktree's absolute path, without persisting that value; a copied source path is classified as
+`ABSOLUTE_PATH_MISMATCH`. Directory trees containing symbolic links are rejected instead of being
+followed. Undeclared ignored resources, environment variables, and agent configuration remain
+explicitly uncaptured limitations. Fork manifest schema v5 persists worktree-path references;
+schema v1 through v4 manifests remain readable, with v1 providing no declared-resource coverage.
 
 With snapshotting enabled, the Codex `SessionStart` Hook pins a baseline snapshot for the reported
 Git working directory. Read-only proposals before the first mutation can therefore reuse that one
@@ -921,9 +923,9 @@ cost/timing
 
 Both forks in a pair are created before either arm runs. Execution is refused when their prefix IDs
 or captured environment fingerprints differ, or when a declared source resource does not survive
-restore. Captured drift is classified as repository-state, missing ignored/untracked files,
-tool-version, or otherwise unknown environment drift. This preflight protects pair parity but does
-not yet establish the replay instrument's empirical noise floor.
+restore. Captured drift is classified as repository-state, missing ignored/untracked files, copied
+absolute worktree paths, tool-version, or otherwise unknown environment drift. This preflight
+protects pair parity but does not yet establish the replay instrument's empirical noise floor.
 
 Neutral-noise mode resumes both arms with the exact same control prompt. Across repeated pairs it
 reports mechanical outcome disagreement separately from environment-preflight mismatches and

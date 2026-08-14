@@ -797,6 +797,45 @@ def test_declared_environment_variable_requires_posix_name(repo: Path) -> None:
         fingerprint_environment(repo, environment_variables=("NOT-VALID",))
 
 
+def test_fork_rejects_declared_values_that_keep_the_source_worktree_path(
+    repo: Path, codex_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = repo / "fixture.json"
+    config.write_text(json.dumps({"cache": str(repo.resolve() / ".cache")}))
+    monkeypatch.setenv("SPOTTER_CACHE_DIR", str(repo.resolve() / ".cache"))
+    subprocess.run(["git", "add", "a.txt", "fixture.json"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "baseline"], cwd=repo, check=True)
+    sha = snapshot_worktree(repo)
+    _journal(
+        OLD_ID,
+        [
+            (
+                TraceEvent(
+                    "tool_proposal",
+                    {"tool_use_id": "call_A", "cwd": str(repo), "reversibility_class": "A"},
+                ),
+                sha,
+            )
+        ],
+    )
+
+    plan = fork(
+        OLD_ID,
+        0,
+        codex_home=codex_home,
+        environment_resources=("fixture.json",),
+        environment_variables=("SPOTTER_CACHE_DIR",),
+    )
+    manifest = load_fork_manifest(Path(plan.manifest or ""))
+
+    assert plan.source_environment_preflight == (
+        "SOURCE_ENVIRONMENT_MISMATCH:ABSOLUTE_PATH_MISMATCH"
+    )
+    assert manifest.environment is not None
+    assert manifest.environment.declared_resources[0].worktree_path_reference is False
+    assert manifest.environment.declared_environment_variables[0].worktree_path_reference is False
+
+
 def test_declared_directory_fingerprint_tracks_tree_contents(repo: Path) -> None:
     _commit_baseline(repo)
     fixtures = repo / "fixtures"
@@ -860,7 +899,7 @@ def test_declared_ignored_directory_loss_is_caught_before_fork_runs(
     assert manifest.environment.declared_resources[0].kind == "missing"
 
 
-def test_fork_manifest_v1_through_v3_remain_readable(
+def test_fork_manifest_v1_through_v4_remain_readable(
     repo: Path, codex_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("SPOTTER_FIXTURE_MODE", "safe-value")
@@ -904,6 +943,20 @@ def test_fork_manifest_v1_through_v3_remain_readable(
     )
 
     raw = json.loads(manifest_path.read_text())
+
+    raw["schema_version"] = 4
+    for resource in raw["environment"]["declared_resources"]:
+        resource.pop("worktree_path_reference")
+    for variable in raw["environment"]["declared_environment_variables"]:
+        variable.pop("worktree_path_reference")
+    manifest_path.write_text(json.dumps(raw))
+
+    manifest = load_fork_manifest(manifest_path)
+
+    assert manifest.schema_version == 4
+    assert manifest.environment is not None
+    assert manifest.environment.declared_resources[0].worktree_path_reference is False
+    assert manifest.environment.declared_environment_variables[0].worktree_path_reference is False
 
     raw["schema_version"] = 3
     raw["environment"].pop("declared_environment_variables")

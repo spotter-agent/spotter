@@ -341,9 +341,10 @@ environment parity checks before either agent arm runs. The arms must use distin
 each is rechecked against its immutable manifest immediately before model continuation. Explicitly
 declared relative non-secret files, directories, and non-secret environment variables are hashed
 and checked from source to fork and again immediately before continuation; missing ignored or
-untracked resources and changed variables block both arms. Directory trees containing symbolic
-links are rejected. Undeclared ignored resources and environment variables are explicitly marked as
-not captured rather than assumed equal. Prefixes preserve the rollout model,
+untracked resources, changed variables, and copied values that still reference the source worktree's
+absolute path block both arms. Directory trees containing symbolic links are rejected. Undeclared
+ignored resources and environment variables are explicitly marked as not captured rather than
+assumed equal. Prefixes preserve the rollout model,
 runtime, and a secret-free subset of turn configuration; experiments can pin both the Codex model
 and reasoning effort and persist both values in result provenance. When those values are pinned and
 source provenance is available, a mismatch is rejected before either arm starts.
