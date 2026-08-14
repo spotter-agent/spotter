@@ -84,6 +84,9 @@ class RuntimeCostReport:
     main_token_breakdown: TokenBreakdown
     reviewer_calls: int
     reviewer_tokens: int | None
+    reviewer_sessions: int
+    reviewer_token_sessions: int
+    reviewer_token_observations: int
     signal_candidates_active: int
     repeated_equivalent_actions: CoveredCount
     reads_without_frontier_expansion: CoveredCount
@@ -220,6 +223,7 @@ def measure_runtime_costs(
 ) -> RuntimeCostReport:
     sessions = events = completed_turns = token_turns = token_observations = 0
     reviewer_calls = reviewer_tokens = journal_bytes = gate_calls = 0
+    reviewer_sessions = reviewer_token_sessions = reviewer_token_observations = 0
     signal_candidates_active = reviewer_jobs_queued = reviewer_jobs_started = 0
     repeated_actions = [0, 0, 0]
     no_frontier_reads = [0, 0, 0]
@@ -229,7 +233,6 @@ def measure_runtime_costs(
     control_failed = control_unknown = control_stale = 0
     control_adoption_eligible = control_adoptions = 0
     reviewer_inference_finishes = 0
-    reviewer_tokens_known = False
     token_sums = {field: 0 for field in _TOKEN_FIELDS}
     token_sessions = {field: 0 for field in _TOKEN_FIELDS}
     action_surfaces: dict[str, set[str]] = {}
@@ -272,6 +275,7 @@ def measure_runtime_costs(
         turn_starts: dict[tuple[str, int], float] = {}
         latest_main_tokens: Mapping[str, object] | None = None
         latest_reviewer_tokens: int | None = None
+        session_reviewer_calls = 0
         for record in records:
             event = record.event
             surface = _event_surface(event)
@@ -329,11 +333,14 @@ def measure_runtime_costs(
                     latest_main_tokens = total
             if event.kind == "reviewer_decision":
                 reviewer_calls += 1
+                session_reviewer_calls += 1
+                latest_reviewer_tokens = None
                 spend = event.payload.get("spend")
                 if isinstance(spend, Mapping):
                     value = spend.get("session_tokens")
-                    if isinstance(value, int) and not isinstance(value, bool):
+                    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
                         latest_reviewer_tokens = value
+                        reviewer_token_observations += 1
                 timing = event.payload.get("timing")
                 if _payload_id(event.payload, "review_job_id") is None and isinstance(
                     timing, Mapping
@@ -388,8 +395,10 @@ def measure_runtime_costs(
                 if (value := _token_count(latest_main_tokens.get(field))) is not None:
                     token_sums[field] += value
                     token_sessions[field] += 1
+        if session_reviewer_calls:
+            reviewer_sessions += 1
         if latest_reviewer_tokens is not None:
-            reviewer_tokens_known = True
+            reviewer_token_sessions += 1
             reviewer_tokens += latest_reviewer_tokens
 
     latest_samples: dict[str, tuple[int, float, int]] = {}
@@ -450,7 +459,10 @@ def measure_runtime_costs(
         cumulative_main_tokens=token_breakdown.total.value,
         main_token_breakdown=token_breakdown,
         reviewer_calls=reviewer_calls,
-        reviewer_tokens=reviewer_tokens if reviewer_tokens_known else None,
+        reviewer_tokens=reviewer_tokens if reviewer_token_sessions else None,
+        reviewer_sessions=reviewer_sessions,
+        reviewer_token_sessions=reviewer_token_sessions,
+        reviewer_token_observations=reviewer_token_observations,
         signal_candidates_active=signal_candidates_active,
         repeated_equivalent_actions=_total_covered_count(repeated_actions),
         reads_without_frontier_expansion=_total_covered_count(no_frontier_reads),
@@ -878,9 +890,6 @@ def render_runtime_costs(report: RuntimeCostReport) -> str:
         "source=durable token_usage provenance; turn coverage "
         f"{report.token_turns}/{report.completed_turns}; observations={report.token_observations}"
     )
-    reviewer_tokens = (
-        str(report.reviewer_tokens) if report.reviewer_tokens is not None else "unknown"
-    )
     queue = _sample(report.reviewer_queue_ms, report.reviewer_jobs_started)
     inference = _sample(report.reviewer_inference_ms, report.reviewer_inference_finishes)
     end_to_end = _sample(report.reviewer_end_to_end_ms, report.reviewer_jobs_decided)
@@ -888,7 +897,7 @@ def render_runtime_costs(report: RuntimeCostReport) -> str:
     decision_lag = _sample(report.reviewer_decision_lag_ms, report.reviewer_jobs_decided)
     lines.append(
         f"  Spotter semantic: reviewer_calls={report.reviewer_calls}, "
-        f"recorded_session_tokens={reviewer_tokens}; queue={queue}, "
+        f"recorded_session_tokens={_reviewer_token_coverage(report)}; queue={queue}, "
         f"inference={inference}"
     )
     lines.append(
@@ -961,13 +970,11 @@ def render_runtime_costs(report: RuntimeCostReport) -> str:
 def render_runtime_cost_summary(report: RuntimeCostReport) -> str:
     """Render one coverage-aware line for per-session intervention review."""
 
-    reviewer_tokens = (
-        str(report.reviewer_tokens) if report.reviewer_tokens is not None else "unknown"
-    )
     main_tokens = _covered_tokens(report.main_token_breakdown.total, report.sessions)
     return (
         f"costs: main_tokens={main_tokens}; "
-        f"semantic reviewer_calls={report.reviewer_calls} reviewer_tokens={reviewer_tokens}; "
+        f"semantic reviewer_calls={report.reviewer_calls} "
+        f"reviewer_tokens={_reviewer_token_coverage(report)}; "
         f"deterministic gate_calls={report.gate_calls}; "
         f"control accepted={report.control_rpc_accepted} "
         f"adoption={report.control_adoptions}/{report.control_adoption_eligible}; "
@@ -1348,6 +1355,24 @@ def _observations(count: int) -> str:
 def _covered_tokens(metric: CoveredTokens, eligible: int) -> str:
     value = str(metric.value) if metric.value is not None else "unknown"
     return f"{value} ({metric.covered_sessions}/{eligible} sessions)"
+
+
+def _reviewer_token_coverage(report: RuntimeCostReport) -> str:
+    value = str(report.reviewer_tokens) if report.reviewer_tokens is not None else "unknown"
+    if report.reviewer_tokens is None:
+        status = "unavailable"
+    elif (
+        report.reviewer_token_sessions == report.reviewer_sessions
+        and report.reviewer_token_observations == report.reviewer_calls
+    ):
+        status = "exact"
+    else:
+        status = "partial"
+    return (
+        f"{value} ({report.reviewer_token_sessions}/{report.reviewer_sessions} "
+        f"reviewer sessions, {report.reviewer_token_observations}/{report.reviewer_calls} "
+        f"calls; {status})"
+    )
 
 
 def _covered_count(metric: CoveredCount) -> str:

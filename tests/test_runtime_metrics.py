@@ -337,6 +337,9 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
     assert report.main_token_breakdown.reasoning_output.value == 1
     assert report.reviewer_calls == 1
     assert report.reviewer_tokens == 25
+    assert report.reviewer_sessions == 1
+    assert report.reviewer_token_sessions == 1
+    assert report.reviewer_token_observations == 1
     assert report.reviewer_jobs_queued == report.reviewer_jobs_started == 1
     assert report.reviewer_queue_ms == (4.0,)
     assert report.reviewer_inference_finishes == 1
@@ -990,6 +993,36 @@ def test_unavailable_runtime_metrics_render_unknown_not_zero() -> None:
     assert "receipt_wall=0/1" in rendered
     assert "monotonic_receipt=0/1 across 0 clock domains" in rendered
     assert "equivalent_actions=unknown (0/0 signal lifecycles)" in rendered
+    assert (
+        "recorded_session_tokens=unknown (0/0 reviewer sessions, 0/0 calls; unavailable)"
+        in rendered
+    )
+
+
+def test_reviewer_tokens_report_partial_call_and_session_coverage() -> None:
+    first_session = [
+        _record(
+            0,
+            TraceEvent("reviewer_decision", {"spend": {"session_tokens": 5}}),
+        ),
+        _record(1, TraceEvent("reviewer_decision", {})),
+    ]
+    second_session = [
+        _record(
+            0,
+            TraceEvent("reviewer_decision", {"spend": {"session_tokens": 7}}),
+        )
+    ]
+
+    report = measure_runtime_costs([(first_session, 10), (second_session, 10)])
+
+    assert report.reviewer_calls == 3
+    assert report.reviewer_sessions == 2
+    assert report.reviewer_token_observations == 2
+    assert report.reviewer_token_sessions == 1
+    assert report.reviewer_tokens == 7
+    rendered = render_runtime_costs(report)
+    assert "recorded_session_tokens=7 (1/2 reviewer sessions, 2/3 calls; partial)" in rendered
 
 
 def test_cumulative_token_updates_use_latest_and_report_field_coverage() -> None:
