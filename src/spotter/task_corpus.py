@@ -480,7 +480,7 @@ def _run_task_agent(
         args += ["--model", model]
     args += ["--skip-git-repo-check", "--sandbox", sandbox]
     if capture_replay_source:
-        args.append("--json")
+        args += ["--dangerously-bypass-hook-trust", "--json"]
     args.append(prompt)
     env = {**os.environ}
     if capture_replay_source:

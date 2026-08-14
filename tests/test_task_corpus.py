@@ -406,10 +406,12 @@ def test_task_agent_capture_mode_enables_json_hooks_without_supervision(
 
     capture_args, capture_env = calls[0]
     assert "--json" in capture_args
+    assert "--dangerously-bypass-hook-trust" in capture_args
     assert capture_env["SPOTTER_CAPTURE_ONLY"] == "1"
     assert "SPOTTER_DISABLE" not in capture_env
     normal_args, normal_env = calls[1]
     assert "--json" not in normal_args
+    assert "--dangerously-bypass-hook-trust" not in normal_args
     assert normal_env["SPOTTER_DISABLE"] == "1"
     assert "SPOTTER_CAPTURE_ONLY" not in normal_env
 
