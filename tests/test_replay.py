@@ -1,7 +1,7 @@
 import json
 import shlex
 import subprocess
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import pytest
@@ -609,6 +609,43 @@ def test_declared_environment_resource_cannot_escape_worktree(repo: Path) -> Non
         fingerprint_environment(repo, ("../secret",))
 
 
+def test_declared_environment_variable_is_hashed_and_compared(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _commit_baseline(repo)
+    monkeypatch.setenv("SPOTTER_FIXTURE_MODE", "source-value")
+
+    first = fingerprint_environment(
+        repo,
+        environment_variables=("SPOTTER_OPTIONAL_MODE", "SPOTTER_FIXTURE_MODE"),
+    )
+    variables = first.declared_environment_variables
+
+    assert tuple(variable.name for variable in variables) == (
+        "SPOTTER_FIXTURE_MODE",
+        "SPOTTER_OPTIONAL_MODE",
+    )
+    assert variables[0].state == "set"
+    assert variables[0].sha256 is not None
+    assert variables[1].state == "missing"
+    assert "source-value" not in json.dumps(asdict(first))
+
+    monkeypatch.setenv("SPOTTER_FIXTURE_MODE", "changed-value")
+    changed = fingerprint_environment(
+        repo,
+        environment_variables=("SPOTTER_FIXTURE_MODE", "SPOTTER_OPTIONAL_MODE"),
+    )
+
+    assert compare_environments(first, changed).drift == (
+        EnvironmentDrift.ENVIRONMENT_VARIABLE_MISMATCH,
+    )
+
+
+def test_declared_environment_variable_requires_posix_name(repo: Path) -> None:
+    with pytest.raises(ReplayError, match="POSIX name"):
+        fingerprint_environment(repo, environment_variables=("NOT-VALID",))
+
+
 def test_declared_directory_fingerprint_tracks_tree_contents(repo: Path) -> None:
     _commit_baseline(repo)
     fixtures = repo / "fixtures"
@@ -672,7 +709,10 @@ def test_declared_ignored_directory_loss_is_caught_before_fork_runs(
     assert manifest.environment.declared_resources[0].kind == "missing"
 
 
-def test_fork_manifest_v1_and_v2_remain_readable(repo: Path, codex_home: Path) -> None:
+def test_fork_manifest_v1_through_v3_remain_readable(
+    repo: Path, codex_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SPOTTER_FIXTURE_MODE", "safe-value")
     sha = snapshot_worktree(repo)
     _journal(
         OLD_ID,
@@ -690,9 +730,39 @@ def test_fork_manifest_v1_and_v2_remain_readable(repo: Path, codex_home: Path) -
             )
         ],
     )
-    plan = fork(OLD_ID, 0, codex_home=codex_home, environment_resources=("a.txt",))
+    plan = fork(
+        OLD_ID,
+        0,
+        codex_home=codex_home,
+        environment_resources=("a.txt",),
+        environment_variables=("SPOTTER_FIXTURE_MODE",),
+    )
     manifest_path = Path(plan.manifest or "")
+    manifest = load_fork_manifest(manifest_path)
+
+    assert manifest.environment is not None
+    assert "safe-value" not in manifest_path.read_text()
+    monkeypatch.setenv("SPOTTER_FIXTURE_MODE", "changed-value")
+    current = fingerprint_environment(
+        Path(plan.worktree),
+        environment_resources=("a.txt",),
+        environment_variables=("SPOTTER_FIXTURE_MODE",),
+    )
+    assert compare_environments(manifest.environment, current).drift == (
+        EnvironmentDrift.ENVIRONMENT_VARIABLE_MISMATCH,
+    )
+
     raw = json.loads(manifest_path.read_text())
+
+    raw["schema_version"] = 3
+    raw["environment"].pop("declared_environment_variables")
+    manifest_path.write_text(json.dumps(raw))
+
+    manifest = load_fork_manifest(manifest_path)
+
+    assert manifest.schema_version == 3
+    assert manifest.environment is not None
+    assert manifest.environment.declared_environment_variables == ()
 
     raw["schema_version"] = 2
     for resource in raw["environment"]["declared_resources"]:

@@ -198,6 +198,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--environment-variable",
+        action="append",
+        default=[],
+        help=(
+            "fork/experiment: non-secret environment variable whose value hash must stay stable "
+            "(repeatable)"
+        ),
+    )
+    parser.add_argument(
         "--run",
         action="store_true",
         help="experiment: actually execute the 2*pairs agent runs (costs real tokens)",
@@ -361,6 +370,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 keep_artifacts=args.keep_artifacts,
                 neutral=args.neutral,
                 environment_resources=tuple(args.environment_resource),
+                environment_variables=tuple(args.environment_variable),
             )
         except (ReplayError, SnapshotError, OSError, subprocess.SubprocessError) as error:
             print(f"experiment failed: {error}", file=sys.stderr)
@@ -400,6 +410,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 repo=args.repo,
                 guidance=args.guidance,
                 environment_resources=tuple(args.environment_resource),
+                environment_variables=tuple(args.environment_variable),
             )
         except (ReplayError, SnapshotError) as error:
             print(f"fork failed: {error}", file=sys.stderr)

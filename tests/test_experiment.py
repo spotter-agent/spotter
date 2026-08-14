@@ -257,7 +257,7 @@ def test_arm_rechecks_environment_immediately_before_agent_run(
     monkeypatch.setattr(
         experiment,
         "fingerprint_environment",
-        lambda path: SimpleNamespace(fingerprint_sha256="drifted"),
+        lambda path, resources, variables: SimpleNamespace(fingerprint_sha256="drifted"),
     )
     monkeypatch.setattr(
         experiment,
@@ -291,7 +291,7 @@ def test_arm_rechecks_environment_immediately_before_agent_run(
     assert result[5] == "ENVIRONMENT_MISMATCH:TRACKED_STATE_MISMATCH"
 
 
-def test_unchanged_declared_resource_recheck_reaches_agent_run(
+def test_unchanged_declared_inputs_recheck_reaches_agent_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     plan = ForkPlan(
@@ -307,11 +307,18 @@ def test_unchanged_declared_resource_recheck_reaches_agent_run(
     expected = SimpleNamespace(
         fingerprint_sha256="expected",
         declared_resources=(SimpleNamespace(path=".fixture-config"),),
+        declared_environment_variables=(SimpleNamespace(name="SPOTTER_FIXTURE_MODE"),),
     )
+
+    def fingerprint(path: Path, resources: tuple[str, ...], variables: tuple[str, ...]) -> object:
+        assert resources == (".fixture-config",)
+        assert variables == ("SPOTTER_FIXTURE_MODE",)
+        return expected
+
     monkeypatch.setattr(
         experiment,
         "fingerprint_environment",
-        lambda path, resources: expected,
+        fingerprint,
     )
     monkeypatch.setattr(
         experiment,
@@ -503,6 +510,10 @@ def test_cli_accepts_neutral_mode_without_guidance(monkeypatch: pytest.MonkeyPat
                 "--neutral",
                 "--reasoning-effort",
                 "low",
+                "--environment-resource",
+                ".fixture-config",
+                "--environment-variable",
+                "SPOTTER_FIXTURE_MODE",
             ]
         )
         == 0
@@ -510,6 +521,8 @@ def test_cli_accepts_neutral_mode_without_guidance(monkeypatch: pytest.MonkeyPat
     assert captured["guidance"] is None
     assert captured["neutral"] is True
     assert captured["reasoning_effort"] == "low"
+    assert captured["environment_resources"] == (".fixture-config",)
+    assert captured["environment_variables"] == ("SPOTTER_FIXTURE_MODE",)
 
 
 def test_cli_rejects_neutral_mode_with_guidance() -> None:

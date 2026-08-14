@@ -193,11 +193,10 @@ def _arm_environment_preflight(plan: ForkPlan) -> str:
         if expected is None:
             return "ENVIRONMENT_FINGERPRINT_MISSING"
         resources = tuple(resource.path for resource in getattr(expected, "declared_resources", ()))
-        current = (
-            fingerprint_environment(Path(plan.worktree), resources)
-            if resources
-            else fingerprint_environment(Path(plan.worktree))
+        variables = tuple(
+            variable.name for variable in getattr(expected, "declared_environment_variables", ())
         )
+        current = fingerprint_environment(Path(plan.worktree), resources, variables)
         if current.fingerprint_sha256 == plan.environment_fingerprint:
             return "MATCHED"
         comparison = compare_environments(expected, current)
@@ -295,6 +294,7 @@ def run_experiment(
     keep_artifacts: bool = False,
     neutral: bool = False,
     environment_resources: Sequence[str] = (),
+    environment_variables: Sequence[str] = (),
 ) -> list[ArmResult]:
     """Build (and with run=True, execute) n counterfactual pairs."""
     if pairs < 1:
@@ -329,6 +329,7 @@ def run_experiment(
         "codex_home": str(codex_home or os.environ.get("CODEX_HOME") or Path.home() / ".codex"),
         "source_snapshot": source_snapshot,
         "environment_resources": list(environment_resources),
+        "environment_variables": list(environment_variables),
         "started_at": datetime.now(UTC).isoformat(),
     }
     with out.open("a", encoding="utf-8") as sink:
@@ -342,7 +343,7 @@ def run_experiment(
         )
         if (pair + uuid.UUID(experiment_id).int) % 2:  # randomize pair 0, then alternate
             arms.reverse()
-        if environment_resources:
+        if environment_resources or environment_variables:
             prepared = [
                 (
                     arm,
@@ -352,6 +353,7 @@ def run_experiment(
                         step,
                         codex_home=codex_home,
                         environment_resources=environment_resources,
+                        environment_variables=environment_variables,
                     ),
                 )
                 for arm, prompt in arms
