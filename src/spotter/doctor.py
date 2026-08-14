@@ -497,7 +497,11 @@ def check_runtime(*, deep: bool = False) -> list[Check]:
                 INFO,
                 "active/dormant thread counts unknown until App Server ingestion (#85)",
             ),
-            Check("review queue", INFO, "no durable reviewer queue is implemented"),
+            Check(
+                "review queue",
+                INFO,
+                "signal-driven jobs are durable; reviewer execution is not connected",
+            ),
         ]
     )
     return checks

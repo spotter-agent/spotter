@@ -24,6 +24,7 @@ from spotter.app_server import (
 from spotter.identity import AttachmentId, RuntimeIdentity, ThreadId
 from spotter.ingestion import AppServerTraceIngestor, IngestionError
 from spotter.observability import state_coverage_status
+from spotter.review_scheduler import ReviewScheduler
 from spotter.signals import SignalEngine
 from spotter.snapshot import StepRecord
 from spotter.thread_state import ThreadState, ThreadStateError, ThreadStateStore
@@ -84,6 +85,7 @@ class AppServerRecoveryLoop:
         on_state: StateCallback | None = None,
         client_factory: ClientFactory | None = None,
         signals: SignalEngine | None = None,
+        review_scheduler: ReviewScheduler | None = None,
         initial_backoff: float = 0.1,
         maximum_backoff: float = 30,
     ) -> None:
@@ -97,6 +99,7 @@ class AppServerRecoveryLoop:
         self.on_state = on_state
         self.client_factory = client_factory or (lambda value: CodexAppServerClient(value))
         self.signals = signals or SignalEngine()
+        self.review_scheduler = review_scheduler or ReviewScheduler()
         self.initial_backoff = initial_backoff
         self.maximum_backoff = maximum_backoff
         self.state = RecoveryState.DISCONNECTED
@@ -116,7 +119,9 @@ class AppServerRecoveryLoop:
         if records:
             self.thread_states.hydrate(records)
             for candidate, trigger in self.signals.hydrate(records):
-                self._record(candidate.to_trace_event(trigger))
+                self._append_derived(candidate.to_trace_event(trigger))
+            for event in self.review_scheduler.hydrate(self.ingestor.records()):
+                self._append_derived(event)
 
     async def start(self) -> None:
         if self._task is not None and not self._task.done():
@@ -374,9 +379,27 @@ class AppServerRecoveryLoop:
         record = self.ingestor.record(event)
         if record is None or event.identity is None or event.identity.thread_id is None:
             return record
+        try:
+            state_before = self.thread_states.snapshot(event.identity.thread_id)
+        except ThreadStateError:
+            state_before = None
         state = self.thread_states.observe(record.event)
+        for transition in self.review_scheduler.update(record.event, state_before, state):
+            self._record(transition)
         for candidate in self.signals.update(record.event, state.version):
             self._record(candidate.to_trace_event(record.event))
+        return record
+
+    def _append_derived(self, event: TraceEvent) -> StepRecord | None:
+        """Recover one already-derived event without running producers out of order."""
+
+        record = self.ingestor.record(event)
+        if (
+            record is not None
+            and event.identity is not None
+            and event.identity.thread_id is not None
+        ):
+            self.thread_states.observe(record.event)
         return record
 
     def _runtime_identity(

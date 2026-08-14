@@ -292,9 +292,12 @@ guessed. The second failure journals an `active` candidate, later failures in th
 `cooled_down` suppression, and success or a turn/epoch/gap boundary records `resolved` or `stale`.
 Candidate identity, target turn/epoch, triggering state version, bounded evidence IDs, resource scope,
 and deterministic magnitude are durable. Recovery reconstructs cooldown state and backfills a
-derived candidate if the process stopped after the source outcome append. Candidate-driven reviewer
-scheduling and the remaining signal families are not implemented yet; the periodic reviewer remains
-the active review trigger.
+derived candidate if the process stopped after the source outcome append. Active candidates now
+queue one durable reviewer job per signal lifecycle, bound to the exact immutable `ThreadState`
+snapshot named by the candidate. Queue recovery replays that snapshot and backfills an interrupted
+derived append; target turn/epoch changes discard pending jobs before execution. Reviewer model
+execution, candidate merging/budget policy, and the remaining signal families are not implemented
+yet, so the periodic reviewer remains the only trigger that actually calls a model.
 
 ## 4.3 Semantic review
 

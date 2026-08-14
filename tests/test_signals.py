@@ -147,13 +147,25 @@ def test_runtime_journals_signal_candidates_and_recovers_cooldown(tmp_path: Path
     first_store = ThreadStateStore()
     runtime = AppServerRecoveryLoop("ws://unused", journals, first_store)
 
+    runtime._record(
+        TraceEvent(
+            "turn_started",
+            {},
+            event_id="turn-start",
+            identity=_event("event-1", "failed").identity,
+            connection_epoch=1,
+        )
+    )
     runtime._record(_event("event-1", "failed"))
     runtime._record(_event("event-2", "failed"))
 
     records = runtime.ingestor.records()
     candidate = next(record.event for record in records if record.event.kind == "signal_candidate")
     assert candidate.payload["status"] == "active"
-    assert first_store.snapshot(ThreadId("thread-1")).version == 3
+    assert first_store.snapshot(ThreadId("thread-1")).version == 5
+    queued = [record.event for record in records if record.event.kind == "review_job_queued"]
+    assert len(queued) == 1
+    assert queued[0].payload["signal_id"] == candidate.payload["signal_id"]
 
     recovered_store = ThreadStateStore()
     recovered = AppServerRecoveryLoop("ws://unused", journals, recovered_store)
@@ -170,6 +182,15 @@ def test_runtime_journals_signal_candidates_and_recovers_cooldown(tmp_path: Path
 def test_runtime_backfills_candidate_after_interrupted_derived_append(tmp_path: Path) -> None:
     journals = tmp_path / "sessions"
     interrupted = AppServerRecoveryLoop("ws://unused", journals, ThreadStateStore())
+    interrupted.ingestor.record(
+        TraceEvent(
+            "turn_started",
+            {},
+            event_id="turn-start",
+            identity=_event("event-1", "failed").identity,
+            connection_epoch=1,
+        )
+    )
     interrupted.ingestor.record(_event("event-1", "failed"))
     interrupted.ingestor.record(_event("event-2", "failed"))
 
@@ -182,4 +203,10 @@ def test_runtime_backfills_candidate_after_interrupted_derived_append(tmp_path: 
     ]
     assert len(candidates) == 1
     assert candidates[0].payload["status"] == "active"
-    assert candidates[0].payload["state_version"] == 2
+    assert candidates[0].payload["state_version"] == 3
+    queued = [
+        record.event
+        for record in recovered.ingestor.records()
+        if record.event.kind == "review_job_queued"
+    ]
+    assert len(queued) == 1
