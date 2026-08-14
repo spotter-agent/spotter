@@ -385,9 +385,12 @@ epoch, so equal source timestamps remain durably ordered across journal reloads.
 Objective task outcomes remain outside ordinary user-session telemetry. For global reports,
 `spotter metrics` reads versioned counterfactual and frozen-task result journals, joins each
 mechanical classification to costs carried by the same stable run/pair/arm identity, and reports
-coverage when agent-reported tokens or elapsed timestamps are unavailable. Unsupported newer result
-schemas fail visibly instead of being guessed; a torn final JSONL row is treated as an interrupted
-append. This projection does not label unscored user sessions as success or failure.
+coverage when agent-reported tokens or elapsed timestamps are unavailable. Counterfactual result
+schema v3 records the parsed token total and same-process monotonic agent duration for each executed
+arm; it does not persist raw agent stderr merely to recover the token count. Earlier v1/v2 rows
+remain readable. Unsupported newer result schemas fail visibly instead of being guessed; a torn
+final JSONL row is treated as an interrupted append. This projection does not label unscored user
+sessions as success or failure.
 
 ## 4.5 Turn completion
 

@@ -48,6 +48,10 @@ def _fake_fork(counter: dict[str, int]) -> Callable[..., ForkPlan]:
     return fake
 
 
+def _agent_run(returncode: int = 0, stderr: str = "") -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess([], returncode, "", stderr)
+
+
 def test_experiment_without_run_only_prepares(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(experiment, "fork", _fake_fork({}))
     results = run_experiment("s1", 5, "check the stack trace", pairs=2)
@@ -70,7 +74,7 @@ def test_results_carry_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
     assert meta["sandbox"] and meta["timeout"] and meta["started_at"]
     assert meta["pairs"] == 1
     assert meta["reasoning_effort"] == "low"
-    assert meta["result_schema_version"] == 2
+    assert meta["result_schema_version"] == 3
     assert rows[-1]["complete"] is True and rows[-1]["finished_at"]
     # every row is linked to its conditions via the experiment id
     assert all(row["experiment_id"] == meta["experiment_id"] for row in rows[1:])
@@ -85,6 +89,30 @@ def test_results_carry_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
     rows2 = [json.loads(line) for line in results_path("s1", 5).read_text().splitlines()]
     metas = [r for r in rows2 if r.get("meta")]
     assert len(metas) == 2 and metas[0]["experiment_id"] != metas[1]["experiment_id"]
+
+
+def test_experiment_persists_minimal_agent_cost_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(experiment, "fork", _fake_fork({}))
+    monkeypatch.setattr(experiment, "_cleanup", lambda worktree: None)
+    ticks = iter((1_000_000_000, 1_250_000_000, 2_000_000_000, 2_500_000_000))
+    monkeypatch.setattr("spotter.experiment.time.monotonic_ns", lambda: next(ticks))
+    stderr = "x" * 5000 + "\ntokens used\n1,234\n"
+    monkeypatch.setattr(
+        experiment,
+        "_run_arm",
+        lambda *args, **kwargs: _agent_run(stderr=stderr),
+    )
+
+    results = run_experiment("s1", 5, "hint", run=True)
+
+    assert [result.agent_elapsed_ms for result in results] == [250.0, 500.0]
+    assert [result.agent_reported_tokens for result in results] == [1234, 1234]
+    rows = [json.loads(line) for line in results_path("s1", 5).read_text().splitlines()]
+    assert [row["agent_elapsed_ms"] for row in rows[1:3]] == [250.0, 500.0]
+    assert [row["agent_reported_tokens"] for row in rows[1:3]] == [1234, 1234]
+    assert all("agent_stderr" not in row for row in rows[1:3])
 
 
 def test_results_path_is_traversal_safe() -> None:
@@ -102,9 +130,9 @@ def test_arm_order_is_counterbalanced(monkeypatch: pytest.MonkeyPatch) -> None:
 
     def record_prompt(
         s: str, w: str, prompt: str, *, sandbox: str, timeout: int, **kwargs: object
-    ) -> int:
+    ) -> subprocess.CompletedProcess[str]:
         prompts.append(prompt)
-        return 0
+        return _agent_run()
 
     monkeypatch.setattr(experiment, "_run_arm", record_prompt)
     results = run_experiment("s1", 5, "hint", pairs=2, run=True)
@@ -124,9 +152,9 @@ def test_pair_forks_are_both_preflighted_before_either_agent_runs(
         events.append("fork")
         return fake(session_id, step, codex_home=codex_home)
 
-    def record_run(*args: object, **kwargs: object) -> int:
+    def record_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
         events.append("run")
-        return 0
+        return _agent_run()
 
     monkeypatch.setattr(experiment, "fork", record_fork)
     monkeypatch.setattr(experiment, "_run_arm", record_run)
@@ -143,9 +171,11 @@ def test_neutral_noise_runs_identical_prompts_and_reports_outcome_disagreement(
     monkeypatch.setattr(experiment, "_codex_version", lambda: None)
     prompts: list[str] = []
 
-    def record_prompt(session: str, worktree: str, prompt: str, **kwargs: object) -> int:
+    def record_prompt(
+        session: str, worktree: str, prompt: str, **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
         prompts.append(prompt)
-        return 0
+        return _agent_run()
 
     check_exits = iter([0, 1, 0, 0])
 
@@ -339,9 +369,9 @@ def test_unchanged_declared_inputs_recheck_reaches_agent_run(
     )
     ran: list[str] = []
 
-    def run_arm(*args: object, **kwargs: object) -> int:
+    def run_arm(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
         ran.append("run")
-        return 0
+        return _agent_run()
 
     monkeypatch.setattr(experiment, "_run_arm", run_arm)
 
@@ -582,7 +612,7 @@ def test_cli_rejects_neutral_mode_with_guidance() -> None:
 
 def test_check_runs_in_each_fork_worktree(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(experiment, "fork", _fake_fork({}))
-    monkeypatch.setattr(experiment, "_run_arm", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(experiment, "_run_arm", lambda *args, **kwargs: _agent_run())
     checks: list[str] = []
 
     class FakeCompleted:
@@ -681,7 +711,7 @@ def test_failed_agent_is_not_checked_or_counted_as_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(experiment, "fork", _fake_fork({}))
-    monkeypatch.setattr(experiment, "_run_arm", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(experiment, "_run_arm", lambda *args, **kwargs: _agent_run(1))
     checks: list[tuple[object, ...]] = []
 
     def record_check(*args: object, **kwargs: object) -> object:
@@ -700,12 +730,12 @@ def test_timeout_does_not_abort_experiment(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(experiment, "fork", _fake_fork({}))
     calls = 0
 
-    def run(*args: object, **kwargs: object) -> int:
+    def run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
         nonlocal calls
         calls += 1
         if calls == 2:
             raise subprocess.TimeoutExpired("codex", 1)
-        return 0
+        return _agent_run()
 
     monkeypatch.setattr(experiment, "_run_arm", run)
     monkeypatch.setattr(experiment, "_cleanup", lambda worktree: None)
@@ -719,7 +749,7 @@ def test_failed_check_is_task_failure_with_bounded_diagnostics(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(experiment, "fork", _fake_fork({}))
-    monkeypatch.setattr(experiment, "_run_arm", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(experiment, "_run_arm", lambda *args, **kwargs: _agent_run())
     monkeypatch.setattr(experiment, "_codex_version", lambda: None)
 
     def fail_check(*args: object, **kwargs: object) -> object:
@@ -743,7 +773,7 @@ def test_check_timeout_is_not_counted_as_task_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(experiment, "fork", _fake_fork({}))
-    monkeypatch.setattr(experiment, "_run_arm", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(experiment, "_run_arm", lambda *args, **kwargs: _agent_run())
     monkeypatch.setattr(experiment, "_codex_version", lambda: None)
 
     def timeout_check(*args: object, **kwargs: object) -> object:

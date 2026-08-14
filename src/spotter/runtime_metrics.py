@@ -824,7 +824,7 @@ def _objective_arm(row: Mapping[str, object], path: Path) -> _ObjectiveArm | Non
         and not isinstance(pair, bool)
         and pair >= 0
     ):
-        if schema not in {1, 2}:
+        if schema not in {1, 2, 3}:
             raise ObjectiveOutcomeError(f"{path}: unsupported experiment result schema {schema}")
         pair_key = f"experiment:{experiment_id}:{pair}"
         key = f"{pair_key}:{arm}"
@@ -836,7 +836,7 @@ def _objective_arm(row: Mapping[str, object], path: Path) -> _ObjectiveArm | Non
         arm,
         classification,
         _agent_reported_tokens(row),
-        _elapsed(row.get("started_at"), row.get("ended_at")),
+        _agent_elapsed(row),
     )
 
 
@@ -849,6 +849,15 @@ def _agent_reported_tokens(row: Mapping[str, object]) -> int | None:
         return None
     matches = _TOKENS_USED_RE.findall(stderr)
     return int(matches[-1].replace(",", "")) if matches else None
+
+
+def _agent_elapsed(row: Mapping[str, object]) -> float | None:
+    elapsed = _number(row.get("agent_elapsed_ms"))
+    return (
+        elapsed
+        if elapsed is not None and elapsed >= 0
+        else _elapsed(row.get("started_at"), row.get("ended_at"))
+    )
 
 
 def _elapsed(started: object, ended: object) -> float | None:

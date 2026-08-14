@@ -106,6 +106,38 @@ def test_objective_outcomes_reject_unknown_persisted_schema(tmp_path: Path) -> N
         measure_objective_outcomes([path])
 
 
+def test_objective_outcomes_project_v3_experiment_agent_costs(tmp_path: Path) -> None:
+    path = tmp_path / "experiment-v3.jsonl"
+    _write_rows(
+        path,
+        {
+            "result_schema_version": 3,
+            "experiment_id": "experiment-3",
+            "pair": 0,
+            "arm": "control",
+            "classification": "PASS",
+            "agent_reported_tokens": 1234,
+            "agent_elapsed_ms": 125.5,
+        },
+        {
+            "result_schema_version": 3,
+            "experiment_id": "experiment-3",
+            "pair": 0,
+            "arm": "guidance",
+            "classification": "PASS",
+            "agent_reported_tokens": 2345,
+            "agent_elapsed_ms": 250,
+        },
+    )
+
+    report = measure_objective_outcomes([path])
+
+    assert report.reported_tokens == 3579
+    assert report.token_arms == 2
+    assert report.elapsed_ms == (125.5, 250.0)
+    assert "agent_reported_tokens=3579 (2/2 arms)" in render_objective_outcomes(report)
+
+
 def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
     hook = [
         _record(

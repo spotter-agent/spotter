@@ -18,7 +18,9 @@ a crash loses at most one run.
 
 import json
 import os
+import re
 import subprocess
+import time
 import uuid
 from collections.abc import Sequence
 from contextlib import suppress
@@ -40,8 +42,9 @@ from spotter.replay import (
 from spotter.snapshot import StepJournal
 
 CONTROL_PROMPT = "Continue the task."
-EXPERIMENT_RESULT_SCHEMA_VERSION = 2
+EXPERIMENT_RESULT_SCHEMA_VERSION = 3
 _OUTPUT_LIMIT = 4000
+_TOKENS_USED_RE = re.compile(r"tokens used\s*\n\s*([0-9][0-9,]*)", re.IGNORECASE)
 
 
 class ArmClassification(StrEnum):
@@ -74,6 +77,8 @@ class ArmResult:
     environment_fingerprint: str | None = None
     environment_preflight: str | None = None
     experiment_mode: str = "guidance"
+    agent_reported_tokens: int | None = None
+    agent_elapsed_ms: float | None = None
 
 
 def results_path(session_id: str, step: int) -> Path:
@@ -92,7 +97,7 @@ def _run_arm(
     model: str | None = None,
     reasoning_effort: str | None = None,
     codex_home: Path | None = None,
-) -> int:
+) -> subprocess.CompletedProcess[str]:
     args = ["codex", "exec", "-C", worktree]
     if model:
         args += ["--model", model]
@@ -109,14 +114,13 @@ def _run_arm(
     env = {**os.environ, "SPOTTER_DISABLE": "1"}
     if codex_home:
         env["CODEX_HOME"] = str(codex_home)
-    result = subprocess.run(
+    return subprocess.run(
         args,
         capture_output=True,
         text=True,
         timeout=timeout,
         env=env,
     )
-    return result.returncode
 
 
 def _pair_environment_preflight(prepared: list[tuple[str, str, ForkPlan]]) -> str:
@@ -225,15 +229,34 @@ def _execute_arm(
     model: str | None,
     reasoning_effort: str | None,
     codex_home: Path | None,
-) -> tuple[int | None, int | None, ArmClassification, str, str, str | None]:
+) -> tuple[
+    int | None,
+    int | None,
+    ArmClassification,
+    str,
+    str,
+    str | None,
+    int | None,
+    float | None,
+]:
     if environment_preflight != "MATCHED":
-        return None, None, ArmClassification.INFRA_FAIL, "", "", environment_preflight
+        return None, None, ArmClassification.INFRA_FAIL, "", "", environment_preflight, None, None
     if plan.manifest:
         environment_preflight = _arm_environment_preflight(plan)
         if environment_preflight != "MATCHED":
-            return None, None, ArmClassification.INFRA_FAIL, "", "", environment_preflight
+            return (
+                None,
+                None,
+                ArmClassification.INFRA_FAIL,
+                "",
+                "",
+                environment_preflight,
+                None,
+                None,
+            )
+    started_ns = time.monotonic_ns()
     try:
-        agent_exit = _run_arm(
+        agent = _run_arm(
             plan.session_id,
             plan.worktree,
             prompt,
@@ -244,13 +267,52 @@ def _execute_arm(
             codex_home=codex_home,
         )
     except subprocess.TimeoutExpired as error:
-        return None, None, ArmClassification.TIMEOUT_AGENT, "", "", str(error)
+        return (
+            None,
+            None,
+            ArmClassification.TIMEOUT_AGENT,
+            "",
+            "",
+            str(error),
+            _reported_tokens(error.stderr),
+            (time.monotonic_ns() - started_ns) / 1_000_000,
+        )
     except OSError as error:
-        return None, None, ArmClassification.INFRA_FAIL, "", "", str(error)
+        return (
+            None,
+            None,
+            ArmClassification.INFRA_FAIL,
+            "",
+            "",
+            str(error),
+            None,
+            (time.monotonic_ns() - started_ns) / 1_000_000,
+        )
+    agent_exit = agent.returncode
+    agent_reported_tokens = _reported_tokens(agent.stderr)
+    agent_elapsed_ms = (time.monotonic_ns() - started_ns) / 1_000_000
     if agent_exit != 0:
-        return agent_exit, None, ArmClassification.INFRA_FAIL, "", "", f"agent exited {agent_exit}"
+        return (
+            agent_exit,
+            None,
+            ArmClassification.INFRA_FAIL,
+            "",
+            "",
+            f"agent exited {agent_exit}",
+            agent_reported_tokens,
+            agent_elapsed_ms,
+        )
     if not check:
-        return agent_exit, None, ArmClassification.UNJUDGEABLE, "", "", None
+        return (
+            agent_exit,
+            None,
+            ArmClassification.UNJUDGEABLE,
+            "",
+            "",
+            None,
+            agent_reported_tokens,
+            agent_elapsed_ms,
+        )
     try:
         completed = subprocess.run(
             check,
@@ -268,9 +330,20 @@ def _execute_arm(
             _bounded_output(error.stdout),
             _bounded_output(error.stderr),
             None,
+            agent_reported_tokens,
+            agent_elapsed_ms,
         )
     except OSError as error:
-        return agent_exit, None, ArmClassification.CHECK_ERROR, "", "", str(error)
+        return (
+            agent_exit,
+            None,
+            ArmClassification.CHECK_ERROR,
+            "",
+            "",
+            str(error),
+            agent_reported_tokens,
+            agent_elapsed_ms,
+        )
     classification = (
         ArmClassification.PASS if completed.returncode == 0 else ArmClassification.TASK_FAIL
     )
@@ -281,6 +354,8 @@ def _execute_arm(
         _bounded_output(completed.stdout),
         _bounded_output(completed.stderr),
         None,
+        agent_reported_tokens,
+        agent_elapsed_ms,
     )
 
 
@@ -374,7 +449,16 @@ def run_experiment(
         environment_preflight = _pair_environment_preflight(prepared)
         source_config_preflight = _source_config_preflight(prepared, model, reasoning_effort)
         for arm, prompt, plan in prepared:
-            execution: tuple[int | None, int | None, ArmClassification, str, str, str | None]
+            execution: tuple[
+                int | None,
+                int | None,
+                ArmClassification,
+                str,
+                str,
+                str | None,
+                int | None,
+                float | None,
+            ]
             if run:
                 if source_config_preflight != "MATCHED":
                     execution = (
@@ -384,6 +468,8 @@ def run_experiment(
                         "",
                         "",
                         source_config_preflight,
+                        None,
+                        None,
                     )
                 else:
                     execution = _execute_arm(
@@ -398,10 +484,17 @@ def run_experiment(
                         codex_home=codex_home,
                     )
             else:
-                execution = (None, None, ArmClassification.UNJUDGEABLE, "", "", None)
-            agent_exit, check_exit, classification, check_stdout, check_stderr, diagnostic = (
-                execution
-            )
+                execution = (None, None, ArmClassification.UNJUDGEABLE, "", "", None, None, None)
+            (
+                agent_exit,
+                check_exit,
+                classification,
+                check_stdout,
+                check_stderr,
+                diagnostic,
+                agent_reported_tokens,
+                agent_elapsed_ms,
+            ) = execution
             if diagnostic and diagnostic.startswith("ENVIRONMENT_"):
                 environment_preflight = diagnostic
             result = ArmResult(
@@ -421,6 +514,8 @@ def run_experiment(
                 environment_fingerprint=plan.environment_fingerprint,
                 environment_preflight=environment_preflight,
                 experiment_mode=experiment_mode,
+                agent_reported_tokens=agent_reported_tokens,
+                agent_elapsed_ms=agent_elapsed_ms,
             )
             results.append(result)
             with out.open("a", encoding="utf-8") as sink:  # one row per run, crash-safe
@@ -486,6 +581,13 @@ def _bounded_output(value: str | bytes | None) -> str:
     if isinstance(value, bytes):
         value = value.decode(errors="replace")
     return (value or "")[-_OUTPUT_LIMIT:]
+
+
+def _reported_tokens(value: str | bytes | None) -> int | None:
+    if isinstance(value, bytes):
+        value = value.decode(errors="replace")
+    matches = _TOKENS_USED_RE.findall(value or "")
+    return int(matches[-1].replace(",", "")) if matches else None
 
 
 def summarize(results: list[ArmResult]) -> str:
