@@ -163,7 +163,7 @@ A signal is a hypothesis, not a verdict.
 
 ## Work
 
-- event-driven candidate signals ([#28](https://github.com/spotter-agent/spotter/issues/28)); the first incremental failure-streak family now journals active/suppressed/resolved/stale candidates, and opted-in active candidates deduplicate into restart-safe bounded-input jobs that run asynchronously under existing spend caps; merge/priority policy and the remaining families remain;
+- event-driven candidate signals ([#28](https://github.com/spotter-agent/spotter/issues/28)); incremental failure-streak and repeated-equivalent-tool-call families now journal active/suppressed/resolved/stale candidates, and opted-in active candidates deduplicate into restart-safe bounded-input jobs that run asynchronously under existing spend caps; merge/priority policy, broader signal coverage, and comparative evidence against periodic review remain;
 - precision and miss-rate measurement ([#38](https://github.com/spotter-agent/spotter/issues/38));
 - detection delay and wasted-action measurement ([#24](https://github.com/spotter-agent/spotter/issues/24));
 - keep reviewer cost visible alongside detection benefit ([#33](https://github.com/spotter-agent/spotter/issues/33)).

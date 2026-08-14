@@ -85,4 +85,6 @@ On 2026-08-13, Codex CLI 0.147.0 passed the Spotter-managed path on macOS:
 
 This proves same-thread observation and real same-turn steering for the Spotter-managed path.
 It does not yet select the production lifecycle: the Codex-managed standalone installation,
-multiple concurrent TUIs, and reconnect behavior still need recorded runs.
+multiple concurrent TUIs, and reconnect behavior still need recorded real-session runs. Reconnect
+and reconciliation are now implemented in `spotterd` and covered by repository tests; that later
+implementation evidence does not retroactively extend this PoC's recorded scope.

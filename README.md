@@ -64,49 +64,9 @@ For the fastest project snapshot, read [Status](docs/status.md). For sequence an
 
 ## Current status
 
-Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 target · ❌ not implemented
-
-| Capability | Status | Notes |
-| --- | --- | --- |
-| Hook trajectory ingestion | ✅ | Current primary observation path |
-| Deterministic pre-action gates | ✅ | Bounded daemon IPC; local fallback preserves enforcement if the daemon is unavailable |
-| Crash-tolerant journal | ✅ | Locking, fsync, torn-tail recovery |
-| Git snapshot / detached restore | ✅ | User HEAD/index remain untouched |
-| Fork / continuation replay | ✅ | Same-prefix continuation machinery |
-| Shadow reviewer | ✅ | Produces `CONTINUE / VERIFY / NUDGE`; periodic and opted-in signal reviews remain shadow-only |
-| Claim/evidence audit ledger | 🟡 | Works where observable outcomes exist |
-| Evaluation labels / metrics | 🟡 | Coverage-aware action/token, clock-domain-safe supervision lifecycle, reviewer, gate-latency, resource, and storage metrics; delivery/adoption joins remain |
-| Counterfactual experiment harness | ✅ | Control/guidance same-prefix pairs |
-| Standalone `spotterd` runtime | 🟡 | Process, gate IPC, per-thread immutable state, and App Server recovery ownership implemented; setup endpoint selection remains |
-| Packaging / release | 🟡 | Tags publish verified artifacts; the dedicated Homebrew tap installs immutable releases and opens Formula-update PRs; macOS CI covers live G1→G2 upgrade/reconcile, teardown-less fail-open uninstall, retained data, and reinstall; broader #89/#90 lifecycle work remains |
-| App Server primary observation | 🟡 | Configured endpoints route through daemon-owned epoch/reconciliation into durable Trace IR and ThreadState; setup does not select an endpoint yet |
-| Event-driven signal engine | 🟡 | Failure-streak candidates queue bounded async reviews when explicitly enabled; remaining families/merge policy remain |
-| Live `VERIFY / NUDGE` | ❌ | Target: `turn/steer` |
-| `INTERRUPT` | ❌ | Target: `turn/interrupt` |
-| `RESTART` | ❌ | Requires verified-state + side-effect-aware recovery |
-| Codex setup lifecycle | 🟡 | Transactional setup/teardown, stable packaged Hook/service references, ownership diagnostics, and degraded capability reporting implemented; full App Server integration remains |
-
-### Current runtime work
-
-[#78](https://github.com/spotter-agent/spotter/issues/78) proved that a Spotter-managed external
-App Server can share the TUI's real thread and steer its active turn. The production client in
-[#80](https://github.com/spotter-agent/spotter/issues/80) now exposes events, thread queries,
-control methods, and per-capability degraded state. [#81](https://github.com/spotter-agent/spotter/issues/81)
-adds a thread/turn/attachment registry. [#85](https://github.com/spotter-agent/spotter/issues/85)
-uses it to normalize authoritative lifecycle, message, plan, reasoning-summary, command, file-change,
-MCP, search, diff, and token events into durable Trace IR. Exact replays are deduplicated across
-restarts, operation outcomes correlate by item ID, and unknown notification families remain explicit.
-[#31](https://github.com/spotter-agent/spotter/issues/31) reduces that Trace IR into isolated,
-immutable, versioned ThreadState snapshots owned by `spotterd`; restart hydration deliberately
-requires live turn reconciliation before control becomes ready again. [#87](https://github.com/spotter-agent/spotter/issues/87)
-adds the single-owner connection loop, bounded reconnect backoff, durable observation gaps,
-connection/attachment epochs, multi-thread reconciliation, and exact epoch+turn control fencing.
-[#79](https://github.com/spotter-agent/spotter/issues/79)
-adds the `spotterd` process, versioned local control handshake, manual lifecycle commands, and a
-platform-neutral service boundary. [#83](https://github.com/spotter-agent/spotter/issues/83) adds
-transactional Codex setup/teardown, managed user-service registration, and integration ownership.
-[#84](https://github.com/spotter-agent/spotter/issues/84) makes `status` and `doctor` distinguish
-daemon, observation, control, enforcement, integration drift, storage, and reviewer health.
+[Status](docs/status.md) is the authoritative implementation dashboard, including capability
+state, current blockers, evidence gaps, and linked work. The README keeps only the stable project
+overview so fast-moving implementation detail is not maintained in two places.
 
 ---
 

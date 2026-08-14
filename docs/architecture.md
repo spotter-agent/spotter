@@ -303,7 +303,15 @@ not copied into the job. With explicit `reviewer.on_signals = true`, `spotterd` 
 asynchronously through a cancellation-safe Codex subprocess, serializes paid calls, enforces the
 existing session/day budget ledger before inference, and journals queue latency, inference timing,
 token spend, errors/caps, and stale decisions. The decision remains shadow-only and cannot steer the
-agent. Candidate merging/priority policy and the remaining signal families are not implemented yet.
+agent.
+
+The second implemented family detects repeated equivalent successful tool calls. It uses normalized
+tool identity, explicit resource scope, and stable normalized arguments; opaque or differently
+scoped calls do not collapse into one candidate. Like failure streaks, it emits a bounded durable
+candidate, cools down duplicate emissions, and becomes stale at a target or lifecycle boundary.
+These two families establish the signal-to-shadow-review mechanism, not its precision, recall, or
+replacement of periodic review. Candidate merging/priority policy and broader signal coverage remain
+open.
 
 ## 4.3 Semantic review
 

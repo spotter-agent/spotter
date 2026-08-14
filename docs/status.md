@@ -37,6 +37,9 @@ The roadmap no longer uses `P0–P9` / `E0–E5`. It is organized by named outco
 Runtime → Observe → Detect → Intervene → Recover → Harden
 ```
 
+The `spotter metrics` headings `P1`, `P3`, and `P4` are retained legacy measurement names for
+output compatibility; they are not roadmap stages or issue-triage codes.
+
 The shared-server gate in [#78](https://github.com/spotter-agent/spotter/issues/78) passed for the
 Spotter-managed external App Server path. Spotter now has a production WebSocket client and a
 Thread/Turn/Runtime Attachment registry, durable normalized ingestion, and an incremental immutable
@@ -109,7 +112,7 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 | App Server primary observation | 🟡 | Configured endpoints route through `spotterd` into normalized durable Trace IR and incremental ThreadState; a bounded value-free source audit and conformance corpus measure projection coverage | Collect labeled App Server failures to finish #37, then reduce Hooks in #86 |
 | Managed Codex lifecycle | 🟡 | Transactional setup/teardown, managed service, diagnostics, configured-endpoint recovery, and temporary observation Hooks until #86 parity | Add verified endpoint selection without claiming shared-process ownership |
 | Runtime reconnect/recovery | ✅ | Explicit connect/reconcile/backoff states, restart hydration, durable gaps, capability/server fingerprints, and stale-control fencing | Add retention/checkpoints in #89 |
-| Event-driven detection | 🟡 | An incremental failure-streak family journals identity/evidence-rich active, cooled-down, resolved, and stale candidates for explicit normalized resources; opted-in active candidates deduplicate into budget-capped asynchronous shadow reviews with bounded immutable inputs, while stale targets never become live delivery | Add merge/priority policy and remaining signal families in #28 |
+| Event-driven detection | 🟡 | Incremental failure-streak and repeated-equivalent-tool-call families journal identity/evidence-rich active, cooled-down, resolved, and stale candidates for explicit normalized resources; opted-in active candidates deduplicate into budget-capped asynchronous shadow reviews with bounded immutable inputs, while stale targets never become live delivery | Add merge/priority policy, broader signal coverage, and comparative detection evidence in #28/#38 |
 | Live `VERIFY` / `NUDGE` | ❌ | Reviewer decisions stop at the journal | #22 via `turn/steer` |
 | `INTERRUPT` / `RESTART` | ❌ | No live recovery path | #26 + #30 after soft intervention is understood |
 | Packaging / long-term operations | 🟡 | Exact version tags publish verified release artifacts; the dedicated Homebrew tap installs immutable releases and opens repeatable Formula-update PRs; the macOS lifecycle gate proves clean install, live G1→G2 upgrade/reconcile, teardown-less fail-open uninstall, retained data, and reinstall/teardown without Cellar assumptions | #89 retention/purge and #90 broader configuration/protocol/schema compatibility |

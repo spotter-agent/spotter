@@ -10,6 +10,8 @@ Start here if you are reading the repository for the first time.
 | What problem is Spotter trying to solve? | [Concept](concept.md) | mental model, principles, intervention semantics |
 | What processes/components/state should exist? | [Architecture](architecture.md) | component, state, IPC, and failure contracts |
 | What happens from install through uninstall/reinstall? | [Lifecycle](lifecycle.md) | command-by-command operational lifecycle |
+| How are release artifacts built and identified? | [Releasing](releasing.md) | tag, artifact, checksum, and build-identity contract |
+| What does the packaged lifecycle smoke prove? | [Homebrew lifecycle smoke](homebrew-lifecycle-smoke.md) | recorded install, live-upgrade, uninstall, retention, and reinstall coverage |
 | What did the App Server proof of concept establish? | [App Server PoC](app-server-poc.md) | exploratory protocol and transport findings |
 | Was shared TUI control validated end to end? | [App Server validation](app-server-validation.md) | historical validation evidence and limitations |
 | How is source/Trace IR/ThreadState coverage measured? | [Observability baseline](observability-baseline.md) | taxonomy, safe audit method, current sample limits |
@@ -67,27 +69,12 @@ Conventions
 Status / Architecture as needed
 ```
 
-## Current architectural decision in one screen
+## Current architecture and implementation
 
-```text
-CURRENT
-Codex hooks
-   ↓
-per-hook Spotter processes
-   ↓
-journal / gate / snapshot / periodic shadow reviewer
-
-TARGET
-Codex TUI
-   ↓
-External Codex App Server
-   ↕ events / steer / interrupt
-spotterd
-   ↓
-PreToolUse Hook only for deterministic blocking
-```
-
-The initial validation found that plain `codex` does not auto-discover a separately started App Server. [#78](https://github.com/spotter-agent/spotter/issues/78) subsequently proved the explicit remote path: the user's Codex TUI and Spotter can share a Spotter-managed external App Server, and `turn/steer` reaches the real active turn. The production client, normalized event consumption, identity reconciliation, reconnect loop, and daemon-owned live state now exist; setup endpoint selection remains. See [App Server connection validation](app-server-validation.md) and [Status](status.md).
+[Status](status.md) is the authoritative current-state dashboard. Read it with
+[Architecture](architecture.md) for the current/target boundary and with the historical
+[App Server validation](app-server-validation.md) for what was demonstrated in a recorded real
+session. This index intentionally does not maintain a second capability summary.
 
 ## Roadmap vocabulary
 
@@ -98,6 +85,9 @@ Runtime → Observe → Detect → Intervene → Recover → Harden
 ```
 
 These names describe the product/evidence outcome being made trustworthy. GitHub Milestone carries the stage assignment; Priority, Effort, Area, and native dependencies answer separate triage questions.
+
+Legacy `P1`/`P3`/`P4` headings in `spotter metrics` name historical measurements retained for
+output compatibility; they are not roadmap or issue-triage codes.
 
 ## Document responsibilities
 

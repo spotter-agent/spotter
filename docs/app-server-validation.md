@@ -116,5 +116,6 @@ Use an environment with a current Codex CLI and authentication:
    than silently claiming attachment.
 
 The recorded PoC passed steps 1–5 for one TUI. Multi-TUI concurrency, reconnect behavior, and the
-Codex-managed daemon path remain unproven; they are productization work rather than evidence that
-the explicit shared-server premise works.
+Codex-managed daemon path remain unproven in a recorded real session. Reconnect/reconciliation is
+implemented in `spotterd` and exercised by repository tests, but that is separate implementation
+evidence; it does not expand what this historical validation run established.
