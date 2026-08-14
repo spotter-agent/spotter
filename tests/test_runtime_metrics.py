@@ -467,6 +467,61 @@ def test_supervision_lifecycle_uses_correlated_monotonic_receipts() -> None:
     assert "monotonic_receipt=16/16 across 2 clock domains" in rendered
 
 
+def test_supervision_lead_and_lag_use_the_target_turn_monotonic_boundary() -> None:
+    def event(
+        kind: str,
+        turn_id: str,
+        monotonic_ns: int,
+        *,
+        job_id: str | None = None,
+        clock_id: str = "daemon-1",
+    ) -> TraceEvent:
+        identity = RuntimeIdentity(
+            ThreadId("thread-1"),
+            TurnId(turn_id),
+            None,
+            IdentityProvenance("codex", "external-thread", turn_id),
+        )
+        payload: dict[str, object] = {}
+        if job_id is not None:
+            payload = {
+                "review_job_id": job_id,
+                "target_turn_id": turn_id,
+                "target_connection_epoch": 1,
+            }
+        return TraceEvent(
+            kind,
+            payload,
+            identity=identity,
+            connection_epoch=1,
+            observed_monotonic_ns=monotonic_ns,
+            monotonic_clock_id=clock_id,
+        )
+
+    events = [
+        event("reviewer_decision", "turn-lead", 1_000_000_000, job_id="job-lead"),
+        event("turn_completed", "turn-lead", 1_200_000_000),
+        event("turn_completed", "turn-lag", 2_000_000_000),
+        event("reviewer_decision", "turn-lag", 2_300_000_000, job_id="job-lag"),
+        event("reviewer_decision", "turn-restart", 3_000_000_000, job_id="job-restart"),
+        event(
+            "turn_completed",
+            "turn-restart",
+            3_200_000_000,
+            clock_id="daemon-after-restart",
+        ),
+    ]
+
+    report = measure_runtime_costs([([_record(i, item) for i, item in enumerate(events)], 10)])
+
+    assert report.reviewer_jobs_decided == 3
+    assert report.reviewer_decision_lead_ms == (200.0,)
+    assert report.reviewer_decision_lag_ms == (300.0,)
+    rendered = render_runtime_costs(report)
+    assert "decision_boundary lead=avg=200.00ms max=200.00ms (1/3)" in rendered
+    assert "lag=avg=300.00ms max=300.00ms (1/3)" in rendered
+
+
 def test_repeated_action_metrics_reuse_durable_signal_features() -> None:
     records = [
         _record(

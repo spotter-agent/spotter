@@ -97,6 +97,8 @@ class RuntimeCostReport:
     reviewer_inference_finishes: int
     reviewer_inference_ms: tuple[float, ...]
     reviewer_end_to_end_ms: tuple[float, ...]
+    reviewer_decision_lead_ms: tuple[float, ...]
+    reviewer_decision_lag_ms: tuple[float, ...]
     turn_wall_ms: tuple[float, ...]
     tool_duration_ms: tuple[float, ...]
     gate_calls: int
@@ -166,6 +168,8 @@ class _ReviewLifecycle:
     jobs_finished: int
     inference_ms: tuple[float, ...]
     end_to_end_ms: tuple[float, ...]
+    decision_lead_ms: tuple[float, ...]
+    decision_lag_ms: tuple[float, ...]
 
 
 def measure_runtime_costs(
@@ -190,6 +194,8 @@ def measure_runtime_costs(
     reviewer_inference_ms: list[float] = []
     signal_detection_ms: list[float] = []
     reviewer_end_to_end_ms: list[float] = []
+    reviewer_decision_lead_ms: list[float] = []
+    reviewer_decision_lag_ms: list[float] = []
     turn_wall_ms: list[float] = []
     hook_ms: list[float] = []
     ipc_ms: list[float] = []
@@ -303,6 +309,8 @@ def measure_runtime_costs(
         reviewer_inference_finishes += lifecycle.jobs_finished
         reviewer_inference_ms.extend(lifecycle.inference_ms)
         reviewer_end_to_end_ms.extend(lifecycle.end_to_end_ms)
+        reviewer_decision_lead_ms.extend(lifecycle.decision_lead_ms)
+        reviewer_decision_lag_ms.extend(lifecycle.decision_lag_ms)
         current = surfaces[surface]
         surfaces[surface] = SurfaceCost(
             actions=current.actions + len(actions),
@@ -390,6 +398,8 @@ def measure_runtime_costs(
         reviewer_inference_finishes=reviewer_inference_finishes,
         reviewer_inference_ms=tuple(reviewer_inference_ms),
         reviewer_end_to_end_ms=tuple(reviewer_end_to_end_ms),
+        reviewer_decision_lead_ms=tuple(reviewer_decision_lead_ms),
+        reviewer_decision_lag_ms=tuple(reviewer_decision_lag_ms),
         turn_wall_ms=tuple(turn_wall_ms),
         tool_duration_ms=tuple(tool_duration_ms),
         gate_calls=gate_calls,
@@ -424,6 +434,7 @@ def _review_lifecycle(records: tuple[StepRecord, ...]) -> _ReviewLifecycle:
     capped: set[str] = set()
     discarded: set[str] = set()
     stale: set[str] = set()
+    turn_boundaries: dict[tuple[str, str, int], StepRecord] = {}
     signal_ids: dict[str, set[str]] = {signal_type: set() for signal_type in _REPETITION_FEATURES}
     signal_features: dict[str, dict[str, int]] = {
         signal_type: {} for signal_type in _REPETITION_FEATURES
@@ -432,6 +443,8 @@ def _review_lifecycle(records: tuple[StepRecord, ...]) -> _ReviewLifecycle:
     for record in records:
         event = record.event
         payload = event.payload
+        if event.kind == "turn_completed" and (turn_key := _review_turn_key(record)) is not None:
+            turn_boundaries.setdefault(turn_key, record)
         if event.kind in {"signal_candidate", "signal_candidate_suppressed"}:
             signal_type = payload.get("signal_type")
             signal_id = _payload_id(payload, "signal_id")
@@ -513,6 +526,14 @@ def _review_lifecycle(records: tuple[StepRecord, ...]) -> _ReviewLifecycle:
         and signal[1] is not None
         and (duration := _monotonic_elapsed_ms(signal[1], terminal)) is not None
     )
+    decision_lead_ms: list[float] = []
+    decision_lag_ms: list[float] = []
+    for decision in decided.values():
+        turn_key = _review_turn_key(decision)
+        boundary = turn_boundaries.get(turn_key) if turn_key is not None else None
+        delta = _monotonic_delta_ms(decision, boundary) if boundary is not None else None
+        if delta is not None:
+            (decision_lead_ms if delta >= 0 else decision_lag_ms).append(abs(delta))
     return _ReviewLifecycle(
         active_signals=len(signals),
         repeated_equivalent_actions=_covered_signal_count(
@@ -536,6 +557,8 @@ def _review_lifecycle(records: tuple[StepRecord, ...]) -> _ReviewLifecycle:
         jobs_finished=len(finished_job_ids),
         inference_ms=tuple(inference_ms),
         end_to_end_ms=end_to_end_ms,
+        decision_lead_ms=tuple(decision_lead_ms),
+        decision_lag_ms=tuple(decision_lag_ms),
     )
 
 
@@ -570,8 +593,13 @@ def _payload_id(payload: Mapping[str, object], key: str) -> str | None:
 
 
 def _monotonic_elapsed_ms(start: StepRecord | None, end: StepRecord) -> float | None:
-    if start is None:
+    duration = _monotonic_delta_ms(start, end) if start is not None else None
+    if duration is None or duration < 0:
         return None
+    return duration
+
+
+def _monotonic_delta_ms(start: StepRecord, end: StepRecord) -> float | None:
     started = start.event.observed_monotonic_ns
     finished = end.event.observed_monotonic_ns
     clock_id = start.event.monotonic_clock_id
@@ -580,10 +608,25 @@ def _monotonic_elapsed_ms(start: StepRecord | None, end: StepRecord) -> float | 
         or finished is None
         or clock_id is None
         or clock_id != end.event.monotonic_clock_id
-        or finished < started
     ):
         return None
     return (finished - started) / 1_000_000
+
+
+def _review_turn_key(record: StepRecord) -> tuple[str, str, int] | None:
+    event = record.event
+    identity = event.identity
+    thread_id = identity.thread_id.value if identity is not None and identity.thread_id else None
+    turn_id = _payload_id(event.payload, "target_turn_id") or _turn_id(record)
+    target_epoch = event.payload.get("target_connection_epoch")
+    epoch = (
+        target_epoch
+        if isinstance(target_epoch, int) and not isinstance(target_epoch, bool)
+        else event.connection_epoch
+    )
+    if thread_id is None or turn_id is None or epoch is None:
+        return None
+    return thread_id, turn_id, epoch
 
 
 def render_runtime_costs(report: RuntimeCostReport) -> str:
@@ -621,6 +664,8 @@ def render_runtime_costs(report: RuntimeCostReport) -> str:
     queue = _sample(report.reviewer_queue_ms, report.reviewer_jobs_started)
     inference = _sample(report.reviewer_inference_ms, report.reviewer_inference_finishes)
     end_to_end = _sample(report.reviewer_end_to_end_ms, report.reviewer_jobs_decided)
+    decision_lead = _sample(report.reviewer_decision_lead_ms, report.reviewer_jobs_decided)
+    decision_lag = _sample(report.reviewer_decision_lag_ms, report.reviewer_jobs_decided)
     lines.append(
         f"  Spotter semantic: reviewer_calls={report.reviewer_calls}, "
         f"recorded_session_tokens={reviewer_tokens}; queue={queue}, "
@@ -629,7 +674,8 @@ def render_runtime_costs(report: RuntimeCostReport) -> str:
     lines.append(
         "  Supervision lifecycle: "
         f"signal_delay={_sample(report.signal_detection_ms, report.signal_candidates_active)}, "
-        f"detection_to_decision={end_to_end}; "
+        f"detection_to_decision={end_to_end}; decision_boundary "
+        f"lead={decision_lead}, lag={decision_lag}; "
         f"jobs queued={report.reviewer_jobs_queued} started={report.reviewer_jobs_started} "
         f"decided={report.reviewer_jobs_decided} errors={report.reviewer_jobs_errored} "
         f"capped={report.reviewer_jobs_capped} discarded={report.reviewer_jobs_discarded} "

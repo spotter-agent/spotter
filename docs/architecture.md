@@ -378,7 +378,10 @@ durable record carries receipt wall time plus a process-local monotonic timestam
 ID. Signal, queue, and detection-to-decision latency is correlated through evidence, signal, and
 review-job IDs and is subtracted only within one monotonic domain; daemon restarts therefore reduce
 coverage instead of manufacturing a duration. Source wall time is never subtracted from receipt
-wall time to manufacture a latency across clock domains.
+wall time to manufacture a latency across clock domains. Signal-driven reviewer decisions are also
+joined to the matching thread/turn/connection-epoch completion boundary. A decision before that
+boundary reports supervision lead time; a decision after it reports lag. Missing identity, missing
+boundaries, and cross-restart clock domains remain uncovered rather than falling back to wall time.
 App Server events also retain a monotonically increasing arrival sequence within each connection
 epoch, so equal source timestamps remain durably ordered across journal reloads.
 
