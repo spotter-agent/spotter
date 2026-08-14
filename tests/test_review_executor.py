@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -6,7 +7,9 @@ import pytest
 from spotter.config import ReviewerConfig
 from spotter.identity import IdentityProvenance, RuntimeIdentity, ThreadId, TurnId
 from spotter.review_executor import ReviewExecutor
+from spotter.review_scheduler import ReviewerJob
 from spotter.reviewer import ReviewerDecision
+from spotter.reviewer_input import ReviewerInput
 from spotter.runtime_connection import AppServerRecoveryLoop
 from spotter.thread_state import ThreadStateStore
 from spotter.trace import TraceEvent
@@ -159,5 +162,74 @@ def test_failed_review_records_monotonic_queue_and_inference_timing(
         assert float(timing["queue_ms"]) >= 0
         assert float(timing["inference_ms"]) >= 0
         assert runtime.review_scheduler.pending() == ()
+
+    asyncio.run(scenario())
+
+
+def test_pending_reviews_use_severity_before_limited_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SPOTTER_HOME", str(tmp_path / "home"))
+
+    async def scenario() -> None:
+        runtime = AppServerRecoveryLoop("ws://unused", tmp_path / "sessions", ThreadStateStore())
+        captured: list[ReviewerJob] = []
+        runtime.set_review_job_callback(captured.append)
+        _trigger(runtime)
+        base = captured[0]
+
+        def queued_job(name: str, severity: int) -> ReviewerJob:
+            return replace(
+                base,
+                job_id=name,
+                signal_id=name,
+                candidate_event_id=f"candidate-{name}",
+                reviewer_input=replace(
+                    base.reviewer_input,
+                    signal_id=name,
+                    severity_hint=severity,
+                ),
+                signal_ids=(name,),
+                candidate_event_ids=(f"candidate-{name}",),
+            )
+
+        low = queued_job("low", 1)
+        medium = queued_job("medium", 5)
+        high = queued_job("high", 9)
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        order: list[str] = []
+        recorded: list[TraceEvent] = []
+
+        async def reviewer(input_: ReviewerInput, model: str) -> tuple[ReviewerDecision, int]:
+            signal_id = input_.signal_id
+            order.append(signal_id)
+            if signal_id == "low":
+                entered.set()
+                await release.wait()
+            return ReviewerDecision("continue", "none", "prioritized", 0.8), 1
+
+        executor = ReviewExecutor(
+            ReviewerConfig(on_signals=True, max_per_session=2, max_per_day=2),
+            recorded.append,
+            lambda job: True,
+            reviewer=reviewer,
+        )
+        executor.submit(low)
+        await entered.wait()
+        executor.submit(medium)
+        executor.submit(high)
+        release.set()
+        await executor.drain()
+        await executor.close()
+
+        assert order == ["low", "high"]
+        started = [event for event in recorded if event.kind == "review_inference_started"]
+        assert [event.payload["review_job_id"] for event in started] == ["low", "high"]
+        assert [event.payload["priority"] for event in started] == [1.0, 9.0]
+        capped = [event for event in recorded if event.kind == "reviewer_capped"]
+        assert len(capped) == 1
+        assert capped[0].payload["review_job_id"] == "medium"
+        assert capped[0].payload["priority"] == 5.0
 
     asyncio.run(scenario())
