@@ -326,6 +326,46 @@ def test_arm_environment_drift_is_persisted_and_summarized(
     assert "environment mismatches=1/1" in summarize(results)
 
 
+def test_source_environment_drift_blocks_both_arms_before_agent_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    counter: dict[str, int] = {}
+
+    def mismatched_fork(*args: object, **kwargs: object) -> ForkPlan:
+        plan = _fake_fork(counter)("s1", 5)
+        return ForkPlan(
+            plan.session_id,
+            plan.branch_step,
+            plan.worktree,
+            plan.rollout,
+            plan.command,
+            prefix_id=plan.prefix_id,
+            environment_fingerprint=plan.environment_fingerprint,
+            source_environment_preflight=("SOURCE_ENVIRONMENT_MISMATCH:MISSING_IGNORED_FILE"),
+        )
+
+    ran: list[str] = []
+    monkeypatch.setattr(experiment, "fork", mismatched_fork)
+    monkeypatch.setattr(experiment, "_run_arm", lambda *args, **kwargs: ran.append("run"))
+    monkeypatch.setattr(experiment, "_cleanup", lambda worktree: None)
+
+    results = run_experiment(
+        "s1",
+        5,
+        None,
+        run=True,
+        neutral=True,
+        environment_resources=(".env",),
+    )
+
+    assert ran == []
+    assert all(result.classification == ArmClassification.INFRA_FAIL for result in results)
+    assert all(
+        result.environment_preflight == "SOURCE_ENVIRONMENT_MISMATCH:MISSING_IGNORED_FILE"
+        for result in results
+    )
+
+
 def test_explicit_source_config_mismatch_prevents_agent_runs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

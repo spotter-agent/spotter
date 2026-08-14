@@ -183,6 +183,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--check", help="experiment: success command run in each fork worktree (exit 0 = pass)"
     )
     parser.add_argument(
+        "--environment-resource",
+        action="append",
+        default=[],
+        help=(
+            "fork/experiment: relative non-secret file that must survive source-to-fork restore "
+            "(repeatable)"
+        ),
+    )
+    parser.add_argument(
         "--run",
         action="store_true",
         help="experiment: actually execute the 2*pairs agent runs (costs real tokens)",
@@ -345,6 +354,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 reasoning_effort=args.reasoning_effort,
                 keep_artifacts=args.keep_artifacts,
                 neutral=args.neutral,
+                environment_resources=tuple(args.environment_resource),
             )
         except (ReplayError, SnapshotError, OSError, subprocess.SubprocessError) as error:
             print(f"experiment failed: {error}", file=sys.stderr)
@@ -378,7 +388,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not args.session or args.step is None:
             parser.error("fork requires --session and --step")
         try:
-            plan = fork(args.session, args.step, repo=args.repo, guidance=args.guidance)
+            plan = fork(
+                args.session,
+                args.step,
+                repo=args.repo,
+                guidance=args.guidance,
+                environment_resources=tuple(args.environment_resource),
+            )
         except (ReplayError, SnapshotError) as error:
             print(f"fork failed: {error}", file=sys.stderr)
             return 1

@@ -29,6 +29,7 @@ import platform
 import shlex
 import subprocess
 import uuid
+from collections.abc import Sequence
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -46,7 +47,7 @@ class ReplayError(RuntimeError):
     """Raised when a fork cannot be assembled from the recorded ingredients."""
 
 
-FORK_MANIFEST_SCHEMA_VERSION = 1
+FORK_MANIFEST_SCHEMA_VERSION = 2
 
 
 class ForkStatus(StrEnum):
@@ -57,6 +58,8 @@ class ForkStatus(StrEnum):
 
 class EnvironmentDrift(StrEnum):
     TRACKED_STATE_MISMATCH = "TRACKED_STATE_MISMATCH"
+    MISSING_IGNORED_FILE = "MISSING_IGNORED_FILE"
+    MISSING_UNTRACKED_FILE = "MISSING_UNTRACKED_FILE"
     TOOL_VERSION_DRIFT = "TOOL_VERSION_DRIFT"
     UNKNOWN_ENVIRONMENT_DRIFT = "UNKNOWN_ENVIRONMENT_DRIFT"
 
@@ -90,6 +93,13 @@ class BranchCoverageReport:
 
 
 @dataclass(frozen=True)
+class DeclaredResourceFingerprint:
+    path: str
+    state: str
+    sha256: str | None
+
+
+@dataclass(frozen=True)
 class EnvironmentFingerprint:
     worktree: str
     snapshot_sha: str
@@ -105,6 +115,7 @@ class EnvironmentFingerprint:
     ignored_state: str
     environment_variables: str
     fingerprint_sha256: str
+    declared_resources: tuple[DeclaredResourceFingerprint, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -151,6 +162,7 @@ class ForkManifest:
     created_at: str
     updated_at: str
     failure: str | None = None
+    source_environment_preflight: str = "MATCHED"
 
 
 @dataclass(frozen=True)
@@ -165,6 +177,7 @@ class ForkPlan:
     manifest: str | None = None
     prefix_id: str | None = None
     environment_fingerprint: str | None = None
+    source_environment_preflight: str = "MATCHED"
 
 
 def find_rollout(session_id: str, codex_home: Path | None = None) -> Path:
@@ -271,9 +284,98 @@ def branch_coverage_to_json(report: BranchCoverageReport) -> str:
     return json.dumps(asdict(report), indent=2)
 
 
-def fingerprint_environment(worktree: Path) -> EnvironmentFingerprint:
-    """Fingerprint material Git/tool state without reading user secrets or ignored files."""
+def _environment_resource_paths(values: Sequence[str]) -> tuple[str, ...]:
+    paths: set[str] = set()
+    for value in values:
+        path = Path(value)
+        if not value or path.is_absolute() or path == Path(".") or ".." in path.parts:
+            raise ReplayError(f"environment resource must be a relative file: {value!r}")
+        paths.add(path.as_posix())
+    return tuple(sorted(paths))
 
+
+def _fingerprint_resources(
+    worktree: Path, values: Sequence[str]
+) -> tuple[DeclaredResourceFingerprint, ...]:
+    root = worktree.resolve()
+    resources: list[DeclaredResourceFingerprint] = []
+    for value in _environment_resource_paths(values):
+        candidate = worktree / value
+        resolved = candidate.resolve()
+        if not resolved.is_relative_to(root) or candidate.is_symlink():
+            raise ReplayError(f"environment resource escapes the worktree: {value!r}")
+        if not candidate.exists():
+            resources.append(DeclaredResourceFingerprint(value, "missing", None))
+            continue
+        if not candidate.is_file():
+            raise ReplayError(f"environment resource must be a regular file: {value!r}")
+        resources.append(
+            DeclaredResourceFingerprint(
+                value,
+                _git_path_state(worktree, value),
+                _digest(candidate.read_bytes()),
+            )
+        )
+    return tuple(resources)
+
+
+def _git_path_state(worktree: Path, value: str) -> str:
+    try:
+        ignored = subprocess.run(
+            ["git", "check-ignore", "--quiet", "--", value],
+            cwd=worktree,
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ReplayError(f"cannot classify environment resource {value!r}: {error}") from error
+    if ignored.returncode == 0:
+        return "ignored"
+    if ignored.returncode != 1:
+        raise ReplayError(f"git check-ignore failed for environment resource {value!r}")
+    try:
+        tracked = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", "--", value],
+            cwd=worktree,
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ReplayError(f"cannot classify environment resource {value!r}: {error}") from error
+    if tracked.returncode not in {0, 1}:
+        raise ReplayError(f"git ls-files failed for environment resource {value!r}")
+    return "tracked" if tracked.returncode == 0 else "untracked"
+
+
+def _declared_resource_drift(
+    left: tuple[DeclaredResourceFingerprint, ...],
+    right: tuple[DeclaredResourceFingerprint, ...],
+) -> tuple[EnvironmentDrift, ...]:
+    if tuple(resource.path for resource in left) != tuple(resource.path for resource in right):
+        return (EnvironmentDrift.UNKNOWN_ENVIRONMENT_DRIFT,)
+    drift: list[EnvironmentDrift] = []
+    for source, restored in zip(left, right, strict=True):
+        if source.sha256 is not None and source.sha256 == restored.sha256:
+            continue
+        if source.state == "ignored" and restored.state == "missing":
+            category = EnvironmentDrift.MISSING_IGNORED_FILE
+        elif source.state == "untracked" and restored.state == "missing":
+            category = EnvironmentDrift.MISSING_UNTRACKED_FILE
+        elif source.state == "tracked":
+            category = EnvironmentDrift.TRACKED_STATE_MISMATCH
+        else:
+            category = EnvironmentDrift.UNKNOWN_ENVIRONMENT_DRIFT
+        if category not in drift:
+            drift.append(category)
+    return tuple(drift)
+
+
+def fingerprint_environment(
+    worktree: Path, environment_resources: Sequence[str] = ()
+) -> EnvironmentFingerprint:
+    """Fingerprint Git/tool state and only explicitly declared extra files."""
+
+    resource_paths = _environment_resource_paths(environment_resources)
     snapshot_sha = _git_output(worktree, "rev-parse", "HEAD")
     tree_sha = _git_output(worktree, "rev-parse", "HEAD^{tree}")
     status = _git_output(worktree, "status", "--porcelain=v1", "--untracked-files=all")
@@ -285,24 +387,47 @@ def fingerprint_environment(worktree: Path) -> EnvironmentFingerprint:
     )
     submodules = _git_output(worktree, "submodule", "status", "--recursive", allow_failure=True)
     git_version = _command_version(["git", "--version"])
+    declared_resources = _fingerprint_resources(worktree, resource_paths)
+    status_sha256 = _digest(status.encode())
+    index_diff_sha256 = _digest(index_diff.encode())
+    tracked_diff_sha256 = _digest(tracked_diff.encode())
+    submodule_status_sha256 = _digest(submodules.encode())
+    python_version = platform.python_version()
+    platform_system = platform.system()
+    platform_machine = platform.machine()
+    ignored_state = "not_captured_by_git_snapshot"
+    environment_variables = "not_captured"
     material = {
         "snapshot_sha": snapshot_sha,
         "tree_sha": tree_sha,
-        "status_sha256": _digest(status.encode()),
-        "index_diff_sha256": _digest(index_diff.encode()),
-        "tracked_diff_sha256": _digest(tracked_diff.encode()),
-        "submodule_status_sha256": _digest(submodules.encode()),
+        "status_sha256": status_sha256,
+        "index_diff_sha256": index_diff_sha256,
+        "tracked_diff_sha256": tracked_diff_sha256,
+        "submodule_status_sha256": submodule_status_sha256,
         "git_version": git_version,
-        "python_version": platform.python_version(),
-        "platform_system": platform.system(),
-        "platform_machine": platform.machine(),
-        "ignored_state": "not_captured_by_git_snapshot",
-        "environment_variables": "not_captured",
+        "python_version": python_version,
+        "platform_system": platform_system,
+        "platform_machine": platform_machine,
+        "ignored_state": ignored_state,
+        "environment_variables": environment_variables,
+        "declared_resources": [asdict(resource) for resource in declared_resources],
     }
     return EnvironmentFingerprint(
         worktree=str(worktree.resolve()),
-        **material,
+        snapshot_sha=snapshot_sha,
+        tree_sha=tree_sha,
+        status_sha256=status_sha256,
+        index_diff_sha256=index_diff_sha256,
+        tracked_diff_sha256=tracked_diff_sha256,
+        submodule_status_sha256=submodule_status_sha256,
+        git_version=git_version,
+        python_version=python_version,
+        platform_system=platform_system,
+        platform_machine=platform_machine,
+        ignored_state=ignored_state,
+        environment_variables=environment_variables,
         fingerprint_sha256=_digest(_canonical_json(material)),
+        declared_resources=declared_resources,
     )
 
 
@@ -342,6 +467,9 @@ def compare_environments(
         right.environment_variables,
     ):
         drift.append(EnvironmentDrift.UNKNOWN_ENVIRONMENT_DRIFT)
+    for category in _declared_resource_drift(left.declared_resources, right.declared_resources):
+        if category not in drift:
+            drift.append(category)
     return EnvironmentComparison(not drift, tuple(drift))
 
 
@@ -389,6 +517,7 @@ def fork(
     codex_home: Path | None = None,
     dest: Path | None = None,
     guidance: str | None = None,
+    environment_resources: Sequence[str] = (),
 ) -> ForkPlan:
     journal_file = journal_path({"session_id": session_id})
     records = StepJournal.load(journal_file)
@@ -410,6 +539,8 @@ def fork(
     repo_path = repo or _recorded_repo(records, step)
     if repo_path is None:
         raise ReplayError("journal has no cwd for this step; pass repo explicitly")
+    resource_paths = _environment_resource_paths(environment_resources)
+    source_resources = _fingerprint_resources(repo_path, resource_paths)
 
     source_rollout = find_rollout(session_id, codex_home)
     rollout_records = _read_rollout(source_rollout)
@@ -449,6 +580,7 @@ def fork(
         environment=None,
         created_at=created_at,
         updated_at=created_at,
+        source_environment_preflight="MATCHED",
     )
     _write_fork_manifest(manifest_file, manifest)
 
@@ -458,7 +590,14 @@ def fork(
         forked_rollout = fork_rollout(source_rollout, call_id, new_id)
         restore_snapshot(repo_path, snapshot, worktree)
         restored = True
-        environment = fingerprint_environment(worktree)
+        environment = fingerprint_environment(worktree, resource_paths)
+        resource_drift = _declared_resource_drift(source_resources, environment.declared_resources)
+        source_environment_preflight = (
+            "MATCHED"
+            if not resource_drift
+            else "SOURCE_ENVIRONMENT_MISMATCH:"
+            + ",".join(category.value for category in resource_drift)
+        )
     except Exception as error:
         if forked_rollout is not None and not restored:
             forked_rollout.unlink(missing_ok=True)
@@ -474,6 +613,7 @@ def fork(
             created_at=created_at,
             updated_at=datetime.now(UTC).isoformat(),
             failure=cleaned[:1000],
+            source_environment_preflight="ENVIRONMENT_PREFLIGHT_ERROR",
         )
         with suppress(OSError):
             _write_fork_manifest(manifest_file, failed)
@@ -489,6 +629,7 @@ def fork(
         environment=environment,
         created_at=created_at,
         updated_at=datetime.now(UTC).isoformat(),
+        source_environment_preflight=source_environment_preflight,
     )
     _write_fork_manifest(manifest_file, ready)
 
@@ -506,6 +647,7 @@ def fork(
         manifest=str(manifest_file),
         prefix_id=prefix.prefix_id,
         environment_fingerprint=environment.fingerprint_sha256,
+        source_environment_preflight=source_environment_preflight,
     )
 
 
@@ -522,7 +664,8 @@ def fork_manifest_path(fork_id: str) -> Path:
 def load_fork_manifest(path: Path) -> ForkManifest:
     try:
         raw = json.loads(path.read_text())
-        if raw.get("schema_version") != FORK_MANIFEST_SCHEMA_VERSION:
+        schema_version = raw.get("schema_version")
+        if schema_version not in {1, FORK_MANIFEST_SCHEMA_VERSION}:
             raise ReplayError(f"unsupported fork manifest schema in {path}")
         prefix_raw = raw["prefix"]
         prefix = PrefixManifest(
@@ -533,11 +676,20 @@ def load_fork_manifest(path: Path) -> ForkManifest:
             }
         )
         environment_raw = raw.get("environment")
-        environment = (
-            EnvironmentFingerprint(**environment_raw) if isinstance(environment_raw, dict) else None
-        )
+        environment = None
+        if isinstance(environment_raw, dict):
+            resources = tuple(
+                DeclaredResourceFingerprint(**resource)
+                for resource in environment_raw.get("declared_resources", [])
+            )
+            environment = EnvironmentFingerprint(
+                **{
+                    **environment_raw,
+                    "declared_resources": resources,
+                }
+            )
         return ForkManifest(
-            schema_version=raw["schema_version"],
+            schema_version=schema_version,
             fork_id=raw["fork_id"],
             status=ForkStatus(raw["status"]),
             prefix=prefix,
@@ -547,6 +699,7 @@ def load_fork_manifest(path: Path) -> ForkManifest:
             created_at=raw["created_at"],
             updated_at=raw["updated_at"],
             failure=raw.get("failure"),
+            source_environment_preflight=str(raw.get("source_environment_preflight") or "MATCHED"),
         )
     except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
         raise ReplayError(f"invalid fork manifest {path}: {error}") from error

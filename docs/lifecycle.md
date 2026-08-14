@@ -863,8 +863,12 @@ The implementation persists this lineage in a secure, atomically replaced fork m
 the source event and tool call, repository and snapshot identity, the exact rollout-prefix digest,
 model/runtime metadata available in the rollout, external-effect warnings, observation gaps, and a
 captured environment fingerprint. The fingerprint covers tracked/untracked Git status, submodule
-status, Git/Python versions, and platform identity. Ignored files, environment variables, and agent
-configuration remain explicitly uncaptured limitations.
+status, Git/Python versions, and platform identity. A fork or experiment may additionally declare
+relative non-secret files with `--environment-resource`; Spotter records only their paths, Git state,
+and content hashes, then classifies source-to-fork loss before either arm runs. Undeclared ignored
+files, environment variables, and agent configuration remain explicitly uncaptured limitations.
+Fork manifest schema v2 persists the declared-resource fingerprint and source preflight result;
+schema v1 manifests remain readable with no declared-resource coverage.
 
 With snapshotting enabled, the Codex `SessionStart` Hook pins a baseline snapshot for the reported
 Git working directory. Read-only proposals before the first mutation can therefore reuse that one
@@ -901,7 +905,8 @@ cost/timing
 ```
 
 Both forks in a pair are created before either arm runs. Execution is refused when their prefix IDs
-or captured environment fingerprints differ; captured drift is classified as repository-state,
+or captured environment fingerprints differ, or when a declared source resource does not survive
+restore. Captured drift is classified as repository-state, missing ignored/untracked files,
 tool-version, or otherwise unknown environment drift. This preflight protects pair parity but does
 not yet establish the replay instrument's empirical noise floor.
 

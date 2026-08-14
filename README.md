@@ -351,6 +351,8 @@ spotter label --session <id> --step <n> --verdict fp
 spotter metrics
 spotter observability [--session <id>]
 spotter fork --session <id> --step <n>
+# require an ignored/non-secret fixture file to survive into the fork:
+spotter fork --session <id> --step <n> --environment-resource .fixture-config
 spotter fork-coverage --session <id>
 spotter prune --repo /path/to/repo  # dry-run unless --apply is supplied
 spotter tasks validate path/to/task-set.toml
@@ -370,9 +372,10 @@ snapshots. `spotter fork` writes a durable manifest under `~/.spotter/fork-manif
 source event, snapshot, rollout-prefix digest, external-effect warnings, and captured environment
 fingerprint. Counterfactual pairs are fully prepared and must pass shared-prefix and captured-
 environment parity checks before either agent arm runs. The arms must use distinct worktrees, and
-each is rechecked against its immutable manifest immediately before model continuation. Ignored
-files and environment variables are
-explicitly marked as not captured rather than assumed equal. Prefixes preserve the rollout model,
+each is rechecked against its immutable manifest immediately before model continuation. Explicitly
+declared relative non-secret files are hashed and checked from source to fork; missing ignored or
+untracked files block both arms. Undeclared ignored files and environment variables are explicitly
+marked as not captured rather than assumed equal. Prefixes preserve the rollout model,
 runtime, and a secret-free subset of turn configuration; experiments can pin both the Codex model
 and reasoning effort and persist both values in result provenance. When those values are pinned and
 source provenance is available, a mismatch is rejected before either arm starts.

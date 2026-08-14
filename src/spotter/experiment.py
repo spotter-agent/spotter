@@ -20,6 +20,7 @@ import json
 import os
 import subprocess
 import uuid
+from collections.abc import Sequence
 from contextlib import suppress
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -126,6 +127,16 @@ def _pair_environment_preflight(prepared: list[tuple[str, str, ForkPlan]]) -> st
         return "FORK_PROVENANCE_UNAVAILABLE"
     if Path(plans[0].worktree).resolve() == Path(plans[1].worktree).resolve():
         return "SHARED_ARM_WORKTREE"
+    source_mismatch = next(
+        (
+            plan.source_environment_preflight
+            for plan in plans
+            if plan.source_environment_preflight != "MATCHED"
+        ),
+        None,
+    )
+    if source_mismatch is not None:
+        return source_mismatch
     if plans[0].prefix_id != plans[1].prefix_id:
         return "PREFIX_MISMATCH"
     if plans[0].environment_fingerprint == plans[1].environment_fingerprint:
@@ -179,6 +190,9 @@ def _arm_environment_preflight(plan: ForkPlan) -> str:
         expected = load_fork_manifest(Path(plan.manifest)).environment
         if expected is None:
             return "ENVIRONMENT_FINGERPRINT_MISSING"
+        resources = tuple(resource.path for resource in getattr(expected, "declared_resources", ()))
+        if resources:
+            current = fingerprint_environment(Path(plan.worktree), resources)
         comparison = compare_environments(expected, current)
         detail = ",".join(comparison.drift) or "UNKNOWN_ENVIRONMENT_DRIFT"
         return f"ENVIRONMENT_MISMATCH:{detail}"
@@ -271,6 +285,7 @@ def run_experiment(
     reasoning_effort: str | None = None,
     keep_artifacts: bool = False,
     neutral: bool = False,
+    environment_resources: Sequence[str] = (),
 ) -> list[ArmResult]:
     """Build (and with run=True, execute) n counterfactual pairs."""
     if pairs < 1:
@@ -304,6 +319,7 @@ def run_experiment(
         "codex_version": _codex_version(),
         "codex_home": str(codex_home or os.environ.get("CODEX_HOME") or Path.home() / ".codex"),
         "source_snapshot": source_snapshot,
+        "environment_resources": list(environment_resources),
         "started_at": datetime.now(UTC).isoformat(),
     }
     with out.open("a", encoding="utf-8") as sink:
@@ -317,9 +333,24 @@ def run_experiment(
         )
         if (pair + uuid.UUID(experiment_id).int) % 2:  # randomize pair 0, then alternate
             arms.reverse()
-        prepared = [
-            (arm, prompt, fork(session_id, step, codex_home=codex_home)) for arm, prompt in arms
-        ]
+        if environment_resources:
+            prepared = [
+                (
+                    arm,
+                    prompt,
+                    fork(
+                        session_id,
+                        step,
+                        codex_home=codex_home,
+                        environment_resources=environment_resources,
+                    ),
+                )
+                for arm, prompt in arms
+            ]
+        else:
+            prepared = [
+                (arm, prompt, fork(session_id, step, codex_home=codex_home)) for arm, prompt in arms
+            ]
         environment_preflight = _pair_environment_preflight(prepared)
         source_config_preflight = _source_config_preflight(prepared, model, reasoning_effort)
         for arm, prompt, plan in prepared:

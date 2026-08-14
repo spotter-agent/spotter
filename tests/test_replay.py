@@ -556,6 +556,88 @@ def test_environment_comparison_classifies_tool_and_platform_drift(
     )
 
 
+def test_declared_ignored_resource_is_not_hidden_by_matching_forks(
+    repo: Path, codex_home: Path
+) -> None:
+    (repo / ".gitignore").write_text(".env\n")
+    (repo / ".env").write_text("fixture-secret")
+    (repo / "fixture.json").write_text('{"version": 1}')
+    sha = snapshot_worktree(repo)
+    _journal(
+        OLD_ID,
+        [
+            (
+                TraceEvent(
+                    "tool_proposal",
+                    {
+                        "tool_use_id": "call_A",
+                        "cwd": str(repo),
+                        "reversibility_class": "A",
+                    },
+                ),
+                sha,
+            )
+        ],
+    )
+
+    plan = fork(
+        OLD_ID,
+        0,
+        codex_home=codex_home,
+        environment_resources=(".env", "fixture.json"),
+    )
+    manifest = load_fork_manifest(Path(plan.manifest or ""))
+
+    assert plan.source_environment_preflight == ("SOURCE_ENVIRONMENT_MISMATCH:MISSING_IGNORED_FILE")
+    assert manifest.source_environment_preflight == plan.source_environment_preflight
+    assert manifest.environment is not None
+    assert tuple(resource.path for resource in manifest.environment.declared_resources) == (
+        ".env",
+        "fixture.json",
+    )
+    assert manifest.environment.declared_resources[0].state == "missing"
+    assert manifest.environment.declared_resources[1].sha256 is not None
+
+
+def test_declared_environment_resource_cannot_escape_worktree(repo: Path) -> None:
+    with pytest.raises(ReplayError, match="relative file"):
+        fingerprint_environment(repo, ("../secret",))
+
+
+def test_fork_manifest_v1_remains_readable(repo: Path, codex_home: Path) -> None:
+    sha = snapshot_worktree(repo)
+    _journal(
+        OLD_ID,
+        [
+            (
+                TraceEvent(
+                    "tool_proposal",
+                    {
+                        "tool_use_id": "call_A",
+                        "cwd": str(repo),
+                        "reversibility_class": "A",
+                    },
+                ),
+                sha,
+            )
+        ],
+    )
+    plan = fork(OLD_ID, 0, codex_home=codex_home)
+    manifest_path = Path(plan.manifest or "")
+    raw = json.loads(manifest_path.read_text())
+    raw["schema_version"] = 1
+    raw.pop("source_environment_preflight")
+    raw["environment"].pop("declared_resources")
+    manifest_path.write_text(json.dumps(raw))
+
+    manifest = load_fork_manifest(manifest_path)
+
+    assert manifest.schema_version == 1
+    assert manifest.source_environment_preflight == "MATCHED"
+    assert manifest.environment is not None
+    assert manifest.environment.declared_resources == ()
+
+
 def test_prefix_manifest_carries_gap_and_external_effect_limits(
     repo: Path, codex_home: Path
 ) -> None:
