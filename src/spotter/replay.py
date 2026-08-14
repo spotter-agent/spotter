@@ -568,7 +568,7 @@ def _build_prefix_manifest(
         common_dir = repo / common_dir
     repository_id = _digest(str(common_dir.resolve()).encode())
     rollout_digest = _rollout_prefix_digest(rollout, call_id)
-    model, runtime_version = _rollout_provenance(rollout, call_id)
+    model, runtime_version, agent_config = _rollout_provenance(rollout, call_id)
     identity = target.event.identity
     turn_id = identity.turn_id.value if identity and identity.turn_id else None
     effects = tuple(external_effects(records, through_step=step))
@@ -600,7 +600,7 @@ def _build_prefix_manifest(
         agent="codex",
         model=model,
         runtime_version=runtime_version,
-        agent_config="not_captured",
+        agent_config=agent_config,
         context_source="truncated_codex_rollout",
         context_limitations=(
             "spotter_private_reviewer_state_not_injected",
@@ -620,9 +620,10 @@ def _rollout_prefix_digest(rollout: Path, call_id: str) -> str:
     raise ReplayError(f"call_id {call_id} not found in rollout {rollout.name}")
 
 
-def _rollout_provenance(rollout: Path, call_id: str) -> tuple[str | None, str | None]:
+def _rollout_provenance(rollout: Path, call_id: str) -> tuple[str | None, str | None, str]:
     model = None
     runtime_version = None
+    agent_config = "not_captured"
     for index, line in enumerate(rollout.read_text(encoding="utf-8").splitlines()):
         record = _rollout_record(line, index + 1)
         if call_id in _record_ids(record):
@@ -634,7 +635,22 @@ def _rollout_provenance(rollout: Path, call_id: str) -> tuple[str | None, str | 
             model = payload["model"]
         if isinstance(payload.get("cli_version"), str):
             runtime_version = payload["cli_version"]
-    return model, runtime_version
+        if record.get("type") == "turn_context":
+            config = {
+                key: payload[key]
+                for key in ("approval_policy", "effort", "personality")
+                if isinstance(payload.get(key), str)
+            }
+            for key, nested_key in (
+                ("collaboration_mode", "mode"),
+                ("sandbox_policy", "type"),
+            ):
+                nested = payload.get(key)
+                if isinstance(nested, dict) and isinstance(nested.get(nested_key), str):
+                    config[key] = nested[nested_key]
+            if config:
+                agent_config = _canonical_json(config).decode()
+    return model, runtime_version, agent_config
 
 
 def _write_fork_manifest(path: Path, manifest: ForkManifest) -> None:

@@ -339,11 +339,16 @@ time, and total Hook time are recorded separately so latency percentiles can be 
 aggregation on the synchronous path.
 
 `spotter metrics` projects these durable records into separate accounting domains: Main semantic
-actions and token observations, Spotter semantic reviewer calls/tokens, deterministic Hook/IPC
+actions (including command/file/tool family and classified-failure counts) and token observations,
+Spotter semantic reviewer calls/tokens, deterministic Hook/IPC
 latency, timing coverage, and journal storage. Hook and App Server action surfaces are reported
 separately during migration rather than summed. Token totals remain `cumulative/unknown-scope`, and
-missing token/timing/latency data is printed as unknown with an explicit coverage denominator. Source
-wall time is never subtracted from receipt wall time to manufacture a latency across clock domains.
+the latest total per session is used so cumulative updates are not double-counted. Input, cached
+input, cache-write input, output, and reasoning-output fields each retain their own session coverage;
+missing token/timing/latency data is printed as unknown with an explicit denominator. Source wall
+time is never subtracted from receipt wall time to manufacture a latency across clock domains.
+App Server events also retain a monotonically increasing arrival sequence within each connection
+epoch, so equal source timestamps remain durably ordered across journal reloads.
 
 ## 4.5 Turn completion
 
@@ -455,6 +460,7 @@ TraceEvent
   turn_id
   item/tool_id
   timestamp
+  connection_epoch / arrival_seq
   kind
   operation
   files/resources
@@ -490,6 +496,11 @@ Timestamp regressions are accepted but marked `out_of_order`, and conflicting te
 explicitly. Hook records carry legacy-session provenance with unknown thread, turn, and attachment
 dimensions, so consumers never need Codex transport objects and never infer that a Hook session is an
 App Server thread.
+
+Runtime metrics count unique resources only from explicit normalized fields: file paths, classified
+Hook resources, and MCP server/tool identities. Lifecycle observations for one correlated action are
+deduplicated, and reports include the number of semantic actions that declared a resource. Commands
+and opaque tool arguments are not parsed to invent resource identity.
 
 The daemon also writes a bounded, value-free source-shape audit beside session journals. It records
 which App Server field paths existed, which normalized fields and evidence families survived, and

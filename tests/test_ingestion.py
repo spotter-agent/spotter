@@ -236,6 +236,41 @@ def test_operation_correlation_does_not_cross_connection_epochs(tmp_path: Path) 
     assert "out_of_order" not in completed.event.payload
 
 
+def test_equal_source_timestamps_keep_durable_arrival_order_across_restart(
+    tmp_path: Path,
+) -> None:
+    ingestor = AppServerTraceIngestor(tmp_path)
+    command = {
+        "type": "commandExecution",
+        "command": "pytest",
+        "cwd": "/repo",
+        "status": "inProgress",
+        "commandActions": [],
+    }
+    first = ingestor.ingest(
+        _item_event("item/started", {**command, "id": "one"}, 1_000), connection_epoch=7
+    )
+    second = ingestor.ingest(
+        _item_event("item/started", {**command, "id": "two"}, 1_000), connection_epoch=7
+    )
+
+    assert first is not None and first.event.arrival_seq == 1
+    assert second is not None and second.event.arrival_seq == 2
+    assert first.event.occurred_at == second.event.occurred_at == 1.0
+
+    resumed = AppServerTraceIngestor(tmp_path).ingest(
+        _item_event("item/started", {**command, "id": "three"}, 1_000),
+        connection_epoch=7,
+    )
+
+    assert resumed is not None and resumed.event.arrival_seq == 3
+    assert [record.event.arrival_seq for record in AppServerTraceIngestor(tmp_path).records()] == [
+        1,
+        2,
+        3,
+    ]
+
+
 def test_out_of_order_timestamp_is_explicit_and_terminal_conflicts_fail(tmp_path: Path) -> None:
     ingestor = AppServerTraceIngestor(tmp_path)
     item = {
@@ -276,8 +311,14 @@ def test_unknown_and_token_events_keep_identity_without_wire_shapes() -> None:
                 "threadId": "thread-1",
                 "turnId": "turn-1",
                 "tokenUsage": {
-                    "last": {"inputTokens": 10, "outputTokens": 4, "futureCount": 99},
-                    "total": {"totalTokens": 14},
+                    "last": {
+                        "inputTokens": 10,
+                        "cachedInputTokens": 2,
+                        "outputTokens": 4,
+                        "reasoningOutputTokens": 1,
+                        "futureCount": 99,
+                    },
+                    "total": {"totalTokens": 14, "cacheWriteInputTokens": 3},
                     "modelContextWindow": 200_000,
                 },
             },
@@ -289,8 +330,13 @@ def test_unknown_and_token_events_keep_identity_without_wire_shapes() -> None:
     assert unknown.item_id == "future-1"
     assert unknown.identity is not None and unknown.identity.turn_id is not None
     assert usage.payload == {
-        "last": {"inputTokens": 10, "outputTokens": 4},
-        "total": {"totalTokens": 14},
+        "last": {
+            "inputTokens": 10,
+            "cachedInputTokens": 2,
+            "outputTokens": 4,
+            "reasoningOutputTokens": 1,
+        },
+        "total": {"cacheWriteInputTokens": 3, "totalTokens": 14},
         "modelContextWindow": 200_000,
     }
 

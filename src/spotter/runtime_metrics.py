@@ -1,8 +1,9 @@
 """Coverage-aware cost and timing projection from durable trajectory records."""
 
 import math
+from collections import Counter
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from statistics import mean
 
 from spotter.outcomes import outcome_failure
@@ -20,6 +21,27 @@ class SurfaceCost:
     outcome_observations: int = 0
     classified_outcomes: int = 0
     failed_outcomes: int = 0
+    actions_by_family: Mapping[str, int] = field(default_factory=dict)
+    classified_outcomes_by_family: Mapping[str, int] = field(default_factory=dict)
+    failed_outcomes_by_family: Mapping[str, int] = field(default_factory=dict)
+    unique_resources: int | None = None
+    resource_actions: int = 0
+
+
+@dataclass(frozen=True)
+class CoveredTokens:
+    value: int | None
+    covered_sessions: int
+
+
+@dataclass(frozen=True)
+class TokenBreakdown:
+    total: CoveredTokens
+    input: CoveredTokens
+    cached_input: CoveredTokens
+    cache_write_input: CoveredTokens
+    output: CoveredTokens
+    reasoning_output: CoveredTokens
 
 
 @dataclass(frozen=True)
@@ -31,6 +53,7 @@ class RuntimeCostReport:
     token_turns: int
     token_observations: int
     cumulative_main_tokens: int | None
+    main_token_breakdown: TokenBreakdown
     reviewer_calls: int
     reviewer_tokens: int | None
     reviewer_jobs_queued: int
@@ -48,6 +71,8 @@ class RuntimeCostReport:
     daemon_peak_rss_bytes: int | None
     source_timestamps: int
     receipt_timestamps: int
+    arrival_ordered_events: int
+    arrival_order_eligible_events: int
     journal_bytes: int
 
 
@@ -56,9 +81,13 @@ def measure_runtime_costs(
 ) -> RuntimeCostReport:
     surfaces: dict[str, SurfaceCost] = {"hook": SurfaceCost(), "app_server": SurfaceCost()}
     sessions = events = completed_turns = token_turns = token_observations = 0
-    cumulative_main_tokens = reviewer_calls = reviewer_tokens = journal_bytes = gate_calls = 0
+    reviewer_calls = reviewer_tokens = journal_bytes = gate_calls = 0
     reviewer_jobs_queued = reviewer_jobs_started = 0
-    main_tokens_known = reviewer_tokens_known = False
+    reviewer_tokens_known = False
+    token_sums = {field: 0 for field in _TOKEN_FIELDS}
+    token_sessions = {field: 0 for field in _TOKEN_FIELDS}
+    resources_by_surface: dict[str, set[str]] = {"hook": set(), "app_server": set()}
+    resource_actions_by_surface = {"hook": 0, "app_server": 0}
     tool_duration_ms: list[float] = []
     reviewer_queue_ms: list[float] = []
     reviewer_inference_ms: list[float] = []
@@ -68,6 +97,7 @@ def measure_runtime_costs(
     daemon_evaluation_ms: list[float] = []
     daemon_samples: dict[tuple[str, int], tuple[float, int]] = {}
     source_timestamps = receipt_timestamps = 0
+    arrival_ordered_events = arrival_order_eligible_events = 0
 
     for records_iter, size in journals:
         records = tuple(records_iter)
@@ -76,28 +106,39 @@ def measure_runtime_costs(
         surface = _surface(records)
         actions: set[str] = set()
         outcomes: set[str] = set()
+        action_families: dict[str, str] = {}
+        outcome_families: dict[str, str] = {}
+        action_resources: dict[str, set[str]] = {}
         action_observations = outcome_observations = 0
         classified: set[str] = set()
         failed: set[str] = set()
         completed: set[str] = set()
         token_covered: set[str] = set()
         turn_starts: dict[tuple[str, int], float] = {}
-        latest_main_tokens: int | None = None
+        latest_main_tokens: Mapping[str, object] | None = None
         latest_reviewer_tokens: int | None = None
         for record in records:
             event = record.event
             events += 1
             source_timestamps += event.occurred_at is not None
             receipt_timestamps += record.at is not None
+            arrival_order_eligible_events += event.connection_epoch is not None
+            arrival_ordered_events += (
+                event.connection_epoch is not None and event.arrival_seq is not None
+            )
             key = _action_key(record)
             if event.kind in _START_KINDS | _OUTCOME_KINDS:
                 action_observations += 1
                 if key is not None:
                     actions.add(key)
+                    action_families.setdefault(key, _action_family(event.kind))
+                    if resources := _event_resources(event.payload):
+                        action_resources.setdefault(key, set()).update(resources)
             if event.kind in _OUTCOME_KINDS:
                 outcome_observations += 1
                 if key is not None:
                     outcomes.add(key)
+                    outcome_families.setdefault(key, _action_family(event.kind))
                     failure = outcome_failure(event.payload)
                     if failure is not None:
                         classified.add(key)
@@ -120,9 +161,9 @@ def measure_runtime_costs(
                 token_observations += 1
                 if turn_id is not None:
                     token_covered.add(turn_id)
-                observed_tokens = _total_tokens(event.payload)
-                if observed_tokens is not None:
-                    latest_main_tokens = observed_tokens
+                total = event.payload.get("total")
+                if isinstance(total, Mapping):
+                    latest_main_tokens = total
             if event.kind == "reviewer_decision":
                 reviewer_calls += 1
                 spend = event.payload.get("spend")
@@ -152,14 +193,31 @@ def measure_runtime_costs(
             outcome_observations=current.outcome_observations + outcome_observations,
             classified_outcomes=current.classified_outcomes + len(classified),
             failed_outcomes=current.failed_outcomes + len(failed),
+            actions_by_family=_merge_counts(
+                current.actions_by_family, Counter(action_families.values())
+            ),
+            classified_outcomes_by_family=_merge_counts(
+                current.classified_outcomes_by_family,
+                Counter(outcome_families[key] for key in classified),
+            ),
+            failed_outcomes_by_family=_merge_counts(
+                current.failed_outcomes_by_family,
+                Counter(outcome_families[key] for key in failed),
+            ),
         )
+        resources_by_surface[surface].update(
+            resource for resources in action_resources.values() for resource in resources
+        )
+        resource_actions_by_surface[surface] += len(action_resources)
         completed_turns += len(completed)
         token_turns += len(completed & token_covered)
         if latest_main_tokens is not None:
             # Each journal represents one session; use only its latest cumulative
             # observation so repeated token updates are not double-counted.
-            main_tokens_known = True
-            cumulative_main_tokens += latest_main_tokens
+            for field in _TOKEN_FIELDS:
+                if (value := _token_count(latest_main_tokens.get(field))) is not None:
+                    token_sums[field] += value
+                    token_sessions[field] += 1
         if latest_reviewer_tokens is not None:
             reviewer_tokens_known = True
             reviewer_tokens += latest_reviewer_tokens
@@ -170,6 +228,24 @@ def measure_runtime_costs(
         if previous is None or sample_seq > previous[0]:
             latest_samples[runtime_id] = (sample_seq, cpu_seconds, peak_rss_bytes)
 
+    token_breakdown = TokenBreakdown(
+        _covered_field("totalTokens", token_sums, token_sessions),
+        _covered_field("inputTokens", token_sums, token_sessions),
+        _covered_field("cachedInputTokens", token_sums, token_sessions),
+        _covered_field("cacheWriteInputTokens", token_sums, token_sessions),
+        _covered_field("outputTokens", token_sums, token_sessions),
+        _covered_field("reasoningOutputTokens", token_sums, token_sessions),
+    )
+    surfaces = {
+        surface: replace(
+            cost,
+            unique_resources=(
+                len(resources_by_surface[surface]) if resource_actions_by_surface[surface] else None
+            ),
+            resource_actions=resource_actions_by_surface[surface],
+        )
+        for surface, cost in surfaces.items()
+    }
     return RuntimeCostReport(
         sessions,
         events,
@@ -177,7 +253,8 @@ def measure_runtime_costs(
         completed_turns,
         token_turns,
         token_observations,
-        cumulative_main_tokens if main_tokens_known else None,
+        token_breakdown.total.value,
+        token_breakdown,
         reviewer_calls,
         reviewer_tokens if reviewer_tokens_known else None,
         reviewer_jobs_queued,
@@ -195,6 +272,8 @@ def measure_runtime_costs(
         max((sample[2] for sample in latest_samples.values()), default=None),
         source_timestamps,
         receipt_timestamps,
+        arrival_ordered_events,
+        arrival_order_eligible_events,
         journal_bytes,
     )
 
@@ -208,13 +287,24 @@ def render_runtime_costs(report: RuntimeCostReport) -> str:
             f"(from {_observations(cost.outcome_observations)}), "
             f"failed={cost.failed_outcomes}/{cost.classified_outcomes} classified"
         )
-    tokens = (
-        f"{report.cumulative_main_tokens} cumulative/unknown-scope tokens"
-        if report.cumulative_main_tokens is not None
-        else "unknown"
-    )
+        resources = (
+            f"{cost.unique_resources} unique" if cost.unique_resources is not None else "unknown"
+        )
+        lines.append(
+            f"      resources={resources} ({cost.resource_actions}/{cost.actions} actions declared)"
+        )
+        if cost.actions_by_family:
+            lines.append(f"      families: {_render_families(cost)}")
+    tokens = report.main_token_breakdown
     lines.append(
-        f"  Main tokens: {tokens}; turn coverage "
+        f"  Main tokens: {_covered_tokens(tokens.total, report.sessions)} "
+        "cumulative/unknown-scope; breakdown "
+        f"input={_covered_tokens(tokens.input, report.sessions)}, "
+        f"cached_input={_covered_tokens(tokens.cached_input, report.sessions)}, "
+        f"cache_write_input={_covered_tokens(tokens.cache_write_input, report.sessions)}, "
+        f"output={_covered_tokens(tokens.output, report.sessions)}, "
+        f"reasoning_output={_covered_tokens(tokens.reasoning_output, report.sessions)}; "
+        "source=durable token_usage provenance; turn coverage "
         f"{report.token_turns}/{report.completed_turns}; observations={report.token_observations}"
     )
     reviewer_tokens = (
@@ -250,6 +340,7 @@ def render_runtime_costs(report: RuntimeCostReport) -> str:
     lines.append(
         f"  Timing: receipt_wall={report.receipt_timestamps}/{report.events}, "
         f"source={report.source_timestamps}/{report.events}, "
+        f"arrival_order={report.arrival_ordered_events}/{report.arrival_order_eligible_events}, "
         f"turn_wall(source)={_sample(report.turn_wall_ms, report.completed_turns)}, "
         f"tool_duration={_sample(report.tool_duration_ms, tool_outcomes)}"
     )
@@ -281,6 +372,42 @@ def _action_key(record: StepRecord) -> str | None:
     return f"{turn}:{value}" if value is not None else None
 
 
+def _action_family(kind: str) -> str:
+    if kind in {"command_started", "command_result"}:
+        return "command"
+    if kind in {"file_change_started", "file_edit"}:
+        return "file_change"
+    return "tool"
+
+
+def _event_resources(payload: Mapping[str, object]) -> set[str]:
+    resources: set[str] = set()
+    files = payload.get("files")
+    if isinstance(files, list):
+        resources.update(f"file:{value}" for value in files if isinstance(value, str) and value)
+    resource = payload.get("resource")
+    if isinstance(resource, str) and resource:
+        resources.add(f"resource:{resource}")
+    server = payload.get("server") or payload.get("namespace")
+    tool = payload.get("tool")
+    if isinstance(server, str) and server and isinstance(tool, str) and tool:
+        resources.add(f"tool:{server}/{tool}")
+    return resources
+
+
+def _merge_counts(left: Mapping[str, int], right: Mapping[str, int]) -> dict[str, int]:
+    return dict(Counter(left) + Counter(right))
+
+
+def _render_families(cost: SurfaceCost) -> str:
+    return ", ".join(
+        f"{family} actions={actions} "
+        f"failed={cost.failed_outcomes_by_family.get(family, 0)}/"
+        f"{cost.classified_outcomes_by_family.get(family, 0)} classified"
+        for family, actions in sorted(cost.actions_by_family.items())
+    )
+
+
 def _turn_id(record: StepRecord) -> str | None:
     identity = record.event.identity
     if identity is not None and identity.turn_id is not None:
@@ -300,10 +427,27 @@ def _turn_clock(record: StepRecord) -> tuple[str, int, float] | None:
     return turn_id, epoch, occurred_at
 
 
-def _total_tokens(payload: Mapping[str, object]) -> int | None:
-    total = payload.get("total")
-    value = total.get("totalTokens") if isinstance(total, Mapping) else None
+_TOKEN_FIELDS = (
+    "totalTokens",
+    "inputTokens",
+    "cachedInputTokens",
+    "cacheWriteInputTokens",
+    "outputTokens",
+    "reasoningOutputTokens",
+)
+
+
+def _token_count(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _covered_field(
+    field: str,
+    sums: Mapping[str, int],
+    sessions: Mapping[str, int],
+) -> CoveredTokens:
+    coverage = sessions[field]
+    return CoveredTokens(sums[field] if coverage else None, coverage)
 
 
 def _number(value: object) -> float | None:
@@ -348,3 +492,8 @@ def _sample(values: tuple[float, ...], eligible: int) -> str:
 
 def _observations(count: int) -> str:
     return f"{count} observation{'s' if count != 1 else ''}"
+
+
+def _covered_tokens(metric: CoveredTokens, eligible: int) -> str:
+    value = str(metric.value) if metric.value is not None else "unknown"
+    return f"{value} ({metric.covered_sessions}/{eligible} sessions)"

@@ -14,7 +14,12 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
             0,
             TraceEvent(
                 "tool_proposal",
-                {"tool_use_id": "call-1", "turn_id": "legacy-turn"},
+                {
+                    "tool_use_id": "call-1",
+                    "turn_id": "legacy-turn",
+                    "files": ["src/a.py"],
+                    "resource": "workspace",
+                },
                 provenance=TraceProvenance("codex_hook", "PreToolUse"),
             ),
         ),
@@ -82,6 +87,7 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
         operation: str | None = None,
         *,
         occurred_at: float = 2.0,
+        arrival_seq: int,
     ) -> TraceEvent:
         return TraceEvent(
             kind,
@@ -91,21 +97,47 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
             operation_id=operation,
             provenance=TraceProvenance("codex_app_server", "synthetic"),
             connection_epoch=1,
+            arrival_seq=arrival_seq,
         )
 
     app_server = [
-        _record(0, app("turn_started", {}, occurred_at=1.0)),
-        _record(1, app("command_started", {}, "command-1")),
+        _record(0, app("turn_started", {}, occurred_at=1.0, arrival_seq=1)),
+        _record(1, app("command_started", {}, "command-1", arrival_seq=2)),
         _record(
             2,
             app(
                 "command_result",
                 {"status": "completed", "exitCode": 0, "durationMs": 10},
                 "command-1",
+                arrival_seq=3,
             ),
         ),
-        _record(3, app("token_usage", {"total": {"totalTokens": 14}})),
-        _record(4, app("turn_completed", {"status": "completed"}, occurred_at=3.0)),
+        _record(
+            3,
+            app(
+                "token_usage",
+                {
+                    "total": {
+                        "totalTokens": 14,
+                        "inputTokens": 10,
+                        "cachedInputTokens": 2,
+                        "cacheWriteInputTokens": 1,
+                        "outputTokens": 4,
+                        "reasoningOutputTokens": 1,
+                    }
+                },
+                arrival_seq=4,
+            ),
+        ),
+        _record(
+            4,
+            app(
+                "turn_completed",
+                {"status": "completed"},
+                occurred_at=3.0,
+                arrival_seq=5,
+            ),
+        ),
     ]
 
     report = measure_runtime_costs([(hook, 100), (app_server, 200)])
@@ -114,12 +146,20 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
     assert report.surfaces["hook"].action_observations == 2
     assert report.surfaces["hook"].classified_outcomes == 1
     assert report.surfaces["hook"].failed_outcomes == 1
+    assert report.surfaces["hook"].actions_by_family == {"tool": 1}
+    assert report.surfaces["hook"].failed_outcomes_by_family == {"tool": 1}
+    assert report.surfaces["hook"].unique_resources == 2
+    assert report.surfaces["hook"].resource_actions == 1
     assert report.surfaces["app_server"].actions == 1
     assert report.surfaces["app_server"].action_observations == 2
     assert report.surfaces["app_server"].outcomes == 1
     assert report.surfaces["app_server"].classified_outcomes == 1
+    assert report.surfaces["app_server"].actions_by_family == {"command": 1}
     assert report.completed_turns == report.token_turns == 1
     assert report.cumulative_main_tokens == 14
+    assert report.main_token_breakdown.input.value == 10
+    assert report.main_token_breakdown.input.covered_sessions == 1
+    assert report.main_token_breakdown.reasoning_output.value == 1
     assert report.reviewer_calls == 1
     assert report.reviewer_tokens == 25
     assert report.reviewer_jobs_queued == report.reviewer_jobs_started == 1
@@ -133,6 +173,7 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
     assert report.tool_duration_ms == (10.0,)
     assert report.source_timestamps == 5
     assert report.receipt_timestamps == report.events == 11
+    assert report.arrival_ordered_events == report.arrival_order_eligible_events == 5
     assert report.journal_bytes == 300
 
     rendered = render_runtime_costs(report)
@@ -141,8 +182,13 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
     assert (
         "app_server: actions=1 (from 2 observations), outcomes=1 (from 1 observation)" in rendered
     )
+    assert "command actions=1 failed=0/1 classified" in rendered
+    assert "resources=2 unique (1/1 actions declared)" in rendered
     assert "jobs=1/1/1 decided/started/queued" in rendered
+    assert "Main tokens: 14 (1/2 sessions) cumulative/unknown-scope" in rendered
+    assert "input=10 (1/2 sessions)" in rendered
     assert "cpu=0.250s, peak_rss=1024 bytes; samples=1/1 gate calls" in rendered
+    assert "arrival_order=5/5" in rendered
     assert "turn_wall(source)=avg=2000.00ms max=2000.00ms (1/1)" in rendered
 
 
@@ -151,8 +197,55 @@ def test_unavailable_runtime_metrics_render_unknown_not_zero() -> None:
 
     rendered = render_runtime_costs(report)
     assert "Main tokens: unknown" in rendered
+    assert "resources=unknown (0/0 actions declared)" in rendered
     assert "hook=unknown (0/0)" in rendered
     assert "receipt_wall=0/1" in rendered
+
+
+def test_cumulative_token_updates_use_latest_and_report_field_coverage() -> None:
+    first_session = [
+        _record(0, TraceEvent("token_usage", {"total": {"totalTokens": 5}})),
+        _record(
+            1,
+            TraceEvent(
+                "token_usage",
+                {
+                    "total": {
+                        "totalTokens": 14,
+                        "inputTokens": 10,
+                        "cachedInputTokens": 2,
+                        "outputTokens": 4,
+                    }
+                },
+            ),
+        ),
+    ]
+    second_session = [
+        _record(
+            0,
+            TraceEvent(
+                "token_usage",
+                {"total": {"totalTokens": 6, "inputTokens": 3}},
+            ),
+        )
+    ]
+
+    report = measure_runtime_costs([(first_session, 10), (second_session, 10)])
+
+    assert report.token_observations == 3
+    assert report.cumulative_main_tokens == 20
+    assert report.main_token_breakdown.total.covered_sessions == 2
+    assert report.main_token_breakdown.input.value == 13
+    assert report.main_token_breakdown.input.covered_sessions == 2
+    assert report.main_token_breakdown.cached_input.value == 2
+    assert report.main_token_breakdown.cached_input.covered_sessions == 1
+    assert report.main_token_breakdown.cache_write_input.value is None
+    assert report.main_token_breakdown.cache_write_input.covered_sessions == 0
+
+    rendered = render_runtime_costs(report)
+    assert "Main tokens: 20 (2/2 sessions)" in rendered
+    assert "cached_input=2 (1/2 sessions)" in rendered
+    assert "cache_write_input=unknown (0/2 sessions)" in rendered
 
 
 def test_uncorrelated_action_observations_do_not_invent_semantic_identity() -> None:
@@ -166,6 +259,53 @@ def test_uncorrelated_action_observations_do_not_invent_semantic_identity() -> N
     assert hook.actions == hook.outcomes == hook.classified_outcomes == 0
     assert hook.action_observations == 2
     assert hook.outcome_observations == 1
+
+
+def test_semantic_action_families_reuse_correlated_action_identity() -> None:
+    records = [
+        _record(0, TraceEvent("command_started", operation_id="command-1")),
+        _record(
+            1,
+            TraceEvent(
+                "command_result",
+                {"status": "completed"},
+                operation_id="command-1",
+            ),
+        ),
+        _record(
+            2,
+            TraceEvent(
+                "file_edit",
+                {"status": "failed", "files": ["src/a.py", "src/a.py"]},
+                operation_id="edit-1",
+            ),
+        ),
+        _record(
+            3,
+            TraceEvent(
+                "tool_started",
+                {"server": "github", "tool": "create_issue"},
+                operation_id="mcp-1",
+            ),
+        ),
+        _record(
+            4,
+            TraceEvent(
+                "tool_result",
+                {"server": "github", "tool": "create_issue"},
+                operation_id="mcp-1",
+            ),
+        ),
+    ]
+
+    cost = measure_runtime_costs([(records, 10)]).surfaces["hook"]
+
+    assert cost.actions == 3
+    assert cost.actions_by_family == {"command": 1, "file_change": 1, "tool": 1}
+    assert cost.classified_outcomes_by_family == {"command": 1, "file_change": 1}
+    assert cost.failed_outcomes_by_family == {"file_change": 1}
+    assert cost.unique_resources == 2
+    assert cost.resource_actions == 2
 
 
 def test_turn_duration_never_crosses_connection_epochs() -> None:
@@ -190,4 +330,6 @@ def test_turn_duration_never_crosses_connection_epochs() -> None:
 
     assert report.completed_turns == 1
     assert report.turn_wall_ms == ()
-    assert "turn_wall(source)=unknown (0/1)" in render_runtime_costs(report)
+    rendered = render_runtime_costs(report)
+    assert "arrival_order=0/2" in rendered
+    assert "turn_wall(source)=unknown (0/1)" in rendered

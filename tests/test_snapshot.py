@@ -86,9 +86,11 @@ def test_journal_roundtrip_prefix_and_resume(tmp_path: Path) -> None:
 
 def test_journal_roundtrips_connection_epoch(tmp_path: Path) -> None:
     path = tmp_path / "journal.jsonl"
-    StepJournal(path).record(TraceEvent("thread_started", connection_epoch=7))
+    StepJournal(path).record(TraceEvent("thread_started", connection_epoch=7, arrival_seq=3))
 
-    assert StepJournal.load(path)[0].event.connection_epoch == 7
+    event = StepJournal.load(path)[0].event
+    assert event.connection_epoch == 7
+    assert event.arrival_seq == 3
 
 
 def test_proposal_number_does_not_mutate_input_event(tmp_path: Path) -> None:

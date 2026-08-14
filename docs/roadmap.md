@@ -121,7 +121,7 @@ The journal remains durable history and recovery input; it is not the normal hot
 
 - normalize App Server events into identity-rich Trace IR and durable history ([#85](https://github.com/spotter-agent/spotter/issues/85), implemented);
 - maintain live state from that stream ([#31](https://github.com/spotter-agent/spotter/issues/31), implemented);
-- record runtime cost/timing/provenance ([#33](https://github.com/spotter-agent/spotter/issues/33)); durable records now project Main actions/token coverage, reviewer cost, gate latency, source/receipt timing coverage, and storage without treating unavailable values as zero, while resource sampling and delivery/outcome joins remain;
+- record runtime cost/timing/provenance ([#33](https://github.com/spotter-agent/spotter/issues/33)); durable records now project correlated Main action-family/failure counts, unique-resource counts with action coverage, and field-level token coverage, reviewer cost, gate latency, source/receipt/arrival-order timing coverage, bounded daemon resources, and storage without treating unavailable values as zero or cumulative updates as additive, while delivery and objective outcome joins remain;
 - measure the actual observability ceiling after migration ([#37](https://github.com/spotter-agent/spotter/issues/37)); the [measurement instrument and current zero-sample baseline](observability-baseline.md) are documented, but labeled App Server failures are still required;
 - remove `SessionStart`, `UserPromptSubmit`, and `PostToolUse` only after parity is demonstrated, leaving the minimal enforcement bridge ([#86](https://github.com/spotter-agent/spotter/issues/86)).
 
