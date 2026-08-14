@@ -1,465 +1,203 @@
-Maintained by [@bogyie / Bogyoeng Kim](https://github.com/Bogyie) and [@zerone / Youngjin Jung](https://github.com/YoungJinJung)
-
 <div align="center">
 
 # Spotter
 
 <picture>
-  <img alt="Spotter" src="docs/assets/main-ts.png" width="40%" style="max-width: 250;"/>
+  <img alt="Spotter" src="docs/assets/main-ts.png" width="250" />
 </picture>
 
-> **A runtime spotter for coding agents.**  
-> Your coding agent drives. Spotter watches the trajectory, challenges bad assumptions, and steps in before wasted work compounds.
+### Catch bad coding-agent trajectories before they become expensive.
 
-Spotter is an experimental **runtime supervision system for coding agents**, starting with Codex.
+Spotter is a local runtime supervisor for coding agents. It watches how work unfolds—not only the
+final diff—so loops, scope drift, weak assumptions, and missing validation can be noticed while
+they are still cheap to correct.
+
+[Install](#install) · [Quick start](#connect-spotter-to-codex) ·
+[Current status](docs/status.md) · [Documentation](docs/README.md)
 
 </div>
 
 ---
 
-## 30-second summary
+## Why Spotter
 
-Spotter asks a more specific question than “is the agent wrong?”
+Coding agents rarely fail in one obvious step. A weak assumption can shape the next search, edit,
+and test; repeated local decisions then turn a recoverable mistake into wasted time, tokens, and
+repository churn.
 
-> **Can we detect a bad assumption, loop, scope drift, or missing validation while the agent is still working, and intervene before the mistake becomes expensive?**
+Spotter maintains an independent view of the running trajectory and helps answer:
 
-The repository is already beyond a scaffold. The current prototype implements Hook-based trajectory collection, daemon-backed deterministic gates, crash-safe journals, Git snapshots, fork/replay, a shadow reviewer, claim/evidence state, evaluation labels/metrics, counterfactual experiment machinery, and a standalone daemon/control foundation.
+- Is the agent repeating failures or equivalent actions without learning anything new?
+- Is the change growing beyond the requested scope?
+- Did meaningful edits happen without relevant validation?
+- Is the agent still acting on a hypothesis that newer evidence has weakened?
+- Is a deterministic safety rule about to be violated?
 
-The current prototype and target product architecture are different:
+The goal is not more alerts. It is less wasted work after the first meaningful deviation.
 
-```text
-CURRENT PROTOTYPE
+## What Spotter does today
 
-Codex / Claude Code
-       │ hooks
-       ▼
- spotter-hook process
-       │
-       ├─ journal
-       ├─ deterministic gate
-       ├─ snapshot
-       └─ periodic shadow review
+The current runtime can:
 
+- collect Codex Hook and configured App Server events into durable trajectory journals;
+- maintain daemon-owned live state for threads, turns, evidence, progress, and detected signals;
+- enforce bounded deterministic gates before risky tool use;
+- detect candidate loops, stalled exploration, scope growth, missing validation, and stale
+  hypotheses;
+- run optional semantic reviews in shadow mode;
+- expose health and integration diagnostics through `spotter status` and `spotter doctor`;
+- preserve Git-backed snapshots and replay material for recovery and analysis.
 
-TARGET ARCHITECTURE
+> [!IMPORTANT]
+> Spotter is under active development. Deterministic gates are active, but semantic `VERIFY` and
+> `NUDGE` decisions are currently recorded rather than delivered into live turns. Some App Server
+> observation and control capabilities still require explicit configuration. Check
+> [Status](docs/status.md) for the exact current boundary.
 
-Codex TUI
-    │
-    ▼
-External Codex App Server
-    ↕ events / steer / interrupt
- spotterd
-    │
-    └─ PreToolUse Hook
-       (deterministic synchronous enforcement only)
-```
+Codex is the primary standalone integration.
 
-[#78](https://github.com/spotter-agent/spotter/issues/78) proved shared observation and steering for a
-Spotter-managed external App Server. The daemon now owns connection epochs, reconnect/reconciliation,
-and conservative control freshness; endpoint selection in setup remains the last ordinary-use gap.
-
-For the fastest project snapshot, read [Status](docs/status.md). For sequence and evidence gates, read [Roadmap](docs/roadmap.md).
-
----
-
-## Current status
-
-[Status](docs/status.md) is the authoritative implementation dashboard, including capability
-state, current blockers, evidence gaps, and linked work. The README keeps only the stable project
-overview so fast-moving implementation detail is not maintained in two places.
-
----
-
-## Roadmap
-
-The roadmap uses named outcomes instead of `P0–P9` / `E0–E5` codes:
+## How it works
 
 ```text
-Runtime
-  ↓
-Observe
-  ↓
-Detect
-  ↓
-Intervene
-  ↓
-Recover
-  ↓
-Harden
+Codex
+  ├─ Hooks ────────────────► bounded deterministic gates
+  └─ App Server events ────► observation and control when configured
+                                   │
+                                   ▼
+                                spotterd
+                                   │
+                 journal · live state · signals · shadow review
 ```
 
-| Stage | What becomes trustworthy |
-| --- | --- |
-| **Runtime** | standalone App Server/`spotterd` boundary and lifecycle |
-| **Observe** | primary event ingestion, live state, and observability |
-| **Detect** | cheap candidate signals + semantic reviewer quality |
-| **Intervene** | live `VERIFY/NUDGE`, provenance, benefit vs harm |
-| **Recover** | interrupt/restart with reversibility and side-effect awareness |
-| **Harden** | upgrades, migrations, retention, cleanup, diagnostics, long-term operation |
+Deterministic gates stay bounded, while slower semantic review remains off synchronous
+tool-execution paths. If observation or control degrades, diagnostics remain explicit and
+generated Hooks fail open rather than blocking normal Codex use.
 
-Experiments are not a separate parallel roadmap. Each stage has an evidence gate. Implementing a mechanism does not prove the mechanism helps.
+## Install
 
-GitHub Milestones carry stage assignment for issues. See [Roadmap](docs/roadmap.md) for stage meaning, linked issues, dependencies, and exit criteria.
-
----
-
-## Core idea
-
-Coding agents work through long trajectories:
-
-```text
-understand
-   ↓
-inspect
-   ↓
-hypothesize
-   ↓
-edit
-   ↓
-run
-   ↓
-observe
-   ↓
-revise
-   ↓
-validate
-```
-
-Many failures are not one bad output. They are **trajectory failures**.
-
-```text
-Weak assumption
-"the timeout must come from the Redis pool"
-        │
-        ▼
-Search only Redis-related code
-        │
-        ▼
-Edit Redis configuration
-        │
-        ▼
-Tests fail for unrelated reasons
-        │
-        ▼
-Add compensating changes
-        │
-        ▼
-Scope grows; time/tokens are already spent
-```
-
-A post-hoc diff reviewer may eventually catch the mistake, but most of the cost has already been paid.
-
-Spotter tries to intervene earlier:
-
-```text
-Weak assumption
-      │
-      ├─ insufficient evidence detected
-      │       ↓
-      │     VERIFY
-      │       ↓
-      │ inspect the stack trace / run focused probe
-      │
-      └─ avoid compounding the wrong branch
-```
-
-The goal is not to maximize alarms. It is to reduce **wasted progress after the first meaningful deviation**.
-
----
-
-## Intervention ladder
-
-Spotter prefers the weakest intervention likely to help.
-
-| Action | Meaning | Current state | Target runtime primitive |
-| --- | --- | --- | --- |
-| `CONTINUE` | No useful intervention | ✅ shadow reviewer | no-op |
-| `VERIFY` | A consequential assumption needs evidence | ✅ decision only | async `turn/steer` |
-| `NUDGE` | The trajectory is drifting or wasting effort | ✅ decision only | async `turn/steer` |
-| `BLOCK` | A deterministic policy violation is about to execute | ✅ gate | synchronous `PreToolUse` deny |
-| `INTERRUPT` | Continuing the active turn is likely to compound failure | ❌ | `turn/interrupt` |
-| `RESTART` | The reasoning context itself is no longer trustworthy | ❌ | fresh continuation from verified state |
-
-A semantic reviewer disagreement should **not** casually become a synchronous `BLOCK`. Stronger interventions require stronger evidence.
-
----
-
-## Target architecture
-
-Spotter separates four responsibilities:
-
-```text
-Observation plane
-  What is happening?
-  → Codex App Server event stream
-
-Control plane
-  How can Spotter influence the active trajectory?
-  → turn/steer, turn/interrupt
-
-Enforcement plane
-  What must be decided before execution?
-  → PreToolUse deterministic gate
-
-Supervision runtime
-  Who owns state, signals, reviewers, budgets, recovery?
-  → spotterd
-```
-
-Target data flow:
-
-```text
-                     ┌─────────────┐
-                     │  Codex TUI  │
-                     └──────┬──────┘
-                            │
-                            ▼
-                 ┌──────────────────────┐
-                 │ External App Server  │
-                 └──────┬────────▲──────┘
-                        │        │
-                events  │        │ steer / interrupt
-                        ▼        │
-                 ┌──────────────────┐
-                 │     spotterd     │
-                 │                  │
-                 │ Thread Manager   │
-                 │ Live State       │
-                 │ Trace IR         │
-                 │ Audit State      │
-                 │ Signal Engine    │
-                 │ Reviewer         │
-                 │ Intervention     │
-                 │ Journal          │
-                 └────────┬─────────┘
-                          │
-                 deterministic gate
-                          │
-                          ▼
-                   PreToolUse Hook
-```
-
-State ownership is explicit:
-
-```text
-memory   = live supervision state for active/dormant threads
-journal  = durable event history + recovery/analysis source
-snapshot = filesystem/Git state at a branch/recovery point
-```
-
----
-
-## Use the current prototype
-
-Python 3.11+:
+The supported packaged installation uses the official Homebrew tap:
 
 ```bash
-git clone https://github.com/spotter-agent/spotter.git
-cd spotter
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install -e '.[dev]'
+brew install spotter-agent/spotter/spotter
 ```
 
-The package has one runtime dependency, `websockets`, which pip installs automatically. The `dev`
-extra adds the repository's test, type-checking, formatting, and release-build tools; use
-`pip install -e .` when those tools are not needed. Tagged artifact production is documented in
-[Release artifacts and build identity](docs/releasing.md).
-
-Configuration:
+Verify both installed entry points:
 
 ```bash
-cp spotter.example.toml spotter.toml
-spotter --config spotter.toml
+spotter --version
+spotterd --version
 ```
 
-Signal-driven reviews spend model tokens and are off by default. Enable them deliberately with
-`reviewer.on_signals = true`; the existing `max_per_session` and `max_per_day` ceilings apply.
+Package installation only installs the CLI, daemon, and Hook bridge. It does **not** edit Codex
+configuration or register an integration.
 
-Current plugin compatibility path:
+For a source/development checkout, follow [CONTRIBUTING.md](CONTRIBUTING.md#local-setup).
 
-```bash
-# Codex
-codex plugin marketplace add spotter-agent/spotter
-codex plugin add spotter@spotter
+## Connect Spotter to Codex
 
-# Claude Code
-claude plugin marketplace add spotter-agent/spotter
-claude plugin install spotter@spotter
-```
-
-Plugin installation remains a compatibility path. New standalone integration can use:
+Make sure the `codex` CLI is installed and available on `PATH`, then inspect and apply the managed
+integration:
 
 ```bash
 spotter setup codex --dry-run
 spotter setup codex
-spotter teardown codex
-```
-
-App Server endpoint selection remains pending; when a verified endpoint is present in the integration
-manifest, `spotterd` owns its connection and recovery loop. Setup does not print or claim an endpoint
-that it has not verified.
-
-Useful commands:
-
-```bash
-spotter observe
-spotter hook  # hook bridge; JSON payload on stdin
-spotter setup codex [--dry-run|--portable]
-spotter teardown codex
-spotter daemon start|stop|restart|status
-spotter analyze
-spotter review --session <id>
-spotter label --session <id> --step <n> --verdict fp
-spotter metrics
-spotter observability [--session <id>]
-spotter fork --session <id> --step <n>
-# require an ignored/non-secret fixture file to survive into the fork:
-spotter fork --session <id> --step <n> --environment-resource .fixture-config
-# classify loss of an explicitly required virtualenv/cache separately:
-spotter fork --session <id> --step <n> --environment-venv-or-cache .venv
-spotter fork-coverage --session <id>
-spotter prune --repo /path/to/repo  # dry-run unless --apply is supplied
-spotter tasks validate path/to/task-set.toml
-spotter tasks preflight path/to/task-set.toml
-spotter tasks run path/to/task-set.toml --guidance "..." --run
-# retain each arm's journal/snapshots so failed outcomes can seed fork experiments:
-spotter tasks run path/to/task-set.toml --guidance "..." \
-  --capture-replay-sources --model gpt-5.6 --reasoning-effort low --run
-# after an interrupted batch, repeat the same conditions and add:
-# --resume ~/.spotter/experiments/task-batches/<batch>.jsonl
-spotter experiment --session <id> --step <n> --guidance "..." --check "..."
-# repeat the same neutral continuation to measure replay/model outcome noise:
-spotter experiment --session <id> --step <n> --neutral --pairs 3 --check "..." \
-  --model gpt-5.6 --reasoning-effort low --run
-```
-
-When snapshotting is enabled, `SessionStart` pins one baseline Git snapshot so read-only exploration
-before the first mutation has a fork anchor; mutation boundaries continue to add deduplicated
-snapshots. `spotter fork` writes a durable manifest under `~/.spotter/fork-manifests/`. The manifest links the
-source event, snapshot, rollout-prefix digest, external-effect warnings, and captured environment
-fingerprint. Counterfactual pairs are fully prepared and must pass shared-prefix and captured-
-environment parity checks before either agent arm runs. The arms must use distinct worktrees, and
-each is rechecked against its immutable manifest immediately before model continuation. Explicitly
-declared relative non-secret files, directories, virtualenv/cache paths, and non-secret environment
-variables are hashed and checked from source to fork and again immediately before continuation;
-missing ignored or untracked resources, missing declared virtualenv/caches, changed variables, and
-copied values that still reference the source worktree's absolute path block both arms. Directory
-trees containing symbolic links are rejected. Undeclared
-ignored resources and environment variables are explicitly marked as not captured rather than
-assumed equal. Prefixes preserve the rollout model,
-runtime, and a secret-free subset of turn configuration; experiments can pin both the Codex model
-and reasoning effort and persist both values in result provenance. When those values are pinned and
-source provenance is available, a mismatch is rejected before either arm starts.
-Submodule status divergence is reported separately from ordinary tracked-state drift; declared
-resource trees containing symbolic links remain rejected before continuation.
-Neutral mode gives both arms the exact control prompt and reports mechanically judgeable outcome
-disagreement, environment-preflight mismatch, and infrastructure-failure rates separately. The
-command provides the measurement path; a representative executed corpus is still required before
-claiming a replay noise bound.
-
-`fork-coverage` is read-only. It classifies every journaled proposal against the currently available
-rollout and Git snapshot objects, reports the earliest exact fork, and separates pre-mutation
-coverage from missing state/context, external-effect contamination, and observation gaps. Because
-the command checks object availability now, pruned or moved historical repositories remain visible
-as `NOT_FORKABLE_STATE` rather than being counted as covered. Active signal triggers are linked to
-their first subsequent proposal while the signal remains active, so the report separately counts
-triggers with no follow-up action and follow-ups that are exactly forkable.
-
-Task-set validation freezes task and fixture hashes and checks the versioned scorer/budget contract without executing commands. Preflight runs setup, the broken-state scorer, a declared known-good transform, and the positive scorer in a temporary fixture copy; it never runs agent arms. Because preflight and batch execution run corpus-declared shell commands, use `validate` only for untrusted task sets. `tasks run` requires an explicit paid-run opt-in, starts each control/guidance arm from a clean fixture copy, journals bounded mechanical results with `fsync`, and resumes only when the frozen set, environment, and run conditions still match. By default, child arms disable Spotter to avoid recursive supervision. `--capture-replay-sources` instead initializes each fixture as a local Git baseline, runs Hooks in capture-only mode, and retains the source workspace under `SPOTTER_HOME/task-sources`; journals and snapshots remain enabled while daemon gating and shadow review are bypassed, and each arm records either its replay-source session ID or an explicit capture error. Task batches can pin both model and reasoning effort so later fork continuations can prove source parity. The Codex backend enforces the wall-time budget; it records the declared max-turn budget for parity/provenance because `codex exec` does not expose a hard turn-limit flag. The existence of the experiment harness does **not** mean positive intervention advantage has been established. Enough executed multi-task runs remain an evidence gap.
-
----
-
-## Homebrew installation and operations UX
-
-Install the standalone runtime from the official
-[`spotter-agent/homebrew-spotter`](https://github.com/spotter-agent/homebrew-spotter) tap. The
-qualified form is intentional: it taps only the Formula needed for this install.
-
-```bash
-brew install spotter-agent/spotter/spotter
-spotter setup codex
 spotter doctor
+```
 
-# normal use afterwards
+Setup is transactional and idempotent. It records the exact Spotter-owned Hooks and service state so
+later repair or teardown does not guess at user-owned configuration.
+
+After setup, use Codex normally:
+
+```bash
 codex
 ```
 
-The Formula exposes both `spotter` and `spotterd`. Package installation itself does not edit Codex
-configuration or register the integration; `spotter setup codex` remains the explicit integration
-transaction. The user should not need to manually run `spotter daemon start` or
-`codex app-server daemon start` before each session.
+## Everyday commands
 
-Detailed ownership, rollback, upgrades, uninstall, purge, and reinstall behavior are specified in [Lifecycle](docs/lifecycle.md).
+| Command | Purpose |
+| --- | --- |
+| `spotter status` | Show integration, daemon, capability, and storage health |
+| `spotter doctor` | Run synthetic health checks and print actionable diagnostics |
+| `spotter daemon status` | Inspect the packaged `spotterd` process and build identity |
+| `spotter metrics` | Summarize collected runtime and evaluation metrics |
+| `spotter observability` | Inspect which trajectory sources and normalized events are available |
+| `spotter --help` | Show the complete command surface |
 
----
+Configuration is optional. Use [spotter.example.toml](spotter.example.toml) as the reference when
+you need to customize gates, storage, snapshots, or reviewer budgets. Signal-driven semantic
+reviews spend model tokens and are disabled by default; enable them deliberately and keep the
+provided per-session and per-day limits.
 
-## Issues and metadata
+## Upgrade
 
-Repository issues use GitHub's native structured metadata rather than prefixed label taxonomies:
+Upgrade the Formula, then rerun setup so Spotter can reconcile the installed build, running daemon,
+and integration generation:
 
-- **Type** — `Task`, `Bug`, `Feature`, `Architecture`, or `Experiment`;
-- **Priority** — `Urgent`, `High`, `Medium`, or `Low`;
-- **Effort** — `XS` through `XL`, representing change surface, validation burden, and uncertainty;
-- **Area** — the primary product/problem domain;
-- **Milestone** — `Runtime`, `Observe`, `Detect`, `Intervene`, `Recover`, or `Harden` when the issue belongs to the product roadmap;
-- **Dependencies** — native `blocked by` / `blocking` relationships for actual blockers.
+```bash
+brew upgrade spotter-agent/spotter/spotter
+spotter setup codex
+spotter doctor
+```
 
-Labels are exceptional contributor signals only; currently `good first issue` and `help wanted` remain. Detailed semantics live in [Repository Conventions](docs/conventions.md#13-issue-metadata-and-triage).
+Persistent Hook and service references use stable package entry points rather than versioned
+Homebrew Cellar paths. Spotter detects a still-running older daemon instead of assuming it matches
+the newly installed CLI.
 
----
+## Disconnect or uninstall
+
+To remove the Codex integration but keep Spotter installed:
+
+```bash
+spotter teardown codex
+```
+
+For a clean uninstall:
+
+```bash
+spotter teardown codex
+brew uninstall spotter-agent/spotter/spotter
+```
+
+Homebrew uninstall removes package-owned executables and stops the packaged runtime. It
+intentionally does not purge separately managed user data under `~/.spotter`. An integration left
+behind by an uninstall without teardown is designed to fail open and can be repaired after
+reinstalling.
+
+See [Lifecycle](docs/lifecycle.md) before upgrades, recovery, migration, teardown, or data removal
+that needs more than the common path above.
+
+## Operational guarantees
+
+- `brew install` and `brew upgrade` do not silently modify Codex configuration.
+- `spotter setup codex` and `spotter teardown codex` change only exact owned integration state.
+- Generated Hooks use stable executable paths and fail open when Spotter is unavailable.
+- Spotter does not stop a shared Codex App Server that it cannot prove it owns.
+- Uninstall and user-data purge are separate operations.
+- `status` and `doctor` make degraded observation or control visible.
+
+These contracts are covered by fast fixtures and a real macOS Homebrew install → live upgrade →
+uninstall → reinstall lifecycle smoke. See
+[Homebrew lifecycle smoke](docs/homebrew-lifecycle-smoke.md) for the evidence and reproduction path.
 
 ## Documentation
 
-- **[Docs index](docs/README.md)** — choose a document by question/reading path
-- **[Status](docs/status.md)** — current implementation, blocker, and next steps
-- **[Concept](docs/concept.md)** — problem definition, principles, and intervention semantics
-- **[Architecture](docs/architecture.md)** — process, state, event, control, and failure contracts
-- **[Lifecycle](docs/lifecycle.md)** — install → setup → run → recover → upgrade → teardown → purge
-- **[Roadmap](docs/roadmap.md)** — named stages, dependencies, and evidence gates
-- **[Research](docs/research.md)** — prior work, borrowed ideas, open hypotheses, and evidence gaps
-- **[Conventions](docs/conventions.md)** — code, issue metadata, branch, PR, and documentation conventions
+| If you want to… | Read |
+| --- | --- |
+| See what works today and what is still experimental | [Status](docs/status.md) |
+| Install, configure, upgrade, recover, or uninstall | [Lifecycle](docs/lifecycle.md) |
+| Understand the product idea and intervention model | [Concept](docs/concept.md) |
+| Understand runtime boundaries and durable state | [Architecture](docs/architecture.md) |
+| Follow upcoming work and evidence gates | [Roadmap](docs/roadmap.md) |
+| Review experiments, hypotheses, and evidence | [Research](docs/research.md) |
+| Build or contribute to Spotter | [Contributing](CONTRIBUTING.md) |
+| Browse every project document | [Documentation index](docs/README.md) |
 
----
+## Maintainers
 
-## Development
-
-```bash
-ruff format --check .
-ruff check .
-mypy src tests
-pytest
-```
-
-The migration should preserve a transport-independent boundary:
-
-```text
-agent-specific runtime events
-        ↓
-normalized Trace IR
-        ↓
-Spotter state / policy / evaluation
-```
-
-Codex App Server event shapes should not leak throughout Spotter core.
-
----
-
-## Trajectory Engineering
-
-Spotter is also an experiment in **Trajectory Engineering**:
-
-- Prompt engineering — what the model is instructed to do
-- Context engineering — what the model can see
-- Harness engineering — what tools and constraints surround execution
-- **Trajectory engineering — how an already-running path is observed, verified, steered, stopped, and recovered**
-
-The working hypothesis is:
-
-> **A better agent system is not only one that makes fewer mistakes. It is also one that detects mistakes early enough that they remain cheap to correct.**
-
-That hypothesis is not yet proven for Spotter. Null and negative intervention results are first-class outcomes.
+Maintained by [@bogyie / Bogyoeng Kim](https://github.com/Bogyie) and
+[@zerone / Youngjin Jung](https://github.com/YoungJinJung).
 
 ## License
 
-MIT
+[MIT](LICENSE)

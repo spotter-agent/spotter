@@ -1,9 +1,9 @@
 # Lifecycle and Operations
 
 > **Status:** primarily a target contract with an implemented transactional Codex setup slice. For
-> commands that work today, see [Use the current prototype](../README.md#use-the-current-prototype);
-> for current
-> implementation state, see [Status](status.md). `spotter setup|teardown codex`, versioned ownership
+> commands that work today, see [Connect Spotter to Codex](../README.md#connect-spotter-to-codex);
+> for current implementation state, see [Status](status.md). `spotter setup|teardown codex`,
+> versioned ownership
 > manifests, managed `launchd`/`systemd --user` registration, portable startup, legacy Hook/plugin
 > migration, runtime-aware diagnostics, tag-derived release artifacts, stable packaged runtime
 > layout, official Homebrew tap, packaged `--version` identity, and a two-generation Homebrew
