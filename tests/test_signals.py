@@ -82,6 +82,18 @@ def _blocked_action(event_id: str, key: str, resources: list[str] | None = None)
     )
 
 
+def _trace(kind: str, event_id: str, payload: dict[str, object]) -> TraceEvent:
+    event = _event(event_id, "completed")
+    return TraceEvent(
+        kind,
+        payload,
+        event_id=event.event_id,
+        occurred_at=event.occurred_at,
+        identity=event.identity,
+        connection_epoch=event.connection_epoch,
+    )
+
+
 def test_failure_streak_emits_once_then_cools_down_until_success() -> None:
     engine = SignalEngine(failure_threshold=2)
     first = _event("event-1", "failed")
@@ -185,6 +197,105 @@ def test_block_recurrence_does_not_guess_across_resources_or_unknown_shapes() ->
     ) == deterministic_block_equivalence(
         "git_reset_hard", {"command": "bash -c 'git reset --hard'"}
     )
+
+
+def test_touched_scope_growth_emits_for_new_files_outside_explicit_request_scope() -> None:
+    engine = SignalEngine(scope_growth_threshold=3)
+    prompt = _trace(
+        "user_prompt",
+        "event-1",
+        {"content": [{"type": "text", "text": "Update src/api.py and tests/api.py"}]},
+    )
+
+    assert engine.update(prompt, 1) == ()
+    assert (
+        engine.update(
+            _trace("file_edit", "event-2", {"status": "completed", "files": ["src/api.py"]}),
+            2,
+        )
+        == ()
+    )
+    assert (
+        engine.update(
+            _trace("file_edit", "event-3", {"status": "completed", "files": ["src/one.py"]}),
+            3,
+        )
+        == ()
+    )
+    assert (
+        engine.update(
+            _trace("file_edit", "event-4", {"status": "completed", "files": ["src/two.py"]}),
+            4,
+        )
+        == ()
+    )
+    active = engine.update(
+        _trace("file_edit", "event-5", {"status": "completed", "files": ["src/three.py"]}),
+        5,
+    )[0]
+    cooled = engine.update(
+        _trace("file_edit", "event-6", {"status": "completed", "files": ["src/four.py"]}),
+        6,
+    )[0]
+
+    assert active.signal_type == SignalType.TOUCHED_SCOPE_GROWTH
+    assert active.status == SignalStatus.ACTIVE
+    assert active.involved_resources == (
+        "file:src/one.py",
+        "file:src/two.py",
+        "file:src/three.py",
+    )
+    assert active.evidence_event_ids == ("event-3", "event-4", "event-5")
+    assert active.to_trace_event(_trace("file_edit", "event-5", {})).payload["features"] == {
+        "files_outside_declared_scope": 3
+    }
+    assert cooled.signal_id == active.signal_id
+    assert cooled.status == SignalStatus.COOLED_DOWN
+
+
+def test_scope_growth_stays_unknown_for_broad_or_unscoped_tasks() -> None:
+    engine = SignalEngine(scope_growth_threshold=2)
+    broad = _trace("user_prompt", "event-1", {"prompt": "Refactor src/ and tests/"})
+    in_scope = _trace(
+        "file_edit",
+        "event-2",
+        {"status": "completed", "files": ["src/a.py", "src/pkg/b.py", "tests/test_a.py"]},
+    )
+    failed = _trace(
+        "file_edit",
+        "event-3",
+        {"status": "failed", "files": ["outside/a.py", "outside/b.py"]},
+    )
+    unscoped = _trace("user_prompt", "event-4", {"prompt": "Refactor the project"})
+    unknown = _trace(
+        "file_edit",
+        "event-5",
+        {"status": "completed", "files": ["one.py", "two.py", "three.py"]},
+    )
+
+    assert engine.update(broad, 1) == ()
+    assert engine.update(in_scope, 2) == ()
+    assert engine.update(failed, 3) == ()
+    assert engine.update(unscoped, 4) == ()
+    assert engine.update(unknown, 5) == ()
+
+
+def test_new_user_scope_stales_active_scope_growth() -> None:
+    engine = SignalEngine(scope_growth_threshold=2)
+    engine.update(_trace("user_prompt", "event-1", {"prompt": "Update src/api.py"}), 1)
+    engine.update(
+        _trace("file_edit", "event-2", {"status": "completed", "files": ["src/one.py"]}),
+        2,
+    )
+    active = engine.update(
+        _trace("file_edit", "event-3", {"status": "completed", "files": ["src/two.py"]}),
+        3,
+    )[0]
+
+    stale = engine.update(_trace("user_prompt", "event-4", {"prompt": "Now refactor src/"}), 4)[0]
+
+    assert stale.signal_id == active.signal_id
+    assert stale.status == SignalStatus.STALE
 
 
 def test_file_mutation_rearms_repeated_tool_call_detection() -> None:
