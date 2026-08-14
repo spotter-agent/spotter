@@ -20,12 +20,37 @@ _TERMINAL_KINDS = {
     "thread_deleted",
     "turn_completed",
 }
+_FRONTIER_RESET_KINDS = {
+    "command_result",
+    "diff_updated",
+    "evidence_invalidated",
+    "file_edit",
+    "file_read",
+    "hypothesis",
+    "reasoning_summary",
+    "search",
+    "test_result",
+    "verification_satisfied",
+}
+_READ_VERBS = ("describe", "fetch", "find", "get", "list", "open", "read", "search", "view")
+_READ_RESOURCE_KEYS = {
+    "file": "file",
+    "file_path": "file",
+    "path": "file",
+    "repository": "repository",
+    "resource": "resource",
+    "scope": "resource",
+    "uri": "uri",
+    "url": "url",
+}
 _EVIDENCE_LIMIT = 20
+_FRONTIER_LIMIT = 128
 
 
 class SignalType(StrEnum):
     FAILURE_STREAK = "failure_streak"
     REPEATED_EQUIVALENT_TOOL_CALL = "repeated_equivalent_tool_call"
+    REPEATED_READ_NO_FRONTIER = "repeated_read_no_frontier"
 
 
 class SignalStatus(StrEnum):
@@ -85,8 +110,10 @@ class SignalCandidate:
 
 
 @dataclass(frozen=True)
-class _FailureStreak:
+class _SignalStreak:
     signal_id: str
+    signal_type: SignalType
+    feature: str
     key: str
     identity: RuntimeIdentity
     connection_epoch: int | None
@@ -99,31 +126,35 @@ class _FailureStreak:
 
 
 @dataclass(frozen=True)
-class _RepeatedToolCalls:
-    signal_id: str
-    key: str
+class _ReadFrontier:
     identity: RuntimeIdentity
     connection_epoch: int | None
-    first_seen_at: float | None
-    last_seen_at: float | None
-    count: int
-    evidence_event_ids: tuple[str, ...]
-    resources: tuple[str, ...]
-    emitted: bool = False
+    observations: frozenset[str]
 
 
 class SignalEngine:
     """Incremental signal state; candidates are evidence, never semantic verdicts."""
 
-    def __init__(self, *, failure_threshold: int = 2, repeated_tool_threshold: int = 3) -> None:
+    def __init__(
+        self,
+        *,
+        failure_threshold: int = 2,
+        repeated_tool_threshold: int = 3,
+        no_frontier_threshold: int = 3,
+    ) -> None:
         if failure_threshold < 2:
             raise ValueError("failure signal threshold must be >= 2")
         if repeated_tool_threshold < 2:
             raise ValueError("repeated tool signal threshold must be >= 2")
+        if no_frontier_threshold < 2:
+            raise ValueError("no-frontier read signal threshold must be >= 2")
         self.failure_threshold = failure_threshold
         self.repeated_tool_threshold = repeated_tool_threshold
-        self._failure_streaks: dict[ThreadId, _FailureStreak] = {}
-        self._repeated_tools: dict[ThreadId, _RepeatedToolCalls] = {}
+        self.no_frontier_threshold = no_frontier_threshold
+        self._failure_streaks: dict[ThreadId, _SignalStreak] = {}
+        self._repeated_tools: dict[ThreadId, _SignalStreak] = {}
+        self._read_streaks: dict[ThreadId, _SignalStreak] = {}
+        self._read_frontiers: dict[ThreadId, _ReadFrontier] = {}
         self._seen_event_ids: dict[ThreadId, set[str]] = {}
 
     def update(self, event: TraceEvent, state_version: int) -> tuple[SignalCandidate, ...]:
@@ -139,6 +170,8 @@ class SignalEngine:
         candidates: list[SignalCandidate] = []
         streak = self._failure_streaks.get(thread_id)
         repeated = self._repeated_tools.get(thread_id)
+        reading = self._read_streaks.get(thread_id)
+        frontier = self._read_frontiers.get(thread_id)
         if streak is not None and _target_changed(streak, event):
             candidates.extend(self._finish(streak, SignalStatus.STALE, event, state_version))
             self._failure_streaks.pop(thread_id, None)
@@ -147,6 +180,12 @@ class SignalEngine:
             candidates.extend(self._finish(repeated, SignalStatus.STALE, event, state_version))
             self._repeated_tools.pop(thread_id, None)
             repeated = None
+        if reading is not None and _target_changed(reading, event):
+            candidates.extend(self._finish(reading, SignalStatus.STALE, event, state_version))
+            self._read_streaks.pop(thread_id, None)
+            reading = None
+        if frontier is not None and _target_changed(frontier, event):
+            self._read_frontiers.pop(thread_id, None)
         if event.kind in _TERMINAL_KINDS:
             if streak is not None:
                 candidates.extend(self._finish(streak, SignalStatus.STALE, event, state_version))
@@ -154,9 +193,14 @@ class SignalEngine:
             if repeated is not None:
                 candidates.extend(self._finish(repeated, SignalStatus.STALE, event, state_version))
                 self._repeated_tools.pop(thread_id, None)
+            if reading is not None:
+                candidates.extend(self._finish(reading, SignalStatus.STALE, event, state_version))
+                self._read_streaks.pop(thread_id, None)
+            self._read_frontiers.pop(thread_id, None)
             return tuple(candidates)
 
         candidates.extend(self._update_repeated_tool(event, state_version))
+        candidates.extend(self._update_no_frontier_reads(event, state_version))
         if event.kind not in _OUTCOME_KINDS:
             return tuple(candidates)
 
@@ -177,8 +221,10 @@ class SignalEngine:
             streak = None
 
         if streak is None:
-            streak = _FailureStreak(
+            streak = _SignalStreak(
                 _signal_id(event, SignalType.FAILURE_STREAK, key),
+                SignalType.FAILURE_STREAK,
+                "consecutive_failures",
                 key,
                 identity,
                 event.connection_epoch,
@@ -236,8 +282,10 @@ class SignalEngine:
             repeated = None
 
         if repeated is None:
-            repeated = _RepeatedToolCalls(
+            repeated = _SignalStreak(
                 _signal_id(event, SignalType.REPEATED_EQUIVALENT_TOOL_CALL, key),
+                SignalType.REPEATED_EQUIVALENT_TOOL_CALL,
+                "consecutive_equivalent_calls",
                 key,
                 event.identity,
                 event.connection_epoch,
@@ -264,6 +312,69 @@ class SignalEngine:
                 self._repeated_tools[thread_id] = replace(repeated, emitted=True)
         return tuple(candidates)
 
+    def _update_no_frontier_reads(
+        self, event: TraceEvent, state_version: int
+    ) -> tuple[SignalCandidate, ...]:
+        assert event.identity is not None and event.identity.thread_id is not None
+        assert event.event_id is not None
+        thread_id = event.identity.thread_id
+        reading = self._read_streaks.get(thread_id)
+        observation = _read_observation(event)
+        if observation is None:
+            if event.kind not in _FRONTIER_RESET_KINDS and event.kind != "tool_result":
+                return ()
+            if reading is None:
+                return ()
+            self._read_streaks.pop(thread_id, None)
+            return self._finish(reading, SignalStatus.STALE, event, state_version)
+
+        resources, observation_key = observation
+        frontier = self._read_frontiers.get(thread_id)
+        known = frontier.observations if frontier is not None else frozenset()
+        if observation_key not in known:
+            self._read_frontiers[thread_id] = _ReadFrontier(
+                event.identity,
+                event.connection_epoch,
+                frozenset((*sorted(known)[-(_FRONTIER_LIMIT - 1) :], observation_key)),
+            )
+            if reading is None:
+                return ()
+            self._read_streaks.pop(thread_id, None)
+            return self._finish(reading, SignalStatus.STALE, event, state_version)
+
+        if reading is None:
+            reading = _SignalStreak(
+                _signal_id(event, SignalType.REPEATED_READ_NO_FRONTIER, "known-resources"),
+                SignalType.REPEATED_READ_NO_FRONTIER,
+                "reads_without_frontier_expansion",
+                "known-resources",
+                event.identity,
+                event.connection_epoch,
+                event.occurred_at,
+                event.occurred_at,
+                1,
+                (event.event_id,),
+                resources,
+            )
+        else:
+            reading = replace(
+                reading,
+                last_seen_at=event.occurred_at,
+                count=reading.count + 1,
+                evidence_event_ids=(reading.evidence_event_ids + (event.event_id,))[
+                    -_EVIDENCE_LIMIT:
+                ],
+                resources=tuple(sorted(set(reading.resources).union(resources))),
+            )
+        self._read_streaks[thread_id] = reading
+        if reading.count < self.no_frontier_threshold:
+            return ()
+        status = SignalStatus.COOLED_DOWN if reading.emitted else SignalStatus.ACTIVE
+        candidate = _candidate(reading, status, event.event_id, state_version)
+        if not reading.emitted:
+            self._read_streaks[thread_id] = replace(reading, emitted=True)
+        return (candidate,)
+
     def hydrate(
         self, records: Iterable[StepRecord]
     ) -> tuple[tuple[SignalCandidate, TraceEvent], ...]:
@@ -271,6 +382,8 @@ class SignalEngine:
 
         self._failure_streaks.clear()
         self._repeated_tools.clear()
+        self._read_streaks.clear()
+        self._read_frontiers.clear()
         self._seen_event_ids.clear()
         versions: dict[ThreadId, int] = {}
         pending: dict[str, tuple[SignalCandidate, TraceEvent]] = {}
@@ -293,7 +406,7 @@ class SignalEngine:
 
     def _finish(
         self,
-        streak: _FailureStreak | _RepeatedToolCalls,
+        streak: _SignalStreak,
         status: SignalStatus,
         event: TraceEvent,
         state_version: int,
@@ -304,26 +417,16 @@ class SignalEngine:
 
 
 def _candidate(
-    streak: _FailureStreak | _RepeatedToolCalls,
+    streak: _SignalStreak,
     status: SignalStatus,
     source_event_id: str,
     state_version: int,
 ) -> SignalCandidate:
     turn_id = streak.identity.turn_id.value if streak.identity.turn_id is not None else None
     assert streak.identity.thread_id is not None
-    signal_type = (
-        SignalType.FAILURE_STREAK
-        if isinstance(streak, _FailureStreak)
-        else SignalType.REPEATED_EQUIVALENT_TOOL_CALL
-    )
-    feature = (
-        "consecutive_failures"
-        if isinstance(streak, _FailureStreak)
-        else "consecutive_equivalent_calls"
-    )
     return SignalCandidate(
         streak.signal_id,
-        signal_type,
+        streak.signal_type,
         streak.identity.thread_id,
         turn_id,
         streak.connection_epoch,
@@ -335,11 +438,11 @@ def _candidate(
         streak.resources,
         status,
         source_event_id,
-        ((feature, streak.count),),
+        ((streak.feature, streak.count),),
     )
 
 
-def _target_changed(streak: _FailureStreak | _RepeatedToolCalls, event: TraceEvent) -> bool:
+def _target_changed(streak: _SignalStreak | _ReadFrontier, event: TraceEvent) -> bool:
     identity = event.identity
     return bool(
         identity is not None
@@ -400,6 +503,49 @@ def _tool_call_equivalence(event: TraceEvent) -> tuple[str | None, tuple[str, ..
         return None, ()
     digest = hashlib.sha256(arguments.encode()).hexdigest()
     return f"{resources[0]}:{digest}", resources
+
+
+def _read_observation(event: TraceEvent) -> tuple[tuple[str, ...], str] | None:
+    if event.kind != "tool_result" or outcome_failure(event.payload) is not False:
+        return None
+    tool = event.payload.get("tool")
+    if not isinstance(tool, str):
+        return None
+    name = tool.rsplit("__", 1)[-1].rsplit("/", 1)[-1].rsplit(".", 1)[-1].lower()
+    if not any(name == verb or name.startswith((f"{verb}_", f"{verb}-")) for verb in _READ_VERBS):
+        return None
+    arguments = event.payload.get("arguments")
+    if not isinstance(arguments, Mapping):
+        return None
+    resources = tuple(
+        sorted(
+            {
+                f"{kind}:{value.strip()}"
+                for key, value in arguments.items()
+                if (kind := _READ_RESOURCE_KEYS.get(str(key).lower())) is not None
+                and isinstance(value, str)
+                and value.strip()
+            }
+        )
+    )
+    if not resources:
+        return None
+    evidence = (
+        event.payload["result"] if "result" in event.payload else event.payload.get("contentItems")
+    )
+    if "result" not in event.payload and "contentItems" not in event.payload:
+        return None
+    try:
+        observation = json.dumps(
+            (resources, evidence, arguments),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+    except (TypeError, ValueError):
+        return None
+    return resources, hashlib.sha256(observation.encode()).hexdigest()
 
 
 def _signal_id(event: TraceEvent, signal_type: SignalType, key: str) -> str:

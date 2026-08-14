@@ -41,6 +41,7 @@ def _tool_call(
     arguments: object,
     *,
     tool: str = "read",
+    result: object = "same evidence",
 ) -> TraceEvent:
     event = _event(event_id, "completed")
     return TraceEvent(
@@ -50,6 +51,7 @@ def _tool_call(
             "server": "fixture",
             "tool": tool,
             "arguments": arguments,
+            "result": result,
         },
         event_id=event.event_id,
         occurred_at=event.occurred_at,
@@ -136,6 +138,158 @@ def test_file_mutation_rearms_repeated_tool_call_detection() -> None:
     candidate = engine.update(_tool_call("event-6", {"path": "src/example.py"}), 6)[0]
 
     assert candidate.evidence_event_ids == ("event-4", "event-5", "event-6")
+
+
+def test_repeated_reads_without_frontier_expansion_emit_then_cool_down() -> None:
+    engine = SignalEngine(no_frontier_threshold=3)
+
+    call = {"path": "src/example.py", "line": 1}
+    assert engine.update(_tool_call("event-1", call), 1) == ()
+    assert engine.update(_tool_call("event-2", call), 2) == ()
+    assert engine.update(_tool_call("event-3", call), 3)
+    active = next(
+        candidate
+        for candidate in engine.update(_tool_call("event-4", call), 4)
+        if candidate.signal_type == SignalType.REPEATED_READ_NO_FRONTIER
+    )
+    suppressed = next(
+        candidate
+        for candidate in engine.update(_tool_call("event-5", call), 5)
+        if candidate.signal_type == SignalType.REPEATED_READ_NO_FRONTIER
+    )
+
+    assert active.signal_type == SignalType.REPEATED_READ_NO_FRONTIER
+    assert active.status == SignalStatus.ACTIVE
+    assert active.severity_hint == 3
+    assert active.evidence_event_ids == ("event-2", "event-3", "event-4")
+    assert active.involved_resources == ("file:src/example.py",)
+    assert active.to_trace_event(_tool_call("event-4", {})).payload["features"] == {
+        "reads_without_frontier_expansion": 3
+    }
+    assert suppressed.signal_id == active.signal_id
+    assert suppressed.status == SignalStatus.COOLED_DOWN
+
+
+def test_new_read_resource_rearms_no_frontier_detection() -> None:
+    engine = SignalEngine(no_frontier_threshold=2)
+
+    assert engine.update(_tool_call("event-1", {"path": "src/one.py"}), 1) == ()
+    assert engine.update(_tool_call("event-2", {"path": "src/one.py"}), 2) == ()
+    assert engine.update(_tool_call("event-3", {"path": "src/two.py"}), 3) == ()
+    assert engine.update(_tool_call("event-4", {"path": "src/two.py"}), 4) == ()
+    active = next(
+        candidate
+        for candidate in engine.update(_tool_call("event-5", {"path": "src/two.py"}), 5)
+        if candidate.signal_type == SignalType.REPEATED_READ_NO_FRONTIER
+    )
+
+    assert active.evidence_event_ids == ("event-4", "event-5")
+    assert active.involved_resources == ("file:src/two.py",)
+
+
+def test_new_read_evidence_rearms_no_frontier_detection() -> None:
+    engine = SignalEngine(no_frontier_threshold=2)
+
+    assert engine.update(_tool_call("event-1", {"path": "src/example.py"}), 1) == ()
+    assert engine.update(_tool_call("event-2", {"path": "src/example.py"}), 2) == ()
+    assert not any(
+        candidate.signal_type == SignalType.REPEATED_READ_NO_FRONTIER
+        for candidate in engine.update(
+            _tool_call(
+                "event-3",
+                {"path": "src/example.py"},
+                result="new evidence",
+            ),
+            3,
+        )
+    )
+    assert not any(
+        candidate.signal_type == SignalType.REPEATED_READ_NO_FRONTIER
+        for candidate in engine.update(
+            _tool_call(
+                "event-4",
+                {"path": "src/example.py"},
+                result="new evidence",
+            ),
+            4,
+        )
+    )
+    active = next(
+        candidate
+        for candidate in engine.update(
+            _tool_call(
+                "event-5",
+                {"path": "src/example.py"},
+                result="new evidence",
+            ),
+            5,
+        )
+        if candidate.signal_type == SignalType.REPEATED_READ_NO_FRONTIER
+    )
+
+    assert active.evidence_event_ids == ("event-4", "event-5")
+
+
+def test_new_read_scope_rearms_no_frontier_detection() -> None:
+    engine = SignalEngine(no_frontier_threshold=2)
+
+    assert engine.update(_tool_call("event-1", {"path": "src/example.py", "line": 1}), 1) == ()
+    assert engine.update(_tool_call("event-2", {"path": "src/example.py", "line": 1}), 2) == ()
+    assert engine.update(_tool_call("event-3", {"path": "src/example.py", "line": 2}), 3) == ()
+    assert engine.update(_tool_call("event-4", {"path": "src/example.py", "line": 2}), 4) == ()
+    active = next(
+        candidate
+        for candidate in engine.update(
+            _tool_call("event-5", {"path": "src/example.py", "line": 2}), 5
+        )
+        if candidate.signal_type == SignalType.REPEATED_READ_NO_FRONTIER
+    )
+
+    assert active.evidence_event_ids == ("event-4", "event-5")
+
+
+def test_unknown_read_and_observation_gap_break_no_frontier_streak() -> None:
+    engine = SignalEngine(no_frontier_threshold=2)
+    identity = _event("event-3", "completed").identity
+
+    assert engine.update(_tool_call("event-1", {"path": "src/example.py"}), 1) == ()
+    assert engine.update(_tool_call("event-2", {"path": "src/example.py"}), 2) == ()
+    assert engine.update(_tool_call("event-3", {"line": 3}), 3) == ()
+    assert engine.update(_tool_call("event-4", {"path": "src/example.py"}), 4) == ()
+    gap = TraceEvent(
+        "observation_gap",
+        {},
+        event_id="gap-1",
+        identity=identity,
+        connection_epoch=1,
+    )
+    assert engine.update(gap, 5) == ()
+    assert engine.update(_tool_call("event-5", {"path": "src/example.py"}), 6) == ()
+    assert engine.update(_tool_call("event-6", {"path": "src/example.py"}), 7) == ()
+    active = next(
+        candidate
+        for candidate in engine.update(_tool_call("event-7", {"path": "src/example.py"}), 8)
+        if candidate.signal_type == SignalType.REPEATED_READ_NO_FRONTIER
+    )
+
+    assert active.evidence_event_ids == ("event-6", "event-7")
+
+
+def test_non_read_tool_with_resource_does_not_claim_no_frontier() -> None:
+    engine = SignalEngine(no_frontier_threshold=2)
+
+    for index in range(1, 5):
+        assert (
+            engine.update(
+                _tool_call(
+                    f"event-{index}",
+                    {"path": "src/example.py", "attempt": index},
+                    tool="execute",
+                ),
+                index,
+            )
+            == ()
+        )
 
 
 def test_different_or_unknown_tool_arguments_do_not_collapse() -> None:
