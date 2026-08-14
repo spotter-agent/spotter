@@ -38,6 +38,7 @@ from pathlib import Path
 
 from spotter.effects import external_effects
 from spotter.hook import journal_path
+from spotter.labels import load_labels, matches
 from spotter.paths import secure_dir, spotter_home
 from spotter.redact import redact_text
 from spotter.snapshot import StepJournal, StepRecord, restore_snapshot
@@ -93,6 +94,16 @@ class SignalBranchCoverage:
 
 
 @dataclass(frozen=True)
+class LabeledBranchCoverage:
+    label_step: int
+    verdict: str
+    target_kind: str
+    proposal_step: int | None
+    status: BranchCoverageStatus | None
+    stale: bool
+
+
+@dataclass(frozen=True)
 class BranchCoverageReport:
     session_id: str
     candidates: int
@@ -105,6 +116,11 @@ class BranchCoverageReport:
     signal_trigger_followups: int
     signal_trigger_followups_forkable: int
     signal_trigger_points: tuple[SignalBranchCoverage, ...]
+    labeled_opportunities: int
+    labeled_opportunities_current: int
+    labeled_opportunity_branch_points: int
+    labeled_opportunity_branch_points_forkable: int
+    labeled_opportunity_points: tuple[LabeledBranchCoverage, ...]
 
 
 @dataclass(frozen=True)
@@ -294,6 +310,7 @@ def branch_coverage(session_id: str, codex_home: Path | None = None) -> BranchCo
     pre_mutation = [point for point in points if point.before_first_mutation]
     forkable = [point for point in points if point.status == BranchCoverageStatus.FORKABLE_EXACT]
     signal_points = _signal_branch_coverage(records, points)
+    labeled_points = _labeled_branch_coverage(session_id, records, points)
     return BranchCoverageReport(
         session_id=session_id,
         candidates=len(points),
@@ -310,6 +327,15 @@ def branch_coverage(session_id: str, codex_home: Path | None = None) -> BranchCo
             point.status == BranchCoverageStatus.FORKABLE_EXACT for point in signal_points
         ),
         signal_trigger_points=signal_points,
+        labeled_opportunities=len(labeled_points),
+        labeled_opportunities_current=sum(not point.stale for point in labeled_points),
+        labeled_opportunity_branch_points=sum(
+            point.proposal_step is not None for point in labeled_points
+        ),
+        labeled_opportunity_branch_points_forkable=sum(
+            point.status == BranchCoverageStatus.FORKABLE_EXACT for point in labeled_points
+        ),
+        labeled_opportunity_points=labeled_points,
     )
 
 
@@ -353,6 +379,59 @@ def _signal_branch_coverage(
             )
         )
     return tuple(triggers)
+
+
+def _labeled_branch_coverage(
+    session_id: str, records: list[StepRecord], points: list[BranchPointCoverage]
+) -> tuple[LabeledBranchCoverage, ...]:
+    """Map current human judgments to the proposal where an intervention could branch."""
+
+    point_by_step = {point.step: point for point in points}
+    opportunities: list[LabeledBranchCoverage] = []
+    labels = (label for step, label in load_labels(session_id).items() if step is not None)
+    for label in sorted(labels, key=lambda label: label.step or 0):
+        assert label.step is not None
+        target = records[label.step] if 0 <= label.step < len(records) else None
+        target_kind = target.event.kind if target else "missing"
+        stale = not matches(label, records)
+        proposal: BranchPointCoverage | None = None
+        if not stale and target is not None:
+            if target_kind in {"gate_shadow_block", "gate_block"}:
+                tool_use_id = target.event.payload.get("tool_use_id")
+                if isinstance(tool_use_id, str) and tool_use_id:
+                    proposal = next(
+                        (
+                            point_by_step[record.step]
+                            for record in reversed(records[: label.step])
+                            if record.event.kind == "tool_proposal"
+                            and record.event.payload.get("tool_use_id") == tool_use_id
+                        ),
+                        None,
+                    )
+                elif label.step > 0 and records[label.step - 1].event.kind == "tool_proposal":
+                    # Legacy gate events lacked the correlation id. Only adjacency
+                    # is strong enough evidence to recover their branch point.
+                    proposal = point_by_step[records[label.step - 1].step]
+            elif target_kind == "reviewer_decision":
+                proposal = next(
+                    (
+                        point_by_step[record.step]
+                        for record in records[label.step + 1 :]
+                        if record.event.kind == "tool_proposal"
+                    ),
+                    None,
+                )
+        opportunities.append(
+            LabeledBranchCoverage(
+                label.step,
+                label.verdict,
+                target_kind,
+                proposal.step if proposal else None,
+                proposal.status if proposal else None,
+                stale,
+            )
+        )
+    return tuple(opportunities)
 
 
 def branch_coverage_to_json(report: BranchCoverageReport) -> str:

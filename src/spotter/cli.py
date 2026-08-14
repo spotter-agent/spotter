@@ -332,7 +332,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error("fork-coverage requires --session")
         try:
             print(branch_coverage_to_json(branch_coverage(args.session)))
-        except (OSError, SnapshotError) as error:
+        except (OSError, SnapshotError, LabelError) as error:
             print(f"fork coverage failed: {error}", file=sys.stderr)
             return 1
         return 0

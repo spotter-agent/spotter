@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from spotter.hook import journal_path
+from spotter.labels import add_label, labels_path
 from spotter.replay import (
     BranchCoverageStatus,
     EnvironmentDrift,
@@ -296,6 +297,58 @@ def test_branch_coverage_reports_signal_trigger_followups(repo: Path, codex_home
     assert report.signal_trigger_points[1].proposal_step is None
     rendered = json.loads(branch_coverage_to_json(report))
     assert rendered["signal_trigger_points"][0]["status"] == "FORKABLE_EXACT"
+
+
+def test_branch_coverage_reports_labeled_intervention_opportunities(
+    repo: Path, codex_home: Path
+) -> None:
+    sha = snapshot_worktree(repo)
+    _journal(
+        OLD_ID,
+        [
+            (
+                TraceEvent(
+                    "tool_proposal",
+                    {
+                        "tool_use_id": "call_A",
+                        "cwd": str(repo),
+                        "reversibility_class": "A",
+                    },
+                ),
+                sha,
+            ),
+            (TraceEvent("gate_shadow_block", {"tool_use_id": "call_A"}), None),
+            (TraceEvent("reviewer_decision", {"decision": "nudge"}), None),
+            (
+                TraceEvent(
+                    "tool_proposal",
+                    {
+                        "tool_use_id": "call_B",
+                        "cwd": str(repo),
+                        "reversibility_class": "A",
+                    },
+                ),
+                None,
+            ),
+            (TraceEvent("reviewer_decision", {"decision": "verify"}), None),
+        ],
+    )
+    records = StepJournal.load(journal_path({"session_id": OLD_ID}))
+    add_label(OLD_ID, 1, "tp", "gate opportunity", records)
+    add_label(OLD_ID, 2, "tp", "reviewer opportunity", records)
+    stale = add_label(OLD_ID, 4, "unclear", "no follow-up", records)
+    with labels_path(OLD_ID).open("a", encoding="utf-8") as sink:
+        sink.write(json.dumps(asdict(replace(stale, fingerprint="stale"))) + "\n")
+
+    report = branch_coverage(OLD_ID, codex_home)
+
+    assert (report.labeled_opportunities, report.labeled_opportunities_current) == (3, 2)
+    assert report.labeled_opportunity_branch_points == 2
+    assert report.labeled_opportunity_branch_points_forkable == 2
+    assert [point.proposal_step for point in report.labeled_opportunity_points] == [0, 3, None]
+    assert report.labeled_opportunity_points[2].stale is True
+    rendered = json.loads(branch_coverage_to_json(report))
+    assert rendered["labeled_opportunity_points"][1]["status"] == "FORKABLE_EXACT"
 
 
 def test_fork_rollout_only_rewrites_session_metadata(codex_home: Path) -> None:
