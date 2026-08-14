@@ -513,12 +513,14 @@ Policy-oriented fields can be layered on later:
 ```text
 constraint ids
 candidate hypothesis ids
+causal hypothesis ids (`hypothesis_ids[]` only on actions with an explicit relation)
 validation relation (`validated_paths[]` only when the source proves file/directory coverage)
 side-effect class
 ```
 
 Absent validation scope remains unknown: a passing test outcome does not clear unrelated
-`edits_since_validation` entries.
+`edits_since_validation` entries. Likewise, an action without `hypothesis_ids` does not prove that
+it reused or ignored any hypothesis.
 
 Normalization must not discard provenance. Live control, replay, and causal analysis must be able to reconnect normalized records to the underlying runtime item/turn.
 

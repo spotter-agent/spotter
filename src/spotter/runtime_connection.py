@@ -462,7 +462,7 @@ class AppServerRecoveryLoop:
             self.review_scheduler.update(record.event, state_before, state)
         )
         candidate_events: list[TraceEvent] = []
-        for candidate in self.signals.update(record.event, state.version):
+        for candidate in self.signals.update(record.event, state.version, state):
             candidate_record = self._append_derived(candidate.to_trace_event(record.event))
             if candidate_record is not None:
                 candidate_events.append(candidate_record.event)

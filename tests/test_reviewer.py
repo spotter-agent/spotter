@@ -94,6 +94,7 @@ def test_bounded_review_uses_only_fenced_input() -> None:
         ("do not change dependencies",),
         (),
         (),
+        (),
         ("event-2: failed",),
         "failed",
         "complete",

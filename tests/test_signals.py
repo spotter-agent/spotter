@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from spotter.identity import IdentityProvenance, RuntimeIdentity, ThreadId, TurnId
-from spotter.review_scheduler import ReviewerJob
+from spotter.review_scheduler import ReviewerJob, ReviewScheduler
 from spotter.runtime_connection import AppServerRecoveryLoop
 from spotter.signals import (
     SignalCandidate,
@@ -11,7 +11,7 @@ from spotter.signals import (
     deterministic_block_equivalence,
 )
 from spotter.snapshot import StepRecord
-from spotter.thread_state import ThreadStateStore
+from spotter.thread_state import ThreadState, ThreadStateStore
 from spotter.trace import TraceEvent, TraceProvenance
 
 
@@ -92,6 +92,13 @@ def _trace(kind: str, event_id: str, payload: dict[str, object]) -> TraceEvent:
         identity=event.identity,
         connection_epoch=event.connection_epoch,
     )
+
+
+def _observe(
+    engine: SignalEngine, store: ThreadStateStore, event: TraceEvent
+) -> tuple[SignalCandidate, ...]:
+    state = store.observe(event)
+    return engine.update(event, state.version, state)
 
 
 def test_failure_streak_emits_once_then_cools_down_until_success() -> None:
@@ -197,6 +204,141 @@ def test_block_recurrence_does_not_guess_across_resources_or_unknown_shapes() ->
     ) == deterministic_block_equivalence(
         "git_reset_hard", {"command": "bash -c 'git reset --hard'"}
     )
+
+
+def test_stale_hypothesis_reuse_requires_explicit_causal_action_link() -> None:
+    engine = SignalEngine()
+    store = ThreadStateStore()
+    turn = _trace("turn_started", "event-1", {})
+    evidence = _trace(
+        "command_result",
+        "event-2",
+        {"status": "completed", "resource": "config-check"},
+    )
+    hypothesis = _trace(
+        "hypothesis",
+        "event-3",
+        {"text": "The config is loaded", "evidence_ids": ["event-2"]},
+    )
+    action_while_fresh = _trace(
+        "command_started",
+        "event-4",
+        {"hypothesis_ids": ["event-3"], "resource": "src/config.py"},
+    )
+    invalidated = _trace("evidence_invalidated", "event-5", {"evidence_id": "event-2"})
+    unlinked = _trace("command_started", "event-6", {"resource": "src/config.py"})
+    linked = _trace(
+        "command_started",
+        "event-7",
+        {"hypothesis_ids": ["event-3"], "resource": "src/config.py"},
+    )
+    linked_again = _trace(
+        "tool_started",
+        "event-8",
+        {
+            "hypothesis_ids": ["event-3"],
+            "server": "fixture",
+            "tool": "rewrite",
+        },
+    )
+
+    for event in (turn, evidence, hypothesis, action_while_fresh, invalidated, unlinked):
+        assert _observe(engine, store, event) == ()
+    active = _observe(engine, store, linked)[0]
+    snapshot = store.snapshot(ThreadId("thread-1"))
+    cooled = _observe(engine, store, linked_again)[0]
+
+    assert active.signal_type == SignalType.STALE_HYPOTHESIS_REUSE
+    assert active.status == SignalStatus.ACTIVE
+    assert active.evidence_event_ids == ("event-7",)
+    assert active.involved_resources == (
+        "hypothesis:event-3",
+        "resource:src/config.py",
+    )
+    assert active.to_trace_event(linked).payload["features"] == {"causally_linked_actions": 1}
+    assert cooled.signal_id == active.signal_id
+    assert cooled.status == SignalStatus.COOLED_DOWN
+    assert cooled.severity_hint == 2
+    assert cooled.involved_resources == (
+        "hypothesis:event-3",
+        "resource:src/config.py",
+        "tool:fixture/rewrite",
+    )
+
+    candidate_event = active.to_trace_event(linked)
+    state_after = store.observe(candidate_event)
+    scheduler = ReviewScheduler()
+    assert scheduler.update(candidate_event, snapshot, state_after)
+    assert scheduler.pending()[0].reviewer_input.stale_hypotheses == (
+        "event-3: The config is loaded",
+    )
+
+
+def test_transitively_stale_hypothesis_reuse_is_detected_without_guessing_unknown_ids() -> None:
+    engine = SignalEngine()
+    store = ThreadStateStore()
+    evidence = _trace("command_result", "event-1", {"status": "completed", "resource": "proof"})
+    first = _trace(
+        "hypothesis",
+        "event-2",
+        {"text": "First claim", "evidence_ids": ["event-1"]},
+    )
+    invalidated = _trace("evidence_invalidated", "event-3", {"evidence_id": "event-1"})
+    dependent = _trace(
+        "hypothesis",
+        "event-4",
+        {"text": "Dependent claim", "depends_on": ["event-2"]},
+    )
+    oversized = _trace("command_started", "event-5", {"hypothesis_ids": ["event-4"] * 129})
+    unknown = _trace("command_started", "event-6", {"hypothesis_ids": ["missing"]})
+    linked = _trace("command_started", "event-7", {"hypothesis_ids": ["event-4"]})
+
+    for event in (evidence, first, invalidated, dependent, oversized, unknown):
+        assert _observe(engine, store, event) == ()
+    candidate = _observe(engine, store, linked)[0]
+
+    assert candidate.signal_type == SignalType.STALE_HYPOTHESIS_REUSE
+    assert candidate.involved_resources == ("hypothesis:event-4",)
+
+
+def test_stale_hypothesis_reuse_hydrates_cooldown() -> None:
+    evidence = _trace("command_result", "event-1", {"status": "completed", "resource": "proof"})
+    hypothesis = _trace(
+        "hypothesis",
+        "event-2",
+        {"text": "Old claim", "evidence_ids": ["event-1"]},
+    )
+    invalidated = _trace("evidence_invalidated", "event-3", {"evidence_id": "event-1"})
+    first_action = _trace("command_started", "event-4", {"hypothesis_ids": ["event-2"]})
+    original = SignalEngine()
+    store = ThreadStateStore()
+    active: SignalCandidate | None = None
+    for event in (evidence, hypothesis, invalidated, first_action):
+        candidates = _observe(original, store, event)
+        if candidates:
+            active = candidates[0]
+    assert active is not None
+
+    recovered = SignalEngine()
+    records = [
+        StepRecord(index, event, None)
+        for index, event in enumerate(
+            (evidence, hypothesis, invalidated, first_action, active.to_trace_event(first_action))
+        )
+    ]
+    assert recovered.hydrate(records) == ()
+    next_action = _trace(
+        "tool_started",
+        "event-5",
+        {"hypothesis_ids": ["event-2"], "server": "fixture", "tool": "retry"},
+    )
+    recovered_state = ThreadStateStore()
+    recovered_state.replay(record.event for record in records)
+    state = recovered_state.observe(next_action)
+    cooled = recovered.update(next_action, state.version, state)[0]
+
+    assert cooled.signal_id == active.signal_id
+    assert cooled.status == SignalStatus.COOLED_DOWN
 
 
 def test_edits_without_validation_emits_for_distinct_successful_files() -> None:
@@ -759,7 +901,12 @@ def test_runtime_correlates_live_hook_blocks_to_exact_app_server_turn(tmp_path: 
 
 def test_runtime_batches_same_source_candidates_before_submitting_review(tmp_path: Path) -> None:
     class TwoSignalEngine(SignalEngine):
-        def update(self, event: TraceEvent, state_version: int) -> tuple[SignalCandidate, ...]:
+        def update(
+            self,
+            event: TraceEvent,
+            state_version: int,
+            state: ThreadState | None = None,
+        ) -> tuple[SignalCandidate, ...]:
             if event.event_id != "event-1" or event.identity is None:
                 return ()
             assert event.identity.thread_id is not None

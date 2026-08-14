@@ -271,6 +271,18 @@ def test_verification_and_invalidation_keep_fact_types_distinct() -> None:
     )
     assert fact.status == StateItemStatus.STALE
     assert hypothesis.status == StateItemStatus.STALE
+    assert invalidated.evidence.stale_hypothesis_ids == {"h1"}
+
+    dependent = store.observe(
+        _event(
+            "hypothesis",
+            {"text": "Proceed with the fix", "depends_on": ["h1"]},
+            event_id="h2",
+        )
+    )
+    later = next(item for item in dependent.evidence.items if item.id == "h2")
+    assert later.status == StateItemStatus.STALE
+    assert dependent.evidence.stale_hypothesis_ids == {"h1", "h2"}
 
 
 def test_old_evidence_remains_addressable_for_later_verification() -> None:

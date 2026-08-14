@@ -109,6 +109,7 @@ class EvidenceState:
     # only after persisted conditions and dependencies gain the same retention boundary.
     items: tuple[StateItem, ...] = ()
     conditions: tuple[VerificationCondition, ...] = ()
+    stale_hypothesis_ids: frozenset[str] = field(default_factory=frozenset)
 
 
 @dataclass(frozen=True)
@@ -292,17 +293,26 @@ class ThreadStateReducer:
         if event.kind in {"reasoning_summary", "hypothesis"}:
             text = _summary_text(event.payload)
             if text:
+                depends_on = _string_tuple(event.payload.get("depends_on"))
+                evidence_ids = _string_tuple(event.payload.get("evidence_ids"))
+                stale_ids = state.evidence.stale_hypothesis_ids
+                is_stale = bool(stale_ids & set((*depends_on, *evidence_ids)))
                 hypothesis = StateItem(
                     item_id,
                     StateItemKind.HYPOTHESIS,
                     text,
                     provenance,
-                    depends_on=_string_tuple(event.payload.get("depends_on")),
-                    evidence_ids=_string_tuple(event.payload.get("evidence_ids")),
+                    status=StateItemStatus.STALE if is_stale else StateItemStatus.ACTIVE,
+                    depends_on=depends_on,
+                    evidence_ids=evidence_ids,
                 )
                 return replace(
                     state,
-                    evidence=replace(state.evidence, items=state.evidence.items + (hypothesis,)),
+                    evidence=replace(
+                        state.evidence,
+                        items=state.evidence.items + (hypothesis,),
+                        stale_hypothesis_ids=(stale_ids | {item_id} if is_stale else stale_ids),
+                    ),
                 )
         if event.kind == "plan":
             text = _summary_text(event.payload)
@@ -633,7 +643,20 @@ def _invalidate_evidence(state: ThreadState, raw_evidence_id: object) -> ThreadS
         else condition
         for condition in state.evidence.conditions
     )
-    return replace(state, evidence=replace(state.evidence, items=items, conditions=conditions))
+    stale_hypothesis_ids = state.evidence.stale_hypothesis_ids | {
+        item.id
+        for item in items
+        if item.kind == StateItemKind.HYPOTHESIS and item.status == StateItemStatus.STALE
+    }
+    return replace(
+        state,
+        evidence=replace(
+            state.evidence,
+            items=items,
+            conditions=conditions,
+            stale_hypothesis_ids=stale_hypothesis_ids,
+        ),
+    )
 
 
 def _user_text(payload: Mapping[str, Any]) -> str | None:

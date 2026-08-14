@@ -3,12 +3,13 @@
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from spotter.thread_state import ThreadState
+from spotter.thread_state import StateItemKind, StateItemStatus, ThreadState
 
 _GOAL_CHARS = 600
 _TEXT_CHARS = 300
 _MAX_CONSTRAINTS = 20
 _MAX_FILES = 50
+_MAX_HYPOTHESES = 20
 _MAX_FAILURES = 20
 _MAX_GAPS = 10
 _MAX_INCONSISTENCIES = 20
@@ -29,6 +30,7 @@ class ReviewerInput:
     constraints: tuple[str, ...]
     touched_files: tuple[str, ...]
     edits_since_validation: tuple[str, ...]
+    stale_hypotheses: tuple[str, ...]
     recent_failures: tuple[str, ...]
     validation_status: str
     coverage_history: str
@@ -44,6 +46,7 @@ class ReviewerInput:
             "resources_shown": len(self.involved_resources),
             "touched_files_shown": len(self.touched_files),
             "edits_since_validation_shown": len(self.edits_since_validation),
+            "stale_hypotheses_shown": len(self.stale_hypotheses),
             "recent_failures_shown": len(self.recent_failures),
             "coverage_gaps_shown": len(self.coverage_gaps),
             "truncated": bool(self.truncated_fields),
@@ -75,6 +78,30 @@ def build_reviewer_input(candidate: Mapping[str, object], snapshot: ThreadState)
         "edits_since_validation",
         truncated,
     )
+    raw_candidate_resources = candidate.get("involved_resources")
+    candidate_resource_values = (
+        raw_candidate_resources if isinstance(raw_candidate_resources, list) else []
+    )
+    candidate_resources = _candidate_strings(
+        raw_candidate_resources, "involved_resources", truncated
+    )
+    candidate_hypothesis_ids = {
+        resource.removeprefix("hypothesis:")
+        for resource in candidate_resource_values
+        if isinstance(resource, str) and resource.startswith("hypothesis:")
+    }
+    stale_hypotheses = _texts(
+        [
+            f"{item.id}: {item.text}"
+            for item in snapshot.evidence.items
+            if item.kind == StateItemKind.HYPOTHESIS
+            and item.status == StateItemStatus.STALE
+            and item.id in candidate_hypothesis_ids
+        ],
+        _MAX_HYPOTHESES,
+        "stale_hypotheses",
+        truncated,
+    )
     failures = _texts(
         [f"{item.id}: {item.text}" for item in snapshot.execution.recent_failures],
         _MAX_FAILURES,
@@ -100,9 +127,6 @@ def build_reviewer_input(candidate: Mapping[str, object], snapshot: ThreadState)
     evidence = _candidate_strings(
         candidate.get("evidence_event_ids"), "evidence_event_ids", truncated
     )
-    resources = _candidate_strings(
-        candidate.get("involved_resources"), "involved_resources", truncated
-    )
     raw_features = candidate.get("features")
     feature_items = (
         sorted(
@@ -125,12 +149,13 @@ def build_reviewer_input(candidate: Mapping[str, object], snapshot: ThreadState)
         _required_string(candidate, "signal_type"),
         severity_hint,
         evidence,
-        resources,
+        candidate_resources,
         features,
         goal,
         constraints,
         touched_files,
         edits_since_validation,
+        stale_hypotheses,
         failures,
         str(snapshot.execution.validation),
         str(snapshot.coverage.history),

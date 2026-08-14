@@ -10,6 +10,7 @@ from enum import StrEnum
 from spotter.identity import RuntimeIdentity, ThreadId
 from spotter.outcomes import outcome_failure
 from spotter.snapshot import StepRecord
+from spotter.thread_state import ThreadState, ThreadStateStore
 from spotter.trace import TraceEvent, TraceProvenance
 
 _OUTCOME_KINDS = {"command_result", "tool_result", "file_edit", "test_result"}
@@ -50,6 +51,14 @@ _BLOCK_LIMIT = 128
 _SCOPE_LIMIT = 128
 _SCOPE_TEXT_LIMIT = 4096
 _PATH_CHARS = re.compile(r"[A-Za-z0-9_./-]+")
+_CAUSAL_ACTION_KINDS = {
+    "command_started",
+    "file_change_started",
+    "tool_proposal",
+    "tool_started",
+}
+_HYPOTHESIS_LIMIT = 128
+_HYPOTHESIS_ID_LIMIT = 300
 
 
 class SignalType(StrEnum):
@@ -58,6 +67,7 @@ class SignalType(StrEnum):
     RECURRENCE_AFTER_DETERMINISTIC_BLOCK = "recurrence_after_deterministic_block"
     REPEATED_EQUIVALENT_TOOL_CALL = "repeated_equivalent_tool_call"
     REPEATED_READ_NO_FRONTIER = "repeated_read_no_frontier"
+    STALE_HYPOTHESIS_REUSE = "stale_hypothesis_reuse"
     TOUCHED_SCOPE_GROWTH = "touched_scope_growth"
 
 
@@ -183,9 +193,15 @@ class SignalEngine:
         self._scope_growths: dict[ThreadId, _SignalStreak] = {}
         self._unvalidated_edits: dict[ThreadId, _SignalStreak] = {}
         self._unvalidated_sources: dict[ThreadId, dict[str, str]] = {}
+        self._stale_hypothesis_reuses: dict[tuple[ThreadId, str], _SignalStreak] = {}
         self._seen_event_ids: dict[ThreadId, set[str]] = {}
 
-    def update(self, event: TraceEvent, state_version: int) -> tuple[SignalCandidate, ...]:
+    def update(
+        self,
+        event: TraceEvent,
+        state_version: int,
+        state: ThreadState | None = None,
+    ) -> tuple[SignalCandidate, ...]:
         identity = event.identity
         if identity is None or identity.thread_id is None or event.event_id is None:
             return ()
@@ -204,6 +220,7 @@ class SignalEngine:
         scope_growth = self._scope_growths.get(thread_id)
         unvalidated_edits = self._unvalidated_edits.get(thread_id)
         blocked_keys = [key for key in self._blocked_actions if key[0] == thread_id]
+        stale_reuse_keys = [key for key in self._stale_hypothesis_reuses if key[0] == thread_id]
         if streak is not None and _target_changed(streak, event):
             candidates.extend(self._finish(streak, SignalStatus.STALE, event, state_version))
             self._failure_streaks.pop(thread_id, None)
@@ -234,6 +251,13 @@ class SignalEngine:
             if _target_changed(blocked, event):
                 candidates.extend(self._finish(blocked, SignalStatus.STALE, event, state_version))
                 self._blocked_actions.pop(blocked_key)
+        for stale_reuse_key in stale_reuse_keys:
+            stale_reuse = self._stale_hypothesis_reuses[stale_reuse_key]
+            if _target_changed(stale_reuse, event):
+                candidates.extend(
+                    self._finish(stale_reuse, SignalStatus.STALE, event, state_version)
+                )
+                self._stale_hypothesis_reuses.pop(stale_reuse_key)
         if event.kind in _TERMINAL_KINDS:
             if streak is not None:
                 candidates.extend(self._finish(streak, SignalStatus.STALE, event, state_version))
@@ -262,10 +286,18 @@ class SignalEngine:
                     continue
                 blocked = self._blocked_actions.pop(blocked_key)
                 candidates.extend(self._finish(blocked, SignalStatus.STALE, event, state_version))
+            for stale_reuse_key in tuple(self._stale_hypothesis_reuses):
+                if stale_reuse_key[0] != thread_id:
+                    continue
+                stale_reuse = self._stale_hypothesis_reuses.pop(stale_reuse_key)
+                candidates.extend(
+                    self._finish(stale_reuse, SignalStatus.STALE, event, state_version)
+                )
             return tuple(candidates)
 
         candidates.extend(self._update_scope_growth(event, state_version))
         candidates.extend(self._update_unvalidated_edits(event, state_version))
+        candidates.extend(self._update_stale_hypothesis_reuse(event, state_version, state))
         candidates.extend(self._update_block_recurrence(event, state_version))
         candidates.extend(self._update_repeated_tool(event, state_version))
         candidates.extend(self._update_no_frontier_reads(event, state_version))
@@ -317,6 +349,64 @@ class SignalEngine:
             candidates.append(_candidate(streak, status, event.event_id, state_version))
             if not streak.emitted:
                 self._failure_streaks[thread_id] = replace(streak, emitted=True)
+        return tuple(candidates)
+
+    def _update_stale_hypothesis_reuse(
+        self,
+        event: TraceEvent,
+        state_version: int,
+        state: ThreadState | None,
+    ) -> tuple[SignalCandidate, ...]:
+        if state is None or event.kind not in _CAUSAL_ACTION_KINDS:
+            return ()
+        assert event.identity is not None and event.identity.thread_id is not None
+        assert event.event_id is not None
+        referenced = _hypothesis_ids(event.payload.get("hypothesis_ids"))
+        if not referenced:
+            return ()
+        stale = state.evidence.stale_hypothesis_ids
+        thread_id = event.identity.thread_id
+        candidates: list[SignalCandidate] = []
+        action_resources = _resources(event.payload)
+        for hypothesis_id in sorted(set(referenced) & stale):
+            key = (thread_id, hypothesis_id)
+            streak = self._stale_hypothesis_reuses.get(key)
+            resources = tuple(dict.fromkeys((f"hypothesis:{hypothesis_id}", *action_resources)))
+            if streak is None:
+                streak = _SignalStreak(
+                    _signal_id(
+                        event,
+                        SignalType.STALE_HYPOTHESIS_REUSE,
+                        hypothesis_id,
+                    ),
+                    SignalType.STALE_HYPOTHESIS_REUSE,
+                    "causally_linked_actions",
+                    hypothesis_id,
+                    event.identity,
+                    event.connection_epoch,
+                    event.occurred_at,
+                    event.occurred_at,
+                    1,
+                    (event.event_id,),
+                    resources,
+                    True,
+                )
+                status = SignalStatus.ACTIVE
+            else:
+                streak = replace(
+                    streak,
+                    last_seen_at=event.occurred_at,
+                    count=streak.count + 1,
+                    evidence_event_ids=(streak.evidence_event_ids + (event.event_id,))[
+                        -_EVIDENCE_LIMIT:
+                    ],
+                    resources=tuple(dict.fromkeys((*streak.resources, *action_resources)))[
+                        :_SCOPE_LIMIT
+                    ],
+                )
+                status = SignalStatus.COOLED_DOWN
+            self._stale_hypothesis_reuses[key] = streak
+            candidates.append(_candidate(streak, status, event.event_id, state_version))
         return tuple(candidates)
 
     def _update_unvalidated_edits(
@@ -716,21 +806,21 @@ class SignalEngine:
         self._scope_growths.clear()
         self._unvalidated_edits.clear()
         self._unvalidated_sources.clear()
+        self._stale_hypothesis_reuses.clear()
         self._seen_event_ids.clear()
-        versions: dict[ThreadId, int] = {}
+        states = ThreadStateStore()
         pending: dict[str, tuple[SignalCandidate, TraceEvent]] = {}
         for record in records:
             event = record.event
             identity = event.identity
             if identity is None or identity.thread_id is None:
                 continue
-            thread_id = identity.thread_id
-            versions[thread_id] = versions.get(thread_id, 0) + 1
+            state = states.observe(event)
             if event.kind in {"signal_candidate", "signal_candidate_suppressed"}:
                 if event.event_id is not None:
                     pending.pop(event.event_id, None)
                 continue
-            for candidate in self.update(event, versions[thread_id]):
+            for candidate in self.update(event, state.version, state):
                 derived = candidate.to_trace_event(event)
                 assert derived.event_id is not None
                 pending[derived.event_id] = (candidate, event)
@@ -881,6 +971,20 @@ def _normalized_paths(raw: object) -> tuple[str, ...]:
             continue
         paths.add(path.rstrip("/") or path)
     return tuple(sorted(paths))
+
+
+def _hypothesis_ids(raw: object) -> tuple[str, ...]:
+    if not isinstance(raw, list) or len(raw) > _HYPOTHESIS_LIMIT:
+        return ()
+    return tuple(
+        dict.fromkeys(
+            value.strip()
+            for value in raw
+            if isinstance(value, str)
+            and value.strip()
+            and len(value.strip()) <= _HYPOTHESIS_ID_LIMIT
+        )
+    )
 
 
 def _within_scope(path: str, expected: str) -> bool:
