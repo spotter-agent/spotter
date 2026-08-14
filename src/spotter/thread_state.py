@@ -1,5 +1,6 @@
 """Immutable live supervision state reduced from runtime-neutral Trace IR."""
 
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -11,6 +12,8 @@ from spotter.snapshot import StepRecord
 from spotter.trace import TraceEvent
 
 _RECENT_LIMIT = 50
+_VALIDATION_SCOPE_LIMIT = 128
+_VALIDATION_PATH_CHARS = re.compile(r"[A-Za-z0-9_./-]+")
 
 
 class StateItemKind(StrEnum):
@@ -375,7 +378,12 @@ class ThreadStateReducer:
             if event.kind == "test_result":
                 validation = _validation_status(event.payload)
                 if validation == ValidationStatus.PASSED:
-                    edits = frozenset()
+                    scopes = _validation_scopes(event.payload)
+                    edits = frozenset(
+                        path
+                        for path in edits
+                        if not any(_within_scope(path, scope) for scope in scopes)
+                    )
             workspace = _workspace(state.workspace, event, edits)
             return replace(
                 state,
@@ -686,6 +694,31 @@ def _validation_status(payload: Mapping[str, Any]) -> ValidationStatus:
     if failure is False:
         return ValidationStatus.PASSED
     return ValidationStatus.UNKNOWN
+
+
+def _validation_scopes(payload: Mapping[str, Any]) -> tuple[str, ...]:
+    raw = payload.get("validated_paths")
+    if not isinstance(raw, list) or len(raw) > _VALIDATION_SCOPE_LIMIT:
+        return ()
+    scopes: set[str] = set()
+    for value in raw:
+        if not isinstance(value, str):
+            continue
+        scope = value.strip().removeprefix("./").rstrip("/")
+        if (
+            not scope
+            or scope.startswith(("/", "~", "../"))
+            or "://" in scope
+            or ".." in scope.split("/")
+            or not _VALIDATION_PATH_CHARS.fullmatch(scope)
+        ):
+            continue
+        scopes.add(scope)
+    return tuple(sorted(scopes))
+
+
+def _within_scope(path: str, scope: str) -> bool:
+    return path == scope or path.startswith(f"{scope}/")
 
 
 def _string_tuple(value: object) -> tuple[str, ...]:

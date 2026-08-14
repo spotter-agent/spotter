@@ -333,7 +333,34 @@ def test_validation_and_unknown_coverage_never_infer_missing_outcomes() -> None:
     assert unknown.workspace.edits_since_validation == {"src/a.py"}
     assert failed.execution.validation == ValidationStatus.FAILED
     assert passed.execution.validation == ValidationStatus.PASSED
+    assert passed.workspace.edits_since_validation == {"src/a.py"}
     assert edited_after_validation.execution.validation == ValidationStatus.STALE
+    assert edited_after_validation.workspace.edits_since_validation == {
+        "src/a.py",
+        "src/b.py",
+    }
+
+
+def test_validation_clears_only_explicitly_validated_scope() -> None:
+    store = ThreadStateStore()
+    store.observe(
+        _event(
+            "file_edit",
+            {"status": "completed", "files": ["src/pkg/a.py", "src/other/b.py"]},
+            event_id="edit",
+        )
+    )
+
+    state = store.observe(
+        _event(
+            "test_result",
+            {"status": "passed", "validated_paths": ["src/pkg"]},
+            event_id="test-passed",
+        )
+    )
+
+    assert state.execution.validation == ValidationStatus.PASSED
+    assert state.workspace.edits_since_validation == {"src/other/b.py"}
 
 
 def test_nested_hook_outcome_uses_shared_failure_classification() -> None:

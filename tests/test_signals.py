@@ -199,8 +199,118 @@ def test_block_recurrence_does_not_guess_across_resources_or_unknown_shapes() ->
     )
 
 
+def test_edits_without_validation_emits_for_distinct_successful_files() -> None:
+    engine = SignalEngine(unvalidated_edit_threshold=3)
+
+    assert (
+        engine.update(
+            _trace("file_edit", "event-1", {"status": "completed", "files": ["src/a.py"]}),
+            1,
+        )
+        == ()
+    )
+    assert (
+        engine.update(
+            _trace("file_edit", "event-2", {"status": "completed", "files": ["src/b.py"]}),
+            2,
+        )
+        == ()
+    )
+    active = engine.update(
+        _trace("diff_updated", "event-3", {"files": ["src/a.py", "src/c.py"]}),
+        3,
+    )[0]
+    cooled = engine.update(
+        _trace("file_edit", "event-4", {"status": "completed", "files": ["src/d.py"]}),
+        4,
+    )[0]
+
+    assert active.signal_type == SignalType.EDITS_WITHOUT_VALIDATION
+    assert active.status == SignalStatus.ACTIVE
+    assert active.involved_resources == (
+        "file:src/a.py",
+        "file:src/b.py",
+        "file:src/c.py",
+    )
+    assert active.evidence_event_ids == ("event-1", "event-2", "event-3")
+    assert active.to_trace_event(_trace("diff_updated", "event-3", {})).payload["features"] == {
+        "files_without_validation": 3
+    }
+    assert cooled.signal_id == active.signal_id
+    assert cooled.status == SignalStatus.COOLED_DOWN
+    assert cooled.severity_hint == 4
+
+
+def test_scoped_validation_rearms_unrelated_unvalidated_files() -> None:
+    engine = SignalEngine(unvalidated_edit_threshold=2)
+    engine.update(
+        _trace(
+            "file_edit",
+            "event-1",
+            {"status": "completed", "files": ["src/pkg/a.py"]},
+        ),
+        1,
+    )
+    active = engine.update(
+        _trace(
+            "file_edit",
+            "event-2",
+            {"status": "completed", "files": ["src/other/b.py"]},
+        ),
+        2,
+    )[0]
+
+    resolved = engine.update(
+        _trace(
+            "test_result",
+            "event-3",
+            {"status": "passed", "validated_paths": ["src/pkg"]},
+        ),
+        3,
+    )[0]
+    rearmed = engine.update(
+        _trace(
+            "file_edit",
+            "event-4",
+            {"status": "completed", "files": ["src/other/c.py"]},
+        ),
+        4,
+    )[0]
+
+    assert resolved.signal_id == active.signal_id
+    assert resolved.status == SignalStatus.RESOLVED
+    assert rearmed.signal_id != active.signal_id
+    assert rearmed.status == SignalStatus.ACTIVE
+    assert rearmed.involved_resources == (
+        "file:src/other/b.py",
+        "file:src/other/c.py",
+    )
+    assert rearmed.evidence_event_ids == ("event-2", "event-4")
+
+
+def test_unknown_validation_scope_and_failed_edits_do_not_clear_or_invent_evidence() -> None:
+    engine = SignalEngine(unvalidated_edit_threshold=2)
+    failed = _trace(
+        "file_edit",
+        "event-1",
+        {"status": "failed", "files": ["src/failed-a.py", "src/failed-b.py"]},
+    )
+    first = _trace("file_edit", "event-2", {"status": "completed", "files": ["src/a.py"]})
+    unscoped_pass = _trace("test_result", "event-3", {"status": "passed"})
+    second = _trace("file_edit", "event-4", {"status": "completed", "files": ["src/b.py"]})
+
+    assert engine.update(failed, 1) == ()
+    assert engine.update(first, 2) == ()
+    assert engine.update(unscoped_pass, 3) == ()
+    active = engine.update(second, 4)[0]
+
+    assert active.signal_type == SignalType.EDITS_WITHOUT_VALIDATION
+    assert active.involved_resources == ("file:src/a.py", "file:src/b.py")
+    assert active.evidence_event_ids == ("event-2", "event-4")
+
+
 def test_touched_scope_growth_emits_for_new_files_outside_explicit_request_scope() -> None:
-    engine = SignalEngine(scope_growth_threshold=3)
+    engine = SignalEngine(scope_growth_threshold=3, unvalidated_edit_threshold=999)
     prompt = _trace(
         "user_prompt",
         "event-1",
@@ -254,7 +364,7 @@ def test_touched_scope_growth_emits_for_new_files_outside_explicit_request_scope
 
 
 def test_scope_growth_stays_unknown_for_broad_or_unscoped_tasks() -> None:
-    engine = SignalEngine(scope_growth_threshold=2)
+    engine = SignalEngine(scope_growth_threshold=2, unvalidated_edit_threshold=999)
     broad = _trace("user_prompt", "event-1", {"prompt": "Refactor src/ and tests/"})
     in_scope = _trace(
         "file_edit",
@@ -281,7 +391,7 @@ def test_scope_growth_stays_unknown_for_broad_or_unscoped_tasks() -> None:
 
 
 def test_new_user_scope_stales_active_scope_growth() -> None:
-    engine = SignalEngine(scope_growth_threshold=2)
+    engine = SignalEngine(scope_growth_threshold=2, unvalidated_edit_threshold=999)
     engine.update(_trace("user_prompt", "event-1", {"prompt": "Update src/api.py"}), 1)
     engine.update(
         _trace("file_edit", "event-2", {"status": "completed", "files": ["src/one.py"]}),

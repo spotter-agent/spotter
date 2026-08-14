@@ -513,9 +513,12 @@ Policy-oriented fields can be layered on later:
 ```text
 constraint ids
 candidate hypothesis ids
-validation relation
+validation relation (`validated_paths[]` only when the source proves file/directory coverage)
 side-effect class
 ```
+
+Absent validation scope remains unknown: a passing test outcome does not clear unrelated
+`edits_since_validation` entries.
 
 Normalization must not discard provenance. Live control, replay, and causal analysis must be able to reconnect normalized records to the underlying runtime item/turn.
 

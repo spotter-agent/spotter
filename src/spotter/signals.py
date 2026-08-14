@@ -53,6 +53,7 @@ _PATH_CHARS = re.compile(r"[A-Za-z0-9_./-]+")
 
 
 class SignalType(StrEnum):
+    EDITS_WITHOUT_VALIDATION = "edits_without_validation"
     FAILURE_STREAK = "failure_streak"
     RECURRENCE_AFTER_DETERMINISTIC_BLOCK = "recurrence_after_deterministic_block"
     REPEATED_EQUIVALENT_TOOL_CALL = "repeated_equivalent_tool_call"
@@ -156,6 +157,7 @@ class SignalEngine:
         repeated_tool_threshold: int = 3,
         no_frontier_threshold: int = 3,
         scope_growth_threshold: int = 3,
+        unvalidated_edit_threshold: int = 3,
     ) -> None:
         if failure_threshold < 2:
             raise ValueError("failure signal threshold must be >= 2")
@@ -165,10 +167,13 @@ class SignalEngine:
             raise ValueError("no-frontier read signal threshold must be >= 2")
         if scope_growth_threshold < 2:
             raise ValueError("scope-growth signal threshold must be >= 2")
+        if unvalidated_edit_threshold < 2:
+            raise ValueError("unvalidated-edit signal threshold must be >= 2")
         self.failure_threshold = failure_threshold
         self.repeated_tool_threshold = repeated_tool_threshold
         self.no_frontier_threshold = no_frontier_threshold
         self.scope_growth_threshold = scope_growth_threshold
+        self.unvalidated_edit_threshold = unvalidated_edit_threshold
         self._failure_streaks: dict[ThreadId, _SignalStreak] = {}
         self._repeated_tools: dict[ThreadId, _SignalStreak] = {}
         self._read_streaks: dict[ThreadId, _SignalStreak] = {}
@@ -176,6 +181,8 @@ class SignalEngine:
         self._blocked_actions: dict[tuple[ThreadId, str], _SignalStreak] = {}
         self._declared_scopes: dict[ThreadId, _DeclaredScope] = {}
         self._scope_growths: dict[ThreadId, _SignalStreak] = {}
+        self._unvalidated_edits: dict[ThreadId, _SignalStreak] = {}
+        self._unvalidated_sources: dict[ThreadId, dict[str, str]] = {}
         self._seen_event_ids: dict[ThreadId, set[str]] = {}
 
     def update(self, event: TraceEvent, state_version: int) -> tuple[SignalCandidate, ...]:
@@ -195,6 +202,7 @@ class SignalEngine:
         frontier = self._read_frontiers.get(thread_id)
         declared_scope = self._declared_scopes.get(thread_id)
         scope_growth = self._scope_growths.get(thread_id)
+        unvalidated_edits = self._unvalidated_edits.get(thread_id)
         blocked_keys = [key for key in self._blocked_actions if key[0] == thread_id]
         if streak is not None and _target_changed(streak, event):
             candidates.extend(self._finish(streak, SignalStatus.STALE, event, state_version))
@@ -215,6 +223,12 @@ class SignalEngine:
         if scope_growth is not None and _target_changed(scope_growth, event):
             candidates.extend(self._finish(scope_growth, SignalStatus.STALE, event, state_version))
             self._scope_growths.pop(thread_id, None)
+        if unvalidated_edits is not None and _target_changed(unvalidated_edits, event):
+            candidates.extend(
+                self._finish(unvalidated_edits, SignalStatus.STALE, event, state_version)
+            )
+            self._unvalidated_edits.pop(thread_id, None)
+            self._unvalidated_sources.pop(thread_id, None)
         for blocked_key in blocked_keys:
             blocked = self._blocked_actions[blocked_key]
             if _target_changed(blocked, event):
@@ -237,6 +251,12 @@ class SignalEngine:
                 candidates.extend(
                     self._finish(scope_growth, SignalStatus.STALE, event, state_version)
                 )
+            unvalidated_edits = self._unvalidated_edits.pop(thread_id, None)
+            self._unvalidated_sources.pop(thread_id, None)
+            if unvalidated_edits is not None:
+                candidates.extend(
+                    self._finish(unvalidated_edits, SignalStatus.STALE, event, state_version)
+                )
             for blocked_key in tuple(self._blocked_actions):
                 if blocked_key[0] != thread_id:
                     continue
@@ -245,6 +265,7 @@ class SignalEngine:
             return tuple(candidates)
 
         candidates.extend(self._update_scope_growth(event, state_version))
+        candidates.extend(self._update_unvalidated_edits(event, state_version))
         candidates.extend(self._update_block_recurrence(event, state_version))
         candidates.extend(self._update_repeated_tool(event, state_version))
         candidates.extend(self._update_no_frontier_reads(event, state_version))
@@ -297,6 +318,127 @@ class SignalEngine:
             if not streak.emitted:
                 self._failure_streaks[thread_id] = replace(streak, emitted=True)
         return tuple(candidates)
+
+    def _update_unvalidated_edits(
+        self, event: TraceEvent, state_version: int
+    ) -> tuple[SignalCandidate, ...]:
+        assert event.identity is not None and event.identity.thread_id is not None
+        assert event.event_id is not None
+        thread_id = event.identity.thread_id
+        streak = self._unvalidated_edits.get(thread_id)
+        if event.kind == "test_result":
+            if outcome_failure(event.payload) is not False:
+                return ()
+            scopes = _normalized_paths(event.payload.get("validated_paths"))
+            if streak is None or not scopes:
+                return ()
+            remaining = tuple(
+                resource
+                for resource in streak.resources
+                if not any(_within_scope(resource.removeprefix("file:"), scope) for scope in scopes)
+            )
+            if remaining == streak.resources:
+                return ()
+            sources = {
+                resource: source_event_id
+                for resource, source_event_id in self._unvalidated_sources.get(
+                    thread_id, {}
+                ).items()
+                if resource in remaining
+            }
+            self._unvalidated_sources[thread_id] = sources
+            evidence_event_ids = tuple(dict.fromkeys(sources.values()))[-_EVIDENCE_LIMIT:]
+            if len(remaining) >= self.unvalidated_edit_threshold:
+                streak = replace(
+                    streak,
+                    last_seen_at=event.occurred_at,
+                    count=len(remaining),
+                    evidence_event_ids=evidence_event_ids,
+                    resources=remaining,
+                )
+                self._unvalidated_edits[thread_id] = streak
+                return (
+                    (_candidate(streak, SignalStatus.COOLED_DOWN, event.event_id, state_version),)
+                    if streak.emitted
+                    else ()
+                )
+            finished = self._finish(streak, SignalStatus.RESOLVED, event, state_version)
+            if remaining:
+                self._unvalidated_edits[thread_id] = _SignalStreak(
+                    _signal_id(
+                        event,
+                        SignalType.EDITS_WITHOUT_VALIDATION,
+                        "remaining-unvalidated-files",
+                    ),
+                    SignalType.EDITS_WITHOUT_VALIDATION,
+                    "files_without_validation",
+                    "unvalidated-files",
+                    event.identity,
+                    event.connection_epoch,
+                    event.occurred_at,
+                    event.occurred_at,
+                    len(remaining),
+                    evidence_event_ids,
+                    remaining,
+                )
+            else:
+                self._unvalidated_edits.pop(thread_id, None)
+                self._unvalidated_sources.pop(thread_id, None)
+            return finished
+        if event.kind not in {"file_edit", "diff_updated"}:
+            return ()
+        if event.kind == "file_edit" and outcome_failure(event.payload) is not False:
+            return ()
+        resources = tuple(f"file:{path}" for path in _normalized_paths(event.payload.get("files")))
+        if not resources:
+            return ()
+        known = set(streak.resources) if streak is not None else set()
+        new_resources = set(resources) - known
+        if not new_resources:
+            return ()
+        combined = (
+            tuple((*streak.resources, *sorted(new_resources)))[:_SCOPE_LIMIT]
+            if streak is not None
+            else tuple(sorted(new_resources))[:_SCOPE_LIMIT]
+        )
+        if streak is not None and combined == streak.resources:
+            return ()
+        sources = self._unvalidated_sources.setdefault(thread_id, {})
+        for resource in combined:
+            if resource in new_resources:
+                sources[resource] = event.event_id
+        if streak is None:
+            streak = _SignalStreak(
+                _signal_id(event, SignalType.EDITS_WITHOUT_VALIDATION, "unvalidated-files"),
+                SignalType.EDITS_WITHOUT_VALIDATION,
+                "files_without_validation",
+                "unvalidated-files",
+                event.identity,
+                event.connection_epoch,
+                event.occurred_at,
+                event.occurred_at,
+                len(combined),
+                (event.event_id,),
+                combined,
+            )
+        else:
+            streak = replace(
+                streak,
+                last_seen_at=event.occurred_at,
+                count=len(combined),
+                evidence_event_ids=(streak.evidence_event_ids + (event.event_id,))[
+                    -_EVIDENCE_LIMIT:
+                ],
+                resources=combined,
+            )
+        self._unvalidated_edits[thread_id] = streak
+        if streak.count < self.unvalidated_edit_threshold:
+            return ()
+        status = SignalStatus.COOLED_DOWN if streak.emitted else SignalStatus.ACTIVE
+        candidate = _candidate(streak, status, event.event_id, state_version)
+        if not streak.emitted:
+            self._unvalidated_edits[thread_id] = replace(streak, emitted=True)
+        return (candidate,)
 
     def _update_scope_growth(
         self, event: TraceEvent, state_version: int
@@ -572,6 +714,8 @@ class SignalEngine:
         self._blocked_actions.clear()
         self._declared_scopes.clear()
         self._scope_growths.clear()
+        self._unvalidated_edits.clear()
+        self._unvalidated_sources.clear()
         self._seen_event_ids.clear()
         versions: dict[ThreadId, int] = {}
         pending: dict[str, tuple[SignalCandidate, TraceEvent]] = {}
