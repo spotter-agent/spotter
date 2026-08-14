@@ -933,7 +933,9 @@ the resulting rate becomes evidence only after representative real prefixes are 
 `spotter fork-coverage --session <id>` derives a point-by-point coverage map without creating a
 fork. It verifies rollout correlation and current Git object availability, then classifies exact
 forks, missing state/context, external-effect contamination, and observation gaps. The report also
-names the earliest exact point and coverage before the first known mutation. Controlled fixture
+names the earliest exact point and coverage before the first known mutation. Each active signal
+trigger is linked to the first following proposal unless the signal resolves or becomes stale first;
+the report counts trigger follow-ups and the subset that are exactly forkable. Controlled fixture
 bootstrap is not inferred when no bootstrap contract exists.
 
 Do not treat experiment machinery as evidence of positive intervention advantage until enough mechanically scored runs exist.

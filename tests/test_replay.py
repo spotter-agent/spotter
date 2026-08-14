@@ -221,6 +221,83 @@ def test_branch_coverage_does_not_treat_legacy_effects_as_clean(
     assert report.points[1].status == BranchCoverageStatus.UNSAFE_EXTERNAL_EFFECT
 
 
+def test_branch_coverage_reports_signal_trigger_followups(repo: Path, codex_home: Path) -> None:
+    sha = snapshot_worktree(repo)
+    _journal(
+        OLD_ID,
+        [
+            (
+                TraceEvent(
+                    "tool_proposal",
+                    {
+                        "tool_use_id": "call_A",
+                        "cwd": str(repo),
+                        "reversibility_class": "A",
+                    },
+                ),
+                sha,
+            ),
+            (
+                TraceEvent(
+                    "signal_candidate",
+                    {
+                        "signal_id": "signal-1",
+                        "signal_type": "failure_streak",
+                        "status": "active",
+                        "source_event_id": "result-2",
+                    },
+                ),
+                None,
+            ),
+            (
+                TraceEvent(
+                    "tool_proposal",
+                    {
+                        "tool_use_id": "call_B",
+                        "cwd": str(repo),
+                        "reversibility_class": "A",
+                    },
+                ),
+                None,
+            ),
+            (
+                TraceEvent(
+                    "signal_candidate",
+                    {
+                        "signal_id": "signal-2",
+                        "signal_type": "failure_streak",
+                        "status": "active",
+                        "source_event_id": "result-4",
+                    },
+                ),
+                None,
+            ),
+            (
+                TraceEvent(
+                    "signal_candidate",
+                    {
+                        "signal_id": "signal-2",
+                        "signal_type": "failure_streak",
+                        "status": "resolved",
+                        "source_event_id": "result-5",
+                    },
+                ),
+                None,
+            ),
+        ],
+    )
+
+    report = branch_coverage(OLD_ID, codex_home)
+
+    assert (report.signal_triggers, report.signal_trigger_followups) == (2, 1)
+    assert report.signal_trigger_followups_forkable == 1
+    assert report.signal_trigger_points[0].proposal_step == 2
+    assert report.signal_trigger_points[0].status == BranchCoverageStatus.FORKABLE_EXACT
+    assert report.signal_trigger_points[1].proposal_step is None
+    rendered = json.loads(branch_coverage_to_json(report))
+    assert rendered["signal_trigger_points"][0]["status"] == "FORKABLE_EXACT"
+
+
 def test_fork_rollout_only_rewrites_session_metadata(codex_home: Path) -> None:
     rollout = next((codex_home / "sessions").rglob("*.jsonl"))
     lines = rollout.read_text().splitlines()

@@ -83,6 +83,16 @@ class BranchPointCoverage:
 
 
 @dataclass(frozen=True)
+class SignalBranchCoverage:
+    signal_id: str
+    signal_type: str
+    trigger_step: int
+    source_event_id: str | None
+    proposal_step: int | None
+    status: BranchCoverageStatus | None
+
+
+@dataclass(frozen=True)
 class BranchCoverageReport:
     session_id: str
     candidates: int
@@ -91,6 +101,10 @@ class BranchCoverageReport:
     pre_mutation_candidates: int
     pre_mutation_forkable: int
     points: tuple[BranchPointCoverage, ...]
+    signal_triggers: int
+    signal_trigger_followups: int
+    signal_trigger_followups_forkable: int
+    signal_trigger_points: tuple[SignalBranchCoverage, ...]
 
 
 @dataclass(frozen=True)
@@ -279,15 +293,66 @@ def branch_coverage(session_id: str, codex_home: Path | None = None) -> BranchCo
     }
     pre_mutation = [point for point in points if point.before_first_mutation]
     forkable = [point for point in points if point.status == BranchCoverageStatus.FORKABLE_EXACT]
+    signal_points = _signal_branch_coverage(records, points)
     return BranchCoverageReport(
-        session_id,
-        len(points),
-        counts,
-        forkable[0].step if forkable else None,
-        len(pre_mutation),
-        sum(point.status == BranchCoverageStatus.FORKABLE_EXACT for point in pre_mutation),
-        tuple(points),
+        session_id=session_id,
+        candidates=len(points),
+        counts=counts,
+        earliest_forkable_step=forkable[0].step if forkable else None,
+        pre_mutation_candidates=len(pre_mutation),
+        pre_mutation_forkable=sum(
+            point.status == BranchCoverageStatus.FORKABLE_EXACT for point in pre_mutation
+        ),
+        points=tuple(points),
+        signal_triggers=len(signal_points),
+        signal_trigger_followups=sum(point.proposal_step is not None for point in signal_points),
+        signal_trigger_followups_forkable=sum(
+            point.status == BranchCoverageStatus.FORKABLE_EXACT for point in signal_points
+        ),
+        signal_trigger_points=signal_points,
     )
+
+
+def _signal_branch_coverage(
+    records: list[StepRecord], points: list[BranchPointCoverage]
+) -> tuple[SignalBranchCoverage, ...]:
+    point_by_step = {point.step: point for point in points}
+    triggers: list[SignalBranchCoverage] = []
+    for record in records:
+        payload = record.event.payload
+        signal_id = payload.get("signal_id")
+        signal_type = payload.get("signal_type")
+        if (
+            record.event.kind != "signal_candidate"
+            or payload.get("status") != "active"
+            or not isinstance(signal_id, str)
+            or not isinstance(signal_type, str)
+        ):
+            continue
+        proposal: BranchPointCoverage | None = None
+        for later in records[record.step + 1 :]:
+            later_payload = later.event.payload
+            if (
+                later.event.kind == "signal_candidate"
+                and later_payload.get("signal_id") == signal_id
+                and later_payload.get("status") in {"resolved", "stale"}
+            ):
+                break
+            if later.event.kind == "tool_proposal":
+                proposal = point_by_step[later.step]
+                break
+        source_event_id = payload.get("source_event_id")
+        triggers.append(
+            SignalBranchCoverage(
+                signal_id,
+                signal_type,
+                record.step,
+                source_event_id if isinstance(source_event_id, str) else None,
+                proposal.step if proposal else None,
+                proposal.status if proposal else None,
+            )
+        )
+    return tuple(triggers)
 
 
 def branch_coverage_to_json(report: BranchCoverageReport) -> str:

@@ -268,6 +268,8 @@ run has established the rate yet. New Hook-observed sessions pin a baseline snap
 observation; historical sessions whose snapshot objects were pruned remain non-recoverable.
 The read-only `fork-coverage` report now quantifies that distinction per proposal, including earliest
 exact and pre-mutation coverage, without mistaking missing historical Git objects for valid anchors.
+It also maps active detector signals to their next proposal while they remain active, exposing both
+no-follow-up triggers and the exact-forkable share of observed trigger follow-ups.
 The first [historical coverage baseline](experiments/fork-coverage-baseline.md) found 0/1,246 clean
 exact proposals (including 0/120 pre-mutation), so neutral execution on that legacy sample is a
 documented no-go rather than a fabricated zero-noise result.
