@@ -1,0 +1,44 @@
+{
+  "measured_at": "2026-08-14",
+  "issue": 42,
+  "experiment_id": "231c5c8e-285d-4012-aa6f-d7115a9ce555",
+  "source_session": "019ffb34-3373-7901-a3d1-b175d5616ac5",
+  "branch_step": 8,
+  "prefix_id": "2cd0da0338ed463361a7ef7cc0b96d375b7a4b3ff3715bf3c0f530de15a6c3a9",
+  "mode": "neutral-noise",
+  "pairs": 1,
+  "declared_resources": [
+    ".fixture-config"
+  ],
+  "induced_fixture": true,
+  "arms": [
+    {
+      "arm": "neutral_a",
+      "classification": "INFRA_FAIL",
+      "environment_preflight": "SOURCE_ENVIRONMENT_MISMATCH:MISSING_IGNORED_FILE",
+      "agent_started": false
+    },
+    {
+      "arm": "neutral_b",
+      "classification": "INFRA_FAIL",
+      "environment_preflight": "SOURCE_ENVIRONMENT_MISMATCH:MISSING_IGNORED_FILE",
+      "agent_started": false
+    }
+  ],
+  "summary": {
+    "judgeable_pairs": 0,
+    "environment_mismatches": 1,
+    "infrastructure_failures": 2,
+    "agent_runs_started": 0
+  },
+  "fork_manifest_schema": 2,
+  "source_fixture_cleaned": true,
+  "raw_result_sha256": "0f1114884e5c53bcf07bcbe117dca7ba98e656bef86b0c568ca8198ce36eb083",
+  "decision": "declared ignored-file loss is blocked before agent execution",
+  "limitations": [
+    "the ignored-file drift was deliberately induced after the historical source run",
+    "no model continuation or outcome-noise observation occurred",
+    "undeclared ignored files and environment variables remain uncaptured",
+    "final-outcome-failure coverage remains insufficient"
+  ]
+}
