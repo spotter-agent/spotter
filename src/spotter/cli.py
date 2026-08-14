@@ -486,6 +486,8 @@ def _analyze_main(session: str | None) -> int:
     if not journals:
         print(f"no journals found under {sessions_dir}", file=sys.stderr)
         return 1
+    experiment_dir = spotter_home() / "experiments"
+    objective_paths = sorted(experiment_dir.rglob("*.jsonl")) if experiment_dir.exists() else []
     for journal in journals:
         try:
             records = StepJournal.load(journal)
@@ -503,6 +505,14 @@ def _analyze_main(session: str | None) -> int:
         )
         report = measure_runtime_costs([(records, journal.stat().st_size)])
         print(f"  {render_runtime_cost_summary(report)}")
+        try:
+            objective_report = measure_objective_outcomes(objective_paths, session_id=journal.stem)
+        except ObjectiveOutcomeError as error:
+            print(f"{journal.stem}: objective outcome join unavailable ({error})", file=sys.stderr)
+        else:
+            if objective_report.arms:
+                rendered = render_objective_outcomes(objective_report, session_id=journal.stem)
+                print("\n".join(f"  {line}" for line in rendered.splitlines()))
         for record in verdicts:
             payload = record.event.payload
             print(

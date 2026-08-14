@@ -369,11 +369,14 @@ aggregation on the synchronous path.
 `spotter metrics` projects these durable records into separate accounting domains: Main semantic
 actions (including command/file/tool family and classified-failure counts) and token observations,
 Spotter semantic reviewer calls/tokens, deterministic Hook/IPC
-latency, timing coverage, and journal storage. Hook and App Server action surfaces are reported
-separately during migration rather than summed. Token totals remain `cumulative/unknown-scope`, and
-the latest total per session is used so cumulative updates are not double-counted. Input, cached
-input, cache-write input, output, and reasoning-output fields each retain their own session coverage;
-missing token/timing/latency data is printed as unknown with an explicit denominator. Every new
+latency, timing coverage, and journal storage. Main actions use one semantic identity across Hook and
+App Server surfaces, so the same operation is counted once globally; per-surface raw observation
+counts remain visible, and the App Server outcome is authoritative for an overlap. Token totals
+remain `cumulative/unknown-scope`, and the latest total per session is used so cumulative updates are
+not double-counted. Input, cached input, cache-write input, output, and reasoning-output fields each
+retain their own session coverage. Reviewer token totals use the final cumulative spend observation
+per reviewer session and report both session and call denominators as exact, partial, or unavailable;
+missing token/timing/latency data is never presented as zero. Every new
 durable record carries receipt wall time plus a process-local monotonic timestamp and clock-domain
 ID. Signal, queue, and detection-to-decision latency is correlated through evidence, signal, and
 review-job IDs and is subtracted only within one monotonic domain; daemon restarts therefore reduce
@@ -390,10 +393,15 @@ failure records. Terminal outcomes distinguish an RPC rejection (`failed`), loss
 dispatch (`unknown`), and an epoch/turn freshness rejection (`stale`). For steering, the same ID is
 sent as App Server `clientUserMessageId`; the normalized `userMessage.clientId` becomes
 `client_user_message_id`. Only a matching ID on the same thread, turn, and connection epoch counts
-as an observed adoption. RPC acceptance alone does not. `spotter metrics` reports same-clock
+as an observed adoption, and that observation must be durably ordered after its dispatch. A control
+ID already present in durable runtime history is rejected before RPC; ambiguous legacy history with
+multiple dispatches for one ID is reported and excluded from adoption. RPC acceptance alone does
+not. `spotter metrics` reports same-clock
 dispatch and adoption latency, evidence-to-adoption latency, adoption lead/lag against the target
-turn boundary, and decision-to-stale-delivery latency with coverage denominators. Stable control
-IDs prevent replayed or duplicate observations from being counted twice. Until live reviewer
+turn boundary, and decision-to-stale-delivery latency with coverage denominators. Dispatch lifecycle
+records capture receipt timing inline but enter a bounded queue; journal locking, history recovery,
+and fsync run on a worker rather than the control RPC path. Queue overflow and writer failures are
+explicit runtime health counters, and graceful shutdown drains accepted records. Until live reviewer
 delivery is connected, these fields remain explicitly uncovered rather than implying a zero cost.
 
 Objective task outcomes remain outside ordinary user-session telemetry. For global reports,
@@ -407,7 +415,10 @@ the parsed token total and same-process monotonic agent duration for each execut
 persist raw agent stderr merely to recover the token count. Earlier v1/v2 rows remain readable.
 Unsupported newer result schemas fail visibly instead of being guessed; a torn final JSONL row is
 treated as an interrupted append. This projection does not label unscored user sessions as success
-or failure.
+or failure. `spotter analyze` additionally joins task-arm outcomes through
+`replay_source_session_id` and replay outcomes through the persisted arm session or fork manifest's
+`prefix.source_session_id`. It does not infer a join from file names or timestamps; missing or broken
+fork provenance is reported instead of guessed.
 
 ## 4.5 Turn completion
 

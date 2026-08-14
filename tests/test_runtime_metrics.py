@@ -102,6 +102,71 @@ def test_objective_outcomes_join_costs_by_durable_arm_identity(tmp_path: Path) -
     assert "disagreements=1" in rendered
 
 
+def test_objective_outcomes_filter_by_explicit_session_provenance(tmp_path: Path) -> None:
+    manifest = tmp_path / "fork.json"
+    manifest.write_text(
+        json.dumps({"prefix": {"source_session_id": "source-session"}}),
+        encoding="utf-8",
+    )
+    path = tmp_path / "results.jsonl"
+    _write_rows(
+        path,
+        {
+            "result_schema_version": 1,
+            "run_id": "run-1",
+            "experiment_pair_id": "run-1:task-1",
+            "arm": "control",
+            "classification": "PASS",
+            "replay_source_session_id": "task-arm-session",
+        },
+        {
+            "result_schema_version": 3,
+            "experiment_id": "experiment-1",
+            "pair": 0,
+            "arm": "guidance",
+            "classification": "TASK_FAIL",
+            "session_id": "fork-arm-session",
+            "fork_manifest": str(manifest),
+        },
+        {
+            "result_schema_version": 1,
+            "run_id": "run-2",
+            "experiment_pair_id": "run-2:task-2",
+            "arm": "control",
+            "classification": "PASS",
+        },
+    )
+
+    assert measure_objective_outcomes([path], session_id="task-arm-session").arms == 1
+    assert measure_objective_outcomes([path], session_id="fork-arm-session").arms == 1
+    source_report = measure_objective_outcomes([path], session_id="source-session")
+    assert source_report.arms == 1
+    assert source_report.failing_arms == 1
+    assert measure_objective_outcomes([path], session_id="unrelated").arms == 0
+    assert "durable provenance to session source-session" in render_objective_outcomes(
+        source_report, session_id="source-session"
+    )
+
+
+def test_objective_session_join_rejects_unreadable_fork_provenance(tmp_path: Path) -> None:
+    path = tmp_path / "results.jsonl"
+    _write_rows(
+        path,
+        {
+            "result_schema_version": 3,
+            "experiment_id": "experiment-1",
+            "pair": 0,
+            "arm": "guidance",
+            "classification": "PASS",
+            "session_id": "fork-arm-session",
+            "fork_manifest": str(tmp_path / "missing.json"),
+        },
+    )
+
+    with pytest.raises(ObjectiveOutcomeError, match="cannot read fork provenance"):
+        measure_objective_outcomes([path], session_id="source-session")
+
+
 def test_objective_outcomes_reject_unknown_persisted_schema(tmp_path: Path) -> None:
     path = tmp_path / "future.jsonl"
     _write_rows(

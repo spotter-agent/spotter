@@ -69,6 +69,7 @@ def test_analyze_reports_span_and_admits_when_it_cannot() -> None:
 
 def test_analyze_joins_coverage_aware_costs_with_review_results(
     capsys: pytest.CaptureFixture[str],
+    home: Path,
 ) -> None:
     from spotter.cli import _analyze_main
 
@@ -86,6 +87,22 @@ def test_analyze_joins_coverage_aware_costs_with_review_results(
             },
         )
     )
+    experiment_dir = home / "experiments"
+    experiment_dir.mkdir(parents=True)
+    (experiment_dir / "task-results.jsonl").write_text(
+        json.dumps(
+            {
+                "result_schema_version": 1,
+                "run_id": "run-1",
+                "experiment_pair_id": "run-1:task-1",
+                "arm": "guidance",
+                "classification": "PASS",
+                "replay_source_session_id": "s",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
     assert _analyze_main("s") == 0
 
@@ -95,6 +112,8 @@ def test_analyze_joins_coverage_aware_costs_with_review_results(
     assert "semantic reviewer_calls=1 reviewer_tokens=3" in output
     assert "deterministic gate_calls=0" in output
     assert "control accepted=0 adoption=0/0" in output
+    assert "Objective outcomes with durable provenance to session s" in output
+    assert "arms: pass=1" in output
     assert "reviewer         warn/loop" in output
 
 

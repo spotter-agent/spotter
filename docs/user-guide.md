@@ -271,9 +271,12 @@ spotter analyze
 Use `--session <id>` with `analyze`, `metrics`, or `observability` to limit output to one recorded
 session. `metrics` keeps Main, semantic-reviewer, deterministic-runtime, control-lifecycle, and
 experiment costs separate and prints explicit coverage for unavailable observations. `analyze`
-places a compact version of those costs beside each session's recorded interventions. Treat
-journals and diagnostics as potentially sensitive: they can contain repository
-paths, prompts, tool payloads, and other work context.
+places a compact version of those costs beside each session's recorded interventions and shows
+mechanical task/replay outcomes only when their durable arm or fork-prefix provenance names that
+session. It never guesses an outcome link from a file name or timestamp. Reviewer token output
+includes session and call coverage and says `partial` or `unavailable` when totals are incomplete.
+Treat journals and diagnostics as potentially sensitive: they can contain repository paths,
+prompts, tool payloads, and other work context.
 
 ### Storage maintenance
 

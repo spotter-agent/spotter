@@ -1025,8 +1025,10 @@ def render_runtime_cost_summary(report: RuntimeCostReport) -> str:
     )
 
 
-def measure_objective_outcomes(paths: Iterable[Path]) -> ObjectiveOutcomeReport:
-    """Join durable mechanical outcomes with costs carried by the same arm row."""
+def measure_objective_outcomes(
+    paths: Iterable[Path], *, session_id: str | None = None
+) -> ObjectiveOutcomeReport:
+    """Join durable mechanical outcomes and optionally select exact session provenance."""
 
     artifacts = 0
     arms: dict[str, _ObjectiveArm] = {}
@@ -1035,6 +1037,8 @@ def measure_objective_outcomes(paths: Iterable[Path]) -> ObjectiveOutcomeReport:
         for row in _result_rows(path):
             arm = _objective_arm(row, path)
             if arm is None:
+                continue
+            if session_id is not None and not _objective_row_matches_session(row, path, session_id):
                 continue
             found = True
             previous = arms.get(arm.key)
@@ -1098,8 +1102,14 @@ def measure_objective_outcomes(paths: Iterable[Path]) -> ObjectiveOutcomeReport:
     )
 
 
-def render_objective_outcomes(report: ObjectiveOutcomeReport) -> str:
-    lines = ["Objective experiment/scorer outcomes (separate from user sessions):"]
+def render_objective_outcomes(
+    report: ObjectiveOutcomeReport, *, session_id: str | None = None
+) -> str:
+    if session_id is None:
+        heading = "Objective experiment/scorer outcomes (separate from user sessions):"
+    else:
+        heading = f"Objective outcomes with durable provenance to session {session_id}:"
+    lines = [heading]
     if not report.arms:
         lines.append("  no versioned objective result rows found")
         return "\n".join(lines)
@@ -1223,6 +1233,42 @@ def _objective_arm(row: Mapping[str, object], path: Path) -> _ObjectiveArm | Non
         _agent_reported_tokens(row),
         _agent_elapsed(row),
     )
+
+
+def _objective_row_matches_session(row: Mapping[str, object], path: Path, session_id: str) -> bool:
+    """Match only explicit arm or fork-prefix session provenance.
+
+    Task batches persist the Codex session captured from each arm. Replay
+    experiments persist both the forked arm session and a manifest pointing
+    back to the source prefix. File names and timestamps are intentionally not
+    used as fallback identity.
+    """
+
+    if any(row.get(field) == session_id for field in ("replay_source_session_id", "session_id")):
+        return True
+    manifest_value = row.get("fork_manifest")
+    if not isinstance(manifest_value, str) or not manifest_value:
+        return False
+    manifest_path = Path(manifest_value)
+    if not manifest_path.is_absolute():
+        manifest_path = path.parent / manifest_path
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ObjectiveOutcomeError(
+            f"{path}: cannot read fork provenance {manifest_path}: {error}"
+        ) from error
+    if not isinstance(manifest, Mapping):
+        raise ObjectiveOutcomeError(f"{path}: fork provenance {manifest_path} is not an object")
+    prefix = manifest.get("prefix")
+    if not isinstance(prefix, Mapping):
+        raise ObjectiveOutcomeError(f"{path}: fork provenance {manifest_path} has no prefix")
+    manifest_session_id = prefix.get("source_session_id")
+    if not isinstance(manifest_session_id, str) or not manifest_session_id:
+        raise ObjectiveOutcomeError(
+            f"{path}: fork provenance {manifest_path} has no source session identity"
+        )
+    return manifest_session_id == session_id
 
 
 def _agent_reported_tokens(row: Mapping[str, object]) -> int | None:
