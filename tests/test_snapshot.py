@@ -110,6 +110,24 @@ def test_journal_stamps_monotonic_receipt_clock_domain(tmp_path: Path) -> None:
     assert loaded[0].event.monotonic_clock_id == first.event.monotonic_clock_id
 
 
+def test_journal_preserves_preobserved_timing_for_async_writes(tmp_path: Path) -> None:
+    path = tmp_path / "journal.jsonl"
+    event = TraceEvent(
+        "control_dispatch_started",
+        observed_monotonic_ns=123,
+        monotonic_clock_id="runtime-1",
+    )
+
+    record = StepJournal(path).record(event, observed_at=456.0)
+    loaded = StepJournal.load(path)[0]
+
+    assert record.at == loaded.at == 456.0
+    assert record.event.observed_monotonic_ns == 123
+    assert loaded.event.observed_monotonic_ns == 123
+    assert record.event.monotonic_clock_id == "runtime-1"
+    assert loaded.event.monotonic_clock_id == "runtime-1"
+
+
 def test_proposal_number_does_not_mutate_input_event(tmp_path: Path) -> None:
     journal = StepJournal(tmp_path / "journal.jsonl")
     event = TraceEvent("tool_proposal", {"tool": "Bash"})

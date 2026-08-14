@@ -27,7 +27,7 @@ from spotter.ingestion import AppServerTraceIngestor, IngestionError
 from spotter.observability import state_coverage_status
 from spotter.review_scheduler import ReviewerJob, ReviewScheduler
 from spotter.signals import SignalEngine, deterministic_block_equivalence
-from spotter.snapshot import StepRecord
+from spotter.snapshot import StepRecord, capture_receipt_timing
 from spotter.thread_state import ThreadState, ThreadStateError, ThreadStateStore
 from spotter.trace import TraceEvent, TraceProvenance
 
@@ -58,12 +58,21 @@ class RecoveryMetrics:
     reconnect_failures: int = 0
     observation_gaps: int = 0
     last_recovery_seconds: float | None = None
+    control_telemetry_dropped: int = 0
+    control_telemetry_errors: int = 0
+    control_telemetry_backlog_peak: int = 0
 
 
 @dataclass(frozen=True)
 class RuntimeControlTarget:
     identity: RuntimeIdentity
     connection_epoch: int
+
+
+@dataclass(frozen=True)
+class _QueuedControlEvent:
+    event: TraceEvent
+    observed_at: float
 
 
 class StaleControlTarget(AppServerError):
@@ -91,11 +100,14 @@ class AppServerRecoveryLoop:
         on_review_job: ReviewJobCallback | None = None,
         initial_backoff: float = 0.1,
         maximum_backoff: float = 30,
+        control_telemetry_queue_size: int = 256,
     ) -> None:
         if not endpoint.strip():
             raise ValueError("App Server endpoint must be non-empty")
         if initial_backoff < 0 or maximum_backoff < initial_backoff:
             raise ValueError("invalid reconnect backoff")
+        if control_telemetry_queue_size <= 0:
+            raise ValueError("control telemetry queue size must be positive")
         self.endpoint = endpoint
         self.thread_states = thread_states
         self.ingestor = AppServerTraceIngestor(journals_dir)
@@ -110,6 +122,7 @@ class AppServerRecoveryLoop:
         self.connection: ConnectionIdentity | None = None
         self.metrics = RecoveryMetrics()
         self.last_error: str | None = None
+        self.last_control_telemetry_error: str | None = None
         self.transitions: tuple[RecoveryState, ...] = (self.state,)
         self._connection_epoch = self.ingestor.last_connection_epoch
         self._client: CodexAppServerClient | None = None
@@ -118,6 +131,10 @@ class AppServerRecoveryLoop:
         self._retry = asyncio.Event()
         self._attachments: dict[ThreadId, AttachmentId] = {}
         self._disconnected_at: float | None = None
+        self._control_telemetry_queue_size = control_telemetry_queue_size
+        self._control_telemetry_queue: asyncio.Queue[_QueuedControlEvent] | None = None
+        self._control_telemetry_writer: asyncio.Task[None] | None = None
+        self._control_telemetry_ids: set[str] = set()
 
         records = self.ingestor.records()
         if records:
@@ -145,7 +162,20 @@ class AppServerRecoveryLoop:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._task
             self._task = None
+        await self.flush_control_telemetry()
+        if self._control_telemetry_writer is not None:
+            self._control_telemetry_writer.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._control_telemetry_writer
+            self._control_telemetry_writer = None
+            self._control_telemetry_queue = None
         self._set_state(RecoveryState.DISCONNECTED)
+
+    async def flush_control_telemetry(self) -> None:
+        """Wait until control telemetry already accepted by the queue is durable."""
+
+        if self._control_telemetry_queue is not None:
+            await self._control_telemetry_queue.join()
 
     def retry_now(self) -> None:
         self._retry.set()
@@ -334,7 +364,7 @@ class AppServerRecoveryLoop:
         outcome: str | None = None,
         reason_code: str | None = None,
         error: BaseException | None = None,
-    ) -> StepRecord | None:
+    ) -> None:
         event_payload = dict(payload)
         if outcome is not None:
             event_payload["outcome"] = outcome
@@ -344,17 +374,76 @@ class AppServerRecoveryLoop:
             event_payload["error_type"] = type(error).__name__
         control_id = event_payload["control_id"]
         phase = outcome or kind.removeprefix("control_")
-        return self.ingestor.record(
-            TraceEvent(
-                kind,
-                event_payload,
-                event_id=f"spotter:control:{control_id}:{phase}",
-                occurred_at=time.time(),
-                identity=target.identity,
-                provenance=TraceProvenance("spotterd", "runtime_control"),
-                connection_epoch=target.connection_epoch,
+        observed_at, observed_monotonic_ns, monotonic_clock_id = capture_receipt_timing()
+        self._enqueue_control_event(
+            _QueuedControlEvent(
+                TraceEvent(
+                    kind,
+                    event_payload,
+                    event_id=f"spotter:control:{control_id}:{phase}",
+                    occurred_at=observed_at,
+                    identity=target.identity,
+                    provenance=TraceProvenance("spotterd", "runtime_control"),
+                    connection_epoch=target.connection_epoch,
+                    observed_monotonic_ns=observed_monotonic_ns,
+                    monotonic_clock_id=monotonic_clock_id,
+                ),
+                observed_at,
             )
         )
+
+    def _enqueue_control_event(self, queued: _QueuedControlEvent) -> None:
+        event_id = queued.event.event_id
+        if event_id is not None and event_id in self._control_telemetry_ids:
+            return
+        if self._control_telemetry_queue is None:
+            self._control_telemetry_queue = asyncio.Queue(
+                maxsize=self._control_telemetry_queue_size
+            )
+        if self._control_telemetry_writer is None or self._control_telemetry_writer.done():
+            self._control_telemetry_writer = asyncio.create_task(
+                self._write_control_telemetry(), name="spotter-control-telemetry"
+            )
+        try:
+            self._control_telemetry_queue.put_nowait(queued)
+        except asyncio.QueueFull:
+            self.metrics = replace(
+                self.metrics,
+                control_telemetry_dropped=self.metrics.control_telemetry_dropped + 1,
+            )
+            self.last_control_telemetry_error = "control telemetry queue is full"
+            return
+        if event_id is not None:
+            self._control_telemetry_ids.add(event_id)
+        self.metrics = replace(
+            self.metrics,
+            control_telemetry_backlog_peak=max(
+                self.metrics.control_telemetry_backlog_peak,
+                self._control_telemetry_queue.qsize(),
+            ),
+        )
+
+    async def _write_control_telemetry(self) -> None:
+        assert self._control_telemetry_queue is not None
+        queue = self._control_telemetry_queue
+        while True:
+            queued = await queue.get()
+            try:
+                record = await asyncio.to_thread(
+                    self.ingestor.append_operational,
+                    queued.event,
+                    observed_at=queued.observed_at,
+                )
+                self.ingestor.index_operational(record)
+                self.last_control_telemetry_error = None
+            except Exception as error:
+                self.metrics = replace(
+                    self.metrics,
+                    control_telemetry_errors=self.metrics.control_telemetry_errors + 1,
+                )
+                self.last_control_telemetry_error = str(error)
+            finally:
+                queue.task_done()
 
     async def _run(self) -> None:
         delay = self.initial_backoff

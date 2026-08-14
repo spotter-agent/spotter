@@ -35,6 +35,12 @@ from spotter.trace import TraceEvent, TraceProvenance
 _MONOTONIC_CLOCK_ID = uuid.uuid4().hex
 
 
+def capture_receipt_timing() -> tuple[float, int, str]:
+    """Capture wall and monotonic receipt time in this process clock domain."""
+
+    return time.time(), time.monotonic_ns(), _MONOTONIC_CLOCK_ID
+
+
 class SnapshotError(RuntimeError):
     """Raised when git snapshot/restore plumbing fails."""
 
@@ -183,7 +189,13 @@ class StepJournal:
     def __init__(self, path: Path) -> None:
         self.path = path
 
-    def record(self, event: TraceEvent, snapshot: str | None = None) -> StepRecord:
+    def record(
+        self,
+        event: TraceEvent,
+        snapshot: str | None = None,
+        *,
+        observed_at: float | None = None,
+    ) -> StepRecord:
         lock_path = self.path.with_suffix(self.path.suffix + ".lock")
         state_path = self.path.with_suffix(self.path.suffix + ".state")
         with lock_path.open("w") as lock:
@@ -216,7 +228,13 @@ class StepJournal:
                 if event.kind == "tool_proposal":
                     state["proposals"] = int(state["proposals"]) + 1
                     payload["proposal_number"] = state["proposals"]
-                recorded_at = time.time()
+                captured_at, captured_monotonic_ns, captured_clock_id = capture_receipt_timing()
+                recorded_at = observed_at if observed_at is not None else captured_at
+                observed_monotonic_ns = event.observed_monotonic_ns
+                monotonic_clock_id = event.monotonic_clock_id
+                if observed_monotonic_ns is None or monotonic_clock_id is None:
+                    observed_monotonic_ns = captured_monotonic_ns
+                    monotonic_clock_id = captured_clock_id
                 stored_event = TraceEvent(
                     event.kind,
                     payload,
@@ -228,8 +246,8 @@ class StepJournal:
                     provenance=event.provenance,
                     connection_epoch=event.connection_epoch,
                     arrival_seq=event.arrival_seq,
-                    observed_monotonic_ns=time.monotonic_ns(),
-                    monotonic_clock_id=_MONOTONIC_CLOCK_ID,
+                    observed_monotonic_ns=observed_monotonic_ns,
+                    monotonic_clock_id=monotonic_clock_id,
                 )
                 record = StepRecord(step, stored_event, snapshot, recorded_at, SCHEMA_VERSION)
                 line = json.dumps(
