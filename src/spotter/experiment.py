@@ -182,18 +182,27 @@ def _source_config_preflight(
 
 def _arm_environment_preflight(plan: ForkPlan) -> str:
     try:
-        current = fingerprint_environment(Path(plan.worktree))
-        if current.fingerprint_sha256 == plan.environment_fingerprint:
-            return "MATCHED"
         if not plan.manifest:
-            return "ENVIRONMENT_FINGERPRINT_MISMATCH"
+            current = fingerprint_environment(Path(plan.worktree))
+            return (
+                "MATCHED"
+                if current.fingerprint_sha256 == plan.environment_fingerprint
+                else "ENVIRONMENT_FINGERPRINT_MISMATCH"
+            )
         expected = load_fork_manifest(Path(plan.manifest)).environment
         if expected is None:
             return "ENVIRONMENT_FINGERPRINT_MISSING"
         resources = tuple(resource.path for resource in getattr(expected, "declared_resources", ()))
-        if resources:
-            current = fingerprint_environment(Path(plan.worktree), resources)
+        current = (
+            fingerprint_environment(Path(plan.worktree), resources)
+            if resources
+            else fingerprint_environment(Path(plan.worktree))
+        )
+        if current.fingerprint_sha256 == plan.environment_fingerprint:
+            return "MATCHED"
         comparison = compare_environments(expected, current)
+        if comparison.equivalent:
+            return "MATCHED"
         detail = ",".join(comparison.drift) or "UNKNOWN_ENVIRONMENT_DRIFT"
         return f"ENVIRONMENT_MISMATCH:{detail}"
     except (OSError, ReplayError, ValueError) as error:

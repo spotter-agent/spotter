@@ -291,6 +291,59 @@ def test_arm_rechecks_environment_immediately_before_agent_run(
     assert result[5] == "ENVIRONMENT_MISMATCH:TRACKED_STATE_MISMATCH"
 
 
+def test_unchanged_declared_resource_recheck_reaches_agent_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = ForkPlan(
+        "fork",
+        5,
+        "/wt",
+        "/rollout",
+        "codex ...",
+        manifest="/manifest.json",
+        prefix_id="prefix",
+        environment_fingerprint="expected",
+    )
+    expected = SimpleNamespace(
+        fingerprint_sha256="expected",
+        declared_resources=(SimpleNamespace(path=".fixture-config"),),
+    )
+    monkeypatch.setattr(
+        experiment,
+        "fingerprint_environment",
+        lambda path, resources: expected,
+    )
+    monkeypatch.setattr(
+        experiment,
+        "load_fork_manifest",
+        lambda path: SimpleNamespace(environment=expected),
+    )
+    ran: list[str] = []
+
+    def run_arm(*args: object, **kwargs: object) -> int:
+        ran.append("run")
+        return 0
+
+    monkeypatch.setattr(experiment, "_run_arm", run_arm)
+
+    result = experiment._execute_arm(
+        plan,
+        "Continue the task.",
+        "MATCHED",
+        check=None,
+        sandbox="workspace-write",
+        timeout=1,
+        model=None,
+        reasoning_effort=None,
+        codex_home=None,
+    )
+
+    assert ran == ["run"]
+    assert result[0] == 0
+    assert result[2] == ArmClassification.UNJUDGEABLE
+    assert result[5] is None
+
+
 def test_arm_environment_drift_is_persisted_and_summarized(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
