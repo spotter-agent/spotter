@@ -9,6 +9,8 @@ import pytest
 import spotter.cli as cli
 import spotter.task_corpus as task_corpus
 from spotter.cli import main
+from spotter.replay import fork
+from spotter.snapshot import StepJournal, snapshot_worktree
 from spotter.task_corpus import (
     PreflightClassification,
     TaskCorpusError,
@@ -19,6 +21,7 @@ from spotter.task_corpus import (
     summarize_task_batch,
     validate_task_set,
 )
+from spotter.trace import TraceEvent
 
 
 def _corpus(root: Path) -> Path:
@@ -269,6 +272,151 @@ def test_task_batch_runs_clean_control_and_guidance_arms(
     assert rows[-1]["complete"] is True
 
 
+def test_task_batch_captures_replay_source_sessions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _corpus(tmp_path / "corpus")
+    home = tmp_path / "home"
+    codex_home = tmp_path / "codex"
+    monkeypatch.setenv("SPOTTER_HOME", str(home))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setattr(task_corpus, "_codex_version", lambda: "codex-test")
+    sessions = iter(("source-control", "source-guidance"))
+
+    def solve(
+        workspace: Path,
+        prompt: str,
+        *,
+        model: str | None,
+        sandbox: str,
+        timeout: int,
+        capture_replay_source: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        assert capture_replay_source is True
+        assert (
+            subprocess.run(
+                ["git", "rev-parse", "--is-inside-work-tree"],
+                cwd=workspace,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+            == "true"
+        )
+        session = next(sessions)
+        journal = home / "sessions" / f"{session}.jsonl"
+        journal.parent.mkdir(parents=True, exist_ok=True)
+        snapshot = snapshot_worktree(workspace)
+        StepJournal(journal).record(TraceEvent("sessionstart"), snapshot=snapshot)
+        call_id = f"call-{session}"
+        StepJournal(journal).record(
+            TraceEvent(
+                "tool_proposal",
+                {"tool_use_id": call_id, "cwd": str(workspace)},
+            ),
+            snapshot=snapshot,
+        )
+        rollout = codex_home / "sessions" / f"rollout-{session}.jsonl"
+        rollout.parent.mkdir(parents=True, exist_ok=True)
+        rollout.write_text(
+            "\n".join(
+                (
+                    json.dumps(
+                        {
+                            "type": "session_meta",
+                            "payload": {"session_id": session, "id": session},
+                        }
+                    ),
+                    json.dumps({"type": "response_item", "payload": {"call_id": call_id}}),
+                )
+            )
+            + "\n"
+        )
+        (workspace / "parser.py").write_text("def parse(): return 1\n")
+        shutil.rmtree(workspace / "__pycache__", ignore_errors=True)
+        stdout = json.dumps({"type": "thread.started", "thread_id": session})
+        assert task_corpus._replay_source(stdout) == (session, None)
+        return subprocess.CompletedProcess([], 0, stdout, "")
+
+    monkeypatch.setattr(task_corpus, "_run_task_agent", solve)
+
+    output, results = run_task_batch(path, "Inspect first.", capture_replay_sources=True)
+
+    assert {result.replay_source_session_id for result in results} == {
+        "source-control",
+        "source-guidance",
+    }, [result.replay_source_error for result in results]
+    assert all(result.replay_source_requested for result in results)
+    assert all(result.replay_source_error is None for result in results)
+    assert all(result.workspace and Path(result.workspace).is_dir() for result in results)
+    assert all(
+        Path(result.workspace or "").parent.parent == home / "task-sources" for result in results
+    )
+    assert "replay sources: 2/2 captured" in summarize_task_batch(results)
+    for result in results:
+        plan = fork(str(result.replay_source_session_id), 1, codex_home=codex_home)
+        assert Path(plan.worktree, "parser.py").read_text() == "def parse(): return 0\n"
+    rows = [json.loads(line) for line in output.read_text().splitlines()]
+    assert rows[0]["capture_replay_sources"] is True
+    assert all(row["replay_source_session_id"] for row in rows if "task_id" in row)
+
+
+def test_task_agent_capture_mode_enables_json_hooks_without_supervision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[list[str], dict[str, str]]] = []
+
+    class Process:
+        pid = 1
+        returncode = 0
+        stdout = None
+        stderr = None
+
+        def communicate(self, timeout: int) -> tuple[str, str]:
+            return "", ""
+
+    def popen(args: list[str], **kwargs: object) -> Process:
+        env = kwargs["env"]
+        assert isinstance(env, dict)
+        calls.append((args, env))
+        return Process()
+
+    monkeypatch.setattr("spotter.task_corpus.subprocess.Popen", popen)
+    monkeypatch.setenv("SPOTTER_DISABLE", "inherited")
+    monkeypatch.setenv("SPOTTER_CAPTURE_ONLY", "stale")
+
+    task_corpus._run_task_agent(
+        tmp_path,
+        "task",
+        model=None,
+        sandbox="workspace-write",
+        timeout=30,
+        capture_replay_source=True,
+    )
+    task_corpus._run_task_agent(tmp_path, "task", model=None, sandbox="workspace-write", timeout=30)
+
+    capture_args, capture_env = calls[0]
+    assert "--json" in capture_args
+    assert capture_env["SPOTTER_CAPTURE_ONLY"] == "1"
+    assert "SPOTTER_DISABLE" not in capture_env
+    normal_args, normal_env = calls[1]
+    assert "--json" not in normal_args
+    assert normal_env["SPOTTER_DISABLE"] == "1"
+    assert "SPOTTER_CAPTURE_ONLY" not in normal_env
+
+
+def test_replay_source_reports_missing_journal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SPOTTER_HOME", str(tmp_path / "home"))
+    stdout = json.dumps({"type": "thread.started", "thread_id": "missing-source"})
+
+    session_id, error = task_corpus._replay_source(stdout)
+
+    assert session_id is None
+    assert error == "Spotter journal missing or unreadable for session missing-source"
+
+
 def test_task_batch_resumes_without_rerunning_completed_arms(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -357,6 +505,8 @@ def test_task_batch_refuses_resume_with_changed_conditions(
 
     with pytest.raises(TaskCorpusError, match="guidance does not match"):
         run_task_batch(path, "Changed guidance.", resume=output)
+    with pytest.raises(TaskCorpusError, match="capture_replay_sources does not match"):
+        run_task_batch(path, "Original guidance.", resume=output, capture_replay_sources=True)
 
 
 def test_task_batch_classifies_agent_timeout_without_running_checks(
@@ -415,7 +565,27 @@ def test_task_batch_cli_requires_paid_run_opt_in(
         main(["tasks", "run", str(path), "--guidance", "Verify first."])
 
     output = tmp_path / "batch.jsonl"
-    monkeypatch.setattr(cli, "run_task_batch", lambda *args, **kwargs: (output, ()))
+    captured: dict[str, object] = {}
 
-    assert main(["tasks", "run", str(path), "--guidance", "Verify first.", "--run"]) == 0
+    def run(*args: object, **kwargs: object) -> tuple[Path, tuple[()]]:
+        captured.update(kwargs)
+        return output, ()
+
+    monkeypatch.setattr(cli, "run_task_batch", run)
+
+    assert (
+        main(
+            [
+                "tasks",
+                "run",
+                str(path),
+                "--guidance",
+                "Verify first.",
+                "--capture-replay-sources",
+                "--run",
+            ]
+        )
+        == 0
+    )
+    assert captured["capture_replay_sources"] is True
     assert f"results written to {output}" in capsys.readouterr().out

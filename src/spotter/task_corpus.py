@@ -18,7 +18,9 @@ from pathlib import Path
 from typing import Any
 
 from spotter.experiment import CONTROL_PROMPT, ArmClassification
-from spotter.paths import spotter_home
+from spotter.paths import sanitize_session, secure_dir, spotter_home
+from spotter.replay import ReplayError, find_rollout
+from spotter.snapshot import SnapshotError, StepJournal
 
 TASK_SCHEMA_VERSION = 1
 TASK_SET_SCHEMA_VERSION = 1
@@ -108,6 +110,9 @@ class TaskArmResult:
     agent_stderr: str
     started_at: str
     ended_at: str
+    replay_source_requested: bool = False
+    replay_source_session_id: str | None = None
+    replay_source_error: str | None = None
     workspace: str | None = None
     result_schema_version: int = TASK_BATCH_SCHEMA_VERSION
 
@@ -198,6 +203,7 @@ def run_task_batch(
     model: str | None = None,
     sandbox: str = "workspace-write",
     keep_artifacts: bool = False,
+    capture_replay_sources: bool = False,
 ) -> tuple[Path, tuple[TaskArmResult, ...]]:
     """Run control/guidance arms from clean fixture copies, resuming completed rows."""
 
@@ -231,6 +237,7 @@ def run_task_batch(
             "platform": platform.platform(),
             "codex_version": _codex_version(),
             "codex_home": str(Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")).resolve()),
+            "capture_replay_sources": capture_replay_sources,
             "started_at": datetime.now(UTC).isoformat(),
         }
         _append_json(output, header)
@@ -246,6 +253,7 @@ def run_task_batch(
             guidance=guidance,
             model=model,
             sandbox=sandbox,
+            capture_replay_sources=capture_replay_sources,
             existing=existing,
         )
         run_id = str(header["run_id"])
@@ -273,6 +281,7 @@ def run_task_batch(
                 model=model,
                 sandbox=sandbox,
                 keep_artifacts=keep_artifacts,
+                capture_replay_source=capture_replay_sources,
             )
             _append_json(output, asdict(result))
             results.append(result)
@@ -328,6 +337,10 @@ def summarize_task_batch(results: tuple[TaskArmResult, ...]) -> str:
         f"pairs: n={complete}/{task_count} mechanically judgeable; "
         f"guidance better={guidance_better}, control better={control_better}, tied={tied}"
     )
+    requested = tuple(result for result in results if result.replay_source_requested)
+    if requested:
+        captured = sum(result.replay_source_session_id is not None for result in requested)
+        lines.append(f"replay sources: {captured}/{len(requested)} captured")
     return "\n".join(lines)
 
 
@@ -341,14 +354,21 @@ def _run_task_arm(
     model: str | None,
     sandbox: str,
     keep_artifacts: bool,
+    capture_replay_source: bool,
 ) -> TaskArmResult:
     started_at = datetime.now(UTC).isoformat()
-    scratch = Path(tempfile.mkdtemp(prefix="spotter-task-arm-"))
+    if capture_replay_source:
+        source_dir = secure_dir(spotter_home() / "task-sources")
+        scratch = Path(tempfile.mkdtemp(prefix=f"{run_id}-{arm}-", dir=source_dir))
+    else:
+        scratch = Path(tempfile.mkdtemp(prefix="spotter-task-arm-"))
     workspace = scratch / "workspace"
     checks: tuple[CommandResult, ...] = ()
     agent_exit: int | None = None
     agent_stdout = ""
     agent_stderr = ""
+    replay_source_session_id: str | None = None
+    replay_source_error: str | None = None
     try:
         try:
             shutil.copytree(task.source, workspace)
@@ -359,44 +379,65 @@ def _run_task_arm(
         if setup.timed_out or setup.returncode != 0:
             classification = ArmClassification.SETUP_FAIL
         else:
-            try:
-                completed = _run_task_agent(
-                    workspace,
-                    prompt,
-                    model=model,
-                    sandbox=sandbox,
-                    timeout=task.wall_time_s,
-                )
-                agent_exit = completed.returncode
-                agent_stdout = _bounded_output(completed.stdout)
-                agent_stderr = _bounded_output(completed.stderr)
-                if agent_exit != 0:
-                    classification = ArmClassification.INFRA_FAIL
-                else:
-                    checks = tuple(
-                        _run_command(f"check:{check.id}", check.command, workspace)
-                        for check in task.checks
-                    )
-                    required = tuple(
-                        result
-                        for check, result in zip(task.checks, checks, strict=True)
-                        if check.required
-                    )
-                    if any(result.timed_out for result in required):
-                        classification = ArmClassification.TIMEOUT_CHECK
-                    elif any(result.returncode is None for result in required):
-                        classification = ArmClassification.CHECK_ERROR
-                    elif all(result.returncode == 0 for result in required):
-                        classification = ArmClassification.PASS
+            if capture_replay_source:
+                replay_source_error = _prepare_replay_repo(workspace)
+            if replay_source_error is not None:
+                classification = ArmClassification.SETUP_FAIL
+            else:
+                try:
+                    if capture_replay_source:
+                        completed = _run_task_agent(
+                            workspace,
+                            prompt,
+                            model=model,
+                            sandbox=sandbox,
+                            timeout=task.wall_time_s,
+                            capture_replay_source=True,
+                        )
                     else:
-                        classification = ArmClassification.TASK_FAIL
-            except subprocess.TimeoutExpired as error:
-                classification = ArmClassification.TIMEOUT_AGENT
-                agent_stdout = _bounded_output(error.stdout)
-                agent_stderr = _bounded_output(error.stderr)
-            except OSError as error:
-                classification = ArmClassification.INFRA_FAIL
-                agent_stderr = _bounded_output(str(error))
+                        completed = _run_task_agent(
+                            workspace,
+                            prompt,
+                            model=model,
+                            sandbox=sandbox,
+                            timeout=task.wall_time_s,
+                        )
+                    agent_exit = completed.returncode
+                    agent_stdout = _bounded_output(completed.stdout)
+                    agent_stderr = _bounded_output(completed.stderr)
+                    if capture_replay_source:
+                        replay_source_session_id, replay_source_error = _replay_source(
+                            completed.stdout
+                        )
+                    if agent_exit != 0:
+                        classification = ArmClassification.INFRA_FAIL
+                    else:
+                        checks = tuple(
+                            _run_command(f"check:{check.id}", check.command, workspace)
+                            for check in task.checks
+                        )
+                        required = tuple(
+                            result
+                            for check, result in zip(task.checks, checks, strict=True)
+                            if check.required
+                        )
+                        if any(result.timed_out for result in required):
+                            classification = ArmClassification.TIMEOUT_CHECK
+                        elif any(result.returncode is None for result in required):
+                            classification = ArmClassification.CHECK_ERROR
+                        elif all(result.returncode == 0 for result in required):
+                            classification = ArmClassification.PASS
+                        else:
+                            classification = ArmClassification.TASK_FAIL
+                except subprocess.TimeoutExpired as error:
+                    classification = ArmClassification.TIMEOUT_AGENT
+                    agent_stdout = _bounded_output(error.stdout)
+                    agent_stderr = _bounded_output(error.stderr)
+                    if capture_replay_source:
+                        replay_source_session_id, replay_source_error = _replay_source(error.stdout)
+                except OSError as error:
+                    classification = ArmClassification.INFRA_FAIL
+                    agent_stderr = _bounded_output(str(error))
         return TaskArmResult(
             run_id=run_id,
             experiment_pair_id=f"{run_id}:{task.task_id}",
@@ -415,10 +456,13 @@ def _run_task_arm(
             agent_stderr=agent_stderr,
             started_at=started_at,
             ended_at=datetime.now(UTC).isoformat(),
-            workspace=str(workspace) if keep_artifacts else None,
+            replay_source_requested=capture_replay_source,
+            replay_source_session_id=replay_source_session_id,
+            replay_source_error=replay_source_error,
+            workspace=str(workspace) if keep_artifacts or capture_replay_source else None,
         )
     finally:
-        if not keep_artifacts:
+        if not keep_artifacts and not capture_replay_source:
             shutil.rmtree(scratch, ignore_errors=True)
 
 
@@ -429,18 +473,29 @@ def _run_task_agent(
     model: str | None,
     sandbox: str,
     timeout: int,
+    capture_replay_source: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     args = ["codex", "exec", "-C", str(workspace)]
     if model:
         args += ["--model", model]
-    args += ["--skip-git-repo-check", "--sandbox", sandbox, prompt]
+    args += ["--skip-git-repo-check", "--sandbox", sandbox]
+    if capture_replay_source:
+        args.append("--json")
+    args.append(prompt)
+    env = {**os.environ}
+    if capture_replay_source:
+        env.pop("SPOTTER_DISABLE", None)
+        env["SPOTTER_CAPTURE_ONLY"] = "1"
+    else:
+        env.pop("SPOTTER_CAPTURE_ONLY", None)
+        env["SPOTTER_DISABLE"] = "1"
     process = subprocess.Popen(
         args,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         start_new_session=True,
-        env={**os.environ, "SPOTTER_DISABLE": "1"},
+        env=env,
     )
     try:
         stdout, stderr = process.communicate(timeout=timeout)
@@ -466,6 +521,68 @@ def _run_task_agent(
             args, timeout, output=stdout, stderr=stderr
         ) from initial_timeout
     return subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
+
+
+def _prepare_replay_repo(workspace: Path) -> str | None:
+    commands = (
+        ("git", "init", "-q"),
+        ("git", "add", "-A"),
+        (
+            "git",
+            "-c",
+            "user.name=Spotter fixture",
+            "-c",
+            "user.email=fixture@spotter.invalid",
+            "commit",
+            "-qm",
+            "fixture baseline",
+        ),
+    )
+    for command in commands:
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=workspace,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            return f"replay-source Git setup failed: {error}"
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout).strip()
+            return f"replay-source Git setup failed: {detail[:300]}"
+    return None
+
+
+def _replay_source(stdout: str | bytes | None) -> tuple[str | None, str | None]:
+    if isinstance(stdout, bytes):
+        stdout = stdout.decode(errors="replace")
+    for line in (stdout or "").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict) or event.get("type") != "thread.started":
+            continue
+        session_id = event.get("thread_id")
+        if not isinstance(session_id, str) or not session_id:
+            break
+        journal = spotter_home() / "sessions" / f"{sanitize_session(session_id)}.jsonl"
+        try:
+            records = StepJournal.load(journal)
+        except (OSError, SnapshotError):
+            return None, f"Spotter journal missing or unreadable for session {session_id}"
+        if not any(record.snapshot for record in records):
+            return None, f"Spotter journal has no replay snapshot for session {session_id}"
+        try:
+            codex_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+            find_rollout(session_id, codex_home)
+        except ReplayError:
+            return None, f"Codex rollout missing for session {session_id}"
+        return session_id, None
+    return None, "Codex JSON stream did not report a thread.started session"
 
 
 def _append_json(path: Path, row: dict[str, Any]) -> None:
@@ -529,6 +646,17 @@ def _read_task_batch(path: Path) -> tuple[dict[str, Any], list[TaskArmResult], b
                     agent_stderr=str(row["agent_stderr"]),
                     started_at=str(row["started_at"]),
                     ended_at=str(row["ended_at"]),
+                    replay_source_requested=bool(row.get("replay_source_requested", False)),
+                    replay_source_session_id=(
+                        str(row["replay_source_session_id"])
+                        if row.get("replay_source_session_id") is not None
+                        else None
+                    ),
+                    replay_source_error=(
+                        str(row["replay_source_error"])
+                        if row.get("replay_source_error") is not None
+                        else None
+                    ),
                     workspace=row.get("workspace"),
                     result_schema_version=int(row["result_schema_version"]),
                 )
@@ -549,6 +677,7 @@ def _validate_resume(
     guidance: str,
     model: str | None,
     sandbox: str,
+    capture_replay_sources: bool,
     existing: list[TaskArmResult],
 ) -> None:
     expected = {
@@ -567,6 +696,8 @@ def _validate_resume(
     for key, value in expected.items():
         if header.get(key) != value:
             raise TaskCorpusError(f"cannot resume {path}: {key} does not match")
+    if bool(header.get("capture_replay_sources", False)) != capture_replay_sources:
+        raise TaskCorpusError(f"cannot resume {path}: capture_replay_sources does not match")
     try:
         uuid.UUID(str(header["run_id"]))
     except (KeyError, ValueError) as error:

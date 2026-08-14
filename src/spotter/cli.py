@@ -138,6 +138,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("subject", nargs="?", help="task-set manifest path")
     parser.add_argument("--resume", type=Path, help="tasks run: resume this task-batch JSONL")
+    parser.add_argument(
+        "--capture-replay-sources",
+        action="store_true",
+        help="tasks run: journal and snapshot each arm as a future fork source",
+    )
     parser.add_argument("--config", type=Path, help="path to Spotter TOML config")
     parser.add_argument(
         "--session", help="session id (fork; analyze/metrics/observability filter to it)"
@@ -283,6 +288,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     resume=args.resume,
                     model=args.model,
                     keep_artifacts=args.keep_artifacts,
+                    capture_replay_sources=args.capture_replay_sources,
                 )
             except TaskCorpusError as error:
                 print(f"task batch failed: {error}", file=sys.stderr)

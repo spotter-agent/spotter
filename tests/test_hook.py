@@ -102,6 +102,32 @@ def test_shadow_mode_allows_but_journals_the_block(spotter_home: Path, daemon: N
     assert sample["peak_rss_bytes"] >= 0
 
 
+def test_capture_only_mode_never_enforces_or_calls_the_daemon(
+    spotter_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def unexpected_gate(*args: object, **kwargs: object) -> object:
+        raise AssertionError("capture-only hooks must not call spotterd")
+
+    monkeypatch.setattr("spotter.hook.DaemonClient.gate", unexpected_gate)
+    monkeypatch.setenv("SPOTTER_CAPTURE_ONLY", "1")
+    payload = _payload("rm -rf /")
+    config = SpotterConfig(
+        MainAgentConfig("codex"),
+        ReviewerConfig(every_steps=1, on_signals=True),
+        observation_only=False,
+    )
+
+    assert run_hook(payload, config) is None
+
+    records = StepJournal.load(journal_path(payload))
+    assert [record.event.kind for record in records] == [
+        "tool_proposal",
+        "gate_shadow_block",
+        "gate_ipc",
+    ]
+    assert records[2].event.payload["status"] == "capture_only"
+
+
 def test_safe_command_allows_silently(daemon: None) -> None:
     assert run_hook(_payload("pytest tests/"), _config(observation_only=False)) is None
 

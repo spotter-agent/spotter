@@ -147,7 +147,7 @@ def _maybe_spawn_shadow_review(
     a silently vanishing reviewer is not "accumulating samples".
     """
     every = config.reviewer.every_steps
-    if not every or os.environ.get("SPOTTER_DISABLE"):
+    if not every or os.environ.get("SPOTTER_DISABLE") or os.environ.get("SPOTTER_CAPTURE_ONLY"):
         return
     if proposal_number == 0 or proposal_number % every:
         return
@@ -220,6 +220,12 @@ def run_hook(
 ) -> str | None:
     """Process one hook invocation. Returns stdout JSON, or None to allow."""
     hook_started = time.perf_counter_ns()
+    if os.environ.get("SPOTTER_CAPTURE_ONLY"):
+        config = replace(
+            config,
+            reviewer=replace(config.reviewer, on_signals=False, every_steps=0),
+            observation_only=True,
+        )
     cwd = payload.get("cwd")
     gate = Gate(
         forbidden_paths=config.gates.forbidden_paths,
@@ -294,6 +300,16 @@ def _gate_over_ipc(
     event: TraceEvent, config: SpotterConfig, root: str | None, fallback: Gate
 ) -> tuple[GateDecision, dict[str, Any]]:
     started = time.perf_counter_ns()
+    if os.environ.get("SPOTTER_CAPTURE_ONLY"):
+        decision = fallback.check(event)
+        return decision, {
+            "status": "capture_only",
+            "protocol": PROTOCOL_VERSION,
+            "ipc_ms": 0.0,
+            "daemon_evaluation_ms": None,
+            "tool_use_id": event.payload.get("tool_use_id"),
+            "tool": event.payload.get("tool"),
+        }
     status = "ok"
     evaluation_ms: float | None = None
     runtime_sample: dict[str, int | float | str] | None = None
