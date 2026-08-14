@@ -339,7 +339,8 @@ time, and total Hook time are recorded separately so latency percentiles can be 
 aggregation on the synchronous path.
 
 `spotter metrics` projects these durable records into separate accounting domains: Main semantic
-actions and token observations, Spotter semantic reviewer calls/tokens, deterministic Hook/IPC
+actions (including command/file/tool family and classified-failure counts) and token observations,
+Spotter semantic reviewer calls/tokens, deterministic Hook/IPC
 latency, timing coverage, and journal storage. Hook and App Server action surfaces are reported
 separately during migration rather than summed. Token totals remain `cumulative/unknown-scope`, and
 the latest total per session is used so cumulative updates are not double-counted. Input, cached

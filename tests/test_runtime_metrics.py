@@ -141,10 +141,13 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
     assert report.surfaces["hook"].action_observations == 2
     assert report.surfaces["hook"].classified_outcomes == 1
     assert report.surfaces["hook"].failed_outcomes == 1
+    assert report.surfaces["hook"].actions_by_family == {"tool": 1}
+    assert report.surfaces["hook"].failed_outcomes_by_family == {"tool": 1}
     assert report.surfaces["app_server"].actions == 1
     assert report.surfaces["app_server"].action_observations == 2
     assert report.surfaces["app_server"].outcomes == 1
     assert report.surfaces["app_server"].classified_outcomes == 1
+    assert report.surfaces["app_server"].actions_by_family == {"command": 1}
     assert report.completed_turns == report.token_turns == 1
     assert report.cumulative_main_tokens == 14
     assert report.main_token_breakdown.input.value == 10
@@ -172,6 +175,7 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
     assert (
         "app_server: actions=1 (from 2 observations), outcomes=1 (from 1 observation)" in rendered
     )
+    assert "command actions=1 failed=0/1 classified" in rendered
     assert "jobs=1/1/1 decided/started/queued" in rendered
     assert "Main tokens: 14 (1/2 sessions) cumulative/unknown-scope" in rendered
     assert "input=10 (1/2 sessions)" in rendered
@@ -246,6 +250,33 @@ def test_uncorrelated_action_observations_do_not_invent_semantic_identity() -> N
     assert hook.actions == hook.outcomes == hook.classified_outcomes == 0
     assert hook.action_observations == 2
     assert hook.outcome_observations == 1
+
+
+def test_semantic_action_families_reuse_correlated_action_identity() -> None:
+    records = [
+        _record(0, TraceEvent("command_started", operation_id="command-1")),
+        _record(
+            1,
+            TraceEvent(
+                "command_result",
+                {"status": "completed"},
+                operation_id="command-1",
+            ),
+        ),
+        _record(
+            2,
+            TraceEvent("file_edit", {"status": "failed"}, operation_id="edit-1"),
+        ),
+        _record(3, TraceEvent("tool_started", operation_id="mcp-1")),
+        _record(4, TraceEvent("tool_result", operation_id="mcp-1")),
+    ]
+
+    cost = measure_runtime_costs([(records, 10)]).surfaces["hook"]
+
+    assert cost.actions == 3
+    assert cost.actions_by_family == {"command": 1, "file_change": 1, "tool": 1}
+    assert cost.classified_outcomes_by_family == {"command": 1, "file_change": 1}
+    assert cost.failed_outcomes_by_family == {"file_change": 1}
 
 
 def test_turn_duration_never_crosses_connection_epochs() -> None:

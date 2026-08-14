@@ -1,8 +1,9 @@
 """Coverage-aware cost and timing projection from durable trajectory records."""
 
 import math
+from collections import Counter
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from statistics import mean
 
 from spotter.outcomes import outcome_failure
@@ -20,6 +21,9 @@ class SurfaceCost:
     outcome_observations: int = 0
     classified_outcomes: int = 0
     failed_outcomes: int = 0
+    actions_by_family: Mapping[str, int] = field(default_factory=dict)
+    classified_outcomes_by_family: Mapping[str, int] = field(default_factory=dict)
+    failed_outcomes_by_family: Mapping[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -98,6 +102,8 @@ def measure_runtime_costs(
         surface = _surface(records)
         actions: set[str] = set()
         outcomes: set[str] = set()
+        action_families: dict[str, str] = {}
+        outcome_families: dict[str, str] = {}
         action_observations = outcome_observations = 0
         classified: set[str] = set()
         failed: set[str] = set()
@@ -120,10 +126,12 @@ def measure_runtime_costs(
                 action_observations += 1
                 if key is not None:
                     actions.add(key)
+                    action_families.setdefault(key, _action_family(event.kind))
             if event.kind in _OUTCOME_KINDS:
                 outcome_observations += 1
                 if key is not None:
                     outcomes.add(key)
+                    outcome_families.setdefault(key, _action_family(event.kind))
                     failure = outcome_failure(event.payload)
                     if failure is not None:
                         classified.add(key)
@@ -178,6 +186,17 @@ def measure_runtime_costs(
             outcome_observations=current.outcome_observations + outcome_observations,
             classified_outcomes=current.classified_outcomes + len(classified),
             failed_outcomes=current.failed_outcomes + len(failed),
+            actions_by_family=_merge_counts(
+                current.actions_by_family, Counter(action_families.values())
+            ),
+            classified_outcomes_by_family=_merge_counts(
+                current.classified_outcomes_by_family,
+                Counter(outcome_families[key] for key in classified),
+            ),
+            failed_outcomes_by_family=_merge_counts(
+                current.failed_outcomes_by_family,
+                Counter(outcome_families[key] for key in failed),
+            ),
         )
         completed_turns += len(completed)
         token_turns += len(completed & token_covered)
@@ -247,6 +266,8 @@ def render_runtime_costs(report: RuntimeCostReport) -> str:
             f"(from {_observations(cost.outcome_observations)}), "
             f"failed={cost.failed_outcomes}/{cost.classified_outcomes} classified"
         )
+        if cost.actions_by_family:
+            lines.append(f"      families: {_render_families(cost)}")
     tokens = report.main_token_breakdown
     lines.append(
         f"  Main tokens: {_covered_tokens(tokens.total, report.sessions)} "
@@ -322,6 +343,27 @@ def _action_key(record: StepRecord) -> str | None:
     value = event.operation_id or event.payload.get("tool_use_id") or event.event_id
     turn = _turn_id(record) or "unknown-turn"
     return f"{turn}:{value}" if value is not None else None
+
+
+def _action_family(kind: str) -> str:
+    if kind in {"command_started", "command_result"}:
+        return "command"
+    if kind in {"file_change_started", "file_edit"}:
+        return "file_change"
+    return "tool"
+
+
+def _merge_counts(left: Mapping[str, int], right: Mapping[str, int]) -> dict[str, int]:
+    return dict(Counter(left) + Counter(right))
+
+
+def _render_families(cost: SurfaceCost) -> str:
+    return ", ".join(
+        f"{family} actions={actions} "
+        f"failed={cost.failed_outcomes_by_family.get(family, 0)}/"
+        f"{cost.classified_outcomes_by_family.get(family, 0)} classified"
+        for family, actions in sorted(cost.actions_by_family.items())
+    )
 
 
 def _turn_id(record: StepRecord) -> str | None:
