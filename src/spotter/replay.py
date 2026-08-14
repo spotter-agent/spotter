@@ -47,7 +47,7 @@ class ReplayError(RuntimeError):
     """Raised when a fork cannot be assembled from the recorded ingredients."""
 
 
-FORK_MANIFEST_SCHEMA_VERSION = 2
+FORK_MANIFEST_SCHEMA_VERSION = 3
 
 
 class ForkStatus(StrEnum):
@@ -97,6 +97,7 @@ class DeclaredResourceFingerprint:
     path: str
     state: str
     sha256: str | None
+    kind: str = "file"
 
 
 @dataclass(frozen=True)
@@ -289,9 +290,33 @@ def _environment_resource_paths(values: Sequence[str]) -> tuple[str, ...]:
     for value in values:
         path = Path(value)
         if not value or path.is_absolute() or path == Path(".") or ".." in path.parts:
-            raise ReplayError(f"environment resource must be a relative file: {value!r}")
+            raise ReplayError(f"environment resource must be a relative path: {value!r}")
         paths.add(path.as_posix())
     return tuple(sorted(paths))
+
+
+def _resource_digest(candidate: Path, value: str) -> tuple[str, str]:
+    if candidate.is_file():
+        return "file", _digest(candidate.read_bytes())
+    if not candidate.is_dir():
+        raise ReplayError(f"environment resource must be a regular file or directory: {value!r}")
+    entries: list[tuple[str, str, str | None]] = []
+    for child in sorted(
+        candidate.rglob("*"), key=lambda path: path.relative_to(candidate).as_posix()
+    ):
+        relative = child.relative_to(candidate).as_posix()
+        if child.is_symlink():
+            raise ReplayError(f"environment resource contains a symlink: {value!r}/{relative}")
+        if child.is_file():
+            entries.append(("file", relative, _digest(child.read_bytes())))
+        elif child.is_dir():
+            entries.append(("directory", relative, None))
+        else:
+            raise ReplayError(
+                f"environment resource contains an unsupported entry: {value!r}/{relative}"
+            )
+    material = json.dumps(entries, separators=(",", ":"), ensure_ascii=False).encode()
+    return "directory", _digest(material)
 
 
 def _fingerprint_resources(
@@ -305,15 +330,15 @@ def _fingerprint_resources(
         if not resolved.is_relative_to(root) or candidate.is_symlink():
             raise ReplayError(f"environment resource escapes the worktree: {value!r}")
         if not candidate.exists():
-            resources.append(DeclaredResourceFingerprint(value, "missing", None))
+            resources.append(DeclaredResourceFingerprint(value, "missing", None, "missing"))
             continue
-        if not candidate.is_file():
-            raise ReplayError(f"environment resource must be a regular file: {value!r}")
+        kind, sha256 = _resource_digest(candidate, value)
         resources.append(
             DeclaredResourceFingerprint(
                 value,
                 _git_path_state(worktree, value),
-                _digest(candidate.read_bytes()),
+                sha256,
+                kind,
             )
         )
     return tuple(resources)
@@ -355,7 +380,11 @@ def _declared_resource_drift(
         return (EnvironmentDrift.UNKNOWN_ENVIRONMENT_DRIFT,)
     drift: list[EnvironmentDrift] = []
     for source, restored in zip(left, right, strict=True):
-        if source.sha256 is not None and source.sha256 == restored.sha256:
+        if (
+            source.sha256 is not None
+            and source.kind == restored.kind
+            and source.sha256 == restored.sha256
+        ):
             continue
         if source.state == "ignored" and restored.state == "missing":
             category = EnvironmentDrift.MISSING_IGNORED_FILE
@@ -665,7 +694,7 @@ def load_fork_manifest(path: Path) -> ForkManifest:
     try:
         raw = json.loads(path.read_text())
         schema_version = raw.get("schema_version")
-        if schema_version not in {1, FORK_MANIFEST_SCHEMA_VERSION}:
+        if schema_version not in {1, 2, FORK_MANIFEST_SCHEMA_VERSION}:
             raise ReplayError(f"unsupported fork manifest schema in {path}")
         prefix_raw = raw["prefix"]
         prefix = PrefixManifest(

@@ -85,6 +85,11 @@ def _journal(session: str, records: list[tuple[TraceEvent, str | None]]) -> None
         journal.record(event, snapshot=snapshot)
 
 
+def _commit_baseline(repo: Path) -> None:
+    subprocess.run(["git", "add", "a.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "baseline"], cwd=repo, check=True)
+
+
 def test_fork_rollout_truncates_and_renames(codex_home: Path) -> None:
     rollout = next((codex_home / "sessions").rglob("*.jsonl"))
     forked = fork_rollout(rollout, "call_B", "new-id-1234")
@@ -600,11 +605,74 @@ def test_declared_ignored_resource_is_not_hidden_by_matching_forks(
 
 
 def test_declared_environment_resource_cannot_escape_worktree(repo: Path) -> None:
-    with pytest.raises(ReplayError, match="relative file"):
+    with pytest.raises(ReplayError, match="relative path"):
         fingerprint_environment(repo, ("../secret",))
 
 
-def test_fork_manifest_v1_remains_readable(repo: Path, codex_home: Path) -> None:
+def test_declared_directory_fingerprint_tracks_tree_contents(repo: Path) -> None:
+    _commit_baseline(repo)
+    fixtures = repo / "fixtures"
+    (fixtures / "nested").mkdir(parents=True)
+    (fixtures / "nested" / "config.json").write_text('{"version": 1}')
+
+    first = fingerprint_environment(repo, ("fixtures",)).declared_resources[0]
+    (fixtures / "nested" / "config.json").write_text('{"version": 2}')
+    second = fingerprint_environment(repo, ("fixtures",)).declared_resources[0]
+
+    assert first.kind == "directory"
+    assert first.state == "untracked"
+    assert first.sha256 != second.sha256
+
+
+def test_declared_directory_rejects_nested_symlink(repo: Path) -> None:
+    _commit_baseline(repo)
+    fixtures = repo / "fixtures"
+    fixtures.mkdir()
+    (fixtures / "link").symlink_to(repo / "a.txt")
+
+    with pytest.raises(ReplayError, match="contains a symlink"):
+        fingerprint_environment(repo, ("fixtures",))
+
+
+def test_declared_ignored_directory_loss_is_caught_before_fork_runs(
+    repo: Path, codex_home: Path
+) -> None:
+    _commit_baseline(repo)
+    (repo / ".gitignore").write_text(".fixture-cache/\n")
+    cache = repo / ".fixture-cache"
+    cache.mkdir()
+    (cache / "state.json").write_text('{"ready": true}')
+    sha = snapshot_worktree(repo)
+    _journal(
+        OLD_ID,
+        [
+            (
+                TraceEvent(
+                    "tool_proposal",
+                    {"tool_use_id": "call_A", "cwd": str(repo), "reversibility_class": "A"},
+                ),
+                sha,
+            )
+        ],
+    )
+
+    source = fingerprint_environment(repo, (".fixture-cache",)).declared_resources[0]
+    plan = fork(
+        OLD_ID,
+        0,
+        codex_home=codex_home,
+        environment_resources=(".fixture-cache",),
+    )
+    manifest = load_fork_manifest(Path(plan.manifest or ""))
+
+    assert source.kind == "directory"
+    assert source.state == "ignored"
+    assert plan.source_environment_preflight == ("SOURCE_ENVIRONMENT_MISMATCH:MISSING_IGNORED_FILE")
+    assert manifest.environment is not None
+    assert manifest.environment.declared_resources[0].kind == "missing"
+
+
+def test_fork_manifest_v1_and_v2_remain_readable(repo: Path, codex_home: Path) -> None:
     sha = snapshot_worktree(repo)
     _journal(
         OLD_ID,
@@ -622,9 +690,21 @@ def test_fork_manifest_v1_remains_readable(repo: Path, codex_home: Path) -> None
             )
         ],
     )
-    plan = fork(OLD_ID, 0, codex_home=codex_home)
+    plan = fork(OLD_ID, 0, codex_home=codex_home, environment_resources=("a.txt",))
     manifest_path = Path(plan.manifest or "")
     raw = json.loads(manifest_path.read_text())
+
+    raw["schema_version"] = 2
+    for resource in raw["environment"]["declared_resources"]:
+        resource.pop("kind")
+    manifest_path.write_text(json.dumps(raw))
+
+    manifest = load_fork_manifest(manifest_path)
+
+    assert manifest.schema_version == 2
+    assert manifest.environment is not None
+    assert manifest.environment.declared_resources[0].kind == "file"
+
     raw["schema_version"] = 1
     raw.pop("source_environment_preflight")
     raw["environment"].pop("declared_resources")

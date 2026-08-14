@@ -376,9 +376,10 @@ source event, snapshot, rollout-prefix digest, external-effect warnings, and cap
 fingerprint. Counterfactual pairs are fully prepared and must pass shared-prefix and captured-
 environment parity checks before either agent arm runs. The arms must use distinct worktrees, and
 each is rechecked against its immutable manifest immediately before model continuation. Explicitly
-declared relative non-secret files are hashed and checked from source to fork; missing ignored or
-untracked files block both arms. Undeclared ignored files and environment variables are explicitly
-marked as not captured rather than assumed equal. Prefixes preserve the rollout model,
+declared relative non-secret files and directories are hashed and checked from source to fork;
+missing ignored or untracked resources block both arms. Directory trees containing symbolic links
+are rejected. Undeclared ignored resources and environment variables are explicitly marked as not
+captured rather than assumed equal. Prefixes preserve the rollout model,
 runtime, and a secret-free subset of turn configuration; experiments can pin both the Codex model
 and reasoning effort and persist both values in result provenance. When those values are pinned and
 source provenance is available, a mismatch is rejected before either arm starts.

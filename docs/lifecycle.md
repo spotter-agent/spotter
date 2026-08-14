@@ -876,11 +876,12 @@ the source event and tool call, repository and snapshot identity, the exact roll
 model/runtime metadata available in the rollout, external-effect warnings, observation gaps, and a
 captured environment fingerprint. The fingerprint covers tracked/untracked Git status, submodule
 status, Git/Python versions, and platform identity. A fork or experiment may additionally declare
-relative non-secret files with `--environment-resource`; Spotter records only their paths, Git state,
-and content hashes, then classifies source-to-fork loss before either arm runs. Undeclared ignored
-files, environment variables, and agent configuration remain explicitly uncaptured limitations.
-Fork manifest schema v2 persists the declared-resource fingerprint and source preflight result;
-schema v1 manifests remain readable with no declared-resource coverage.
+relative non-secret files or directories with `--environment-resource`; Spotter records only their
+paths, resource types, Git state, and content/tree hashes, then classifies source-to-fork loss before
+either arm runs. Directory trees containing symbolic links are rejected instead of following them.
+Undeclared ignored resources, environment variables, and agent configuration remain explicitly
+uncaptured limitations. Fork manifest schema v3 persists the resource type; schema v1 and v2
+manifests remain readable, with v1 providing no declared-resource coverage.
 
 With snapshotting enabled, the Codex `SessionStart` Hook pins a baseline snapshot for the reported
 Git working directory. Read-only proposals before the first mutation can therefore reuse that one

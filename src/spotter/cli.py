@@ -193,7 +193,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         help=(
-            "fork/experiment: relative non-secret file that must survive source-to-fork restore "
+            "fork/experiment: relative non-secret file or directory that must survive restore "
             "(repeatable)"
         ),
     )
