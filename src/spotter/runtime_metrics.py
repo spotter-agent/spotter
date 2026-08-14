@@ -26,6 +26,10 @@ _ARM_CLASSIFICATIONS = {
     "UNJUDGEABLE",
 }
 _TOKENS_USED_RE = re.compile(r"tokens used\s*\n\s*([0-9][0-9,]*)", re.IGNORECASE)
+_REPETITION_FEATURES = {
+    "repeated_equivalent_tool_call": "consecutive_equivalent_calls",
+    "repeated_read_no_frontier": "reads_without_frontier_expansion",
+}
 
 
 @dataclass(frozen=True)
@@ -47,6 +51,13 @@ class SurfaceCost:
 class CoveredTokens:
     value: int | None
     covered_sessions: int
+
+
+@dataclass(frozen=True)
+class CoveredCount:
+    value: int | None
+    covered: int
+    eligible: int
 
 
 @dataclass(frozen=True)
@@ -72,6 +83,8 @@ class RuntimeCostReport:
     reviewer_calls: int
     reviewer_tokens: int | None
     signal_candidates_active: int
+    repeated_equivalent_actions: CoveredCount
+    reads_without_frontier_expansion: CoveredCount
     signal_detection_ms: tuple[float, ...]
     reviewer_jobs_queued: int
     reviewer_jobs_started: int
@@ -139,6 +152,8 @@ class _ObjectiveArm:
 @dataclass(frozen=True)
 class _ReviewLifecycle:
     active_signals: int
+    repeated_equivalent_actions: CoveredCount
+    reads_without_frontier_expansion: CoveredCount
     signal_detection_ms: tuple[float, ...]
     jobs_queued: int
     jobs_started: int
@@ -160,6 +175,8 @@ def measure_runtime_costs(
     sessions = events = completed_turns = token_turns = token_observations = 0
     reviewer_calls = reviewer_tokens = journal_bytes = gate_calls = 0
     signal_candidates_active = reviewer_jobs_queued = reviewer_jobs_started = 0
+    repeated_actions = [0, 0, 0]
+    no_frontier_reads = [0, 0, 0]
     reviewer_jobs_decided = reviewer_jobs_errored = reviewer_jobs_capped = 0
     reviewer_jobs_discarded = reviewer_jobs_stale = 0
     reviewer_inference_finishes = 0
@@ -272,6 +289,8 @@ def measure_runtime_costs(
                 _append_daemon_sample(daemon_samples, event.payload.get("runtime_sample"))
         lifecycle = _review_lifecycle(records)
         signal_candidates_active += lifecycle.active_signals
+        _add_covered_count(repeated_actions, lifecycle.repeated_equivalent_actions)
+        _add_covered_count(no_frontier_reads, lifecycle.reads_without_frontier_expansion)
         signal_detection_ms.extend(lifecycle.signal_detection_ms)
         reviewer_jobs_queued += lifecycle.jobs_queued
         reviewer_jobs_started += lifecycle.jobs_started
@@ -357,6 +376,8 @@ def measure_runtime_costs(
         reviewer_calls=reviewer_calls,
         reviewer_tokens=reviewer_tokens if reviewer_tokens_known else None,
         signal_candidates_active=signal_candidates_active,
+        repeated_equivalent_actions=_total_covered_count(repeated_actions),
+        reads_without_frontier_expansion=_total_covered_count(no_frontier_reads),
         signal_detection_ms=tuple(signal_detection_ms),
         reviewer_jobs_queued=reviewer_jobs_queued,
         reviewer_jobs_started=reviewer_jobs_started,
@@ -403,10 +424,25 @@ def _review_lifecycle(records: tuple[StepRecord, ...]) -> _ReviewLifecycle:
     capped: set[str] = set()
     discarded: set[str] = set()
     stale: set[str] = set()
+    signal_ids: dict[str, set[str]] = {signal_type: set() for signal_type in _REPETITION_FEATURES}
+    signal_features: dict[str, dict[str, int]] = {
+        signal_type: {} for signal_type in _REPETITION_FEATURES
+    }
 
     for record in records:
         event = record.event
         payload = event.payload
+        if event.kind in {"signal_candidate", "signal_candidate_suppressed"}:
+            signal_type = payload.get("signal_type")
+            signal_id = _payload_id(payload, "signal_id")
+            if isinstance(signal_type, str) and signal_type in signal_ids and signal_id is not None:
+                signal_ids[signal_type].add(signal_id)
+                feature_name = _REPETITION_FEATURES[signal_type]
+                features = payload.get("features")
+                count = features.get(feature_name) if isinstance(features, Mapping) else None
+                if isinstance(count, int) and not isinstance(count, bool) and count >= 0:
+                    previous = signal_features[signal_type].get(signal_id, 0)
+                    signal_features[signal_type][signal_id] = max(previous, count)
         if (
             event.kind == "signal_candidate"
             and payload.get("status") == "active"
@@ -479,6 +515,15 @@ def _review_lifecycle(records: tuple[StepRecord, ...]) -> _ReviewLifecycle:
     )
     return _ReviewLifecycle(
         active_signals=len(signals),
+        repeated_equivalent_actions=_covered_signal_count(
+            signal_ids["repeated_equivalent_tool_call"],
+            signal_features["repeated_equivalent_tool_call"],
+            first_is_not_repeated=True,
+        ),
+        reads_without_frontier_expansion=_covered_signal_count(
+            signal_ids["repeated_read_no_frontier"],
+            signal_features["repeated_read_no_frontier"],
+        ),
         signal_detection_ms=signal_detection_ms,
         jobs_queued=len(queued),
         jobs_started=len(started),
@@ -492,6 +537,31 @@ def _review_lifecycle(records: tuple[StepRecord, ...]) -> _ReviewLifecycle:
         inference_ms=tuple(inference_ms),
         end_to_end_ms=end_to_end_ms,
     )
+
+
+def _covered_signal_count(
+    signal_ids: set[str], counts: Mapping[str, int], *, first_is_not_repeated: bool = False
+) -> CoveredCount:
+    return CoveredCount(
+        (
+            sum(max(0, count - int(first_is_not_repeated)) for count in counts.values())
+            if counts
+            else None
+        ),
+        len(counts),
+        len(signal_ids),
+    )
+
+
+def _add_covered_count(total: list[int], value: CoveredCount) -> None:
+    if value.value is not None:
+        total[0] += value.value
+    total[1] += value.covered
+    total[2] += value.eligible
+
+
+def _total_covered_count(total: list[int]) -> CoveredCount:
+    return CoveredCount(total[0] if total[1] else None, total[1], total[2])
 
 
 def _payload_id(payload: Mapping[str, object], key: str) -> str | None:
@@ -564,6 +634,13 @@ def render_runtime_costs(report: RuntimeCostReport) -> str:
         f"decided={report.reviewer_jobs_decided} errors={report.reviewer_jobs_errored} "
         f"capped={report.reviewer_jobs_capped} discarded={report.reviewer_jobs_discarded} "
         f"stale={report.reviewer_jobs_stale}"
+    )
+    lines.append(
+        "  Detected repetition: "
+        f"equivalent_actions={_covered_count(report.repeated_equivalent_actions)}, "
+        "reads_without_frontier="
+        f"{_covered_count(report.reads_without_frontier_expansion)}; "
+        "source=durable #28 signal lifecycles"
     )
     lines.append(
         f"  Spotter deterministic: gate_calls={report.gate_calls}; "
@@ -931,3 +1008,8 @@ def _observations(count: int) -> str:
 def _covered_tokens(metric: CoveredTokens, eligible: int) -> str:
     value = str(metric.value) if metric.value is not None else "unknown"
     return f"{value} ({metric.covered_sessions}/{eligible} sessions)"
+
+
+def _covered_count(metric: CoveredCount) -> str:
+    value = str(metric.value) if metric.value is not None else "unknown"
+    return f"{value} ({metric.covered}/{metric.eligible} signal lifecycles)"

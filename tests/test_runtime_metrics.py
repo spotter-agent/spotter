@@ -5,6 +5,7 @@ import pytest
 
 from spotter.identity import IdentityProvenance, RuntimeIdentity, ThreadId, TurnId
 from spotter.runtime_metrics import (
+    CoveredCount,
     ObjectiveOutcomeError,
     measure_objective_outcomes,
     measure_runtime_costs,
@@ -434,6 +435,91 @@ def test_supervision_lifecycle_uses_correlated_monotonic_receipts() -> None:
     assert "monotonic_receipt=16/16 across 2 clock domains" in rendered
 
 
+def test_repeated_action_metrics_reuse_durable_signal_features() -> None:
+    records = [
+        _record(
+            0,
+            TraceEvent(
+                "signal_candidate",
+                {
+                    "signal_id": "repeat-1",
+                    "signal_type": "repeated_equivalent_tool_call",
+                    "status": "active",
+                    "features": {"consecutive_equivalent_calls": 3},
+                },
+            ),
+        ),
+        _record(
+            1,
+            TraceEvent(
+                "signal_candidate_suppressed",
+                {
+                    "signal_id": "repeat-1",
+                    "signal_type": "repeated_equivalent_tool_call",
+                    "status": "cooled_down",
+                    "features": {"consecutive_equivalent_calls": 5},
+                },
+            ),
+        ),
+        _record(
+            2,
+            TraceEvent(
+                "signal_candidate",
+                {
+                    "signal_id": "repeat-without-feature",
+                    "signal_type": "repeated_equivalent_tool_call",
+                    "status": "active",
+                    "features": {},
+                },
+            ),
+        ),
+        _record(
+            3,
+            TraceEvent(
+                "signal_candidate",
+                {
+                    "signal_id": "frontier-1",
+                    "signal_type": "repeated_read_no_frontier",
+                    "status": "active",
+                    "features": {"reads_without_frontier_expansion": 3},
+                },
+            ),
+        ),
+        _record(
+            4,
+            TraceEvent(
+                "signal_candidate_suppressed",
+                {
+                    "signal_id": "frontier-1",
+                    "signal_type": "repeated_read_no_frontier",
+                    "status": "cooled_down",
+                    "features": {"reads_without_frontier_expansion": 4},
+                },
+            ),
+        ),
+        _record(
+            5,
+            TraceEvent(
+                "signal_candidate",
+                {
+                    "signal_id": "failure-1",
+                    "signal_type": "failure_streak",
+                    "status": "active",
+                    "features": {"consecutive_failures": 2},
+                },
+            ),
+        ),
+    ]
+
+    report = measure_runtime_costs([(records, 10)])
+
+    assert report.repeated_equivalent_actions == CoveredCount(4, 1, 2)
+    assert report.reads_without_frontier_expansion == CoveredCount(4, 1, 1)
+    rendered = render_runtime_costs(report)
+    assert "equivalent_actions=4 (1/2 signal lifecycles)" in rendered
+    assert "reads_without_frontier=4 (1/1 signal lifecycles)" in rendered
+
+
 def test_unavailable_runtime_metrics_render_unknown_not_zero() -> None:
     report = measure_runtime_costs([([_record(0, TraceEvent("session_start"), at=None)], 10)])
 
@@ -443,6 +529,7 @@ def test_unavailable_runtime_metrics_render_unknown_not_zero() -> None:
     assert "hook=unknown (0/0)" in rendered
     assert "receipt_wall=0/1" in rendered
     assert "monotonic_receipt=0/1 across 0 clock domains" in rendered
+    assert "equivalent_actions=unknown (0/0 signal lifecycles)" in rendered
 
 
 def test_cumulative_token_updates_use_latest_and_report_field_coverage() -> None:
