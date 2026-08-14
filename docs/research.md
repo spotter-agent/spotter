@@ -290,6 +290,14 @@ branched after the source session made an incomplete patch that subsequently fai
 required recovery. Its three pairs again produced no disagreement, environment mismatch, or
 infrastructure failure. Because effort changes the continuation distribution, this 0/3 result is a
 separate low-effort cohort and is not pooled into the prior unpinned-effort 0/11 noise estimate.
+One later [edit-decision run](experiments/fork-neutral-edit-decision.md) extended the legacy
+unpinned stratum to 0/12 at a first-edit proposal, but its source and both arms still passed.
+The [final-outcome-failure run](experiments/fork-neutral-final-outcome-failure.md) then captured a
+pinned-low guidance arm that exited normally but failed its frozen scorer. All six neutral
+continuations also failed, with 0/3 disagreements, 0/3 environment mismatches, and 0/6
+infrastructure failures. Because the source guidance deliberately constrained the implementation,
+this proves final-failure capture and classification but does not qualify naturally occurring
+failure noise.
 
 The consolidated [fork fidelity qualification v1](experiments/fork-fidelity-v1.md) records a
 **NO-GO for representative causal use** by #34/#23. It publishes raw strata, coverage, instrument

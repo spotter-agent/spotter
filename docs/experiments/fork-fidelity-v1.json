@@ -11,11 +11,11 @@
     "pre_mutation_forkable": 0
   },
   "fresh_coverage": {
-    "sessions": 4,
-    "candidates": 25,
-    "forkable_exact": 15,
-    "pre_mutation_candidates": 10,
-    "pre_mutation_forkable": 8
+    "sessions": 5,
+    "candidates": 27,
+    "forkable_exact": 17,
+    "pre_mutation_candidates": 11,
+    "pre_mutation_forkable": 9
   },
   "strata": [
     {
@@ -43,6 +43,20 @@
       "infrastructure_failures": 0,
       "naive_pair_level_one_sided_95_percent_upper_bound": 0.6316,
       "inferential_use": "not valid outside the single repeated prefix"
+    },
+    {
+      "id": "pinned-low-effort-induced-final-failure",
+      "tasks": 1,
+      "prefixes": 1,
+      "pairs": 3,
+      "arms": 6,
+      "passing_arms": 0,
+      "failing_arms": 6,
+      "mechanical_disagreements": 0,
+      "environment_mismatches": 0,
+      "infrastructure_failures": 0,
+      "naive_pair_level_one_sided_95_percent_upper_bound": 0.6316,
+      "inferential_use": "not valid outside one deliberately induced failure prefix"
     }
   ],
   "instrument_controls": {
@@ -56,8 +70,8 @@
   "blocking_gaps": [
     "no neutral disagreement has been observed",
     "legacy effort provenance is unavailable for the 12-pair stratum",
-    "all neutral arms ended in mechanical success",
-    "fresh sample contains only four synthetic Python tasks",
+    "the only final-outcome-failure cohort is deliberately induced",
+    "fresh sample contains only five synthetic Python tasks",
     "undeclared ignored files and environment variables remain explicitly uncaptured"
   ],
   "downstream": {

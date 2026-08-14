@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "measured_at": "2026-08-14",
+  "experiment_id": "a57f8a00-1c53-4db0-8803-5713449d20cb",
+  "source_batch_id": "0395b855-f638-4f4b-98a6-87f42fb1357b",
+  "source_session": "019ffefd-c083-7ba0-8906-bb95c46a586c",
+  "branch_step": 2,
+  "prefix_id": "af47f3f8c19be5f4fcd59b2b2c8d7746d7373d040615cff941f6afb4d3d136fd",
+  "source_snapshot": "301002790e43733b46b1fcfa5a25ede5862fd682",
+  "environment_fingerprint": "3c10aa56be3f017e70b9f24a5c71dabd98454b3dd497959e59459214f5b88797",
+  "model": "gpt-5.6-sol",
+  "reasoning_effort": "low",
+  "scorer": "python3 check.py",
+  "source_batch_raw_sha256": "b58b04d00d30f6ec98b6b375ca3cafb6ceeacbe1409fb8a036a48081c3ad83df",
+  "raw_result_sha256": "4c8c1fc057ffdd4fd1781dabbf7420da3232325722736bec6c644c4526bba101",
+  "source_outcome": {
+    "task_id": "fixture/profile-contract-001",
+    "control": "PASS",
+    "guidance": "TASK_FAIL",
+    "failure_was_deliberately_induced": true
+  },
+  "coverage": {
+    "candidates": 2,
+    "forkable_exact": 2,
+    "pre_mutation_candidates": 1,
+    "pre_mutation_forkable": 1,
+    "earliest_forkable_step": 2
+  },
+  "outcomes": {
+    "pairs": 3,
+    "judgeable_pairs": 3,
+    "mechanical_disagreements": 0,
+    "environment_mismatches": 0,
+    "infrastructure_failures": 0,
+    "passing_arms": 0,
+    "failing_arms": 6
+  },
+  "continuations": [
+    {
+      "pair": 0,
+      "arm": "neutral_a",
+      "session_id": "1a9a628f-12de-4e10-833b-986768dba677",
+      "elapsed_seconds": 32.441,
+      "tool_calls": 5,
+      "reported_tokens": 129740
+    },
+    {
+      "pair": 0,
+      "arm": "neutral_b",
+      "session_id": "ec53e6c0-1f4f-4a8b-93e7-80e8f1e71497",
+      "elapsed_seconds": 23.526,
+      "tool_calls": 4,
+      "reported_tokens": 106892
+    },
+    {
+      "pair": 1,
+      "arm": "neutral_a",
+      "session_id": "f6be5b39-b150-482d-a586-fcbf7ade0cc0",
+      "elapsed_seconds": 22.881,
+      "tool_calls": 4,
+      "reported_tokens": 106497
+    },
+    {
+      "pair": 1,
+      "arm": "neutral_b",
+      "session_id": "37d53313-a749-428d-8b98-0936dbdd74c9",
+      "elapsed_seconds": 21.387,
+      "tool_calls": 3,
+      "reported_tokens": 85201
+    },
+    {
+      "pair": 2,
+      "arm": "neutral_a",
+      "session_id": "599afd64-360f-4fee-9581-a992223fa059",
+      "elapsed_seconds": 40.357,
+      "tool_calls": 5,
+      "reported_tokens": 128565
+    },
+    {
+      "pair": 2,
+      "arm": "neutral_b",
+      "session_id": "a798df47-ed0e-4a07-b7b8-469e1931e894",
+      "elapsed_seconds": 19.054,
+      "tool_calls": 3,
+      "reported_tokens": 105618
+    }
+  ]
+}
