@@ -1106,7 +1106,16 @@ commands by their strongest effect. Remote HTTP resources drop credentials, quer
 before persistence. Each result keeps classifier, semantic-operation, reason, resource, and
 confidence provenance. Unsupported subcommands, scripts, SQL, malformed shell, and over-deep
 wrappers remain explicitly unknown while mapping to conservative Class C behavior. Configured MCP
-semantics and effect reconciliation remain future #98 work.
+semantics are keyed by exact server/tool identity and cannot be promoted by model-authored
+descriptions.
+
+Hook Class C proposals remain proposal evidence rather than proof that the external world changed.
+An App Server item start with the same bounded classification creates an `attempted` effect
+observation; a terminal result enriches that logical effect through its native operation identity.
+Terminal outcomes remain `failed`, `partial`, `succeeded`, or `unknown` according to explicit
+protocol evidence, so process exit zero alone does not prove a remote mutation committed. Duplicate
+Hook/App Server observations merge without discarding conflicts, and later reversal, compensation,
+or reconciliation is appended as separate history instead of rewriting the original effect.
 
 ---
 

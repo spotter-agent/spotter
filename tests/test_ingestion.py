@@ -5,7 +5,7 @@ import pytest
 
 from spotter.app_server import AppServerEvent
 from spotter.config import McpToolSemantics
-from spotter.effects import effect_event
+from spotter.effects import effect_event, external_effects
 from spotter.hook import event_from_hook
 from spotter.ingestion import AppServerTraceIngestor, CodexTraceNormalizer, IngestionError
 from spotter.snapshot import StepJournal
@@ -151,6 +151,35 @@ def test_app_server_command_effects_share_native_correlation_with_hooks(tmp_path
     hook_effect = effect_event(hook_result)
     assert hook_effect is not None
     assert hook_effect.payload["effect_id"] == effects[0].payload["effect_id"]
+
+
+def test_app_server_started_effect_remains_attempted_until_completion(tmp_path: Path) -> None:
+    ingestor = AppServerTraceIngestor(tmp_path)
+    ingestor.ingest(_event("thread/started", {"thread": {"id": "thread-1", "createdAt": 100}}))
+    ingestor.ingest(_event("turn/started", {"threadId": "thread-1", "turn": _turn()}))
+    item = {
+        "id": "call-8",
+        "type": "commandExecution",
+        "command": "git push origin feature",
+        "cwd": "/repo",
+    }
+
+    ingestor.ingest(_item_event("item/started", {**item, "status": "in_progress"}))
+    attempted = external_effects(ingestor.records())
+    assert len(attempted) == 1
+    assert (attempted[0]["lifecycle"], attempted[0]["outcome_evidence"]) == (
+        "attempted",
+        "operation_started",
+    )
+
+    ingestor.ingest(_item_event("item/completed", {**item, "status": "completed", "exitCode": 0}))
+    completed = external_effects(ingestor.records())
+    assert len(completed) == 1
+    assert (
+        completed[0]["lifecycle"],
+        completed[0]["outcome"],
+        completed[0]["outcome_evidence"],
+    ) == ("completed", "unknown", "exit_zero_only")
 
 
 def test_app_server_mcp_calls_use_exact_configured_semantics() -> None:

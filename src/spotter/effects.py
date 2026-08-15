@@ -281,14 +281,15 @@ def _configured_mcp_resource(
 
 
 def effect_event(result: TraceEvent) -> TraceEvent | None:
-    """Turn a completed Class C call into a durable, compact ledger entry."""
+    """Turn an accepted or completed Class C call into a compact ledger observation."""
 
-    if (
-        result.kind not in {"tool_result", "command_result", "file_edit"}
-        or result.payload.get("reversibility_class") != "C"
-    ):
+    started = result.kind in {"tool_started", "command_started", "file_change_started"}
+    completed = result.kind in {"tool_result", "command_result", "file_edit"}
+    if (not started and not completed) or result.payload.get("reversibility_class") != "C":
         return None
-    outcome, evidence = _effect_outcome(result.payload)
+    outcome, evidence = (
+        ("unknown", "operation_started") if started else _effect_outcome(result.payload)
+    )
     effect_id, correlation_quality = _effect_identity(result)
     return TraceEvent(
         "external_effect",
@@ -301,6 +302,7 @@ def effect_event(result: TraceEvent) -> TraceEvent | None:
             "result": outcome,
             "outcome": outcome,
             "outcome_evidence": evidence,
+            "lifecycle": "attempted" if started else "completed",
             "reversible": False,
             "checkpoint": result.payload.get("checkpoint"),
             "turn_id": result.payload.get("turn_id"),
@@ -404,7 +406,9 @@ def _has_zero_exit_code(payload: Mapping[str, object], response: object) -> bool
     return any(value == 0 and not isinstance(value, bool) for value in values)
 
 
-def external_effects(records: list[Any], through_step: int | None = None) -> list[dict[str, Any]]:
+def external_effects(
+    records: Iterable[Any], through_step: int | None = None
+) -> list[dict[str, Any]]:
     """Enumerate effects a local restore cannot claim to have undone."""
 
     effects: list[dict[str, Any]] = []
@@ -577,7 +581,13 @@ def _apply_effect_resolution(
 
 
 def _merge_effect_observations(previous: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
-    merged = {**previous, **current}
+    previous_terminal = previous.get("outcome_evidence") != "operation_started"
+    current_terminal = current.get("outcome_evidence") != "operation_started"
+    merged = (
+        {**current, **previous}
+        if previous_terminal and not current_terminal
+        else {**previous, **current}
+    )
     merged["source_event_ids"] = list(
         dict.fromkeys(
             (
@@ -596,6 +606,11 @@ def _merge_effect_observations(previous: dict[str, Any], current: dict[str, Any]
         )
         if isinstance(value, str)
     }
+    if not previous_terminal:
+        outcomes.discard(previous.get("outcome"))
+    if not current_terminal:
+        outcomes.discard(current.get("outcome"))
+    merged["lifecycle"] = "completed" if previous_terminal or current_terminal else "attempted"
     if len(outcomes) > 1:
         merged["result"] = "unknown"
         merged["outcome"] = "unknown"

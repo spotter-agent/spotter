@@ -405,6 +405,7 @@ def test_class_c_result_becomes_effect_with_recovery_identity() -> None:
         "result": "unknown",
         "outcome": "unknown",
         "outcome_evidence": "exit_zero_only",
+        "lifecycle": "completed",
         "reversible": False,
         "checkpoint": "abc123",
         "turn_id": "turn-2",
@@ -484,6 +485,50 @@ def test_exact_effect_observations_correlate_without_hiding_conflicts() -> None:
     assert effects[0]["outcome"] == "unknown"
     assert effects[0]["outcome_evidence"] == "conflicting_observations"
     assert effects[0]["observed_outcomes"] == ["failed", "succeeded"]
+
+
+def test_started_effect_is_attempted_until_a_terminal_observation_arrives() -> None:
+    started = effect_event(
+        TraceEvent(
+            "command_started",
+            {
+                "reversibility_class": "C",
+                "effect_kind": "git_remote_write",
+                "resource": "origin",
+            },
+            operation_id="call-9",
+        )
+    )
+    completed = effect_event(
+        TraceEvent(
+            "command_result",
+            {
+                "reversibility_class": "C",
+                "effect_kind": "git_remote_write",
+                "resource": "origin",
+                "status": "succeeded",
+            },
+            operation_id="call-9",
+        )
+    )
+    assert started is not None and completed is not None
+    assert (started.payload["lifecycle"], started.payload["outcome_evidence"]) == (
+        "attempted",
+        "operation_started",
+    )
+
+    projected = external_effects([StepRecord(1, started, None), StepRecord(2, completed, None)])
+    assert len(projected) == 1
+    assert (
+        projected[0]["lifecycle"],
+        projected[0]["outcome"],
+        projected[0]["outcome_evidence"],
+        projected[0]["observation_count"],
+    ) == ("completed", "succeeded", "explicit_success", 2)
+
+    out_of_order = external_effects([StepRecord(1, completed, None), StepRecord(2, started, None)])
+    assert out_of_order[0]["lifecycle"] == "completed"
+    assert out_of_order[0]["outcome"] == "succeeded"
 
 
 def test_explicit_effect_resolution_is_append_only_and_keeps_effect_history() -> None:
