@@ -713,10 +713,12 @@ The journal exists for:
 It is **not** the live-state database.
 
 Human labels remain in a separate append-only versioned store so they never enter reviewer input or
-shift replay step identity. Label schema v2 records a stable rater identity while retaining v0/v1
-read compatibility. Precision metrics still use the latest judgment per target; agreement metrics
-independently use the latest judgment per rater and report exact agreement only for the explicitly
-double-labeled subset. Unattributed legacy and stale labels remain visible in coverage.
+shift replay step identity. Label schema v3 records a stable rater identity and distinct
+`miss|tn|unclear` judgments for correlation-proven unflagged tool proposals while retaining v0-v2
+read compatibility. Precision and miss metrics still use the latest judgment per target; agreement
+metrics independently use the latest judgment per rater and report exact agreement only for the
+explicitly double-labeled subset. Unattributed legacy, stale, and uncorrelatable proposal coverage
+remain visible.
 
 ## 8.3 Snapshot state
 

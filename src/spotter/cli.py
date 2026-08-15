@@ -48,6 +48,7 @@ from spotter.metrics import (
     merge,
     merge_agreement,
     tally_session,
+    tally_unflagged_proposals,
 )
 from spotter.observability import (
     SOURCE_AUDIT_RELATIVE_PATH,
@@ -235,7 +236,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--verdict",
-        help="label: tp|fp|unclear for a step, visible|invisible|unclear for a session",
+        help=(
+            "label: tp|fp|unclear for a flag, miss|tn|unclear for an unflagged proposal, "
+            "visible|invisible|unclear for a session"
+        ),
     )
     parser.add_argument("--note", default="", help="label: why (free text, stored verbatim)")
     parser.add_argument(
@@ -977,6 +981,8 @@ def _metrics_main(session: str | None) -> int:
     runtime_journals: list[tuple[list[StepRecord], int]] = []
     blind_spots: dict[str, int] = {}
     reviewer = ceiling = Tally()
+    gate_misses = Tally()
+    uncorrelatable_proposals = 0
     agreement = AgreementTally()
     for journal in journals:
         try:
@@ -987,6 +993,9 @@ def _metrics_main(session: str | None) -> int:
         runtime_journals.append((records, journal.stat().st_size))
         try:
             session_gates, session_reviewer, session_ceiling = tally_session(journal.stem, records)
+            session_misses, session_uncorrelatable = tally_unflagged_proposals(
+                journal.stem, records
+            )
             session_agreement = agreement_session(journal.stem, records)
         except LabelError as error:
             print(f"metrics aborted: {error}", file=sys.stderr)
@@ -999,6 +1008,8 @@ def _metrics_main(session: str | None) -> int:
                 blind_spots[rule] = blind_spots.get(rule, 0) + 1
         reviewer = merge(reviewer, session_reviewer)
         ceiling = merge(ceiling, session_ceiling)
+        gate_misses = merge(gate_misses, session_misses)
+        uncorrelatable_proposals += session_uncorrelatable
         agreement = merge_agreement(agreement, session_agreement)
 
     objective_report = None
@@ -1021,6 +1032,13 @@ def _metrics_main(session: str | None) -> int:
         rules = ", ".join(f"{rule}={count}" for rule, count in sorted(blind_spots.items()))
         print(
             f"  blind spots (not part of the rate): {sum(blind_spots.values())} fail-open ({rules})"
+        )
+    print("P3 gate misses (label unflagged tool proposals miss|tn):")
+    print("  " + gate_misses.rate_line("unflagged proposals", "miss-rate"))
+    if uncorrelatable_proposals:
+        print(
+            "  blind spots (not part of the rate): "
+            f"{uncorrelatable_proposals} proposals lack a correlation id"
         )
     print("P4 reviewer precision (label each verify/nudge tp|fp):")
     print("  " + reviewer.rate_line("interventions", "correct"))

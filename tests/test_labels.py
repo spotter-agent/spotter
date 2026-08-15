@@ -21,6 +21,7 @@ from spotter.metrics import (
     merge,
     merge_agreement,
     tally_session,
+    tally_unflagged_proposals,
 )
 from spotter.paths import sanitize_session
 from spotter.snapshot import StepJournal, StepRecord
@@ -119,16 +120,36 @@ def test_only_scored_records_accept_labels() -> None:
     records = _journal(
         "s1",
         [
-            TraceEvent("tool_proposal", {"command": "x"}),
+            TraceEvent("agent_message", {"message": "x"}),
             TraceEvent("gate_shadow_block", {"rule": "r"}),
             TraceEvent("reviewer_decision", {"decision": "continue"}),
         ],
     )
     with pytest.raises(LabelError, match="only .* are scored"):
-        add_label("s1", 0, "fp", "", records)  # tool_proposal is not scored
+        add_label("s1", 0, "fp", "", records)  # agent_message is not scored
     with pytest.raises(LabelError, match="silence is not scored"):
         add_label("s1", 2, "tp", "", records)  # CONTINUE is never counted
     add_label("s1", 1, "fp", "", records)  # the gate flag is fine
+
+
+def test_only_proven_unflagged_proposals_accept_miss_labels() -> None:
+    records = _journal(
+        "s1",
+        [
+            TraceEvent("tool_proposal", {"tool_use_id": "unflagged"}),
+            TraceEvent("tool_proposal", {"tool_use_id": "flagged"}),
+            TraceEvent("gate_shadow_block", {"tool_use_id": "flagged", "rule": "r"}),
+            TraceEvent("tool_proposal", {}),
+        ],
+    )
+
+    assert add_label("s1", 0, "miss", "", records).verdict == "miss"
+    with pytest.raises(LabelError, match="correlated gate flag"):
+        add_label("s1", 1, "miss", "", records)
+    with pytest.raises(LabelError, match="correlation id"):
+        add_label("s1", 3, "miss", "", records)
+    with pytest.raises(LabelError, match="verdict must be"):
+        add_label("s1", 0, "tp", "", records)
 
 
 def test_label_goes_stale_when_its_target_changes() -> None:
@@ -239,6 +260,27 @@ def test_rate_is_marked_provisional_until_coverage_is_complete() -> None:
     assert "provisional" not in complete and "false-positive 100%" in complete
 
 
+def test_gate_miss_rate_counts_only_correlated_unflagged_proposals() -> None:
+    events = [TraceEvent("tool_proposal", {"tool_use_id": f"open-{index}"}) for index in range(7)]
+    events.extend(
+        [
+            TraceEvent("tool_proposal", {"tool_use_id": "flagged"}),
+            TraceEvent("gate_shadow_block", {"tool_use_id": "flagged", "rule": "r"}),
+            TraceEvent("tool_proposal", {}),
+        ]
+    )
+    records = _journal("s1", events)
+    for step in range(5):
+        add_label("s1", step, "miss" if step < 2 else "tn", "", records)
+
+    tally, uncorrelatable = tally_unflagged_proposals("s1", records)
+
+    assert tally.total == 7 and tally.labeled == 5
+    assert tally.positive == 2 and tally.negative == 3
+    assert uncorrelatable == 1
+    assert "miss-rate 40% of 5 decided" in tally.rate_line("unflagged proposals", "miss-rate")
+
+
 def test_unclear_labels_count_as_coverage_but_not_as_a_verdict() -> None:
     tally = Tally().plus("unclear").plus("tp").plus(None)
     assert tally.total == 3 and tally.labeled == 2 and tally.unclear == 1
@@ -268,6 +310,7 @@ def test_cli_label_and_metrics_roundtrip(capsys: pytest.CaptureFixture[str]) -> 
     out = capsys.readouterr().out
     assert "step 1: fp by alice" in out
     assert "P3 gate false positives" in out
+    assert "P3 gate misses" in out
     assert "P4 reviewer precision" in out
     assert "P1 observability ceiling" in out
     assert "Runtime cost / efficiency (coverage-aware)" in out

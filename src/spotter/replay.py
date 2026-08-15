@@ -418,6 +418,8 @@ def _labeled_branch_coverage(
                     # Legacy gate events lacked the correlation id. Only adjacency
                     # is strong enough evidence to recover their branch point.
                     proposal = point_by_step[records[label.step - 1].step]
+            elif target_kind == "tool_proposal":
+                proposal = point_by_step.get(target.step)
             elif target_kind == "reviewer_decision":
                 proposal = next(
                     (

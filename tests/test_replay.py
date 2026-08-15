@@ -336,17 +336,18 @@ def test_branch_coverage_reports_labeled_intervention_opportunities(
     records = StepJournal.load(journal_path({"session_id": OLD_ID}))
     add_label(OLD_ID, 1, "tp", "gate opportunity", records)
     add_label(OLD_ID, 2, "tp", "reviewer opportunity", records)
+    add_label(OLD_ID, 3, "miss", "missed proposal opportunity", records)
     stale = add_label(OLD_ID, 4, "unclear", "no follow-up", records)
     with labels_path(OLD_ID).open("a", encoding="utf-8") as sink:
         sink.write(json.dumps(asdict(replace(stale, fingerprint="stale"))) + "\n")
 
     report = branch_coverage(OLD_ID, codex_home)
 
-    assert (report.labeled_opportunities, report.labeled_opportunities_current) == (3, 2)
-    assert report.labeled_opportunity_branch_points == 2
-    assert report.labeled_opportunity_branch_points_forkable == 2
-    assert [point.proposal_step for point in report.labeled_opportunity_points] == [0, 3, None]
-    assert report.labeled_opportunity_points[2].stale is True
+    assert (report.labeled_opportunities, report.labeled_opportunities_current) == (4, 3)
+    assert report.labeled_opportunity_branch_points == 3
+    assert report.labeled_opportunity_branch_points_forkable == 3
+    assert [point.proposal_step for point in report.labeled_opportunity_points] == [0, 3, 3, None]
+    assert report.labeled_opportunity_points[3].stale is True
     rendered = json.loads(branch_coverage_to_json(report))
     assert rendered["labeled_opportunity_points"][1]["status"] == "FORKABLE_EXACT"
 

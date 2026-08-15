@@ -8,7 +8,13 @@ and rates with fewer than MIN_SAMPLES labels are withheld entirely.
 
 from dataclasses import dataclass
 
-from spotter.labels import Label, load_label_history, load_labels, matches
+from spotter.labels import (
+    Label,
+    load_label_history,
+    load_labels,
+    matches,
+    unflagged_proposal_eligibility,
+)
 from spotter.snapshot import StepRecord
 
 MIN_SAMPLES = 5
@@ -30,8 +36,8 @@ class Tally:
         return Tally(
             labeled=self.labeled + counted,
             total=self.total + 1,
-            positive=self.positive + (counted and verdict in ("tp", "visible")),
-            negative=self.negative + (counted and verdict in ("fp", "invisible")),
+            positive=self.positive + (counted and verdict in ("tp", "visible", "miss")),
+            negative=self.negative + (counted and verdict in ("fp", "invisible", "tn")),
             unclear=self.unclear + (counted and verdict == "unclear"),
             not_applicable=self.not_applicable + (counted and verdict == "na"),
             stale=self.stale + stale,
@@ -150,6 +156,24 @@ def agreement_session(session: str, records: list[StepRecord]) -> AgreementTally
         unattributed_labels=unattributed,
         stale_labels=stale,
     )
+
+
+def tally_unflagged_proposals(session: str, records: list[StepRecord]) -> tuple[Tally, int]:
+    """Return labeled gate-silence coverage and uncorrelatable proposal count."""
+
+    labels = load_labels(session)
+    tally = Tally()
+    uncorrelatable = 0
+    for record in records:
+        if record.event.kind != "tool_proposal":
+            continue
+        eligibility = unflagged_proposal_eligibility(record, records)
+        if eligibility is None:
+            uncorrelatable += 1
+        elif eligibility:
+            verdict, stale = _verdict(labels, records, record.step)
+            tally = tally.plus(verdict, stale=stale)
+    return tally, uncorrelatable
 
 
 def merge(left: Tally, right: Tally) -> Tally:

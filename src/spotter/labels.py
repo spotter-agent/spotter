@@ -27,6 +27,7 @@ from spotter.paths import sanitize_session, spotter_home
 from spotter.snapshot import StepRecord
 
 STEP_VERDICTS = ("tp", "fp", "unclear")
+UNFLAGGED_VERDICTS = ("miss", "tn", "unclear")
 # "na" disposes of a session that had no failure to see — without it the
 # ceiling denominator can never reach full coverage, and a metric whose
 # coverage cannot be completed is a metric nobody will ever trust.
@@ -34,14 +35,14 @@ SESSION_VERDICTS = ("visible", "invisible", "unclear", "na")
 
 # Only records metrics actually scores may be labeled. Accepting a label on
 # anything else prints success and then silently discards the judgment.
-LABELABLE_KINDS = ("gate_shadow_block", "gate_block", "reviewer_decision")
+LABELABLE_KINDS = ("gate_shadow_block", "gate_block", "reviewer_decision", "tool_proposal")
 
 
 class LabelError(ValueError):
     """Raised when a label cannot be applied to the thing it names."""
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 LEGACY_VERSION = 0
 
 
@@ -93,10 +94,9 @@ def add_label(
     *,
     rater: str | None = None,
 ) -> Label:
-    allowed = SESSION_VERDICTS if step is None else STEP_VERDICTS
-    if verdict not in allowed:
-        raise LabelError(f"verdict must be one of {allowed} for this target")
+    allowed: tuple[str, ...]
     if step is None:
+        allowed = SESSION_VERDICTS
         mark = session_fingerprint(records)
     else:
         if not 0 <= step < len(records):
@@ -106,9 +106,25 @@ def add_label(
             raise LabelError(
                 f"step {step} is {target.event.kind}; only {LABELABLE_KINDS} are scored"
             )
-        if target.event.payload.get("decision") == "continue":
+        if target.event.kind == "tool_proposal":
+            eligibility = unflagged_proposal_eligibility(target, records)
+            if eligibility is None:
+                raise LabelError(
+                    f"step {step} proposal has no correlation id; unflagged status is unknown"
+                )
+            if not eligibility:
+                raise LabelError(f"step {step} proposal has a correlated gate flag")
+            allowed = UNFLAGGED_VERDICTS
+        else:
+            allowed = STEP_VERDICTS
+        if (
+            target.event.kind == "reviewer_decision"
+            and target.event.payload.get("decision") == "continue"
+        ):
             raise LabelError(f"step {step} is a CONTINUE verdict; silence is not scored")
         mark = fingerprint(target)
+    if verdict not in allowed:
+        raise LabelError(f"verdict must be one of {allowed} for this target")
     rater_id = getuser() if rater is None else rater.strip()
     if not rater_id or len(rater_id) > 200:
         raise LabelError("rater must be a non-empty identity of at most 200 characters")
@@ -125,6 +141,21 @@ def add_label(
     with labels_path(session).open("a", encoding="utf-8") as sink:
         sink.write(json.dumps(asdict(label), ensure_ascii=False) + "\n")
     return label
+
+
+def unflagged_proposal_eligibility(record: StepRecord, records: list[StepRecord]) -> bool | None:
+    """True only when correlation proves a proposal has no gate flag."""
+
+    if record.event.kind != "tool_proposal":
+        return None
+    tool_use_id = record.event.payload.get("tool_use_id")
+    if not isinstance(tool_use_id, str) or not tool_use_id:
+        return None
+    return not any(
+        candidate.event.kind in {"gate_shadow_block", "gate_block"}
+        and candidate.event.payload.get("tool_use_id") == tool_use_id
+        for candidate in records
+    )
 
 
 def load_labels(session: str) -> dict[int | None, Label]:
