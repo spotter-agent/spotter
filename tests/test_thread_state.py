@@ -183,6 +183,48 @@ def test_spotter_advisory_input_does_not_replace_the_user_goal() -> None:
     assert advised.supervision.interventions[-1].text == "Verify the retry assumption"
 
 
+def test_final_answer_settles_the_turn_until_the_next_turn_starts() -> None:
+    store = ThreadStateStore()
+    store.observe(_event("turn_started", event_id="turn-1-start"))
+    started = store.observe(
+        _event(
+            "agent_message",
+            {"text": "The fix is complete", "phase": "final_answer", "lifecycle": "started"},
+            event_id="final-answer-start",
+        )
+    )
+    assert started.execution.terminal_answer is None
+
+    settled = store.observe(
+        _event(
+            "agent_message",
+            {
+                "text": "The fix is complete",
+                "phase": "final_answer",
+                "lifecycle": "completed",
+            },
+            event_id="final-answer",
+        )
+    )
+
+    assert settled.execution.terminal_answer is not None
+    assert settled.execution.terminal_answer.text == "The fix is complete"
+    completed = store.observe(_event("turn_completed", event_id="turn-1-done"))
+    assert completed.execution.terminal_answer == settled.execution.terminal_answer
+    next_turn = store.observe(_event("turn_started", event_id="turn-2-start", turn="turn-2"))
+    assert next_turn.execution.terminal_answer is None
+    late_old_answer = store.observe(
+        _event(
+            "agent_message",
+            {"text": "Old", "phase": "final_answer", "lifecycle": "completed"},
+            event_id="late-old-answer",
+        )
+    )
+    assert late_old_answer.active_turn_id == TurnId("turn-2")
+    assert late_old_answer.execution.terminal_answer is not None
+    assert late_old_answer.execution.terminal_answer.provenance.turn_id == TurnId("turn-1")
+
+
 def test_snapshot_is_deeply_immutable_and_version_anchored() -> None:
     store = ThreadStateStore()
     snapshot = store.observe(_event("user_prompt", {"prompt": "Goal"}, event_id="goal"))

@@ -333,6 +333,10 @@ advisory inputs stay in supervision state rather than replacing the user goal. I
 ID appears outside its target turn or connection epoch, Spotter records an expired-advisory
 diagnostic for later safety evaluation.
 
+A completed assistant message explicitly marked `final_answer` closes Spotter's soft-intervention
+window even before `turn/completed`. Pending review results then become stale and a late steer is not
+sent. Commentary or messages without a phase do not trigger this conservative fence.
+
 ### Storage maintenance
 
 Snapshot pruning is dry-run by default. Run it from, or point it at, the relevant repository:

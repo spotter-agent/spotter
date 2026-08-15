@@ -164,8 +164,23 @@ def test_live_advisory_keeps_current_turn_scope(
     asyncio.run(scenario())
 
 
-def test_running_review_is_recorded_stale_after_target_turn_ends(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("terminal_kind", "terminal_payload", "stale_reason"),
+    [
+        ("turn_completed", {"status": "completed"}, "target_changed"),
+        (
+            "agent_message",
+            {"text": "Done", "phase": "final_answer", "lifecycle": "completed"},
+            "terminal_answer_settled",
+        ),
+    ],
+)
+def test_running_review_is_recorded_stale_after_target_settles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    terminal_kind: str,
+    terminal_payload: dict[str, object],
+    stale_reason: str,
 ) -> None:
     monkeypatch.setenv("SPOTTER_HOME", str(tmp_path / "home"))
 
@@ -194,12 +209,13 @@ def test_running_review_is_recorded_stale_after_target_turn_ends(
         _trigger(runtime)
         await entered.wait()
 
-        runtime._record(_event("turn-done", "turn_completed", {"status": "completed"}))
+        runtime._record(_event("turn-done", terminal_kind, terminal_payload))
         release.set()
         await executor.drain()
 
         records = [record.event for record in runtime.ingestor.records()]
-        assert any(event.kind == "review_job_stale" for event in records)
+        stale = next(event for event in records if event.kind == "review_job_stale")
+        assert stale.payload["reason"] == stale_reason
         decision = next(event for event in records if event.kind == "reviewer_decision")
         assert decision.payload["stale"] is True
         assert decision.payload["decision"] == "nudge"

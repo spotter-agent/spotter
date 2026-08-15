@@ -237,6 +237,69 @@ def test_restart_hydrates_without_control_until_live_reconciliation(tmp_path: Pa
     asyncio.run(scenario())
 
 
+def test_settled_final_answer_fences_steer_but_not_interrupt(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        async def handler(connection: ServerConnection) -> None:
+            await _initialize(connection)
+            listed = await _receive(connection, "thread/list")
+            await _reply(
+                connection,
+                listed,
+                {"data": [{"id": "thread-1"}], "nextCursor": None},
+            )
+            read = await _receive(connection, "thread/read")
+            await _reply(
+                connection,
+                read,
+                {
+                    "thread": {
+                        "id": "thread-1",
+                        "turns": [{"id": "turn-1", "status": "active"}],
+                    }
+                },
+            )
+            interrupt = await _receive(connection, "turn/interrupt")
+            await _reply(connection, interrupt, {})
+            await connection.wait_closed()
+
+        async with _server(handler) as endpoint:
+            recovery = AppServerRecoveryLoop(endpoint, tmp_path / "sessions", ThreadStateStore())
+            await recovery.start()
+            await _wait_until(lambda: recovery.state == RecoveryState.READY)
+            state = recovery.thread_states.snapshots()[0]
+            recovery._record(
+                TraceEvent(
+                    "agent_message",
+                    {
+                        "text": "The task is complete",
+                        "phase": "final_answer",
+                        "lifecycle": "completed",
+                    },
+                    event_id="final-answer",
+                    identity=state.identity,
+                    connection_epoch=state.connection_epoch,
+                )
+            )
+            target = RuntimeControlTarget(state.identity, state.connection_epoch or 0)
+
+            with pytest.raises(StaleControlTarget, match="settled terminal answer"):
+                await recovery.steer(target, "too late", control_id="late-steer")
+            assert await recovery.interrupt(target, control_id="late-interrupt") == {}
+            await recovery.flush_control_telemetry()
+
+            stale = next(
+                record.event
+                for record in recovery.ingestor.records()
+                if record.event.payload.get("control_id") == "late-steer"
+            )
+            assert stale.kind == "control_terminal"
+            assert stale.payload["outcome"] == "stale"
+            assert stale.payload["reason_code"] == "terminal_answer_settled"
+            await recovery.close()
+
+    asyncio.run(scenario())
+
+
 def test_control_rejection_and_unknown_acceptance_are_distinct(tmp_path: Path) -> None:
     async def scenario() -> None:
         async def handler(connection: ServerConnection) -> None:

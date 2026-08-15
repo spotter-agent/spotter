@@ -79,6 +79,10 @@ class _QueuedControlEvent:
 class StaleControlTarget(AppServerError):
     """A live control request no longer names the exact reconciled epoch and turn."""
 
+    def __init__(self, message: str, reason_code: str = "stale_target") -> None:
+        super().__init__(message)
+        self.reason_code = reason_code
+
 
 StateCallback = Callable[[RecoveryState, str | None], None]
 ClientFactory = Callable[[str], CodexAppServerClient]
@@ -270,9 +274,13 @@ class AppServerRecoveryLoop:
             state = self.thread_states.snapshot(job.thread_id)
         except ThreadStateError:
             return False
+        terminal_answer = state.execution.terminal_answer
         return (
             state.active_turn_id == job.target_turn_id
             and state.connection_epoch == job.target_connection_epoch
+            and (
+                terminal_answer is None or terminal_answer.provenance.turn_id != job.target_turn_id
+            )
         )
 
     async def steer(
@@ -334,14 +342,16 @@ class AppServerRecoveryLoop:
             raise ValueError("control_id must be unique across durable runtime history")
         self._control_request_ids.add(request_id)
         try:
-            client, thread_id, turn_id = self._validate_target(target)
+            client, thread_id, turn_id = self._validate_target(
+                target, reject_terminal_answer=control_kind == "steer"
+            )
         except StaleControlTarget as error:
             self._record_control_event(
                 "control_terminal",
                 target,
                 payload,
                 outcome="stale",
-                reason_code="stale_target",
+                reason_code=error.reason_code,
                 error=error,
             )
             raise
@@ -872,7 +882,10 @@ class AppServerRecoveryLoop:
         )
 
     def _validate_target(
-        self, target: RuntimeControlTarget
+        self,
+        target: RuntimeControlTarget,
+        *,
+        reject_terminal_answer: bool,
     ) -> tuple[CodexAppServerClient, str, str]:
         identity = target.identity
         client = self._client
@@ -895,6 +908,16 @@ class AppServerRecoveryLoop:
             or state.active_turn_id != identity.turn_id
         ):
             raise StaleControlTarget("control target no longer names the active reconciled turn")
+        terminal_answer = state.execution.terminal_answer
+        if (
+            reject_terminal_answer
+            and terminal_answer is not None
+            and terminal_answer.provenance.turn_id == identity.turn_id
+        ):
+            raise StaleControlTarget(
+                "control target already has a settled terminal answer",
+                "terminal_answer_settled",
+            )
         thread_id = identity.provenance.agent_thread_id
         turn_id = identity.provenance.agent_turn_id
         if thread_id is None or turn_id is None:

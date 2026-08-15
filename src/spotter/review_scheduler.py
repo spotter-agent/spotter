@@ -128,7 +128,13 @@ class ReviewScheduler:
         for job in tuple(self._jobs.values()):
             if job.thread_id != state_after.thread_id:
                 continue
-            if (
+            reason = None
+            if _terminal_answer_matches(state_after, job.target_turn_id) and (
+                state_before is None
+                or not _terminal_answer_matches(state_before, job.target_turn_id)
+            ):
+                reason = "terminal_answer_settled"
+            elif (
                 state_after.connection_epoch != job.target_connection_epoch
                 or state_after.active_turn_id != job.target_turn_id
                 or event.kind
@@ -141,7 +147,9 @@ class ReviewScheduler:
                     "turn_completed",
                 }
             ):
-                transitions.append(self._discard(job, event, "target_changed"))
+                reason = "target_changed"
+            if reason is not None:
+                transitions.append(self._discard(job, event, reason))
 
         if event.kind != "signal_candidate":
             return tuple(transitions)
@@ -182,6 +190,9 @@ class ReviewScheduler:
         trigger = active[-1]
         if source_snapshot.active_turn_id != job.target_turn_id:
             transitions.append(job.discarded_event(trigger, "target_not_active"))
+            return tuple(transitions)
+        if _terminal_answer_matches(state_after, job.target_turn_id):
+            transitions.append(job.discarded_event(trigger, "terminal_answer_settled"))
             return tuple(transitions)
         if (
             state_after.thread_id != job.thread_id
@@ -274,6 +285,11 @@ class ReviewScheduler:
         if job is not None:
             for signal_id in job.signal_ids:
                 self._job_by_signal.pop(signal_id, None)
+
+
+def _terminal_answer_matches(state: ThreadState, turn_id: TurnId) -> bool:
+    answer = state.execution.terminal_answer
+    return answer is not None and answer.provenance.turn_id == turn_id
 
 
 def _job(events: tuple[TraceEvent, ...], snapshot: ThreadState) -> ReviewerJob:

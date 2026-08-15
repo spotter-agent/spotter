@@ -124,6 +124,7 @@ class WorkspaceState:
 @dataclass(frozen=True)
 class ExecutionState:
     plan_summary: StateItem | None = None
+    terminal_answer: StateItem | None = None
     active_items: frozenset[str] = field(default_factory=frozenset)
     completed_turns: frozenset[TurnId] = field(default_factory=frozenset)
     recent_outcomes: tuple[StateItem, ...] = ()
@@ -219,7 +220,14 @@ class ThreadStateReducer:
                     state,
                     f"turn_started_while_active:{state.active_turn_id.value}:{turn_id.value}",
                 )
-            return replace(state, active_turn_id=turn_id)
+            terminal_answer = state.execution.terminal_answer
+            if terminal_answer is not None and terminal_answer.provenance.turn_id != turn_id:
+                terminal_answer = None
+            return replace(
+                state,
+                active_turn_id=turn_id,
+                execution=replace(state.execution, terminal_answer=terminal_answer),
+            )
         if event.kind == "turn_completed" and turn_id is not None:
             if state.active_turn_id != turn_id:
                 state = _inconsistent(state, f"turn_completed_without_start:{turn_id.value}")
@@ -335,6 +343,18 @@ class ThreadStateReducer:
             if text:
                 summary = StateItem(item_id, StateItemKind.SUMMARY, text, provenance)
                 return replace(state, execution=replace(state.execution, plan_summary=summary))
+        if (
+            event.kind == "agent_message"
+            and event.payload.get("phase") == "final_answer"
+            and event.payload.get("lifecycle") == "completed"
+        ):
+            text = _optional_text(event.payload.get("text"))
+            if text:
+                answer = StateItem(item_id, StateItemKind.SUMMARY, text, provenance)
+                return replace(
+                    state,
+                    execution=replace(state.execution, terminal_answer=answer),
+                )
         if event.kind == "verification_condition":
             condition_id = _optional_text(event.payload.get("condition_id"))
             kind = _optional_text(event.payload.get("kind"))

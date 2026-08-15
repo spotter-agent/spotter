@@ -404,8 +404,8 @@ reconciler annotates that input as `spotter_supervision`, journals a `control_ob
 outcome, and reduces the advisory into supervision state without replacing the authoritative user
 goal. A known intervention ID observed outside its target identity instead journals
 `control_observed_outside_target` with `expired_advisory_visible`; it is diagnostic evidence, not a
-new user goal. A control
-ID already present in durable runtime history is rejected before RPC; ambiguous legacy history with
+new user goal. A control ID already present in durable runtime history is rejected before RPC;
+ambiguous legacy history with
 multiple dispatches for one ID is reported and excluded from adoption. RPC acceptance alone does
 not prove observation. `spotter metrics` reports same-clock
 dispatch and adoption latency, evidence-to-adoption latency, adoption lead/lag against the target
@@ -413,7 +413,14 @@ turn boundary, and decision-to-stale-delivery latency with coverage denominators
 records capture receipt timing inline but enter a bounded queue; journal locking, history recovery,
 and fsync run on a worker rather than the control RPC path. Queue overflow and writer failures are
 explicit runtime health counters, and graceful shutdown drains accepted records. Until live reviewer
-delivery is connected, these fields remain explicitly uncovered rather than implying a zero cost.
+delivery is enabled, sessions without it remain explicitly uncovered rather than implying a zero cost.
+
+Codex `agentMessage.phase` is also a bounded terminal hint. A completed message explicitly marked
+`final_answer` settles the target for soft intervention even if `turn/completed` has not arrived:
+pending/running review jobs become stale and a later steer is rejected locally with
+`terminal_answer_settled`. A started item, commentary phase, or absent phase does not trigger this
+fence because providers do not populate the field consistently. Interrupt remains a separate
+recovery control and is not disabled by this soft-intervention fence.
 
 Objective task outcomes remain outside ordinary user-session telemetry. For global reports,
 `spotter metrics` reads versioned counterfactual and frozen-task result journals, joins each

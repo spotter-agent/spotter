@@ -121,6 +121,27 @@ def test_normalizes_user_message_control_correlation() -> None:
     }
 
 
+def test_normalizes_completed_final_answer_phase() -> None:
+    event = CodexTraceNormalizer().normalize(
+        _item_event(
+            "item/completed",
+            {
+                "id": "answer-1",
+                "type": "agentMessage",
+                "text": "The task is complete",
+                "phase": "final_answer",
+            },
+        )
+    )
+
+    assert event.kind == "agent_message"
+    assert event.payload == {
+        "text": "The task is complete",
+        "phase": "final_answer",
+        "lifecycle": "completed",
+    }
+
+
 def test_correlates_operation_by_item_id_not_event_adjacency(tmp_path: Path) -> None:
     ingestor = AppServerTraceIngestor(tmp_path)
     command = {
