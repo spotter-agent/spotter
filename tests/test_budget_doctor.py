@@ -5,7 +5,17 @@ from pathlib import Path
 
 import pytest
 
-from spotter.budget import LedgerCorrupt, cancel, charge, exhausted, read, reserve, settle
+from spotter.budget import (
+    LEDGER_SCHEMA,
+    LEDGER_SCHEMA_VERSION,
+    LedgerCorrupt,
+    cancel,
+    charge,
+    exhausted,
+    read,
+    reserve,
+    settle,
+)
 from spotter.cli import main
 from spotter.config import GatesConfig, MainAgentConfig, ReviewerConfig, SpotterConfig
 from spotter.doctor import (
@@ -111,7 +121,66 @@ def test_ledger_writes_are_atomic(home: Path) -> None:
     ledger = home / "review-spend.json"
     assert ledger.exists()
     assert not list(home.glob("review-spend.json.tmp"))
-    assert json.loads(ledger.read_text())["sessions"]["a"]["tokens"] == 5
+    raw = json.loads(ledger.read_text())
+    assert (raw["schema"], raw["schema_version"]) == (
+        LEDGER_SCHEMA,
+        LEDGER_SCHEMA_VERSION,
+    )
+    assert raw["sessions"]["a"]["tokens"] == 5
+
+
+def test_legacy_ledger_is_read_old_and_written_current(home: Path) -> None:
+    ledger = home / "review-spend.json"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(
+        json.dumps(
+            {
+                "sessions": {"a": {"reviews": 2, "tokens": 50}},
+                "day": {"date": "1970-01-01", "reviews": 2},
+            }
+        )
+    )
+
+    legacy = read("a", now=0)
+    assert (legacy.session, legacy.day, legacy.tokens) == (2, 2, 50)
+    charge("a", tokens=25, now=0)
+
+    upgraded = json.loads(ledger.read_text())
+    assert upgraded["schema"] == LEDGER_SCHEMA
+    assert upgraded["schema_version"] == LEDGER_SCHEMA_VERSION
+    assert upgraded["sessions"]["a"] == {"reviews": 3, "tokens": 75}
+
+
+@pytest.mark.parametrize(
+    ("schema", "version", "message"),
+    [
+        (LEDGER_SCHEMA, LEDGER_SCHEMA_VERSION + 1, "newer schema"),
+        ("future.review_spend", LEDGER_SCHEMA_VERSION, "unsupported schema"),
+        (LEDGER_SCHEMA, "1", "non-integer"),
+    ],
+)
+def test_unknown_ledger_schema_is_non_destructive(
+    home: Path, schema: object, version: object, message: str
+) -> None:
+    ledger = home / "review-spend.json"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(
+        json.dumps(
+            {
+                "schema": schema,
+                "schema_version": version,
+                "sessions": {"a": {"reviews": 2, "tokens": 50}},
+            }
+        )
+    )
+    before = ledger.read_bytes()
+
+    with pytest.raises(LedgerCorrupt, match=message):
+        charge("a")
+    token, refusal = reserve("a", 5, 100)
+
+    assert token is None and "refusing to spend" in refusal
+    assert ledger.read_bytes() == before
 
 
 # --- #41: a dead spotter must not look like a quiet one ----------------------

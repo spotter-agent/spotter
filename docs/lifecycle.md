@@ -1452,6 +1452,7 @@ journal_schema_version
 label_schema_version
 experiment_schema_version
 integration_manifest_version
+review_spend_schema_version
 ```
 
 Prefer:
@@ -1476,6 +1477,11 @@ commit/replace
 ```
 
 When a newer incompatible schema is encountered, refuse rather than guessing.
+
+The review-spend ledger uses the independent `spotter.review_spend` schema. Legacy unversioned
+ledgers remain readable and are upgraded lazily by the next successful spend mutation. Current
+writes fsync a temporary file, atomically replace the ledger, and fsync its parent directory;
+unknown schema names and versions are read-only failures so an older binary cannot reset a budget.
 
 ---
 

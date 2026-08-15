@@ -18,6 +18,9 @@ from pathlib import Path
 
 from spotter.paths import sanitize_session, secure_dir, spotter_home
 
+LEDGER_SCHEMA = "spotter.review_spend"
+LEDGER_SCHEMA_VERSION = 1
+
 
 @dataclass(frozen=True)
 class Spend:
@@ -57,6 +60,20 @@ def _load(path: Path) -> dict[str, object]:
         raise LedgerCorrupt(f"{path.name} is unreadable: {error}") from error
     if not isinstance(data, dict):
         raise LedgerCorrupt(f"{path.name} is not an object")
+    schema = data.get("schema")
+    version = data.get("schema_version")
+    if schema is None and version is None:
+        return data  # legacy v0; the next successful mutation writes v1
+    if schema != LEDGER_SCHEMA:
+        raise LedgerCorrupt(f"{path.name} has unsupported schema {schema!r}")
+    if not isinstance(version, int) or isinstance(version, bool):
+        raise LedgerCorrupt(f"{path.name} has a non-integer schema version")
+    if version != LEDGER_SCHEMA_VERSION:
+        direction = "newer" if version > LEDGER_SCHEMA_VERSION else "unsupported"
+        raise LedgerCorrupt(
+            f"{path.name} uses {direction} schema v{version}; "
+            f"this build understands v{LEDGER_SCHEMA_VERSION}"
+        )
     return data
 
 
@@ -181,14 +198,24 @@ def _write(
     """
     sessions[sanitize_session(session)] = {"reviews": reviews, "tokens": tokens}
     payload: dict[str, object] = {
+        "schema": LEDGER_SCHEMA,
+        "schema_version": LEDGER_SCHEMA_VERSION,
         "sessions": sessions,
         "day": {"date": _today(now), "reviews": day_reviews},
     }
     if open_slots:
         payload["open_slots"] = open_slots
     temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(payload))
+    with temporary.open("w", encoding="utf-8") as sink:
+        json.dump(payload, sink)
+        sink.flush()
+        os.fsync(sink.fileno())
     os.replace(temporary, path)
+    directory = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
 def reserve(
