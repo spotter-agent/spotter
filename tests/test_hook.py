@@ -262,7 +262,8 @@ def test_git_push_records_class_and_external_effect(spotter_home: Path) -> None:
     effect = records[-1].event
     assert effect.kind == "external_effect"
     assert effect.payload["resource"] == "origin"
-    assert effect.payload["result"] == "succeeded"
+    assert effect.payload["result"] == "unknown"
+    assert effect.payload["outcome_evidence"] == "exit_zero_only"
     assert effect.payload["tool_use_id"] == "push-1"
 
 

@@ -6,12 +6,13 @@ unknown command shapes still map to Class C without being mislabeled as known wr
 """
 
 import shlex
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Literal, cast
 from urllib.parse import urlsplit, urlunsplit
 
 from spotter.config import McpToolSemantics
+from spotter.outcomes import outcome_failure
 from spotter.trace import TraceEvent
 
 ReversibilityClass = Literal["A", "B", "C"]
@@ -260,20 +261,15 @@ def effect_event(result: TraceEvent) -> TraceEvent | None:
 
     if result.kind != "tool_result" or result.payload.get("reversibility_class") != "C":
         return None
-    response = result.payload.get("tool_response")
-    if isinstance(response, dict):
-        code = response.get("exit_code")
-        outcome = (
-            "succeeded" if code == 0 else (f"exit {code}" if isinstance(code, int) else "reported")
-        )
-    else:
-        outcome = "reported" if response is not None else "unknown"
+    outcome, evidence = _effect_outcome(result.payload)
     return TraceEvent(
         "external_effect",
         {
             "kind": result.payload.get("effect_kind"),
             "resource": result.payload.get("resource"),
             "result": outcome,
+            "outcome": outcome,
+            "outcome_evidence": evidence,
             "reversible": False,
             "checkpoint": result.payload.get("checkpoint"),
             "turn_id": result.payload.get("turn_id"),
@@ -284,6 +280,50 @@ def effect_event(result: TraceEvent) -> TraceEvent | None:
             "semantic_operation": result.payload.get("semantic_operation"),
         },
     )
+
+
+def _effect_outcome(payload: Mapping[str, object]) -> tuple[str, str]:
+    response = payload.get("tool_response")
+    statuses = [payload.get("status")]
+    if isinstance(response, Mapping):
+        statuses.append(response.get("status"))
+        if response.get("partial") is True:
+            return "partial", "partial_result"
+    if any(
+        isinstance(status, str) and status.casefold() in {"partial", "partially_succeeded"}
+        for status in statuses
+    ):
+        return "partial", "partial_result"
+
+    failed = outcome_failure(payload)
+    if failed is True:
+        return "failed", "explicit_failure"
+    if _has_explicit_success(payload, response):
+        return "succeeded", "explicit_success"
+    if _has_zero_exit_code(payload, response):
+        return "unknown", "exit_zero_only"
+    return "unknown", "no_conclusive_result"
+
+
+def _has_explicit_success(payload: Mapping[str, object], response: object) -> bool:
+    candidates: list[object] = [payload.get("success"), payload.get("status")]
+    if isinstance(response, Mapping):
+        candidates.extend((response.get("ok"), response.get("success"), response.get("status")))
+    return any(
+        value is True
+        or (
+            isinstance(value, str)
+            and value.casefold() in {"completed", "passed", "succeeded", "success"}
+        )
+        for value in candidates
+    )
+
+
+def _has_zero_exit_code(payload: Mapping[str, object], response: object) -> bool:
+    values = [payload.get("exitCode"), payload.get("exit_code")]
+    if isinstance(response, Mapping):
+        values.append(response.get("exit_code"))
+    return any(value == 0 and not isinstance(value, bool) for value in values)
 
 
 def external_effects(records: list[Any], through_step: int | None = None) -> list[dict[str, Any]]:

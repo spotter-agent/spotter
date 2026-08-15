@@ -385,7 +385,9 @@ def test_class_c_result_becomes_effect_with_recovery_identity() -> None:
     assert effect.payload == {
         "kind": "git_remote_write",
         "resource": "origin",
-        "result": "succeeded",
+        "result": "unknown",
+        "outcome": "unknown",
+        "outcome_evidence": "exit_zero_only",
         "reversible": False,
         "checkpoint": "abc123",
         "turn_id": "turn-2",
@@ -398,3 +400,26 @@ def test_class_c_result_becomes_effect_with_recovery_identity() -> None:
     records = [StepRecord(4, effect, "abc123")]
     assert external_effects(records) == [effect.payload]
     assert external_effects(records, through_step=3) == []
+
+
+def test_external_effect_outcomes_require_explicit_evidence() -> None:
+    def effect(response: object) -> tuple[object, object]:
+        event = effect_event(
+            TraceEvent(
+                "tool_result",
+                {
+                    "reversibility_class": "C",
+                    "effect_kind": "external_tool_write",
+                    "resource": "remote",
+                    "tool_response": response,
+                },
+            )
+        )
+        assert event is not None
+        return event.payload["outcome"], event.payload["outcome_evidence"]
+
+    assert effect({"exit_code": 0}) == ("unknown", "exit_zero_only")
+    assert effect({"ok": True}) == ("succeeded", "explicit_success")
+    assert effect({"exit_code": 1}) == ("failed", "explicit_failure")
+    assert effect({"status": "partial"}) == ("partial", "partial_result")
+    assert effect(None) == ("unknown", "no_conclusive_result")
