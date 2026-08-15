@@ -1454,6 +1454,7 @@ experiment_schema_version
 integration_manifest_version
 review_spend_schema_version
 source_audit_schema_version
+intervention_feedback_schema_version
 ```
 
 Prefer:
@@ -1487,6 +1488,10 @@ unknown schema names and versions are read-only failures so an older binary cann
 The bounded source-shape audit uses the independent `spotter.source_audit` container schema.
 Legacy JSONL samples are prefixed atomically with current metadata before the next append. Unknown
 container versions refuse audit writes without interrupting primary App Server journaling.
+
+Human intervention feedback uses per-record `spotter.intervention_feedback` schema metadata.
+Released schema-name-less v1 records remain readable and immutable; new records use the current
+schema, while unsupported, future, or corrupt history refuses append without changing the file.
 
 ---
 

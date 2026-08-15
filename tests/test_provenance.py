@@ -1,9 +1,17 @@
+import json
 from pathlib import Path
 
 import pytest
 
 from spotter.cli import main
-from spotter.feedback import FeedbackError, add_feedback, load_feedback
+from spotter.feedback import (
+    FEEDBACK_SCHEMA,
+    FEEDBACK_SCHEMA_VERSION,
+    FeedbackError,
+    add_feedback,
+    feedback_path,
+    load_feedback,
+)
 from spotter.hook import journal_path
 from spotter.identity import (
     AttachmentId,
@@ -131,9 +139,96 @@ def test_feedback_is_structured_redacted_and_append_only(
     assert [item.feedback_id for item in history] == [first.feedback_id, second.feedback_id]
     assert [item.category for item in history] == ["USEFUL", "TOO_LATE"]
     assert history[0].note == "confirmed; token=[REDACTED]"
+    stored = [json.loads(line) for line in feedback_path().read_text().splitlines()]
+    assert {(row["schema"], row["schema_version"], row["version"]) for row in stored} == {
+        (FEEDBACK_SCHEMA, FEEDBACK_SCHEMA_VERSION, FEEDBACK_SCHEMA_VERSION)
+    }
 
     with pytest.raises(FeedbackError, match="category must be one of"):
         add_feedback("spt-0123456789ab", "false_positive")
+
+
+def test_feedback_reads_legacy_records_and_writes_current_schema(
+    intervention_journal: StepJournal,
+) -> None:
+    path = feedback_path(create=True)
+    path.write_text(
+        json.dumps(
+            {
+                "feedback_id": "feedback-legacy",
+                "supervision_event_id": "spt-0123456789ab",
+                "category": "USEFUL",
+                "created_at": "2026-08-15T00:00:00+00:00",
+                "note": "legacy",
+                "rater": "developer-1",
+                "version": 1,
+            }
+        )
+        + "\n"
+    )
+
+    assert load_feedback()[0].feedback_id == "feedback-legacy"
+    add_feedback("spt-0123456789ab", "too_late", rater="developer-1")
+
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    assert "schema" not in rows[0]
+    assert rows[1]["schema"] == FEEDBACK_SCHEMA
+    assert rows[1]["schema_version"] == FEEDBACK_SCHEMA_VERSION
+
+
+@pytest.mark.parametrize(
+    ("record", "message"),
+    [
+        (
+            {
+                "schema": FEEDBACK_SCHEMA,
+                "schema_version": FEEDBACK_SCHEMA_VERSION + 1,
+                "version": FEEDBACK_SCHEMA_VERSION + 1,
+            },
+            "uses schema v2",
+        ),
+        (
+            {
+                "schema": "future.intervention_feedback",
+                "schema_version": FEEDBACK_SCHEMA_VERSION,
+                "version": FEEDBACK_SCHEMA_VERSION,
+            },
+            "unsupported schema",
+        ),
+    ],
+)
+def test_feedback_refuses_unknown_history_before_append(
+    intervention_journal: StepJournal, record: dict[str, object], message: str
+) -> None:
+    path = feedback_path(create=True)
+    record.update(
+        {
+            "feedback_id": "feedback-future",
+            "supervision_event_id": "spt-0123456789ab",
+            "category": "USEFUL",
+            "created_at": "2026-08-15T00:00:00+00:00",
+        }
+    )
+    path.write_text(json.dumps(record) + "\n")
+    before = path.read_bytes()
+
+    with pytest.raises(FeedbackError, match=message):
+        add_feedback("spt-0123456789ab", "useful", rater="developer-1")
+
+    assert path.read_bytes() == before
+
+
+def test_feedback_refuses_corrupt_history_before_append(
+    intervention_journal: StepJournal,
+) -> None:
+    path = feedback_path(create=True)
+    path.write_text("not-json\n")
+    before = path.read_bytes()
+
+    with pytest.raises(FeedbackError, match="line 1 is unreadable"):
+        add_feedback("spt-0123456789ab", "useful", rater="developer-1")
+
+    assert path.read_bytes() == before
 
 
 def test_cli_records_feedback_and_explain_keeps_it_separate_from_ground_truth(
