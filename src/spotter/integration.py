@@ -478,13 +478,15 @@ class IntegrationManager:
         if not codex.supports_remote or not codex.supports_app_server:
             raise IntegrationError("Codex lacks the required app-server/--remote capability")
         try:
-            resolve_config(
+            resolved = resolve_config(
                 layout=self.layout,
                 repository=Path.cwd(),
                 explicit_path=self.config_path,
             )
         except (OSError, tomllib.TOMLDecodeError, ConfigurationError) as error:
             raise IntegrationError(f"Spotter config is unusable: {error}") from error
+        if resolved.diagnostics:
+            raise IntegrationError("Spotter config is unusable: " + "; ".join(resolved.diagnostics))
         hooks, before = self._read_hooks()
         migrated, removed = self._migrate_hooks(hooks, existing)
         after = (json.dumps(migrated, indent=2, sort_keys=True) + "\n").encode()

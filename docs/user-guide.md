@@ -203,6 +203,10 @@ Setting `SPOTTER_HOME` moves the global configuration, data, integration, runtim
 together. Repository configuration is discovered from the Git worktree root. You can select an
 additional highest-precedence file explicitly with `--config` during setup and diagnostics.
 Nested tables merge by key, while scalar values and lists replace lower-precedence values.
+Repository files are not operator-trusted policy: they cannot override `observation_only` or
+`mcp_semantics`, may only add `gates.forbidden_paths`, and may only enable (not disable)
+`gates.block_dependency_changes`. Ignored or invalid repository policy is reported and the valid
+operator configuration remains active.
 
 A conservative starting configuration is:
 

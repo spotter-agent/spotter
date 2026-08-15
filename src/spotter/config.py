@@ -52,6 +52,7 @@ class ConfigSourceLayer:
     path: str | None
     modified_ns: int | None
     content_sha256: str
+    ignored_fields: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,7 @@ class ResolvedConfig:
     resolved_config_hash: str
     source_layers: tuple[ConfigSourceLayer, ...]
     loaded_at: str
+    diagnostics: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -184,26 +186,38 @@ def resolve_config(
         )
     ]
     loaded_paths: set[Path] = set()
+    diagnostics: list[str] = []
 
     global_path = runtime_layout.user_config_dir / "spotter.toml"
-    _merge_file_layer(effective, sources, loaded_paths, "global", global_path, required=False)
+    _merge_file_layer(
+        effective,
+        sources,
+        loaded_paths,
+        diagnostics,
+        "global",
+        global_path,
+        required=False,
+    )
 
     if repository is not None:
-        repository_path = _repository_root(repository) / "spotter.toml"
-        _merge_file_layer(
-            effective,
-            sources,
-            loaded_paths,
-            "repository",
-            repository_path,
-            required=False,
-        )
+        repository_root = _repository_root(repository)
+        if repository_root is not None:
+            _merge_file_layer(
+                effective,
+                sources,
+                loaded_paths,
+                diagnostics,
+                "repository",
+                repository_root / "spotter.toml",
+                required=False,
+            )
 
     if explicit_path is not None:
         _merge_file_layer(
             effective,
             sources,
             loaded_paths,
+            diagnostics,
             "explicit",
             explicit_path,
             required=True,
@@ -239,6 +253,7 @@ def resolve_config(
         resolved_config_hash=config_hash,
         source_layers=tuple(sources),
         loaded_at=datetime.now(UTC).isoformat(),
+        diagnostics=tuple(diagnostics),
     )
 
 
@@ -246,6 +261,7 @@ def _merge_file_layer(
     effective: dict[str, Any],
     sources: list[ConfigSourceLayer],
     loaded_paths: set[Path],
+    diagnostics: list[str],
     name: str,
     path: Path,
     *,
@@ -262,32 +278,116 @@ def _merge_file_layer(
         return
     try:
         raw = tomllib.loads(contents.decode())
-    except UnicodeDecodeError as error:
-        raise ConfigurationError(f"{normalized} must be UTF-8 TOML") from error
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
+        if name == "repository":
+            diagnostics.append(f"ignored invalid repository config {normalized}: {error}")
+            _record_file_source(sources, name, normalized, contents, ignored_fields=("*",))
+            loaded_paths.add(normalized)
+            return
+        if isinstance(error, UnicodeDecodeError):
+            raise ConfigurationError(f"{normalized} must be UTF-8 TOML") from error
+        raise
     if not isinstance(raw, dict):  # pragma: no cover - tomllib currently always returns a dict
         raise ConfigurationError(f"{normalized} must contain a TOML table")
-    _validate_layer_schema(raw)
-    _deep_merge(effective, raw)
-    stat = normalized.stat()
-    sources.append(
-        ConfigSourceLayer(
-            name=name,
-            path=str(normalized),
-            modified_ns=stat.st_mtime_ns,
-            content_sha256=hashlib.sha256(contents).hexdigest(),
-        )
-    )
+    try:
+        _validate_layer_schema(raw)
+        if name == "repository":
+            candidate = _copy_mapping(effective)
+            ignored_fields = _merge_repository_layer(candidate, raw)
+            SpotterConfig.from_mapping(candidate)
+            effective.clear()
+            effective.update(candidate)
+            if ignored_fields:
+                diagnostics.append(
+                    f"repository config {normalized} cannot override operator policy; ignored: "
+                    + ", ".join(ignored_fields)
+                )
+        else:
+            ignored_fields = ()
+            _deep_merge(effective, raw)
+    except ConfigurationError as error:
+        if name != "repository":
+            raise
+        diagnostics.append(f"ignored invalid repository config {normalized}: {error}")
+        ignored_fields = ("*",)
+    _record_file_source(sources, name, normalized, contents, ignored_fields=ignored_fields)
     loaded_paths.add(normalized)
 
 
-def _repository_root(start: Path) -> Path:
+def _record_file_source(
+    sources: list[ConfigSourceLayer],
+    name: str,
+    path: Path,
+    contents: bytes,
+    *,
+    ignored_fields: tuple[str, ...],
+) -> None:
+    stat = path.stat()
+    sources.append(
+        ConfigSourceLayer(
+            name=name,
+            path=str(path),
+            modified_ns=stat.st_mtime_ns,
+            content_sha256=hashlib.sha256(contents).hexdigest(),
+            ignored_fields=ignored_fields,
+        )
+    )
+
+
+def _repository_root(start: Path) -> Path | None:
     candidate = start.expanduser().resolve()
     if candidate.is_file():
         candidate = candidate.parent
     for directory in (candidate, *candidate.parents):
         if (directory / ".git").exists():
             return directory
-    return candidate
+    return None
+
+
+def _merge_repository_layer(effective: dict[str, Any], raw: Mapping[str, Any]) -> tuple[str, ...]:
+    """Apply only repository settings that cannot relax operator policy."""
+
+    overlay = _copy_mapping(raw)
+    ignored: list[str] = []
+    for key in ("observation_only", "mcp_semantics"):
+        if key in overlay:
+            overlay.pop(key)
+            ignored.append(key)
+
+    repository_gates = overlay.pop("gates", None)
+    _deep_merge(effective, overlay)
+    if repository_gates is None:
+        return tuple(ignored)
+    if not isinstance(repository_gates, Mapping):
+        effective["gates"] = repository_gates
+        return tuple(ignored)
+
+    gates = effective.setdefault("gates", {})
+    if not isinstance(gates, dict):
+        gates = {}
+        effective["gates"] = gates
+    for key in repository_gates:
+        if key not in {"forbidden_paths", "block_dependency_changes"}:
+            ignored.append(f"gates.{key}")
+
+    if "forbidden_paths" in repository_gates:
+        additions = repository_gates["forbidden_paths"]
+        current = gates.get("forbidden_paths", [])
+        if not isinstance(additions, list) or not all(isinstance(item, str) for item in additions):
+            gates["forbidden_paths"] = additions
+        elif not isinstance(current, list):
+            gates["forbidden_paths"] = current
+        else:
+            gates["forbidden_paths"] = list(dict.fromkeys([*current, *additions]))
+
+    if "block_dependency_changes" in repository_gates:
+        addition = repository_gates["block_dependency_changes"]
+        current = gates.get("block_dependency_changes", False)
+        if not isinstance(addition, bool) or not isinstance(current, bool):
+            gates["block_dependency_changes"] = addition
+        else:
+            gates["block_dependency_changes"] = current or addition
+    return tuple(sorted(ignored))
 
 
 def _validate_layer_schema(raw: Mapping[str, Any]) -> None:

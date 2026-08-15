@@ -469,9 +469,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _load_config(parser: argparse.ArgumentParser, path: Path | None) -> SpotterConfig:
     try:
-        return resolve_config(repository=Path.cwd(), explicit_path=path).config
+        resolved = resolve_config(repository=Path.cwd(), explicit_path=path)
     except (OSError, tomllib.TOMLDecodeError, ConfigurationError) as error:
         parser.error(str(error))
+    for diagnostic in resolved.diagnostics:
+        print(f"spotter: {diagnostic}", file=sys.stderr)
+    return resolved.config
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -2636,7 +2639,10 @@ def _hook_main(
         )
         if config is None:
             try:
-                config = resolve_config(repository=repository, explicit_path=config_path).config
+                resolved = resolve_config(repository=repository, explicit_path=config_path)
+                config = resolved.config
+                for diagnostic in resolved.diagnostics:
+                    print(f"spotter: {diagnostic}", file=sys.stderr)
             except Exception as error:  # noqa: BLE001 — config is inside fail-open boundary
                 # Unsupervised beats blocked: fall back to defaults and say so.
                 location = f" {config_path}" if config_path is not None else ""

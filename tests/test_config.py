@@ -106,7 +106,7 @@ def test_explicit_config_is_required_and_not_loaded_twice(tmp_path: Path) -> Non
         resolve_config(layout=layout, explicit_path=tmp_path / "missing.toml")
 
 
-def test_invalid_higher_precedence_layer_refuses_the_entire_snapshot(tmp_path: Path) -> None:
+def test_invalid_repository_layer_preserves_valid_operator_config(tmp_path: Path) -> None:
     layout = _layout(tmp_path)
     layout.user_config_dir.mkdir(parents=True)
     (layout.user_config_dir / "spotter.toml").write_text(
@@ -116,8 +116,67 @@ def test_invalid_higher_precedence_layer_refuses_the_entire_snapshot(tmp_path: P
     (repository / ".git").mkdir(parents=True)
     (repository / "spotter.toml").write_text("[reviewer]\nmax_per_day = -1\n")
 
+    resolved = resolve_config(layout=layout, repository=repository)
+
+    assert resolved.config.reviewer.max_per_day == 10
+    assert resolved.source_layers[-1].ignored_fields == ("*",)
+    assert "ignored invalid repository config" in resolved.diagnostics[0]
+
+
+def test_explicit_invalid_layer_still_refuses_activation(tmp_path: Path) -> None:
+    explicit = tmp_path / "explicit.toml"
+    explicit.write_text("[reviewer]\nmax_per_day = -1\n")
+
     with pytest.raises(ConfigurationError, match="non-negative integer"):
-        resolve_config(layout=layout, repository=repository)
+        resolve_config(layout=_layout(tmp_path), explicit_path=explicit)
+
+
+def test_repository_policy_can_only_tighten_operator_gates(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    layout.user_config_dir.mkdir(parents=True)
+    (layout.user_config_dir / "spotter.toml").write_text(
+        """observation_only = false
+[gates]
+forbidden_paths = ["secrets/*"]
+block_dependency_changes = true
+[mcp_semantics.admin.destroy]
+operation = "delete"
+reversibility = "C"
+"""
+    )
+    repository = tmp_path / "repo"
+    (repository / ".git").mkdir(parents=True)
+    (repository / "spotter.toml").write_text(
+        """observation_only = true
+[gates]
+forbidden_paths = ["private/*"]
+block_dependency_changes = false
+[mcp_semantics.admin.destroy]
+operation = "read"
+reversibility = "A"
+"""
+    )
+
+    resolved = resolve_config(layout=layout, repository=repository)
+
+    assert resolved.config.observation_only is False
+    assert resolved.config.gates.forbidden_paths == ("secrets/*", "private/*")
+    assert resolved.config.gates.block_dependency_changes is True
+    assert resolved.config.mcp_semantics[0].operation == "delete"
+    assert resolved.source_layers[-1].ignored_fields == (
+        "mcp_semantics",
+        "observation_only",
+    )
+    assert "cannot override operator policy" in resolved.diagnostics[0]
+
+
+def test_non_repository_directory_does_not_load_a_local_spotter_file(tmp_path: Path) -> None:
+    (tmp_path / "spotter.toml").write_text("[main_agent]\nadapter = 'not-a-repository'\n")
+
+    resolved = resolve_config(layout=_layout(tmp_path), repository=tmp_path)
+
+    assert resolved.config.main_agent.adapter == "codex"
+    assert [layer.name for layer in resolved.source_layers] == ["built_in"]
 
 
 @pytest.mark.parametrize(

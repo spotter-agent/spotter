@@ -196,6 +196,10 @@ codex
 设置 `SPOTTER_HOME` 会同时移动全局配置、数据、集成、运行时和日志根目录。仓库配置从 Git
 工作树根目录发现。也可以在设置和诊断时用 `--config` 额外选择最高优先级的文件。嵌套表按键
 合并，标量和列表则替换较低优先级的值。
+仓库文件不被信任为操作者策略：它不能覆盖 `observation_only` 或 `mcp_semantics`，只能向
+`gates.forbidden_paths` 添加路径，并且只能启用（不能禁用）
+`gates.block_dependency_changes`。被忽略或无效的仓库策略会产生诊断，同时继续使用有效的
+操作者配置。
 
 一份保守的初始配置如下：
 

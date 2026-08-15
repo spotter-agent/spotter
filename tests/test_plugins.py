@@ -252,12 +252,12 @@ def test_wrapper_reads_the_documented_home_config(tmp_path: Path) -> None:
 
 def test_hook_resolves_repository_config_from_payload_cwd(tmp_path: Path) -> None:
     home = tmp_path / "home"
+    home.mkdir()
+    (home / "spotter.toml").write_text("observation_only = false\n")
     repository = tmp_path / "repo"
     (repository / ".git").mkdir(parents=True)
     (repository / "nested").mkdir()
-    (repository / "spotter.toml").write_text(
-        'observation_only = false\n[gates]\nforbidden_paths = ["private/*"]\n'
-    )
+    (repository / "spotter.toml").write_text('[gates]\nforbidden_paths = ["private/*"]\n')
 
     result = subprocess.run(
         [sys.executable, "-m", "spotter", "hook"],

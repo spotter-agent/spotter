@@ -1245,6 +1245,12 @@ doctor's Hook round trip, integration validation, and the Hook fail-open boundar
 resolver; an explicitly named missing or invalid layer refuses activation, while the Hook preserves
 its existing fail-open contract.
 
+Repository content is supervised input, not operator-trusted policy. Repository layers cannot
+override `observation_only` or `mcp_semantics`; gate paths are unioned and dependency blocking is
+logical-OR, so a repository can tighten but cannot relax global enforcement. Invalid repository
+layers are ignored with a visible diagnostic while the last valid lower-precedence snapshot remains
+active. A local `spotter.toml` is considered a repository layer only when a Git worktree root exists.
+
 Each configuration field should declare reload semantics.
 
 | Setting class | Likely behavior |
