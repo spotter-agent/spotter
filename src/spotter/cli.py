@@ -41,7 +41,14 @@ from spotter.gates import Gate
 from spotter.hook import journal_path, run_hook
 from spotter.integration import IntegrationError, IntegrationManager, IntegrationManifest
 from spotter.labels import LabelError, add_label, valid_session
-from spotter.metrics import Tally, merge, tally_session
+from spotter.metrics import (
+    AgreementTally,
+    Tally,
+    agreement_session,
+    merge,
+    merge_agreement,
+    tally_session,
+)
 from spotter.observability import (
     SOURCE_AUDIT_RELATIVE_PATH,
     ObservabilityError,
@@ -232,6 +239,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--note", default="", help="label: why (free text, stored verbatim)")
     parser.add_argument(
+        "--rater", help="label: stable human rater identity (defaults to the OS account)"
+    )
+    parser.add_argument(
         "--keep-artifacts",
         action="store_true",
         help="experiment: keep forked worktrees (rollouts are always retained)",
@@ -399,7 +409,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "label":
         if not args.session or not args.verdict:
             parser.error("label requires --session and --verdict")
-        return _label_main(args.session, args.step, args.verdict, args.note)
+        return _label_main(args.session, args.step, args.verdict, args.note, args.rater)
     if args.command == "metrics":
         return _metrics_main(args.session)
     if args.command == "observability":
@@ -936,7 +946,7 @@ def _status_main() -> int:
     return 0
 
 
-def _label_main(session: str, step: int | None, verdict: str, note: str) -> int:
+def _label_main(session: str, step: int | None, verdict: str, note: str, rater: str | None) -> int:
     """Record a human verdict. Labels live outside the journal so the reviewer
     never reads its own report card."""
     try:
@@ -945,12 +955,12 @@ def _label_main(session: str, step: int | None, verdict: str, note: str) -> int:
         print(f"label failed: {error}", file=sys.stderr)
         return 1
     try:
-        label = add_label(session, step, verdict, note, records)
+        label = add_label(session, step, verdict, note, records, rater=rater)
     except LabelError as error:
         print(f"label failed: {error}", file=sys.stderr)
         return 1
     target = "session" if step is None else f"step {step}"
-    print(f"labeled {session} {target}: {label.verdict}")
+    print(f"labeled {session} {target}: {label.verdict} by {label.rater}")
     return 0
 
 
@@ -967,6 +977,7 @@ def _metrics_main(session: str | None) -> int:
     runtime_journals: list[tuple[list[StepRecord], int]] = []
     blind_spots: dict[str, int] = {}
     reviewer = ceiling = Tally()
+    agreement = AgreementTally()
     for journal in journals:
         try:
             records = StepJournal.load(journal)
@@ -976,6 +987,7 @@ def _metrics_main(session: str | None) -> int:
         runtime_journals.append((records, journal.stat().st_size))
         try:
             session_gates, session_reviewer, session_ceiling = tally_session(journal.stem, records)
+            session_agreement = agreement_session(journal.stem, records)
         except LabelError as error:
             print(f"metrics aborted: {error}", file=sys.stderr)
             return 1
@@ -987,6 +999,7 @@ def _metrics_main(session: str | None) -> int:
                 blind_spots[rule] = blind_spots.get(rule, 0) + 1
         reviewer = merge(reviewer, session_reviewer)
         ceiling = merge(ceiling, session_ceiling)
+        agreement = merge_agreement(agreement, session_agreement)
 
     objective_report = None
     if session is None:
@@ -1013,6 +1026,8 @@ def _metrics_main(session: str | None) -> int:
     print("  " + reviewer.rate_line("interventions", "correct"))
     print("P1 observability ceiling (label failed sessions visible|invisible):")
     print("  " + ceiling.rate_line("sessions", "visible"))
+    print("Rater agreement (double-label subset):")
+    print("  " + agreement.rate_line())
     print(render_runtime_costs(measure_runtime_costs(runtime_journals)))
     if objective_report is not None:
         print(render_objective_outcomes(objective_report))

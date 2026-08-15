@@ -20,6 +20,7 @@ import json
 import re
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from getpass import getuser
 from pathlib import Path
 
 from spotter.paths import sanitize_session, spotter_home
@@ -40,7 +41,7 @@ class LabelError(ValueError):
     """Raised when a label cannot be applied to the thing it names."""
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 LEGACY_VERSION = 0
 
 
@@ -52,6 +53,7 @@ class Label:
     fingerprint: str
     note: str
     labeled_at: str
+    rater: str = ""
     # The verdict vocabularies have already changed once. Without a version a
     # future change reinterprets old labels silently, and every published rate
     # rests on them (issue #47).
@@ -83,7 +85,13 @@ def session_fingerprint(records: list[StepRecord]) -> str:
 
 
 def add_label(
-    session: str, step: int | None, verdict: str, note: str, records: list[StepRecord]
+    session: str,
+    step: int | None,
+    verdict: str,
+    note: str,
+    records: list[StepRecord],
+    *,
+    rater: str | None = None,
 ) -> Label:
     allowed = SESSION_VERDICTS if step is None else STEP_VERDICTS
     if verdict not in allowed:
@@ -101,7 +109,19 @@ def add_label(
         if target.event.payload.get("decision") == "continue":
             raise LabelError(f"step {step} is a CONTINUE verdict; silence is not scored")
         mark = fingerprint(target)
-    label = Label(session, step, verdict, mark, note, datetime.now(UTC).isoformat(), SCHEMA_VERSION)
+    rater_id = getuser() if rater is None else rater.strip()
+    if not rater_id or len(rater_id) > 200:
+        raise LabelError("rater must be a non-empty identity of at most 200 characters")
+    label = Label(
+        session,
+        step,
+        verdict,
+        mark,
+        note,
+        datetime.now(UTC).isoformat(),
+        rater_id,
+        SCHEMA_VERSION,
+    )
     with labels_path(session).open("a", encoding="utf-8") as sink:
         sink.write(json.dumps(asdict(label), ensure_ascii=False) + "\n")
     return label
@@ -114,10 +134,19 @@ def load_labels(session: str) -> dict[int | None, Label]:
     meant to overwrite: a torn write on a correction silently reinstates the
     judgment the labeler had just rejected, which is worse than no data.
     """
-    path = labels_path(session)
     labels: dict[int | None, Label] = {}
+    for label in load_label_history(session):
+        labels[label.step] = label
+    return labels
+
+
+def load_label_history(session: str) -> tuple[Label, ...]:
+    """Read append-only label history so independent raters remain measurable."""
+
+    path = labels_path(session)
     if not path.exists():
-        return labels
+        return ()
+    labels: list[Label] = []
     for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         if not line.strip():
             continue
@@ -138,6 +167,7 @@ def load_labels(session: str) -> dict[int | None, Label]:
                 fingerprint=str(raw["fingerprint"]),
                 note=str(raw.get("note") or ""),
                 labeled_at=str(raw.get("labeled_at") or ""),
+                rater=str(raw.get("rater") or ""),
                 version=version,
             )
         except (json.JSONDecodeError, KeyError, TypeError) as error:
@@ -145,8 +175,8 @@ def load_labels(session: str) -> dict[int | None, Label]:
                 f"{path.name} line {number} is unreadable ({error}); "
                 "a dropped correction would revive the verdict it replaced"
             ) from error
-        labels[label.step] = label
-    return labels
+        labels.append(label)
+    return tuple(labels)
 
 
 def sessions_with_labels() -> list[str]:

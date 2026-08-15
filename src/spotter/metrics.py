@@ -8,7 +8,7 @@ and rates with fewer than MIN_SAMPLES labels are withheld entirely.
 
 from dataclasses import dataclass
 
-from spotter.labels import Label, load_labels, matches
+from spotter.labels import Label, load_label_history, load_labels, matches
 from spotter.snapshot import StepRecord
 
 MIN_SAMPLES = 5
@@ -54,6 +54,32 @@ class Tally:
         return f"{name}: {measure} {rate:.0%} of {decided} decided; {coverage}{qualifier}"
 
 
+@dataclass(frozen=True)
+class AgreementTally:
+    labeled_targets: int = 0
+    double_labeled_targets: int = 0
+    agreed_targets: int = 0
+    disagreed_targets: int = 0
+    unattributed_labels: int = 0
+    stale_labels: int = 0
+
+    def rate_line(self) -> str:
+        coverage = (
+            f"{self.double_labeled_targets}/{self.labeled_targets} labeled targets double-labeled"
+        )
+        if self.unattributed_labels:
+            coverage += f", {self.unattributed_labels} unattributed legacy labels"
+        if self.stale_labels:
+            coverage += f", {self.stale_labels} stale labels"
+        if self.double_labeled_targets < MIN_SAMPLES:
+            return (
+                f"raters: {coverage} — too few double-labeled targets "
+                f"({self.double_labeled_targets}) to state agreement"
+            )
+        rate = self.agreed_targets / self.double_labeled_targets
+        return f"raters: exact agreement {rate:.0%} of {self.double_labeled_targets}; {coverage}"
+
+
 def _verdict(
     labels: dict[int | None, Label], records: list[StepRecord], step: int | None
 ) -> tuple[str | None, bool]:
@@ -92,6 +118,40 @@ def tally_session(session: str, records: list[StepRecord]) -> tuple[dict[str, Ta
     return gates, reviewer, ceiling
 
 
+def agreement_session(session: str, records: list[StepRecord]) -> AgreementTally:
+    """Measure independent latest-per-rater judgments over current targets."""
+
+    latest: dict[tuple[int | None, str], Label] = {}
+    for label in load_label_history(session):
+        latest[(label.step, label.rater)] = label
+
+    by_target: dict[int | None, list[Label]] = {}
+    stale = 0
+    unattributed = 0
+    for label in latest.values():
+        if not matches(label, records):
+            stale += 1
+            continue
+        by_target.setdefault(label.step, []).append(label)
+        unattributed += not label.rater
+
+    doubled = agreed = 0
+    for labels in by_target.values():
+        verdicts = [label.verdict for label in labels if label.rater]
+        if len(verdicts) < 2:
+            continue
+        doubled += 1
+        agreed += len(set(verdicts)) == 1
+    return AgreementTally(
+        labeled_targets=len(by_target),
+        double_labeled_targets=doubled,
+        agreed_targets=agreed,
+        disagreed_targets=doubled - agreed,
+        unattributed_labels=unattributed,
+        stale_labels=stale,
+    )
+
+
 def merge(left: Tally, right: Tally) -> Tally:
     return Tally(
         labeled=left.labeled + right.labeled,
@@ -101,4 +161,15 @@ def merge(left: Tally, right: Tally) -> Tally:
         unclear=left.unclear + right.unclear,
         not_applicable=left.not_applicable + right.not_applicable,
         stale=left.stale + right.stale,
+    )
+
+
+def merge_agreement(left: AgreementTally, right: AgreementTally) -> AgreementTally:
+    return AgreementTally(
+        labeled_targets=left.labeled_targets + right.labeled_targets,
+        double_labeled_targets=left.double_labeled_targets + right.double_labeled_targets,
+        agreed_targets=left.agreed_targets + right.agreed_targets,
+        disagreed_targets=left.disagreed_targets + right.disagreed_targets,
+        unattributed_labels=left.unattributed_labels + right.unattributed_labels,
+        stale_labels=left.stale_labels + right.stale_labels,
     )

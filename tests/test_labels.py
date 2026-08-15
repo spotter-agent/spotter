@@ -8,11 +8,20 @@ from spotter.labels import (
     LabelError,
     add_label,
     labels_path,
+    load_label_history,
     load_labels,
     matches,
     valid_session,
 )
-from spotter.metrics import MIN_SAMPLES, Tally, merge, tally_session
+from spotter.metrics import (
+    MIN_SAMPLES,
+    AgreementTally,
+    Tally,
+    agreement_session,
+    merge,
+    merge_agreement,
+    tally_session,
+)
 from spotter.paths import sanitize_session
 from spotter.snapshot import StepJournal, StepRecord
 from spotter.trace import TraceEvent
@@ -54,6 +63,45 @@ def test_latest_label_wins() -> None:
     add_label("s1", 1, "tp", "first call", records)
     add_label("s1", 1, "fp", "on reflection", records)
     assert load_labels("s1")[1].verdict == "fp"
+
+
+def test_label_history_retains_rater_identity_and_same_rater_corrections() -> None:
+    records = _journal("s1", _flagged(1))
+    add_label("s1", 1, "tp", "first", records, rater="alice")
+    add_label("s1", 1, "fp", "corrected", records, rater="alice")
+    add_label("s1", 1, "fp", "independent", records, rater="bob")
+
+    history = load_label_history("s1")
+
+    assert [label.rater for label in history] == ["alice", "alice", "bob"]
+    agreement = agreement_session("s1", records)
+    assert agreement.labeled_targets == agreement.double_labeled_targets == 1
+    assert agreement.agreed_targets == 1
+
+
+def test_label_rejects_an_empty_explicit_rater() -> None:
+    records = _journal("s1", _flagged(1))
+    with pytest.raises(LabelError, match="rater must be"):
+        add_label("s1", 1, "tp", "", records, rater="  ")
+
+
+def test_rater_agreement_reports_sample_size_and_exact_agreement() -> None:
+    records = _journal("s1", _flagged(MIN_SAMPLES))
+    flag_steps = [record.step for record in records if record.event.kind == "gate_shadow_block"]
+    for index, step in enumerate(flag_steps):
+        add_label("s1", step, "tp", "", records, rater="alice")
+        add_label("s1", step, "fp" if index == 0 else "tp", "", records, rater="bob")
+
+    agreement = agreement_session("s1", records)
+
+    assert agreement == AgreementTally(
+        labeled_targets=5,
+        double_labeled_targets=5,
+        agreed_targets=4,
+        disagreed_targets=1,
+    )
+    assert "exact agreement 80% of 5" in agreement.rate_line()
+    assert merge_agreement(AgreementTally(), agreement) == agreement
 
 
 def test_verdict_vocabulary_is_enforced_per_target() -> None:
@@ -199,14 +247,31 @@ def test_unclear_labels_count_as_coverage_but_not_as_a_verdict() -> None:
 
 def test_cli_label_and_metrics_roundtrip(capsys: pytest.CaptureFixture[str]) -> None:
     _journal("s1", _flagged(1))
-    assert main(["label", "--session", "s1", "--step", "1", "--verdict", "fp"]) == 0
+    assert (
+        main(
+            [
+                "label",
+                "--session",
+                "s1",
+                "--step",
+                "1",
+                "--verdict",
+                "fp",
+                "--rater",
+                "alice",
+            ]
+        )
+        == 0
+    )
     assert main(["label", "--session", "s1", "--verdict", "invisible"]) == 0
     assert main(["metrics", "--session", "s1"]) == 0
     out = capsys.readouterr().out
+    assert "step 1: fp by alice" in out
     assert "P3 gate false positives" in out
     assert "P4 reviewer precision" in out
     assert "P1 observability ceiling" in out
     assert "Runtime cost / efficiency (coverage-aware)" in out
+    assert "Rater agreement (double-label subset)" in out
     assert "too few decided labels" in out  # honest about n=1
 
 
