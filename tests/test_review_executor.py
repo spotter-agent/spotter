@@ -154,11 +154,13 @@ def test_live_advisory_keeps_current_turn_scope(
         await runtime.deliver_review_decision(jobs[0], decision)
 
         text, control_id, review_job_id = sent[0]
+        assert text.startswith(f"[Spotter / VERIFY / {control_id}]")
         assert "not a new user requirement" in text
         assert "continue the original user task" in text
         assert "VERIFY: Check this assumption with evidence" in text
         assert "check the failures" in text
-        assert control_id == f"spotter:intervention:{jobs[0].job_id}"
+        assert control_id.startswith("spt-")
+        assert len(control_id) == 16
         assert review_job_id == jobs[0].job_id
 
     asyncio.run(scenario())

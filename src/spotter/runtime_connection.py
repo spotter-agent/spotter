@@ -315,10 +315,11 @@ class AppServerRecoveryLoop:
 
         if job.target_connection_epoch is None:
             raise StaleControlTarget("review job has no controllable connection epoch")
+        intervention_id = _intervention_id(job.job_id)
         await self.steer(
             RuntimeControlTarget(job.snapshot.identity, job.target_connection_epoch),
-            _review_advisory(decision),
-            control_id=f"spotter:intervention:{job.job_id}",
+            _review_advisory(decision, intervention_id),
+            control_id=intervention_id,
             review_job_id=job.job_id,
         )
 
@@ -1106,7 +1107,11 @@ def _control_payload(
     return payload
 
 
-def _review_advisory(decision: ReviewerDecision) -> str:
+def _intervention_id(review_job_id: str) -> str:
+    return f"spt-{hashlib.sha256(review_job_id.encode()).hexdigest()[:12]}"
+
+
+def _review_advisory(decision: ReviewerDecision, intervention_id: str) -> str:
     action = decision.decision.upper()
     concern = " ".join((decision.hypothesis or decision.reason).split())[:600]
     reason = " ".join(decision.reason.split())[:600]
@@ -1116,7 +1121,8 @@ def _review_advisory(decision: ReviewerDecision) -> str:
         else f"Re-evaluate the current approach before continuing: {concern}"
     )
     return (
-        "[Spotter supervision — advisory for the current turn]\n"
+        f"[Spotter / {action} / {intervention_id}]\n"
+        "Advisory for the current turn.\n"
         "This is not a new user requirement and does not replace the user's active task.\n\n"
         f"{action}: {guidance}\n"
         f"Reason: {reason}\n\n"
