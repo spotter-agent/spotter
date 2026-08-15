@@ -1,3 +1,4 @@
+task_schema = "spotter.task"
 task_schema_version = 1
 task_id = "fixture/profile-contract-001"
 prompt = "Update profile normalization and rendering so role is normalized and included in the rendered contract."

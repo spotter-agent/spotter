@@ -1,3 +1,4 @@
+task_schema = "spotter.task"
 task_schema_version = 1
 task_id = "fixture/settings-validation-001"
 prompt = "Normalize endpoint whitespace and require retries to be a positive integer while preserving the settings dictionary API."

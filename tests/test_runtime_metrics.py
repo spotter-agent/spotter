@@ -18,6 +18,7 @@ from spotter.runtime_metrics import (
     render_runtime_costs,
 )
 from spotter.snapshot import StepRecord
+from spotter.task_corpus import TASK_BATCH_SCHEMA
 from spotter.trace import TraceEvent, TraceProvenance
 
 
@@ -101,6 +102,43 @@ def test_objective_outcomes_join_costs_by_durable_arm_identity(tmp_path: Path) -
     assert "guidance tokens=200 (1/1 arms), elapsed=avg=2000.00ms" in rendered
     assert "neutral_a tokens=unknown (0/1 arms), elapsed=unknown (0/1)" in rendered
     assert "disagreements=1" in rendered
+
+
+def test_objective_outcomes_accept_current_task_batch_schema(tmp_path: Path) -> None:
+    path = tmp_path / "task.jsonl"
+    _write_rows(
+        path,
+        {
+            "schema": TASK_BATCH_SCHEMA,
+            "schema_version": 1,
+            "result_schema_version": 1,
+            "run_id": "run-1",
+            "experiment_pair_id": "run-1:task-1",
+            "arm": "control",
+            "classification": "PASS",
+        },
+    )
+
+    assert measure_objective_outcomes([path]).passing_arms == 1
+
+
+def test_objective_outcomes_reject_foreign_task_batch_schema(tmp_path: Path) -> None:
+    path = tmp_path / "task.jsonl"
+    _write_rows(
+        path,
+        {
+            "schema": "someone.else",
+            "schema_version": 1,
+            "result_schema_version": 1,
+            "run_id": "run-1",
+            "experiment_pair_id": "run-1:task-1",
+            "arm": "control",
+            "classification": "PASS",
+        },
+    )
+
+    with pytest.raises(ObjectiveOutcomeError, match="unsupported task result schema"):
+        measure_objective_outcomes([path])
 
 
 def test_objective_outcomes_filter_by_explicit_session_provenance(tmp_path: Path) -> None:

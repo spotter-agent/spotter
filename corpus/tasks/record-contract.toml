@@ -1,3 +1,4 @@
+task_schema = "spotter.task"
 task_schema_version = 1
 task_id = "fixture/record-contract-001"
 prompt = "Normalize record tags by trimming and lowercasing them, discard blanks, deduplicate in first-seen order, and render non-empty tags without mutating the input."

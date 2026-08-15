@@ -14,6 +14,7 @@ from contextlib import suppress
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
+from fcntl import LOCK_EX, flock
 from pathlib import Path
 from typing import Any
 
@@ -22,8 +23,11 @@ from spotter.paths import sanitize_session, secure_dir, spotter_home
 from spotter.replay import ReplayError, find_rollout
 from spotter.snapshot import SnapshotError, StepJournal
 
+TASK_SCHEMA = "spotter.task"
 TASK_SCHEMA_VERSION = 1
+TASK_SET_SCHEMA = "spotter.task_set"
 TASK_SET_SCHEMA_VERSION = 1
+TASK_BATCH_SCHEMA = "spotter.task_batch"
 TASK_BATCH_SCHEMA_VERSION = 1
 
 
@@ -122,7 +126,14 @@ def validate_task_set(path: Path) -> TaskSetManifest:
 
     set_path = path.resolve()
     data = _load_toml(set_path)
-    _schema(data, "task_set_schema_version", TASK_SET_SCHEMA_VERSION, set_path)
+    _schema_identity(
+        data,
+        "task_set_schema",
+        TASK_SET_SCHEMA,
+        "task_set_schema_version",
+        TASK_SET_SCHEMA_VERSION,
+        set_path,
+    )
     task_set_id = _text(data, "task_set_id", set_path)
     version = _positive_int(data, "version", set_path)
     split = _text(data, "split", set_path)
@@ -211,6 +222,10 @@ def run_task_batch(
     if not guidance.strip():
         raise TaskCorpusError("task batch guidance must be non-empty")
     set_path = path.resolve()
+    resumed: tuple[dict[str, Any], list[TaskArmResult], bool] | None = None
+    if resume is not None:
+        validate_task_set(set_path)
+        resumed = _read_task_batch(resume.resolve(), repair_tail=True)
     task_set, preflight = preflight_task_set(set_path)
     not_ready = [
         result for result in preflight if result.classification != PreflightClassification.READY
@@ -224,6 +239,8 @@ def run_task_batch(
         run_id = str(uuid.uuid4())
         output = task_batch_path(task_set, run_id)
         header = {
+            "schema": TASK_BATCH_SCHEMA,
+            "schema_version": TASK_BATCH_SCHEMA_VERSION,
             "meta": True,
             "result_schema_version": TASK_BATCH_SCHEMA_VERSION,
             "run_id": run_id,
@@ -242,11 +259,12 @@ def run_task_batch(
             "capture_replay_sources": capture_replay_sources,
             "started_at": datetime.now(UTC).isoformat(),
         }
-        _append_json(output, header)
+        _append_task_batch(output, header)
         existing: list[TaskArmResult] = []
     else:
         output = resume.resolve()
-        header, existing, was_complete = _read_task_batch(output)
+        assert resumed is not None
+        header, existing, was_complete = resumed
         _validate_resume(
             output,
             header,
@@ -287,11 +305,21 @@ def run_task_batch(
                 keep_artifacts=keep_artifacts,
                 capture_replay_source=capture_replay_sources,
             )
-            _append_json(output, asdict(result))
+            _append_task_batch(
+                output,
+                {
+                    "schema": TASK_BATCH_SCHEMA,
+                    "schema_version": TASK_BATCH_SCHEMA_VERSION,
+                    **asdict(result),
+                },
+            )
             results.append(result)
-    _append_json(
+    _append_task_batch(
         output,
         {
+            "schema": TASK_BATCH_SCHEMA,
+            "schema_version": TASK_BATCH_SCHEMA_VERSION,
+            "result_schema_version": TASK_BATCH_SCHEMA_VERSION,
             "complete": True,
             "run_id": run_id,
             "results": len(results),
@@ -588,34 +616,60 @@ def _replay_source(stdout: str | bytes | None) -> tuple[str | None, str | None]:
     return None, "Codex JSON stream did not report a thread.started session"
 
 
-def _append_json(path: Path, row: dict[str, Any]) -> None:
-    with path.open("a", encoding="utf-8") as sink:
-        sink.write(json.dumps(row) + "\n")
-        sink.flush()
-        os.fsync(sink.fileno())
+def _append_task_batch(path: Path, row: dict[str, Any]) -> None:
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    with lock_path.open("a") as lock:
+        flock(lock, LOCK_EX)
+        if path.exists():
+            _, existing, complete = _read_task_batch_locked(path, repair_tail=False)
+            task_id = row.get("task_id")
+            arm = row.get("arm")
+            key = (task_id, arm)
+            if (
+                isinstance(task_id, str)
+                and isinstance(arm, str)
+                and any((task_id, arm) == (result.task_id, result.arm) for result in existing)
+            ):
+                raise TaskCorpusError(f"task batch {path} already contains result {key}")
+            if row.get("complete") is True and complete:
+                raise TaskCorpusError(f"task batch {path} is already complete")
+        with path.open("a", encoding="utf-8") as sink:
+            sink.write(json.dumps(row) + "\n")
+            sink.flush()
+            os.fsync(sink.fileno())
 
 
-def _read_task_batch(path: Path) -> tuple[dict[str, Any], list[TaskArmResult], bool]:
+def _read_task_batch(
+    path: Path, *, repair_tail: bool = False
+) -> tuple[dict[str, Any], list[TaskArmResult], bool]:
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    with lock_path.open("a") as lock:
+        flock(lock, LOCK_EX)
+        return _read_task_batch_locked(path, repair_tail=repair_tail)
+
+
+def _read_task_batch_locked(
+    path: Path, *, repair_tail: bool
+) -> tuple[dict[str, Any], list[TaskArmResult], bool]:
     try:
-        lines = path.read_text().splitlines(keepends=True)
-    except OSError as error:
+        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    except (OSError, UnicodeError) as error:
         raise TaskCorpusError(f"cannot resume task batch {path}: {error}") from error
     if not lines:
         raise TaskCorpusError(f"cannot resume empty task batch {path}")
     rows: list[dict[str, Any]] = []
+    repair_content: str | None = None
     for index, line in enumerate(lines):
         try:
             row = json.loads(line)
         except json.JSONDecodeError as error:
             if index == len(lines) - 1:
-                with path.open("w", encoding="utf-8") as sink:
-                    sink.write("".join(lines[:index]))
-                    sink.flush()
-                    os.fsync(sink.fileno())
+                repair_content = "".join(lines[:index])
                 break
             raise TaskCorpusError(f"task batch {path} has corrupt row {index + 1}") from error
         if not isinstance(row, dict):
             raise TaskCorpusError(f"task batch {path} row {index + 1} is not an object")
+        _task_batch_version(row, path, index + 1)
         rows.append(row)
     if not rows or rows[0].get("meta") is not True:
         raise TaskCorpusError(f"task batch {path} has no metadata header")
@@ -668,7 +722,55 @@ def _read_task_batch(path: Path) -> tuple[dict[str, Any], list[TaskArmResult], b
             raise TaskCorpusError(f"task batch {path} contains an invalid result") from error
     if any(result.result_schema_version != TASK_BATCH_SCHEMA_VERSION for result in results):
         raise TaskCorpusError(f"task batch {path} contains an unsupported result schema")
+    if repair_content is not None:
+        if not repair_tail:
+            raise TaskCorpusError(f"task batch {path} has a torn final row")
+        _replace_task_batch(path, repair_content)
     return rows[0], results, any(row.get("complete") is True for row in rows[1:])
+
+
+def _task_batch_version(row: dict[str, Any], path: Path, number: int) -> None:
+    schema = row.get("schema")
+    schema_version = row.get("schema_version")
+    version = row.get("result_schema_version")
+    legacy_completion = (
+        schema is None
+        and schema_version is None
+        and version is None
+        and row.get("complete") is True
+    )
+    if not legacy_completion and (not isinstance(version, int) or isinstance(version, bool)):
+        raise TaskCorpusError(f"task batch {path} row {number} has no integer schema version")
+    if schema is None and schema_version is None:
+        pass
+    elif schema != TASK_BATCH_SCHEMA:
+        raise TaskCorpusError(f"task batch {path} row {number} uses unsupported schema {schema!r}")
+    elif not isinstance(schema_version, int) or isinstance(schema_version, bool):
+        raise TaskCorpusError(f"task batch {path} row {number} has a non-integer schema version")
+    elif schema_version != version:
+        raise TaskCorpusError(f"task batch {path} row {number} has mismatched schema versions")
+    if isinstance(version, int) and version != TASK_BATCH_SCHEMA_VERSION:
+        raise TaskCorpusError(
+            f"task batch {path} row {number} uses result schema v{version}; "
+            f"this build understands v{TASK_BATCH_SCHEMA_VERSION}"
+        )
+
+
+def _replace_task_batch(path: Path, content: str) -> None:
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("x", encoding="utf-8") as sink:
+            sink.write(content)
+            sink.flush()
+            os.fsync(sink.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _validate_resume(
@@ -736,7 +838,14 @@ def _codex_version() -> str | None:
 
 def _validate_task(path: Path, corpus_root: Path) -> TaskManifest:
     data = _load_toml(path)
-    _schema(data, "task_schema_version", TASK_SCHEMA_VERSION, path)
+    _schema_identity(
+        data,
+        "task_schema",
+        TASK_SCHEMA,
+        "task_schema_version",
+        TASK_SCHEMA_VERSION,
+        path,
+    )
     task_id = _text(data, "task_id", path)
     prompt = _text(data, "prompt", path)
 
@@ -937,9 +1046,22 @@ def _load_toml(path: Path) -> dict[str, Any]:
         raise TaskCorpusError(f"{path}: {error}") from error
 
 
-def _schema(data: dict[str, Any], key: str, expected: int, where: object) -> None:
-    if data.get(key) != expected:
-        raise TaskCorpusError(f"{where}: {key} must be {expected}")
+def _schema_identity(
+    data: dict[str, Any],
+    name_key: str,
+    expected_name: str,
+    version_key: str,
+    expected_version: int,
+    where: object,
+) -> None:
+    name = data.get(name_key)
+    if name is not None and name != expected_name:
+        raise TaskCorpusError(f"{where}: {name_key} must be {expected_name!r}")
+    version = data.get(version_key)
+    if not isinstance(version, int) or isinstance(version, bool):
+        raise TaskCorpusError(f"{where}: {version_key} must be an integer")
+    if version != expected_version:
+        raise TaskCorpusError(f"{where}: {version_key} must be {expected_version}")
 
 
 def _table(data: dict[str, Any], key: str, where: object) -> dict[str, Any]:

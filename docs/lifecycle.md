@@ -1453,6 +1453,9 @@ journal_state_schema_version
 label_schema_version
 signal_sampling_schema_version
 experiment_schema_version
+task_schema_version
+task_set_schema_version
+task_batch_schema_version
 integration_manifest_version
 review_spend_schema_version
 source_audit_schema_version
@@ -1519,6 +1522,13 @@ Trace journal records use the independent `spotter.trace_event` schema while ret
 rebuildable index: unsupported or corrupt cache state is discarded and reconstructed from the
 journal, whose full schema validation remains authoritative before append. Both journal records and
 atomic sidecar replacements are fsynced.
+
+Frozen evaluation artifacts use separate `spotter.task`, `spotter.task_set`, and
+`spotter.task_batch` schemas. Released schema-name-less v1 task and set manifests remain readable;
+new bundled manifests declare their identity explicitly. Batch resume validates the complete
+history under its resource lock before preflight or mutation, writes only current records, and
+repairs a validated torn tail through fsync plus atomic replacement. Future, foreign, or corrupt
+history is never truncated or extended.
 
 ---
 

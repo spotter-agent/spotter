@@ -1,3 +1,4 @@
+task_schema = "spotter.task"
 task_schema_version = 1
 task_id = "fixture/routing-investigation-001"
 prompt = "Make request dispatch honor the existing route table when callers use lowercase methods and one trailing slash, without broadening unknown routes."

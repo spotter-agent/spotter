@@ -1,3 +1,4 @@
+task_schema = "spotter.task"
 task_schema_version = 1
 task_id = "fixture/query-parser-001"
 prompt = "Fix the query parser so values may contain equals signs without changing its key/value API."

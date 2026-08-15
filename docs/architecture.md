@@ -448,10 +448,16 @@ the parsed token total and same-process monotonic agent duration for each execut
 persist raw agent stderr merely to recover the token count. Earlier v1/v2 rows remain readable.
 Unsupported newer result schemas fail visibly instead of being guessed; a torn final JSONL row is
 treated as an interrupted append and blocks further mutation. This projection does not label
-unscored user sessions as success or failure. `spotter analyze` additionally joins task-arm outcomes through
-`replay_source_session_id` and replay outcomes through the persisted arm session or fork manifest's
+unscored user sessions as success or failure. `spotter analyze` additionally joins task-arm outcomes
+through `replay_source_session_id` and replay outcomes through the persisted arm session or fork manifest's
 `prefix.source_session_id`. It does not infer a join from file names or timestamps; missing or broken
 fork provenance is reported instead of guessed.
+
+Frozen corpus inputs separately identify `spotter.task` and `spotter.task_set` v1 manifests. Their
+append-only run output uses `spotter.task_batch` v1 on metadata, arm, and completion records. Legacy
+schema-name-less v1 artifacts remain readable, while resume validates identity before preflight and
+performs locked, crash-durable append or validated torn-tail repair without mutating incompatible
+history.
 
 ## 4.5 Turn completion
 

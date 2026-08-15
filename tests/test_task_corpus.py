@@ -12,6 +12,10 @@ from spotter.cli import main
 from spotter.replay import fork
 from spotter.snapshot import StepJournal, snapshot_worktree
 from spotter.task_corpus import (
+    TASK_BATCH_SCHEMA,
+    TASK_BATCH_SCHEMA_VERSION,
+    TASK_SCHEMA,
+    TASK_SET_SCHEMA,
     PreflightClassification,
     TaskCorpusError,
     file_digest,
@@ -33,7 +37,8 @@ def _corpus(root: Path) -> Path:
     task = root / "tasks" / "parser.toml"
     task.parent.mkdir()
     task.write_text(
-        f'''task_schema_version = 1
+        f'''task_schema = "spotter.task"
+task_schema_version = 1
 task_id = "fixture/parser-001"
 prompt = "Fix the parser regression."
 
@@ -73,7 +78,8 @@ provenance = "spotter synthetic fixture"
     )
     task_set = root / "dev.toml"
     task_set.write_text(
-        f'''task_set_schema_version = 1
+        f'''task_set_schema = "spotter.task_set"
+task_set_schema_version = 1
 task_set_id = "spotter-dev"
 version = 1
 split = "dev"
@@ -104,8 +110,33 @@ def test_validates_versioned_task_set_and_cli(
     assert task_set.task_set_id == "spotter-dev"
     assert task_set.split == "dev"
     assert task_set.tasks[0].task_id == "fixture/parser-001"
+    assert TASK_SCHEMA == "spotter.task" and TASK_SET_SCHEMA == "spotter.task_set"
     assert main(["tasks", "validate", str(path)]) == 0
     assert "validated spotter-dev v1 (dev): 1 task(s)" in capsys.readouterr().out
+
+
+def test_legacy_schema_name_less_task_manifests_remain_readable(tmp_path: Path) -> None:
+    path = _corpus(tmp_path)
+    task = tmp_path / "tasks" / "parser.toml"
+    task.write_text(task.read_text().replace('task_schema = "spotter.task"\n', ""))
+    _refreeze_task(tmp_path, path)
+    path.write_text(path.read_text().replace('task_set_schema = "spotter.task_set"\n', ""))
+
+    assert validate_task_set(path).task_set_id == "spotter-dev"
+
+
+@pytest.mark.parametrize("target", ["task", "task_set"])
+def test_foreign_task_manifest_schema_is_refused(tmp_path: Path, target: str) -> None:
+    path = _corpus(tmp_path)
+    if target == "task":
+        task = tmp_path / "tasks" / "parser.toml"
+        task.write_text(task.read_text().replace(TASK_SCHEMA, "someone.else"))
+        _refreeze_task(tmp_path, path)
+    else:
+        path.write_text(path.read_text().replace(TASK_SET_SCHEMA, "someone.else"))
+
+    with pytest.raises(TaskCorpusError, match="schema"):
+        validate_task_set(path)
 
 
 def test_manifest_hash_detects_task_set_drift(tmp_path: Path) -> None:
@@ -280,6 +311,12 @@ def test_task_batch_runs_clean_control_and_guidance_arms(
     assert rows[0]["model"] == "gpt-test"
     assert rows[0]["reasoning_effort"] == "low"
     assert rows[-1]["complete"] is True
+    assert all(
+        row["schema"] == TASK_BATCH_SCHEMA
+        and row["schema_version"] == TASK_BATCH_SCHEMA_VERSION
+        and row["result_schema_version"] == TASK_BATCH_SCHEMA_VERSION
+        for row in rows
+    )
 
 
 def test_task_batch_captures_replay_source_sessions(
@@ -475,7 +512,12 @@ def test_task_batch_resumes_without_rerunning_completed_arms(
     rows = output.read_text().splitlines()
     header = json.loads(rows[0])
     header.pop("reasoning_effort")
-    output.write_text(json.dumps(header) + "\n" + rows[1] + "\n")
+    header.pop("schema")
+    header.pop("schema_version")
+    result = json.loads(rows[1])
+    result.pop("schema")
+    result.pop("schema_version")
+    output.write_text(json.dumps(header) + "\n" + json.dumps(result) + "\n")
     calls = 0
 
     resumed_output, results = run_task_batch(path, "Verify first.", resume=output)
@@ -484,6 +526,49 @@ def test_task_batch_resumes_without_rerunning_completed_arms(
     assert calls == 1
     assert len(results) == 2
     assert len({(result.task_id, result.arm) for result in results}) == 2
+    persisted = [json.loads(line) for line in output.read_text().splitlines()]
+    assert "schema" not in persisted[0] and "schema" not in persisted[1]
+    assert all(row["schema"] == TASK_BATCH_SCHEMA for row in persisted[2:])
+
+
+@pytest.mark.parametrize(
+    ("schema", "version", "message"),
+    [
+        (TASK_BATCH_SCHEMA, TASK_BATCH_SCHEMA_VERSION + 1, "understands"),
+        ("someone.else", TASK_BATCH_SCHEMA_VERSION, "unsupported schema"),
+    ],
+)
+def test_incompatible_task_batch_is_refused_before_preflight_or_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    schema: str,
+    version: int,
+    message: str,
+) -> None:
+    task_set = _corpus(tmp_path / "corpus")
+    batch = tmp_path / "batch.jsonl"
+    batch.write_text(
+        json.dumps(
+            {
+                "schema": schema,
+                "schema_version": version,
+                "result_schema_version": version,
+                "meta": True,
+                "run_id": "future",
+            }
+        )
+        + "\n"
+    )
+    before = batch.read_bytes()
+    monkeypatch.setattr(
+        task_corpus,
+        "_preflight_task",
+        lambda task: (_ for _ in ()).throw(AssertionError("preflight must not run")),
+    )
+
+    with pytest.raises(TaskCorpusError, match=message):
+        run_task_batch(task_set, "guidance", resume=batch)
+    assert batch.read_bytes() == before
 
 
 def test_task_batch_repairs_a_torn_final_row_before_resuming(

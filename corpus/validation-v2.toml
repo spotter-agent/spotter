@@ -1,3 +1,4 @@
+task_set_schema = "spotter.task_set"
 task_set_schema_version = 1
 task_set_id = "spotter-validation"
 version = 2
@@ -6,14 +7,14 @@ split = "validation"
 [[tasks]]
 task_id = "fixture/profile-contract-001"
 manifest = "tasks/profile-contract.toml"
-sha256 = "986d658545d3def14adfda2b3a01c7e7647ff30fba5f56db3eda88a9447f6529"
+sha256 = "70c36c1482c4724942f8b2218d2d79003f66b5d6665b4d147bf95e9b056da0e0"
 
 [[tasks]]
 task_id = "fixture/routing-investigation-001"
 manifest = "tasks/routing-investigation.toml"
-sha256 = "a1c3f6ff58abba22c50d8c4a0f71281d53621b7f4b8efe0ca2f7f2bca836348a"
+sha256 = "9d99d20d404c38afc8983c2b13e964bdb7d8b880778a0edcdce8925a3b878315"
 
 [[tasks]]
 task_id = "fixture/record-contract-001"
 manifest = "tasks/record-contract.toml"
-sha256 = "b7619253dcf1fcc85195208af48d3887cec8736f8e5dfaaa22cff1b7420f153a"
+sha256 = "48e1f6c58c497cf0d0c1e5cce313cc19f8a4a70e296d15df18c0135a63f7bb3e"

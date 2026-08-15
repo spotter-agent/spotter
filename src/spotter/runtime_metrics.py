@@ -13,6 +13,7 @@ from statistics import mean
 from spotter.experiment import EXPERIMENT_RESULT_SCHEMA
 from spotter.outcomes import outcome_failure
 from spotter.snapshot import StepRecord
+from spotter.task_corpus import TASK_BATCH_SCHEMA, TASK_BATCH_SCHEMA_VERSION
 from spotter.trace import TraceEvent
 
 _START_KINDS = {"tool_proposal", "command_started", "tool_started", "file_change_started"}
@@ -1190,6 +1191,8 @@ def _result_rows(path: Path) -> tuple[Mapping[str, object], ...]:
             raise ObjectiveOutcomeError(f"{path}: row {index + 1} is not an object")
         if isinstance(row.get("experiment_id"), str) and row["experiment_id"]:
             _validate_experiment_result_schema(row, path, index + 1)
+        elif isinstance(row.get("run_id"), str) and row["run_id"]:
+            _validate_task_result_schema(row, path, index + 1)
         rows.append(row)
     return tuple(rows)
 
@@ -1265,6 +1268,27 @@ def _objective_arm(row: Mapping[str, object], path: Path) -> _ObjectiveArm | Non
         _agent_reported_tokens(row),
         _agent_elapsed(row),
     )
+
+
+def _validate_task_result_schema(row: Mapping[str, object], path: Path, number: int) -> None:
+    schema_name = row.get("schema")
+    schema_version = row.get("schema_version")
+    version = row.get("result_schema_version")
+    if schema_name is None and schema_version is None:
+        if version is None and row.get("complete") is True:
+            return
+    elif schema_name != TASK_BATCH_SCHEMA:
+        raise ObjectiveOutcomeError(
+            f"{path}: row {number} uses unsupported task result schema {schema_name!r}"
+        )
+    elif not isinstance(schema_version, int) or isinstance(schema_version, bool):
+        raise ObjectiveOutcomeError(f"{path}: row {number} has a non-integer task schema version")
+    elif schema_version != version:
+        raise ObjectiveOutcomeError(f"{path}: row {number} has mismatched task schema versions")
+    if not isinstance(version, int) or isinstance(version, bool):
+        raise ObjectiveOutcomeError(f"{path}: row {number} has no task schema version")
+    if version != TASK_BATCH_SCHEMA_VERSION:
+        raise ObjectiveOutcomeError(f"{path}: unsupported task result schema {version}")
 
 
 def _objective_row_matches_session(row: Mapping[str, object], path: Path, session_id: str) -> bool:
