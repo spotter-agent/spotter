@@ -24,6 +24,7 @@ from spotter.app_server import (
     CodexAppServerClient,
     ControlFailureReason,
 )
+from spotter.config import McpToolSemantics
 from spotter.identity import AttachmentId, RuntimeIdentity, ThreadId
 from spotter.ingestion import AppServerTraceIngestor, IngestionError
 from spotter.observability import state_coverage_status
@@ -108,6 +109,7 @@ class AppServerRecoveryLoop:
         initial_backoff: float = 0.1,
         maximum_backoff: float = 30,
         control_telemetry_queue_size: int = 256,
+        mcp_semantics: tuple[McpToolSemantics, ...] = (),
     ) -> None:
         if not endpoint.strip():
             raise ValueError("App Server endpoint must be non-empty")
@@ -117,7 +119,7 @@ class AppServerRecoveryLoop:
             raise ValueError("control telemetry queue size must be positive")
         self.endpoint = endpoint
         self.thread_states = thread_states
-        self.ingestor = AppServerTraceIngestor(journals_dir)
+        self.ingestor = AppServerTraceIngestor(journals_dir, mcp_semantics)
         self.on_state = on_state
         self.client_factory = client_factory or (lambda value: CodexAppServerClient(value))
         self.signals = signals or SignalEngine()

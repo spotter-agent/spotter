@@ -283,7 +283,10 @@ def _configured_mcp_resource(
 def effect_event(result: TraceEvent) -> TraceEvent | None:
     """Turn a completed Class C call into a durable, compact ledger entry."""
 
-    if result.kind != "tool_result" or result.payload.get("reversibility_class") != "C":
+    if (
+        result.kind not in {"tool_result", "command_result", "file_edit"}
+        or result.payload.get("reversibility_class") != "C"
+    ):
         return None
     outcome, evidence = _effect_outcome(result.payload)
     effect_id, correlation_quality = _effect_identity(result)

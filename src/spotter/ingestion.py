@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from spotter.app_server import AppServerEvent
+from spotter.config import McpToolSemantics
+from spotter.effects import Classification, classify, effect_event
 from spotter.identity import (
     IdentityProvenance,
     RuntimeIdentity,
@@ -43,8 +45,13 @@ class IngestionError(ValueError):
 class CodexTraceNormalizer:
     """The only layer allowed to know Codex notification and ThreadItem shapes."""
 
-    def __init__(self, identities: RuntimeIdentityRegistry | None = None) -> None:
+    def __init__(
+        self,
+        identities: RuntimeIdentityRegistry | None = None,
+        mcp_semantics: tuple[McpToolSemantics, ...] = (),
+    ) -> None:
         self.identities = identities or RuntimeIdentityRegistry()
+        self.mcp_semantics = mcp_semantics
 
     def normalize(self, event: AppServerEvent) -> TraceEvent:
         params = event.raw.get("params")
@@ -135,7 +142,7 @@ class CodexTraceNormalizer:
             item = _object(params.get("item"), "item")
             item_id = _string(item.get("id"), "item.id")
             completed = event.method == "item/completed"
-            kind, payload = _normalize_item(item, completed)
+            kind, payload = _normalize_item(item, completed, self.mcp_semantics)
             payload["lifecycle"] = "completed" if completed else "started"
             timestamp = _milliseconds(
                 params.get("completedAtMs") if completed else params.get("startedAtMs")
@@ -229,10 +236,12 @@ class CodexTraceNormalizer:
 class AppServerTraceIngestor:
     """Append normalized events once, with restart-safe lifecycle reconciliation."""
 
-    def __init__(self, journals_dir: Path) -> None:
+    def __init__(
+        self, journals_dir: Path, mcp_semantics: tuple[McpToolSemantics, ...] = ()
+    ) -> None:
         self.journals_dir = journals_dir
         self.journals_dir.mkdir(parents=True, exist_ok=True)
-        self.normalizer = CodexTraceNormalizer()
+        self.normalizer = CodexTraceNormalizer(mcp_semantics=mcp_semantics)
         self.source_audit = SourceAuditStore(journals_dir / SOURCE_AUDIT_RELATIVE_PATH)
         self.last_source_audit_error: str | None = None
         self._seen: set[str] = set()
@@ -334,8 +343,13 @@ class AppServerTraceIngestor:
                 )
             event = replace(event, arrival_seq=event.arrival_seq or previous_seq + 1)
 
-        record = StepJournal(self.journals_dir / route).record(event)
+        journal = StepJournal(self.journals_dir / route)
+        record = journal.record(event)
         self._remember(record.event, route)
+        effect = effect_event(event)
+        if effect is not None:
+            effect_record = journal.record(effect)
+            self._remember(effect_record.event, route)
         return record
 
     def append_operational(self, event: TraceEvent, *, observed_at: float) -> StepRecord:
@@ -414,7 +428,11 @@ class AppServerTraceIngestor:
                 )
 
 
-def _normalize_item(item: Mapping[str, Any], completed: bool) -> tuple[str, dict[str, Any]]:
+def _normalize_item(
+    item: Mapping[str, Any],
+    completed: bool,
+    mcp_semantics: tuple[McpToolSemantics, ...],
+) -> tuple[str, dict[str, Any]]:
     item_type = _optional_string(item.get("type")) or "unknown"
     if item_type == "userMessage":
         payload: dict[str, Any] = {"content": _user_content(item.get("content"))}
@@ -431,7 +449,13 @@ def _normalize_item(item: Mapping[str, Any], completed: bool) -> tuple[str, dict
         return "reasoning_summary", {"summary": summary if isinstance(summary, list) else []}
     if item_type == "commandExecution":
         kind = "command_result" if completed else "command_started"
-        return kind, _known(item, *APP_SERVER_ITEM_FIELDS["commandExecution"])
+        payload = _known(item, *APP_SERVER_ITEM_FIELDS["commandExecution"])
+        payload.update(
+            _classification_payload(
+                classify("Bash", {"command": payload.get("command"), "cwd": payload.get("cwd")})
+            )
+        )
+        return kind, payload
     if item_type == "fileChange":
         changes = item.get("changes")
         normalized = (
@@ -443,22 +467,67 @@ def _normalize_item(item: Mapping[str, Any], completed: bool) -> tuple[str, dict
             if isinstance(changes, list)
             else []
         )
-        return ("file_edit" if completed else "file_change_started"), {
+        payload = {
             "status": item.get("status"),
             "files": [change["path"] for change in normalized if "path" in change],
             "changes": normalized,
         }
+        payload.update(
+            _classification_payload(classify("apply_patch", {"files": payload["files"]}))
+        )
+        return ("file_edit" if completed else "file_change_started"), payload
     if item_type == "mcpToolCall":
         kind = "tool_result" if completed else "tool_started"
-        return kind, _known(item, *APP_SERVER_ITEM_FIELDS["mcpToolCall"])
+        payload = _known(item, *APP_SERVER_ITEM_FIELDS["mcpToolCall"])
+        server = _optional_string(payload.get("server")) or "unknown"
+        tool = _optional_string(payload.get("tool")) or "unknown"
+        arguments = payload.get("arguments")
+        values = dict(arguments) if isinstance(arguments, Mapping) else {}
+        payload.update(
+            _classification_payload(classify(f"mcp__{server}__{tool}", values, mcp_semantics))
+        )
+        return kind, payload
     if item_type == "dynamicToolCall":
         kind = "tool_result" if completed else "tool_started"
-        return kind, _known(item, *APP_SERVER_ITEM_FIELDS["dynamicToolCall"])
+        payload = _known(item, *APP_SERVER_ITEM_FIELDS["dynamicToolCall"])
+        namespace = _optional_string(payload.get("namespace")) or "unknown"
+        tool = _optional_string(payload.get("tool")) or "unknown"
+        arguments = payload.get("arguments")
+        values = dict(arguments) if isinstance(arguments, Mapping) else {}
+        payload.update(_classification_payload(classify(f"dynamic__{namespace}__{tool}", values)))
+        return kind, payload
     if item_type == "webSearch":
         return ("search" if completed else "search_started"), _known(
             item, *APP_SERVER_ITEM_FIELDS["webSearch"]
         )
     return ("item_completed" if completed else "item_started"), {"item_type": item_type}
+
+
+def _classification_payload(value: Classification) -> dict[str, Any]:
+    if value.reversibility_class == "B":
+        return {
+            "reversibility_class": "C",
+            "expected_reversibility_class": "B",
+            "effect_kind": f"uncheckpointed_{value.kind}",
+            "resource": value.resource,
+            "reversible": False,
+            "checkpoint_required": True,
+            "checkpoint_observed": False,
+            "effect_classifier": value.classifier_id,
+            "effect_reason": "checkpoint_unavailable",
+            "effect_confidence": value.parse_confidence,
+            "semantic_operation": value.semantic_operation,
+        }
+    return {
+        "reversibility_class": value.reversibility_class,
+        "effect_kind": value.kind,
+        "resource": value.resource,
+        "reversible": value.reversible,
+        "effect_classifier": value.classifier_id,
+        "effect_reason": value.reason_code,
+        "effect_confidence": value.parse_confidence,
+        "semantic_operation": value.semantic_operation,
+    }
 
 
 def _event_id(method: str, params: Mapping[str, Any]) -> str | None:

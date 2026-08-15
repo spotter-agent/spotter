@@ -20,6 +20,7 @@ from spotter.daemon import (
     DaemonServer,
     DaemonTimeout,
     RuntimeHealth,
+    _configured_mcp_semantics,
     _configured_reviewer,
     _PackageBoundaryMonitor,
     runtime_socket,
@@ -91,6 +92,27 @@ def test_daemon_loads_signal_review_opt_in_from_manifest_config(tmp_path: Path) 
 
     assert reviewer.model == "review-model"
     assert reviewer.on_signals is True
+
+
+def test_daemon_loads_mcp_semantics_from_manifest_config(tmp_path: Path) -> None:
+    layout = RuntimeLayout.discover(spotter_root=tmp_path / "home")
+    config = tmp_path / "custom.toml"
+    config.write_text(
+        '[main_agent]\nadapter = "codex"\n'
+        '[mcp_semantics."inventory"."lookup"]\n'
+        'operation = "read"\nreversibility = "A"\nresource_fields = ["item_id"]\n'
+    )
+    layout.integration_manifest.parent.mkdir(parents=True)
+    layout.integration_manifest.write_text(json.dumps({"config_path": str(config)}))
+
+    semantics = _configured_mcp_semantics(layout)
+
+    assert len(semantics) == 1
+    assert (semantics[0].server, semantics[0].tool, semantics[0].reversibility) == (
+        "inventory",
+        "lookup",
+        "A",
+    )
 
 
 def test_daemon_stops_cleanly_after_the_stable_package_is_removed(

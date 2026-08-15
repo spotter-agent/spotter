@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from spotter.build_identity import RuntimeComponent, current_build_identity, version_line
-from spotter.config import GatesConfig, ReviewerConfig, SpotterConfig
+from spotter.config import GatesConfig, McpToolSemantics, ReviewerConfig, SpotterConfig
 from spotter.gates import Gate, GateDecision
 from spotter.identity import ThreadId
 from spotter.paths import RuntimeLayout, RuntimeLayoutError, secure_dir
@@ -265,6 +265,7 @@ class DaemonServer:
         journals_dir: Path | None = None,
         layout: RuntimeLayout | None = None,
         reviewer_config: ReviewerConfig | None = None,
+        mcp_semantics: tuple[McpToolSemantics, ...] = (),
         package_watch_interval: float = _PACKAGE_WATCH_INTERVAL,
         package_missing_grace: float = _PACKAGE_MISSING_GRACE,
     ) -> None:
@@ -282,6 +283,7 @@ class DaemonServer:
         self.recovery: RuntimeRecovery | None = None
         self.review_executor: ReviewExecutor | None = None
         self.reviewer_config = reviewer_config or ReviewerConfig()
+        self.mcp_semantics = mcp_semantics
         self._runtime_id = uuid.uuid4().hex
         self._gate_requests = 0
         self._resource_sample_seq = 0
@@ -341,6 +343,7 @@ class DaemonServer:
                 self.journals_dir,
                 self.thread_states,
                 on_state=self._on_recovery_state,
+                mcp_semantics=self.mcp_semantics,
             )
             self.recovery = recovery
             self.review_executor = ReviewExecutor(
@@ -897,10 +900,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         layout = RuntimeLayout.discover()
         reviewer_config = _configured_reviewer(layout)
+        mcp_semantics = _configured_mcp_semantics(layout)
         asyncio.run(
             DaemonServer(
                 app_server_endpoint=_configured_app_server_endpoint(layout),
                 reviewer_config=reviewer_config,
+                mcp_semantics=mcp_semantics,
                 layout=layout,
             ).serve()
         )
@@ -943,6 +948,32 @@ def _configured_reviewer(layout: RuntimeLayout | None = None) -> ReviewerConfig:
             file=sys.stderr,
         )
         return ReviewerConfig()
+
+
+def _configured_mcp_semantics(
+    layout: RuntimeLayout | None = None,
+) -> tuple[McpToolSemantics, ...]:
+    runtime_layout = layout or RuntimeLayout.discover()
+    manifest_path = runtime_layout.integration_manifest
+    try:
+        raw = json.loads(manifest_path.read_bytes())
+    except (OSError, ValueError):
+        raw = {}
+    configured = raw.get("config_path") if isinstance(raw, dict) else None
+    config_path = Path(configured) if isinstance(configured, str) and configured else None
+    default_path = runtime_layout.user_config_dir / "spotter.toml"
+    config_path = config_path or (default_path if default_path.exists() else None)
+    if config_path is None:
+        return ()
+    try:
+        return SpotterConfig.from_toml(config_path).mcp_semantics
+    except (OSError, ValueError) as error:
+        print(
+            f"spotterd: unusable MCP semantics config {config_path} ({error}); "
+            "unknown MCP tools remain conservative",
+            file=sys.stderr,
+        )
+        return ()
 
 
 if __name__ == "__main__":

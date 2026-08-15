@@ -4,8 +4,12 @@ from typing import Any
 import pytest
 
 from spotter.app_server import AppServerEvent
+from spotter.config import McpToolSemantics
+from spotter.effects import effect_event
+from spotter.hook import event_from_hook
 from spotter.ingestion import AppServerTraceIngestor, CodexTraceNormalizer, IngestionError
 from spotter.snapshot import StepJournal
+from spotter.trace import TraceEvent
 
 
 def _event(method: str, params: dict[str, Any]) -> AppServerEvent:
@@ -98,6 +102,120 @@ def test_normalizes_lifecycle_and_authoritative_item_families() -> None:
     assert command.payload["exitCode"] == 0
     assert reasoning.payload["summary"] == ["Check the failing test"]
     assert "content" not in reasoning.payload
+
+
+def test_app_server_command_effects_share_native_correlation_with_hooks(tmp_path: Path) -> None:
+    ingestor = AppServerTraceIngestor(tmp_path)
+    ingestor.ingest(_event("thread/started", {"thread": {"id": "thread-1", "createdAt": 100}}))
+    ingestor.ingest(_event("turn/started", {"threadId": "thread-1", "turn": _turn()}))
+    completed = ingestor.ingest(
+        _item_event(
+            "item/completed",
+            {
+                "id": "call-7",
+                "type": "commandExecution",
+                "command": "git push origin feature",
+                "cwd": "/repo",
+                "status": "completed",
+                "exitCode": 0,
+            },
+        )
+    )
+    assert completed is not None
+    assert (
+        completed.event.payload["reversibility_class"],
+        completed.event.payload["effect_classifier"],
+        completed.event.payload["semantic_operation"],
+    ) == ("C", "git", "git.push")
+
+    effects = [
+        record.event for record in ingestor.records() if record.event.kind == "external_effect"
+    ]
+    assert len(effects) == 1
+    assert effects[0].payload["outcome"] == "succeeded"
+    assert effects[0].provenance is not None
+    assert effects[0].provenance.source == "codex_app_server"
+
+    hook_result = event_from_hook(
+        {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "tool_use_id": "call-7",
+            "tool_input": {"command": "git push origin feature"},
+            "tool_response": {"exit_code": 0},
+        }
+    )
+    hook_effect = effect_event(hook_result)
+    assert hook_effect is not None
+    assert hook_effect.payload["effect_id"] == effects[0].payload["effect_id"]
+
+
+def test_app_server_mcp_calls_use_exact_configured_semantics() -> None:
+    semantics = (
+        McpToolSemantics("inventory", "lookup", "read", "A", ("item_id",)),
+        McpToolSemantics("admin", "lookup", "delete", "C", ("item_id",)),
+    )
+    normalizer = CodexTraceNormalizer(mcp_semantics=semantics)
+    normalizer.normalize(_event("thread/started", {"thread": {"id": "thread-1", "createdAt": 100}}))
+    normalizer.normalize(_event("turn/started", {"threadId": "thread-1", "turn": _turn()}))
+
+    def call(server: str) -> TraceEvent:
+        return normalizer.normalize(
+            _item_event(
+                "item/completed",
+                {
+                    "id": f"{server}-call",
+                    "type": "mcpToolCall",
+                    "server": server,
+                    "tool": "lookup",
+                    "arguments": {"item_id": 42, "description": "model-generated read claim"},
+                    "status": "completed",
+                },
+            )
+        )
+
+    read = call("inventory")
+    delete = call("admin")
+
+    assert (read.payload["reversibility_class"], read.payload["resource"]) == (
+        "A",
+        "item_id=42",
+    )
+    assert (delete.payload["reversibility_class"], delete.payload["resource"]) == (
+        "C",
+        "item_id=42",
+    )
+    assert read.payload["effect_classifier"] == delete.payload["effect_classifier"] == "mcp_config"
+
+
+def test_app_server_downgrades_uncheckpointed_class_b_mutations(tmp_path: Path) -> None:
+    ingestor = AppServerTraceIngestor(tmp_path)
+    ingestor.ingest(_event("thread/started", {"thread": {"id": "thread-1", "createdAt": 100}}))
+    ingestor.ingest(_event("turn/started", {"threadId": "thread-1", "turn": _turn()}))
+    completed = ingestor.ingest(
+        _item_event(
+            "item/completed",
+            {
+                "id": "edit-1",
+                "type": "fileChange",
+                "changes": [{"path": "src/example.py", "kind": "update"}],
+                "status": "completed",
+            },
+        )
+    )
+    assert completed is not None
+    assert completed.event.payload["reversibility_class"] == "C"
+    assert completed.event.payload["expected_reversibility_class"] == "B"
+    assert completed.event.payload["checkpoint_required"] is True
+    assert completed.event.payload["checkpoint_observed"] is False
+    assert completed.event.payload["effect_reason"] == "checkpoint_unavailable"
+
+    effects = [
+        record.event for record in ingestor.records() if record.event.kind == "external_effect"
+    ]
+    assert len(effects) == 1
+    assert effects[0].payload["kind"] == "uncheckpointed_workspace_write"
+    assert effects[0].payload["outcome"] == "succeeded"
 
 
 def test_normalizes_user_message_control_correlation() -> None:
