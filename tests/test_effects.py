@@ -224,6 +224,14 @@ def test_curl_clustered_short_options_preserve_methods_and_local_outputs() -> No
         "Bash",
         {"command": "curl -sKrequest.conf https://api.example.com/items"},
     )
+    data_with_flag_letters = classify(
+        "Bash",
+        {"command": "curl -dsize=BIG https://api.example.com/items"},
+    )
+    unknown_cluster = classify(
+        "Bash",
+        {"command": "curl -s@ https://api.example.com/items"},
+    )
 
     assert (download.reversibility_class, download.resource) == (
         "B",
@@ -231,7 +239,12 @@ def test_curl_clustered_short_options_preserve_methods_and_local_outputs() -> No
     )
     assert (post.reversibility_class, post.semantic_operation) == ("C", "http.post")
     assert (data.reversibility_class, data.semantic_operation) == ("C", "http.post")
+    assert (
+        data_with_flag_letters.reversibility_class,
+        data_with_flag_letters.semantic_operation,
+    ) == ("C", "http.post")
     assert config.reason_code == "unsupported_curl_shape"
+    assert unknown_cluster.reason_code == "unsupported_curl_cluster"
 
 
 def test_invalid_url_port_fallback_still_redacts_credentials() -> None:

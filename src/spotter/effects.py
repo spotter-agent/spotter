@@ -112,6 +112,37 @@ _SCRIPT_RUNNERS = frozenset(
 )
 _HTTP_READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _HTTP_WRITE_METHODS = frozenset({"DELETE", "PATCH", "POST", "PUT"})
+_CURL_BOOLEAN_SHORT_OPTIONS = frozenset("#0123456789:BaGfghiIJjklLMnNOqRSsvVZ")
+_CURL_VALUE_SHORT_OPTIONS = frozenset(
+    {
+        "A",
+        "b",
+        "C",
+        "c",
+        "D",
+        "d",
+        "E",
+        "e",
+        "F",
+        "H",
+        "K",
+        "m",
+        "o",
+        "P",
+        "Q",
+        "r",
+        "T",
+        "t",
+        "U",
+        "u",
+        "w",
+        "X",
+        "x",
+        "Y",
+        "y",
+        "z",
+    }
+)
 _SQL_READ_VERBS = frozenset({"DESC", "DESCRIBE", "SHOW"})
 _SQL_WRITE_VERBS = frozenset(
     {
@@ -389,8 +420,14 @@ def _classify_terraform(words: Sequence[str], values: dict[str, Any]) -> Classif
 
 
 def _classify_curl(words: Sequence[str], values: dict[str, Any]) -> Classification:
+    normalized = _normalize_curl_args(words)
+    if normalized is None:
+        return _unknown("unsupported_curl_cluster", "http", "curl")
+    words = normalized
     if _has_option_prefix(words, "-K", "--config") or _has_option(words, "-:", "--next"):
         return _unknown("unsupported_curl_shape", "http", "curl")
+    if _has_option(words, "-Q", "--quote"):
+        return _unknown("unsupported_curl_remote_command", "http", "curl")
     url = _curl_url(words)
     if url is None:
         return _unknown("missing_http_resource", "http", "curl")
@@ -636,22 +673,12 @@ def _option_values(words: Sequence[str], *names: str) -> list[str]:
             if len(name) == 2 and token.startswith(name) and len(token) > len(name):
                 values.append(token[len(name) :])
                 break
-            if len(name) == 2 and _short_cluster_contains(token, name[1]):
-                suffix = token[token.index(name[1], 1) + 1 :]
-                if suffix:
-                    values.append(suffix)
-                elif index + 1 < len(words):
-                    values.append(words[index + 1])
-                break
     return values
 
 
 def _has_option(words: Sequence[str], *names: str) -> bool:
     return any(
-        token in names
-        or any(token.startswith(name + "=") for name in names)
-        or any(len(name) == 2 and _short_cluster_contains(token, name[1]) for name in names)
-        for token in words
+        token in names or any(token.startswith(name + "=") for name in names) for token in words
     )
 
 
@@ -662,17 +689,44 @@ def _has_option_prefix(words: Sequence[str], *names: str) -> bool:
                 return True
             if len(name) == 2 and token.startswith(name) and len(token) > len(name):
                 return True
-            if len(name) == 2 and _short_cluster_contains(token, name[1]):
-                return True
     return False
 
 
 def _has_short_flag(words: Sequence[str], flag: str) -> bool:
-    return any(token == f"-{flag}" or _short_cluster_contains(token, flag) for token in words)
+    return any(token == f"-{flag}" for token in words)
 
 
-def _short_cluster_contains(token: str, flag: str) -> bool:
-    return token.startswith("-") and not token.startswith("--") and flag in token[1:]
+def _normalize_curl_args(words: Sequence[str]) -> list[str] | None:
+    normalized: list[str] = []
+    index = 0
+    while index < len(words):
+        token = words[index]
+        if not token.startswith("-") or token.startswith("--") or token == "-":
+            normalized.append(token)
+            index += 1
+            continue
+        cluster = token[1:]
+        offset = 0
+        while offset < len(cluster):
+            option = cluster[offset]
+            if option in _CURL_BOOLEAN_SHORT_OPTIONS:
+                normalized.append(f"-{option}")
+                offset += 1
+                continue
+            if option not in _CURL_VALUE_SHORT_OPTIONS:
+                return None
+            normalized.append(f"-{option}")
+            attached = cluster[offset + 1 :]
+            if attached:
+                normalized.append(attached)
+            elif index + 1 < len(words):
+                index += 1
+                normalized.append(words[index])
+            else:
+                return None
+            break
+        index += 1
+    return normalized
 
 
 def _executable(value: str) -> str:
