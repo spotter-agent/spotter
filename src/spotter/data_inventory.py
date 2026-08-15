@@ -1,8 +1,10 @@
 """Conservative schema-backed inventory for Spotter durable user data."""
 
 import json
+import os
 import stat
 from dataclasses import dataclass
+from fcntl import LOCK_EX, LOCK_UN, flock
 from pathlib import Path
 
 from spotter.budget import LEDGER_SCHEMA, LEDGER_SCHEMA_VERSION
@@ -33,6 +35,13 @@ class DataResourceInspection:
     presence: ResourcePresence
     size_bytes: int | None
     reason: str
+
+
+@dataclass(frozen=True)
+class DataRemovalResult:
+    inspection: DataResourceInspection | None
+    outcome: str
+    failure: str | None = None
 
 
 SchemaIdentity = tuple[str, int, str]
@@ -113,8 +122,54 @@ class DataInventory:
         except OSError:
             inspections.append(self._inaccessible(lock))
         else:
-            inspections.append(self._companion_lock(lock, spend))
+            inspected_lock = self._companion_lock(lock, spend)
+            if inspected_lock is not None:
+                inspections.append(inspected_lock)
         return tuple(sorted(inspections, key=lambda item: item.relative_path))
+
+    def remove(self, item: DataResourceInspection) -> DataRemovalResult:
+        """Remove one schema-proven file after serialised ownership revalidation.
+
+        The lock is deliberately retained. Removing a lock path can split waiting and new writers
+        across different inodes, so an empty regular orphan lock is an expected synchronization
+        remnant rather than durable user data.
+        """
+        if item.confidence != OwnershipConfidence.SAFE_OWNED or item.relative_path.endswith(
+            ".lock"
+        ):
+            return DataRemovalResult(item, "skipped_ambiguous", "resource is not removable data")
+        path = self.root / item.relative_path
+        lock_path = self._lock_path(path)
+        flags = os.O_RDWR | os.O_CREAT
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = -1
+        try:
+            self._validate_directory_chain(lock_path.parent)
+            descriptor = os.open(lock_path, flags, 0o600)
+            lock_status = os.fstat(descriptor)
+            if not stat.S_ISREG(lock_status.st_mode):
+                raise DataInventoryError("data lock is not a regular file")
+            with os.fdopen(descriptor, "r+") as lock:
+                descriptor = -1
+                flock(lock, LOCK_EX)
+                try:
+                    self._validate_directory_chain(path.parent)
+                    current = self._reinspect(path)
+                    if current is None:
+                        return DataRemovalResult(None, "already_absent")
+                    if current.confidence != OwnershipConfidence.SAFE_OWNED:
+                        return DataRemovalResult(current, "skipped_ambiguous", current.reason)
+                    self._validate_directory_chain(path.parent)
+                    path.unlink()
+                    self._sync_directory(path.parent)
+                    return DataRemovalResult(current, "removed")
+                finally:
+                    flock(lock, LOCK_UN)
+        except (OSError, DataInventoryError) as error:
+            if descriptor >= 0:
+                os.close(descriptor)
+            return DataRemovalResult(item, "failed_retryable", str(error))
 
     def _inspect_family(self, directory: Path, family: str) -> list[DataResourceInspection]:
         try:
@@ -159,8 +214,58 @@ class DataInventory:
         by_path = {item.relative_path: item for item in inspections}
         for lock in locks:
             companion = str(lock.relative_to(self.root))[: -len(".lock")]
-            inspections.append(self._companion_lock(lock, by_path.get(companion)))
+            inspected_lock = self._companion_lock(lock, by_path.get(companion))
+            if inspected_lock is not None:
+                inspections.append(inspected_lock)
         return inspections
+
+    def _reinspect(self, path: Path) -> DataResourceInspection | None:
+        try:
+            path.stat(follow_symlinks=False)
+        except FileNotFoundError:
+            return None
+        except OSError:
+            return self._inaccessible(path)
+        relative = path.relative_to(self.root)
+        identity = _ROOT_FILES.get(relative)
+        if identity is None and relative.parts:
+            family = relative.parts[0]
+            if family in _FAMILY_DEFAULTS:
+                identity = self._identity_for(path, family)
+        if identity is None:
+            return self._ambiguous(path, "data path no longer has a recognized schema identity")
+        return self._inspect_schema_file(path, identity)
+
+    def _lock_path(self, path: Path) -> Path:
+        relative = path.relative_to(self.root)
+        if relative == Path("review-spend.json"):
+            return self.root / "review-spend.lock"
+        if relative.parts[0] == "sessions" and path.name.endswith(".jsonl.state"):
+            return Path(str(path)[: -len(".state")] + ".lock")
+        return path.with_suffix(path.suffix + ".lock")
+
+    @staticmethod
+    def _sync_directory(directory: Path) -> None:
+        descriptor = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    def _validate_directory_chain(self, directory: Path) -> None:
+        current = self.root
+        try:
+            relative = directory.relative_to(self.root)
+        except ValueError as error:
+            raise DataInventoryError("data path escaped the durable-data root") from error
+        status = current.stat(follow_symlinks=False)
+        if not stat.S_ISDIR(status.st_mode):
+            raise DataInventoryError(f"data parent is not a directory: {current}")
+        for part in relative.parts:
+            current /= part
+            status = current.stat(follow_symlinks=False)
+            if not stat.S_ISDIR(status.st_mode):
+                raise DataInventoryError(f"data parent is not a directory: {current}")
 
     @staticmethod
     def _identity_for(path: Path, family: str) -> SchemaIdentity | None:
@@ -215,14 +320,16 @@ class DataInventory:
 
     def _companion_lock(
         self, path: Path, companion: DataResourceInspection | None
-    ) -> DataResourceInspection:
+    ) -> DataResourceInspection | None:
         try:
             status = path.stat(follow_symlinks=False)
         except OSError:
             return self._inaccessible(path)
         if not stat.S_ISREG(status.st_mode):
             return self._ambiguous(path, "lock companion is not a regular file")
-        if companion is None or companion.confidence != OwnershipConfidence.SAFE_OWNED:
+        if companion is None:
+            return None
+        if companion.confidence != OwnershipConfidence.SAFE_OWNED:
             return self._ambiguous(path, "lock has no schema-proven companion data file")
         return DataResourceInspection(
             str(path.relative_to(self.root)),

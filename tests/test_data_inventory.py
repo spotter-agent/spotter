@@ -77,6 +77,14 @@ def test_broken_root_lock_is_not_silently_ignored(tmp_path: Path) -> None:
     assert inspection.confidence == OwnershipConfidence.AMBIGUOUS
 
 
+def test_regular_orphan_lock_is_ignored(tmp_path: Path) -> None:
+    labels = tmp_path / "labels"
+    labels.mkdir()
+    (labels / "removed.jsonl.lock").touch()
+
+    assert DataInventory(tmp_path).inspect() == ()
+
+
 def test_symlinked_data_root_is_refused(tmp_path: Path) -> None:
     real = tmp_path / "real"
     real.mkdir()
@@ -117,3 +125,84 @@ def test_symlink_is_never_schema_ownership_proof(tmp_path: Path) -> None:
 
     assert inspection.confidence == OwnershipConfidence.AMBIGUOUS
     assert "not a regular file" in inspection.reason
+
+
+def test_remove_revalidates_schema_and_retains_lock(tmp_path: Path) -> None:
+    path = tmp_path / "labels/s.jsonl"
+    path.parent.mkdir()
+    path.write_text(json.dumps({"schema": "spotter.label", "schema_version": 6}) + "\n")
+    inventory = DataInventory(tmp_path)
+    [inspection] = inventory.inspect()
+
+    result = inventory.remove(inspection)
+
+    assert result.outcome == "removed"
+    assert not path.exists()
+    assert path.with_suffix(".jsonl.lock").is_file()
+    assert inventory.inspect() == ()
+
+
+def test_remove_refuses_data_that_changed_after_preview(tmp_path: Path) -> None:
+    path = tmp_path / "labels/s.jsonl"
+    path.parent.mkdir()
+    path.write_text(json.dumps({"schema": "spotter.label", "schema_version": 6}) + "\n")
+    inventory = DataInventory(tmp_path)
+    [inspection] = inventory.inspect()
+    path.write_text(json.dumps({"schema": "spotter.label", "schema_version": 99}) + "\n")
+
+    result = inventory.remove(inspection)
+
+    assert result.outcome == "skipped_ambiguous"
+    assert path.exists()
+
+
+def test_remove_refuses_non_regular_lock(tmp_path: Path) -> None:
+    path = tmp_path / "labels/s.jsonl"
+    path.parent.mkdir()
+    path.write_text(json.dumps({"schema": "spotter.label", "schema_version": 6}) + "\n")
+    lock = path.with_suffix(".jsonl.lock")
+    lock.symlink_to(path)
+    inventory = DataInventory(tmp_path)
+    inspections = {item.relative_path: item for item in inventory.inspect()}
+
+    result = inventory.remove(inspections["labels/s.jsonl"])
+
+    assert result.outcome == "failed_retryable"
+    assert path.exists()
+
+
+def test_remove_root_ledger_uses_and_retains_root_lock(tmp_path: Path) -> None:
+    path = tmp_path / "review-spend.json"
+    path.write_text(json.dumps({"schema": "spotter.review_spend", "schema_version": 1}))
+    lock = tmp_path / "review-spend.lock"
+    lock.touch()
+    inventory = DataInventory(tmp_path)
+    inspections = {item.relative_path: item for item in inventory.inspect()}
+
+    result = inventory.remove(inspections["review-spend.json"])
+
+    assert result.outcome == "removed"
+    assert not path.exists()
+    assert lock.is_file()
+    assert inventory.inspect() == ()
+
+
+def test_remove_refuses_replaced_parent_directory(tmp_path: Path) -> None:
+    labels = tmp_path / "labels"
+    labels.mkdir()
+    path = labels / "s.jsonl"
+    row = json.dumps({"schema": "spotter.label", "schema_version": 6}) + "\n"
+    path.write_text(row)
+    inventory = DataInventory(tmp_path)
+    [inspection] = inventory.inspect()
+    labels.rename(tmp_path / "original-labels")
+    foreign = tmp_path / "foreign-labels"
+    foreign.mkdir()
+    foreign_path = foreign / "s.jsonl"
+    foreign_path.write_text(row)
+    labels.symlink_to(foreign, target_is_directory=True)
+
+    result = inventory.remove(inspection)
+
+    assert result.outcome == "failed_retryable"
+    assert foreign_path.exists()

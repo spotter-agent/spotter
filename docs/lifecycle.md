@@ -1340,13 +1340,14 @@ If package-manager uninstall cannot run lifecycle cleanup reliably, `spotter tea
 # 16. Purge
 
 Purge is the target destructive data-cleanup operation. Repository and durable-data previews plus
-two explicit destructive scopes are implemented:
+three explicit destructive scopes are implemented:
 
 ```bash
 spotter purge --all --dry-run
 spotter purge --all --dry-run --json
 spotter purge --data --dry-run
 spotter purge --data --dry-run --json
+spotter purge --data
 spotter purge --snapshots --dry-run
 spotter purge --snapshots
 spotter purge --logs --dry-run
@@ -1374,15 +1375,21 @@ spotter pins remove --pin-id <uuid>
 Only an exact registered Spotter-owned snapshot can be pinned. A pin protects the snapshot from
 both ordinary prune and explicit age expiry until it is removed. An unreadable, future-version, or
 stale pin store makes purge eligibility unknown rather than silently dropping the claim.
-Destructive scopes other than `--snapshots` and `--logs` remain tracked by
+Destructive scopes other than `--snapshots`, `--data`, and `--logs` remain tracked by
 [#89](https://github.com/spotter-agent/spotter/issues/89) and refuse mutation.
 
-`purge --data --dry-run` inventories durable data independently of repository snapshots and logs.
+`purge --data --dry-run` inventories durable data independently of repository snapshots and logs;
+`purge --data` removes only the proven files.
 Every record in a file must match that family's current schema name and version before the file is
 `SAFE_OWNED`; an exact regular `.lock` companion inherits that proof. Legacy schema-less, empty,
 future-version, corrupt, symlinked, non-regular, unreadable, and unknown paths remain `AMBIGUOUS` or
-`INACCESSIBLE`. The preview excludes configuration and the repository, integration, runtime, and
-log scopes, never mutates files, and returns non-zero when any path is not safely attributable.
+`INACCESSIBLE`. Before each deletion Spotter acquires that store's lock path without following
+symlinks, revalidates the complete schema, unlinks the file, and syncs its parent directory. Lock
+files are deliberately retained: unlinking a lock can split queued and new writers across different
+inodes. Regular orphan locks are ignored on retries, while a non-regular lock blocks deletion.
+Configuration and the repository, integration, runtime, and log scopes remain excluded. Safe files
+are still removed when another path is ambiguous, with a non-zero result reporting the partial
+outcome. An active writer may create new data after this point-in-time purge.
 
 `purge --snapshots` removes only exact `SAFE_OWNED`, unreferenced registered worktrees and snapshot
 refs. It holds the global snapshot lock, removes worktrees through Git first, recomputes reachability,
@@ -1399,12 +1406,13 @@ owned anchors instead of unlinking live files, so current writers keep a valid d
 reports every unregistered log-directory entry as `AMBIGUOUS`, never touches a replaced public
 path, preserves ownership evidence for idempotent reruns, and returns non-zero for skipped or failed
 resources. This is a point-in-time clear: an active writer may append new bytes immediately after
-the command. Destructive data, integration, and `--all` scopes remain pending.
+the command. Destructive integration and `--all` scopes remain pending.
 
 Examples:
 
 ```bash
 spotter purge --data --dry-run
+spotter purge --data
 spotter purge --snapshots
 spotter purge --logs
 spotter purge --all

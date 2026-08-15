@@ -393,7 +393,9 @@ snapshot을 명시적으로 보존하려면 `spotter pins add --repo <경로> --
 `spotter purge --data --dry-run`으로 영구 사용자 데이터를 미리 확인할 수 있습니다. 파일 전체가
 현재 family schema와 일치하고 정확한 일반 lock companion인 경우에만 안전한 소유 대상으로
 분류합니다. legacy, 손상, 빈 파일, 미래 버전, symlink, 접근 불가, 알 수 없는 경로는 건너뛰고
-보고합니다. data/integration/full 파괴 범위는
+보고합니다. `spotter purge --data`로 입증된 파일만 제거할 수 있습니다. Spotter는 삭제 직전에 각
+파일을 lock하고 다시 검증하며, 동시 writer가 서로 다른 lock inode로 갈라지지 않도록 일반 lock
+파일은 보존합니다. 활성 writer는 명령 후 새 데이터를 만들 수 있습니다. integration/full 파괴 범위는
 [#89](https://github.com/spotter-agent/spotter/issues/89)에 남아 있습니다.
 
 통합 해제 전에 패키지를 제거했더라도 생성된 Hook은 fail-open으로 동작하도록 설계되어 있습니다.

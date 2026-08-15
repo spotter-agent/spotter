@@ -35,7 +35,11 @@ from spotter.daemon import (
     RuntimeHealth,
     ServiceManager,
 )
-from spotter.data_inventory import DataInventory, DataInventoryError, DataResourceInspection
+from spotter.data_inventory import (
+    DataInventory,
+    DataInventoryError,
+    DataResourceInspection,
+)
 from spotter.doctor import FAIL, INFO, OK, WARN, check_runtime, worst
 from spotter.doctor import run as run_doctor
 from spotter.effects import (
@@ -191,7 +195,7 @@ def build_parser() -> argparse.ArgumentParser:
             "analyze: summarize journaled sessions; fork: branch a session at a step; "
             "fork-coverage: classify each session proposal for replay eligibility; "
             "prune: drop unreferenced refs/spotter snapshots (dry-run without --apply); "
-            "purge: preview resources, remove snapshots, or clear exact owned logs; "
+            "purge: preview resources or remove exact owned snapshots, data, and log contents; "
             "pins: add, remove, or list durable manual snapshot roots; "
             "review: run the shadow reviewer on a session (records only, injects nothing); "
             "experiment: guidance or identical-neutral fork pairs (needs --run to execute); "
@@ -291,7 +295,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--data",
         dest="purge_data",
         action="store_true",
-        help="purge: preview schema-proven durable user data",
+        help="purge: remove schema-proven durable user data",
     )
     parser.add_argument(
         "--logs",
@@ -303,7 +307,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         dest="json_output",
         action="store_true",
-        help="purge preview: emit machine-readable JSON",
+        help="purge: emit machine-readable JSON",
     )
     parser.add_argument(
         "--forks", action="store_true", help="prune: also remove orphaned fork worktrees"
@@ -496,14 +500,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error("purge requires exactly one of --all, --snapshots, --data, or --logs")
         if args.purge_all and not args.dry_run:
             parser.error("destructive --all is not implemented; use --dry-run")
-        if args.purge_data and not args.dry_run:
-            parser.error("destructive --data is not implemented; use --dry-run")
         if args.target is not None or args.portable:
             parser.error("purge accepts only a scope, optional --dry-run, and optional --json")
         if args.apply:
             parser.error("purge is destructive without --dry-run; do not pass --apply")
         if args.purge_data:
-            return _purge_data_preview_main(json_output=args.json_output)
+            return _purge_data_main(json_output=args.json_output, apply=not args.dry_run)
         if args.purge_logs:
             return _purge_logs_main(json_output=args.json_output, apply=not args.dry_run)
         return _purge_main(
@@ -1943,13 +1945,37 @@ def _pins_main(
 
 
 def _data_purge_outcome(item: DataResourceInspection) -> str:
-    return "planned" if item.confidence == OwnershipConfidence.SAFE_OWNED else "skipped_ambiguous"
+    if item.confidence != OwnershipConfidence.SAFE_OWNED:
+        return "skipped_ambiguous"
+    if item.relative_path.endswith(".lock"):
+        return "preserved_synchronization"
+    return "planned"
 
 
-def _purge_data_preview_main(*, json_output: bool) -> int:
-    """Preview schema-proven user data without mutating durable state."""
+def _purge_data_main(*, json_output: bool, apply: bool) -> int:
+    """Plan or remove schema-proven user data under each store's retained lock."""
+    inventory = DataInventory()
+    outcomes: dict[str, str] = {}
+    failures: dict[str, str] = {}
     try:
-        inspections = DataInventory().inspect()
+        inspections = inventory.inspect()
+        reported = {item.relative_path: item for item in inspections}
+        for item in inspections:
+            outcomes[item.relative_path] = _data_purge_outcome(item)
+        if apply:
+            for item in inspections:
+                if outcomes[item.relative_path] != "planned":
+                    continue
+                result = inventory.remove(item)
+                outcomes[item.relative_path] = result.outcome
+                if result.inspection is not None:
+                    reported[item.relative_path] = result.inspection
+                if result.failure is not None:
+                    failures[item.relative_path] = result.failure
+            for item in inventory.inspect():
+                reported.setdefault(item.relative_path, item)
+                outcomes.setdefault(item.relative_path, _data_purge_outcome(item))
+        inspections = tuple(sorted(reported.values(), key=lambda item: item.relative_path))
     except (OSError, DataInventoryError) as error:
         print(f"purge failed: {error}", file=sys.stderr)
         return 1
@@ -1966,8 +1992,8 @@ def _purge_data_preview_main(*, json_output: bool) -> int:
             "presence": item.presence.value,
             "size_bytes": item.size_bytes,
             "reason": item.reason,
-            "outcome": _data_purge_outcome(item),
-            "failure": None,
+            "outcome": outcomes[item.relative_path],
+            "failure": failures.get(item.relative_path),
         }
         for item in inspections
     ]
@@ -1976,8 +2002,8 @@ def _purge_data_preview_main(*, json_output: bool) -> int:
             json.dumps(
                 {
                     "scope": "data",
-                    "dry_run": True,
-                    "deletion_supported": False,
+                    "dry_run": not apply,
+                    "deletion_supported": True,
                     "summary": summary,
                     "resources": resources,
                 },
@@ -1985,7 +2011,8 @@ def _purge_data_preview_main(*, json_output: bool) -> int:
             )
         )
     else:
-        print("purge preview (dry-run); scope=data")
+        action = "purge results" if apply else "purge preview (dry-run)"
+        print(f"{action}; scope=data")
         for name in groups:
             matching = [item for item in inspections if item.confidence.value == name]
             print(f"{name} ({len(matching)})")
@@ -1993,10 +2020,13 @@ def _purge_data_preview_main(*, json_output: bool) -> int:
                 size = "unknown" if item.size_bytes is None else str(item.size_bytes)
                 print(
                     f"  data {item.relative_path} [{item.presence.value.lower()}, {size} bytes] "
-                    f"- {_data_purge_outcome(item)} - {item.reason}"
+                    f"- {outcomes[item.relative_path]} - {item.reason}"
                 )
+                if item.relative_path in failures:
+                    print(f"    failure: {failures[item.relative_path]}")
     return int(
-        any(
+        bool(failures)
+        or any(
             item.confidence in {OwnershipConfidence.INACCESSIBLE, OwnershipConfidence.AMBIGUOUS}
             for item in inspections
         )

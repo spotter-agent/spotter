@@ -466,8 +466,11 @@ active writers remain valid, never touches replaced or unregistered paths, and m
 bytes immediately from an active writer. Preview durable user data with
 `spotter purge --data --dry-run`; only files whose complete contents match the current family schema
 and exact regular lock companions are safely owned. Legacy, corrupt, empty, future-version,
-symlinked, unreadable, and unknown paths are skipped and reported. Data/integration/full destructive
-scopes remain pending in
+symlinked, unreadable, and unknown paths are skipped and reported. Remove those proven files with
+`spotter purge --data`. Spotter locks and revalidates each file immediately before deletion, retains
+regular lock files to avoid splitting concurrent writers across lock inodes, and may receive newly
+created data from an active writer after the command. Integration/full destructive scopes remain
+pending in
 [#89](https://github.com/spotter-agent/spotter/issues/89).
 
 If the package was removed before teardown, generated Hooks are designed to fail open. Reinstall the

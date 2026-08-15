@@ -347,7 +347,7 @@ def test_data_purge_preview_reports_current_journal_family(
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["scope"] == "data"
-    assert payload["deletion_supported"] is False
+    assert payload["deletion_supported"] is True
     resources = {resource["resource_id"]: resource for resource in payload["resources"]}
     assert set(resources) == {
         "sessions/owned.jsonl",
@@ -355,8 +355,75 @@ def test_data_purge_preview_reports_current_journal_family(
         "sessions/owned.jsonl.state",
     }
     assert {resource["group"] for resource in resources.values()} == {"SAFE_OWNED"}
-    assert {resource["outcome"] for resource in resources.values()} == {"planned"}
+    assert resources["sessions/owned.jsonl"]["outcome"] == "planned"
+    assert resources["sessions/owned.jsonl.state"]["outcome"] == "planned"
+    assert resources["sessions/owned.jsonl.lock"]["outcome"] == "preserved_synchronization"
     assert journal.path.exists(), "preview must not delete data"
+
+
+def test_data_purge_removes_schema_proven_files_and_retains_lock(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    journal = StepJournal(journal_path({"session_id": "owned"}))
+    journal.record(TraceEvent("user_prompt", {"prompt": "test"}))
+    lock = journal.path.with_suffix(journal.path.suffix + ".lock")
+
+    assert main(["purge", "--data", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    resources = {resource["resource_id"]: resource for resource in payload["resources"]}
+    assert resources["sessions/owned.jsonl"]["outcome"] == "removed"
+    assert resources["sessions/owned.jsonl.state"]["outcome"] == "removed"
+    assert resources["sessions/owned.jsonl.lock"]["outcome"] == "preserved_synchronization"
+    assert not journal.path.exists()
+    assert not journal.path.with_suffix(journal.path.suffix + ".state").exists()
+    assert lock.is_file()
+
+    assert main(["purge", "--data", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["resources"] == []
+
+
+def test_data_purge_removes_safe_data_but_preserves_ambiguous_data(
+    spotter_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    labels = spotter_home / "labels"
+    labels.mkdir(parents=True)
+    safe = labels / "safe.jsonl"
+    safe.write_text(json.dumps({"schema": "spotter.label", "schema_version": 6}) + "\n")
+    ambiguous = labels / "legacy.jsonl"
+    ambiguous.write_text(json.dumps({"verdict": "verify"}) + "\n")
+
+    assert main(["purge", "--data", "--json"]) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    resources = {resource["resource_id"]: resource for resource in payload["resources"]}
+    assert resources["labels/safe.jsonl"]["outcome"] == "removed"
+    assert resources["labels/legacy.jsonl"]["outcome"] == "skipped_ambiguous"
+    assert not safe.exists()
+    assert ambiguous.exists()
+
+
+def test_data_purge_continues_after_one_lock_failure(
+    spotter_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    labels = spotter_home / "labels"
+    labels.mkdir(parents=True)
+    row = json.dumps({"schema": "spotter.label", "schema_version": 6}) + "\n"
+    blocked = labels / "blocked.jsonl"
+    blocked.write_text(row)
+    blocked.with_suffix(".jsonl.lock").symlink_to(blocked)
+    removable = labels / "removable.jsonl"
+    removable.write_text(row)
+
+    assert main(["purge", "--data", "--json"]) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    resources = {resource["resource_id"]: resource for resource in payload["resources"]}
+    assert resources["labels/blocked.jsonl"]["outcome"] == "failed_retryable"
+    assert resources["labels/blocked.jsonl.lock"]["outcome"] == "skipped_ambiguous"
+    assert resources["labels/removable.jsonl"]["outcome"] == "removed"
+    assert blocked.exists()
+    assert not removable.exists()
 
 
 def test_data_purge_preview_surfaces_unknown_or_corrupt_data(
@@ -391,6 +458,11 @@ def test_data_purge_preview_excludes_other_scope_roots(
     payload = json.loads(capsys.readouterr().out)
     assert payload["resources"] == []
     assert (logs / "foreign.log").read_text() == "keep"
+
+    assert main(["purge", "--data", "--json"]) == 0
+    capsys.readouterr()
+    assert (logs / "foreign.log").read_text() == "keep"
+    assert (spotter_home / "spotter.toml").exists()
 
 
 def test_missing_repository_is_inaccessible(
@@ -449,8 +521,6 @@ def test_purge_refuses_non_preview_invocation() -> None:
         main(["purge", "--snapshots", "--apply"])
     with pytest.raises(SystemExit):
         main(["purge", "--logs", "--apply"])
-    with pytest.raises(SystemExit):
-        main(["purge", "--data"])
     with pytest.raises(SystemExit):
         main(["purge", "codex", "--all", "--dry-run"])
 
