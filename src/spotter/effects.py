@@ -378,14 +378,23 @@ def _has_explicit_success(payload: Mapping[str, object], response: object) -> bo
     candidates: list[object] = [payload.get("success"), payload.get("status")]
     if isinstance(response, Mapping):
         candidates.extend((response.get("ok"), response.get("success"), response.get("status")))
+    has_exit_code = _has_exit_code(payload, response)
     return any(
         value is True
         or (
             isinstance(value, str)
             and value.casefold() in {"completed", "passed", "succeeded", "success"}
+            and not (has_exit_code and value.casefold() == "completed")
         )
         for value in candidates
     )
+
+
+def _has_exit_code(payload: Mapping[str, object], response: object) -> bool:
+    values = [payload.get("exitCode"), payload.get("exit_code")]
+    if isinstance(response, Mapping):
+        values.append(response.get("exit_code"))
+    return any(isinstance(value, int) and not isinstance(value, bool) for value in values)
 
 
 def _has_zero_exit_code(payload: Mapping[str, object], response: object) -> bool:

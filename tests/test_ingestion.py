@@ -132,7 +132,10 @@ def test_app_server_command_effects_share_native_correlation_with_hooks(tmp_path
         record.event for record in ingestor.records() if record.event.kind == "external_effect"
     ]
     assert len(effects) == 1
-    assert effects[0].payload["outcome"] == "succeeded"
+    assert (effects[0].payload["outcome"], effects[0].payload["outcome_evidence"]) == (
+        "unknown",
+        "exit_zero_only",
+    )
     assert effects[0].provenance is not None
     assert effects[0].provenance.source == "codex_app_server"
 

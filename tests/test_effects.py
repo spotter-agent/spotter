@@ -719,6 +719,24 @@ def test_external_effect_outcomes_require_explicit_evidence() -> None:
     assert effect({"status": "partial"}) == ("partial", "partial_result")
     assert effect(None) == ("unknown", "no_conclusive_result")
 
+    completed_command = effect_event(
+        TraceEvent(
+            "command_result",
+            {
+                "reversibility_class": "C",
+                "effect_kind": "git_remote_write",
+                "resource": "origin",
+                "status": "completed",
+                "exitCode": 0,
+            },
+        )
+    )
+    assert completed_command is not None
+    assert (
+        completed_command.payload["outcome"],
+        completed_command.payload["outcome_evidence"],
+    ) == ("unknown", "exit_zero_only")
+
 
 def test_effect_coverage_counts_unknowns_by_bounded_classifier_family() -> None:
     from spotter.hook import event_from_hook
