@@ -9,6 +9,7 @@ import shlex
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Literal
+from urllib.parse import urlsplit, urlunsplit
 
 from spotter.trace import TraceEvent
 
@@ -108,6 +109,28 @@ _TERRAFORM_WRITE_VERBS = frozenset(
 )
 _SCRIPT_RUNNERS = frozenset(
     {"deno", "make", "node", "npm", "npx", "perl", "php", "python", "python3", "ruby"}
+)
+_HTTP_READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+_HTTP_WRITE_METHODS = frozenset({"DELETE", "PATCH", "POST", "PUT"})
+_SQL_READ_VERBS = frozenset({"DESC", "DESCRIBE", "SHOW"})
+_SQL_WRITE_VERBS = frozenset(
+    {
+        "ALTER",
+        "CALL",
+        "COMMENT",
+        "CREATE",
+        "DELETE",
+        "DO",
+        "DROP",
+        "GRANT",
+        "INSERT",
+        "MERGE",
+        "REINDEX",
+        "REVOKE",
+        "TRUNCATE",
+        "UPDATE",
+        "VACUUM",
+    }
 )
 
 
@@ -251,6 +274,10 @@ def _classify_tokens(
         result = _classify_kubectl(rest, values)
     elif executable == "terraform":
         result = _classify_terraform(rest, values)
+    elif executable == "curl":
+        result = _classify_curl(rest, values)
+    elif executable in {"mysql", "psql"}:
+        result = _classify_database(executable, rest, values)
     elif executable in _SCRIPT_RUNNERS:
         result = _unknown("uninspected_script", executable, "script_runner")
     else:
@@ -359,6 +386,94 @@ def _classify_terraform(words: Sequence[str], values: dict[str, Any]) -> Classif
     if verb in _TERRAFORM_WRITE_VERBS:
         return _known("C", "external_command_write", resource, False, "terraform", semantic)
     return _unknown("unsupported_terraform_subcommand", resource, "terraform", semantic)
+
+
+def _classify_curl(words: Sequence[str], values: dict[str, Any]) -> Classification:
+    if _has_option_prefix(words, "-K", "--config") or _has_option(words, "-:", "--next"):
+        return _unknown("unsupported_curl_shape", "http", "curl")
+    url = _curl_url(words)
+    if url is None:
+        return _unknown("missing_http_resource", "http", "curl")
+
+    explicit_method = _option_value(words, "-X", "--request")
+    has_data = _has_option_prefix(
+        words,
+        "-d",
+        "-F",
+        "--data",
+        "--data-ascii",
+        "--data-binary",
+        "--data-raw",
+        "--data-urlencode",
+        "--form",
+        "--form-string",
+        "--json",
+    )
+    upload = _option_value(words, "-T", "--upload-file")
+    if explicit_method is not None:
+        method = explicit_method.upper()
+    elif _has_option(words, "-G", "--get"):
+        method = "GET"
+    elif _has_option(words, "-I", "--head"):
+        method = "HEAD"
+    elif upload is not None:
+        method = "PUT"
+    elif has_data:
+        method = "POST"
+    else:
+        method = "GET"
+
+    resource = _sanitize_remote_resource(url)
+    semantic = f"http.{method.lower()}"
+    if method in _HTTP_WRITE_METHODS:
+        return _known("C", "external_command_write", resource, False, "curl", semantic)
+    if method not in _HTTP_READ_METHODS:
+        return _unknown("unsupported_http_method", resource, "curl", semantic)
+    if upload is not None or (has_data and not _has_option(words, "-G", "--get")):
+        return _unknown("http_read_method_with_request_body", resource, "curl", semantic)
+
+    output = _curl_local_output(words)
+    if output is not None:
+        return _known(
+            "B",
+            "local_write",
+            f"{output} <- {resource}",
+            True,
+            "curl",
+            f"{semantic}.download",
+        )
+    return _known("A", "external_read", resource, True, "curl", semantic)
+
+
+def _classify_database(
+    executable: str, words: Sequence[str], values: dict[str, Any]
+) -> Classification:
+    classifier = "postgres" if executable == "psql" else "mysql"
+    resource = _database_resource(executable, words, values)
+    if _has_option(words, "--help", "--version"):
+        return _known("A", "observation", executable, True, classifier, f"{classifier}.help")
+    if _has_option_prefix(words, "-f", "--file") or _has_option(words, "--init-command"):
+        return _unknown("uninspected_database_script", resource, classifier)
+
+    queries = _option_values(
+        words,
+        *(("-c", "--command") if executable == "psql" else ("-e", "--execute")),
+    )
+    if len(queries) > 1:
+        return _unknown("multiple_database_commands", resource, classifier)
+    if not queries:
+        if executable == "psql" and _has_option(words, "-l", "--list"):
+            return _known("A", "external_read", resource, True, classifier, "postgres.list")
+        return _unknown("interactive_database_command", resource, classifier)
+    verb = _sql_verb(queries[0])
+    if verb is None:
+        return _unknown("unsupported_sql_shape", resource, classifier)
+    semantic = f"{classifier}.{verb.lower()}"
+    if verb in _SQL_READ_VERBS:
+        return _known("A", "external_read", resource, True, classifier, semantic)
+    if verb in _SQL_WRITE_VERBS:
+        return _known("C", "external_command_write", resource, False, classifier, semantic)
+    return _unknown("unsupported_sql_semantics", resource, classifier, semantic)
 
 
 def _tokens(command: str) -> list[str] | None:
@@ -504,15 +619,48 @@ def _combined_confidence(value: Classification) -> ParseConfidence:
 
 
 def _option_value(words: Sequence[str], *names: str) -> str | None:
+    values = _option_values(words, *names)
+    return values[-1] if values else None
+
+
+def _option_values(words: Sequence[str], *names: str) -> list[str]:
+    values: list[str] = []
     for index, token in enumerate(words):
         if token in names and index + 1 < len(words):
-            return words[index + 1]
+            values.append(words[index + 1])
+            continue
         for name in names:
             if token.startswith(name + "="):
-                return token.partition("=")[2]
+                values.append(token.partition("=")[2])
+                break
             if len(name) == 2 and token.startswith(name) and len(token) > len(name):
-                return token[len(name) :]
-    return None
+                values.append(token[len(name) :])
+                break
+    return values
+
+
+def _has_option(words: Sequence[str], *names: str) -> bool:
+    return any(
+        token in names or any(token.startswith(name + "=") for name in names) for token in words
+    )
+
+
+def _has_option_prefix(words: Sequence[str], *names: str) -> bool:
+    for token in words:
+        for name in names:
+            if token == name or token.startswith(name + "="):
+                return True
+            if len(name) == 2 and token.startswith(name) and len(token) > len(name):
+                return True
+    return False
+
+
+def _has_short_flag(words: Sequence[str], flag: str) -> bool:
+    return any(
+        token == f"-{flag}"
+        or (token.startswith("-") and not token.startswith("--") and flag in token[1:])
+        for token in words
+    )
 
 
 def _executable(value: str) -> str:
@@ -549,6 +697,92 @@ def _gh_resource(words: Sequence[str], values: dict[str, Any]) -> str:
             if not token.startswith("-"):
                 return f"github:{token}"[:300]
     return _external_resource(values, "github")
+
+
+def _curl_url(words: Sequence[str]) -> str | None:
+    explicit = _option_value(words, "--url")
+    if explicit is not None:
+        return explicit
+    return next(
+        (token for token in words if token.startswith(("http://", "https://"))),
+        None,
+    )
+
+
+def _curl_local_output(words: Sequence[str]) -> str | None:
+    output = _option_value(words, "-o", "--output")
+    if output is not None:
+        return output
+    file_options = (
+        ("-D", "--dump-header"),
+        ("-c", "--cookie-jar"),
+        ("--alt-svc",),
+        ("--etag-save",),
+        ("--hsts",),
+        ("--stderr",),
+        ("--trace",),
+        ("--trace-ascii",),
+    )
+    for names in file_options:
+        if value := _option_value(words, *names):
+            return value
+    write_out = _option_value(words, "-w", "--write-out")
+    if write_out is not None and "%output{" in write_out:
+        return "curl write-out file"
+    if _has_short_flag(words, "O") or _has_option(
+        words, "--remote-name", "--remote-header-name", "--remote-name-all"
+    ):
+        return "remote-named download"
+    return None
+
+
+def _sanitize_remote_resource(value: str) -> str:
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        return value.partition("?")[0].partition("#")[0][:300]
+    if not parsed.scheme or not parsed.hostname:
+        return value.partition("?")[0].partition("#")[0][:300]
+    host = parsed.hostname
+    if ":" in host:
+        host = f"[{host}]"
+    if port is not None:
+        host = f"{host}:{port}"
+    return urlunsplit((parsed.scheme, host, parsed.path, "", ""))[:300]
+
+
+def _database_resource(executable: str, words: Sequence[str], values: dict[str, Any]) -> str:
+    explicit = values.get("resource")
+    if isinstance(explicit, str):
+        return _sanitize_remote_resource(explicit) if "://" in explicit else explicit[:300]
+    if executable == "psql":
+        database = _option_value(words, "-d", "--dbname")
+        host = _option_value(words, "-h", "--host")
+        family = "postgres"
+    else:
+        database = _option_value(words, "-D", "--database")
+        host = _option_value(words, "-h", "--host")
+        family = "mysql"
+    if database and "://" in database:
+        return _sanitize_remote_resource(database)
+    parts = [family]
+    if host:
+        parts.append(f"host/{host}")
+    if database:
+        parts.append(f"database/{database}")
+    return ":".join(parts)[:300]
+
+
+def _sql_verb(query: str) -> str | None:
+    stripped = query.strip()
+    if not stripped or stripped.startswith(("--", "/*", "\\")):
+        return None
+    statements = [part.strip() for part in stripped.split(";") if part.strip()]
+    if len(statements) != 1:
+        return None
+    first = statements[0].split(maxsplit=1)[0]
+    return first.upper() if first.isalpha() else None
 
 
 def _kubectl_resource(words: Sequence[str], verb: str | None) -> str:

@@ -1100,12 +1100,13 @@ Effect
 A reasoning restart must never imply that external state was automatically rolled back.
 
 The current Hook path performs a bounded, deterministic classification before execution. It
-recognizes explicit Git, GitHub CLI, Kubernetes CLI, and Terraform operations, unwraps a small set
-of common shell wrappers, and combines compound commands by their strongest effect. Each result
-keeps classifier, semantic-operation, reason, resource, and confidence provenance. Unsupported
-subcommands, scripts, malformed shell, and over-deep wrappers remain explicitly unknown while
-mapping to conservative Class C behavior. This is still only the first #98 classifier slice: richer
-MCP metadata, HTTP/database families, and effect reconciliation remain future work.
+recognizes explicit Git, GitHub CLI, Kubernetes CLI, Terraform, HTTP method, and bounded database
+metadata/write operations, unwraps a small set of common shell wrappers, and combines compound
+commands by their strongest effect. Remote HTTP resources drop credentials, queries, and fragments
+before persistence. Each result keeps classifier, semantic-operation, reason, resource, and
+confidence provenance. Unsupported subcommands, scripts, SQL, malformed shell, and over-deep
+wrappers remain explicitly unknown while mapping to conservative Class C behavior. Configured MCP
+semantics and effect reconciliation remain future #98 work.
 
 ---
 

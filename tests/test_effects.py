@@ -137,6 +137,132 @@ def test_malformed_shell_composition_and_gh_api_fields_are_not_read_only() -> No
     assert too_large.reason_code == "command_too_large"
 
 
+def test_curl_classification_uses_http_method_and_redacts_resource_secrets() -> None:
+    read = classify(
+        "Bash",
+        {"command": "curl 'https://user:secret@example.com/items?token=secret#frag'"},
+    )
+    post = classify(
+        "Bash",
+        {"command": 'curl -d \'{"name":"item"}\' https://api.example.com/items'},
+    )
+    attached = classify(
+        "Bash",
+        {"command": "curl -XDELETE https://api.example.com/items/1"},
+    )
+    download = classify(
+        "Bash",
+        {"command": "curl -o result.json https://api.example.com/items"},
+    )
+    cookie_jar = classify(
+        "Bash",
+        {"command": "curl -c cookies.txt https://api.example.com/items"},
+    )
+    remote_name = classify(
+        "Bash",
+        {"command": "curl --remote-name https://api.example.com/items.json"},
+    )
+
+    assert (read.reversibility_class, read.semantic_operation, read.resource) == (
+        "A",
+        "http.get",
+        "https://example.com/items",
+    )
+    assert (post.reversibility_class, post.semantic_operation) == ("C", "http.post")
+    assert (attached.reversibility_class, attached.semantic_operation) == (
+        "C",
+        "http.delete",
+    )
+    assert (download.reversibility_class, download.semantic_operation) == (
+        "B",
+        "http.get.download",
+    )
+    assert download.resource == "result.json <- https://api.example.com/items"
+    assert cookie_jar.reversibility_class == "B"
+    assert remote_name.reversibility_class == "B"
+
+
+def test_curl_unknown_shapes_never_inherit_get_semantics() -> None:
+    config = classify(
+        "Bash",
+        {"command": "curl -Krequest.conf https://api.example.com/items"},
+    )
+    unknown_method = classify(
+        "Bash",
+        {"command": "curl -XPROPFIND https://api.example.com/items"},
+    )
+    missing_url = classify("Bash", {"command": "curl example.com/items"})
+    get_with_body = classify(
+        "Bash",
+        {"command": "curl -XGET -d payload https://api.example.com/items"},
+    )
+
+    assert config.reason_code == "unsupported_curl_shape"
+    assert unknown_method.reason_code == "unsupported_http_method"
+    assert missing_url.reason_code == "missing_http_resource"
+    assert get_with_body.reason_code == "http_read_method_with_request_body"
+    assert all(
+        assessment.reversibility_class == "C" and assessment.parse_confidence == "unknown"
+        for assessment in (config, unknown_method, missing_url, get_with_body)
+    )
+
+
+def test_database_cli_classification_limits_reads_to_bounded_metadata_queries() -> None:
+    postgres_list = classify(
+        "Bash",
+        {"command": "psql --dbname=postgresql://user:secret@db.example.com/app --list"},
+    )
+    mysql_show = classify(
+        "Bash",
+        {"command": "mysql -h db.example.com -D app -e 'SHOW TABLES'"},
+    )
+    postgres_delete = classify(
+        "Bash",
+        {"command": "psql -h db.example.com -d app -c 'DELETE FROM jobs'"},
+    )
+    mysql_update = classify(
+        "Bash",
+        {"command": "mysql -Dapp -eUPDATE\\ jobs\\ SET\\ status=1"},
+    )
+
+    assert (postgres_list.reversibility_class, postgres_list.resource) == (
+        "A",
+        "postgresql://db.example.com/app",
+    )
+    assert (mysql_show.reversibility_class, mysql_show.semantic_operation) == (
+        "A",
+        "mysql.show",
+    )
+    assert mysql_show.resource == "mysql:host/db.example.com:database/app"
+    assert (postgres_delete.reversibility_class, postgres_delete.semantic_operation) == (
+        "C",
+        "postgres.delete",
+    )
+    assert (mysql_update.reversibility_class, mysql_update.semantic_operation) == (
+        "C",
+        "mysql.update",
+    )
+
+
+def test_database_scripts_selects_and_multi_statements_remain_unknown() -> None:
+    script = classify("Bash", {"command": "psql -f migration.sql"})
+    select = classify("Bash", {"command": "psql -c 'SELECT run_user_function()'"})
+    multi = classify("Bash", {"command": "mysql -e 'SHOW TABLES; DELETE FROM jobs'"})
+    multiple_options = classify(
+        "Bash",
+        {"command": "psql -c 'SHOW search_path' -c 'DELETE FROM jobs'"},
+    )
+
+    assert script.reason_code == "uninspected_database_script"
+    assert select.reason_code == "unsupported_sql_semantics"
+    assert multi.reason_code == "unsupported_sql_shape"
+    assert multiple_options.reason_code == "multiple_database_commands"
+    assert all(
+        assessment.reversibility_class == "C" and assessment.parse_confidence == "unknown"
+        for assessment in (script, select, multi, multiple_options)
+    )
+
+
 def test_class_c_result_becomes_effect_with_recovery_identity() -> None:
     result = TraceEvent(
         "tool_result",
