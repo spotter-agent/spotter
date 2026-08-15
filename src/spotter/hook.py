@@ -31,6 +31,7 @@ from spotter.daemon import (
 from spotter.effects import classify
 from spotter.gates import Gate, GateDecision
 from spotter.identity import RuntimeIdentity
+from spotter.log_registry import LogRegistry, LogRegistryError
 from spotter.paths import RuntimeLayout, sanitize_session, secure_dir, spotter_home
 from spotter.snapshot import SnapshotError, StepJournal, global_lock, snapshot_worktree
 from spotter.trace import TraceEvent, TraceProvenance
@@ -217,7 +218,11 @@ def _maybe_spawn_shadow_review(
         args += ["--config", str(config_path)]
     logs = RuntimeLayout.discover().log_dir
     logs.mkdir(parents=True, exist_ok=True)
-    with (logs / f"review-{sanitize_session(session)}.log").open("ab") as log:
+    safe_session = sanitize_session(session)
+    log_path = logs / f"review-{safe_session}.log"
+    with suppress(LogRegistryError, OSError):
+        LogRegistry(log_dir=logs).claim(log_path, f"review:{safe_session}")
+    with log_path.open("ab") as log:
         try:
             subprocess.Popen(
                 args,

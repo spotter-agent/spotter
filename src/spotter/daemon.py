@@ -24,6 +24,7 @@ from spotter.build_identity import RuntimeComponent, current_build_identity, ver
 from spotter.config import GatesConfig, McpToolSemantics, ReviewerConfig, SpotterConfig
 from spotter.gates import Gate, GateDecision
 from spotter.identity import ThreadId
+from spotter.log_registry import LogRegistry, LogRegistryError
 from spotter.paths import RuntimeLayout, RuntimeLayoutError, secure_dir
 from spotter.protocol import CONTROL_PROTOCOL_VERSION
 from spotter.review_executor import ReviewExecutor
@@ -633,6 +634,8 @@ class ManualServiceManager:
         home = secure_dir(self.layout.user_data_dir)
         logs = secure_dir(self.layout.log_dir)
         log_path = logs / "spotterd.log"
+        with suppress(LogRegistryError, OSError):
+            LogRegistry(log_dir=logs).claim(log_path, "spotterd")
         with log_path.open("ab") as log:
             process = subprocess.Popen(
                 list(self.layout.daemon_command),
@@ -725,6 +728,8 @@ class ManagedServiceManager:
         home = secure_dir(self.layout.user_data_dir)
         logs = secure_dir(self.layout.log_dir)
         log_path = logs / "spotterd.log"
+        with suppress(LogRegistryError, OSError):
+            LogRegistry(log_dir=logs).claim(log_path, "spotterd")
         if self.platform == "darwin":
             program = self._program()
             return plistlib.dumps(

@@ -1380,7 +1380,10 @@ referenced. Dry-run simulates that ordering without mutation. Human and JSON out
 resource as `planned`, `skipped_referenced`, `skipped_ambiguous`, `already_absent`, `removed`,
 `failed_retryable`, or `failed_manual_recovery`; one repository failure does not undo successful
 cleanup in another. Ownership records remain as idempotent audit evidence until a future full purge.
-Destructive data, log, integration, and `--all` scopes remain pending.
+New daemon and reviewer logs now receive a separate exact, schema-versioned ownership record when
+Spotter creates the file. A pre-existing or inode-replaced log remains unowned rather than being
+adopted from its filename, so a future log purge can distinguish safe resources from ambiguous
+ones. Destructive data, log, integration, and `--all` scopes remain pending.
 
 Examples:
 
@@ -1600,6 +1603,7 @@ the same resource lock; future, foreign, or corrupt lineage is never overwritten
 | Frozen task-batch results | `spotter.task_batch` v1 | Read schema-name-less v1; atomically repair only a validated torn tail | Refuse preflight, repair, and append |
 | Fork lineage | `spotter.fork_manifest` v6 | Read v1-v6 with explicit historical coverage defaults | Refuse replacement |
 | Repository ownership | `spotter.repository_registry` v1 | No legacy ownership is inferred from names | Refuse inspection or mutation |
+| Log ownership | `spotter.log_registry` v1 | Existing unrecorded logs remain unowned | Refuse ownership mutation; never adopt by filename |
 | Manual snapshot roots | `spotter.snapshot_pins` v1 | No legacy pin format | Refuse mutation; prune aborts and purge eligibility becomes unknown |
 | Integration ownership | `spotter.integration_manifest` v4 | Migrate v1-v3 in memory and persist current ownership evidence atomically | Refuse setup, teardown, or destructive reconciliation |
 | User/repository config | `spotter.config` v1 | Read schema-less legacy config without inventing activation state | Refuse activation |

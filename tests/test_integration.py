@@ -22,6 +22,7 @@ from spotter.integration import (
     IntegrationManager,
     IntegrationManifest,
 )
+from spotter.log_registry import LogRegistry
 from spotter.paths import RuntimeLayout
 
 
@@ -793,6 +794,9 @@ def test_managed_service_uses_stable_package_and_user_layout(
         assert f'Environment="SPOTTER_HOME={spotter_home}"' in text
         assert f'StandardOutput="append:{spotter_home}/logs/spotterd.log"' in text
     assert "Cellar" not in definition.decode()
+    [owned_log] = LogRegistry(log_dir=layout.log_dir).load()
+    assert owned_log.resource_id == "spotterd"
+    assert owned_log.expected_path == str(layout.log_dir / "spotterd.log")
 
 
 def test_systemd_definition_escapes_percent_specifiers(homes: tuple[Path, Path]) -> None:
