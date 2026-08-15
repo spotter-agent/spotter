@@ -45,7 +45,13 @@ from spotter.effects import (
     measure_effect_coverage,
     render_effect_coverage,
 )
-from spotter.experiment import list_forks, results_path, run_experiment, summarize
+from spotter.experiment import (
+    ExperimentResultError,
+    list_forks,
+    results_path,
+    run_experiment,
+    summarize,
+)
 from spotter.feedback import FeedbackError, add_feedback, load_feedback
 from spotter.gates import Gate
 from spotter.hook import journal_path, run_hook
@@ -550,7 +556,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 environment_variables=tuple(args.environment_variable),
                 environment_venv_or_cache=tuple(args.environment_venv_or_cache),
             )
-        except (ReplayError, SnapshotError, OSError, subprocess.SubprocessError) as error:
+        except (
+            ExperimentResultError,
+            ReplayError,
+            SnapshotError,
+            OSError,
+            subprocess.SubprocessError,
+        ) as error:
             print(f"experiment failed: {error}", file=sys.stderr)
             return 1
         print(summarize(results))

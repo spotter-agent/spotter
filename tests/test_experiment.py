@@ -13,8 +13,11 @@ import spotter.experiment as experiment
 from spotter.cli import main
 from spotter.config import GatesConfig, MainAgentConfig, ReviewerConfig, SpotterConfig
 from spotter.experiment import (
+    EXPERIMENT_RESULT_SCHEMA,
+    EXPERIMENT_RESULT_SCHEMA_VERSION,
     ArmClassification,
     ArmResult,
+    ExperimentResultError,
     results_path,
     run_experiment,
     summarize,
@@ -76,6 +79,12 @@ def test_results_carry_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
     assert meta["reasoning_effort"] == "low"
     assert meta["result_schema_version"] == 3
     assert rows[-1]["complete"] is True and rows[-1]["finished_at"]
+    assert all(
+        row["schema"] == EXPERIMENT_RESULT_SCHEMA
+        and row["schema_version"] == EXPERIMENT_RESULT_SCHEMA_VERSION
+        and row["result_schema_version"] == EXPERIMENT_RESULT_SCHEMA_VERSION
+        for row in rows
+    )
     # every row is linked to its conditions via the experiment id
     assert all(row["experiment_id"] == meta["experiment_id"] for row in rows[1:])
     assert all(row.get("classification") == "UNJUDGEABLE" for row in rows[1:-1])
@@ -89,6 +98,64 @@ def test_results_carry_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
     rows2 = [json.loads(line) for line in results_path("s1", 5).read_text().splitlines()]
     metas = [r for r in rows2 if r.get("meta")]
     assert len(metas) == 2 and metas[0]["experiment_id"] != metas[1]["experiment_id"]
+
+
+def test_legacy_result_history_is_read_before_current_rows_are_appended(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(experiment, "fork", _fake_fork({}))
+    run_experiment("s1", 5, "first")
+    path = results_path("s1", 5)
+    legacy = []
+    for line in path.read_text().splitlines():
+        row = json.loads(line)
+        row.pop("schema")
+        row.pop("schema_version")
+        if row.get("complete") is True:
+            row.pop("result_schema_version")
+        legacy.append(row)
+    path.write_text("".join(json.dumps(row) + "\n" for row in legacy))
+
+    monkeypatch.setattr(experiment, "fork", _fake_fork({}))
+    run_experiment("s1", 5, "second")
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+
+    assert all("schema" not in row for row in rows[:4])
+    assert all(row["schema"] == EXPERIMENT_RESULT_SCHEMA for row in rows[4:])
+
+
+@pytest.mark.parametrize(
+    ("schema", "version", "message"),
+    [
+        (EXPERIMENT_RESULT_SCHEMA, EXPERIMENT_RESULT_SCHEMA_VERSION + 1, "understands up to"),
+        ("someone.else", EXPERIMENT_RESULT_SCHEMA_VERSION, "unsupported schema"),
+    ],
+)
+def test_incompatible_result_history_is_refused_before_fork_or_append(
+    monkeypatch: pytest.MonkeyPatch, schema: str, version: int, message: str
+) -> None:
+    path = results_path("s1", 5)
+    path.write_text(
+        json.dumps(
+            {
+                "schema": schema,
+                "schema_version": version,
+                "result_schema_version": version,
+                "meta": True,
+                "experiment_id": "existing",
+            }
+        )
+        + "\n"
+    )
+    before = path.read_bytes()
+
+    def unexpected_fork(*args: object, **kwargs: object) -> ForkPlan:
+        raise AssertionError("incompatible history must be refused before forking")
+
+    monkeypatch.setattr(experiment, "fork", unexpected_fork)
+    with pytest.raises(ExperimentResultError, match=message):
+        run_experiment("s1", 5, "hint")
+    assert path.read_bytes() == before
 
 
 def test_experiment_persists_minimal_agent_cost_provenance(

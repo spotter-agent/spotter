@@ -27,6 +27,7 @@ from contextlib import suppress
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
+from fcntl import LOCK_EX, flock
 from pathlib import Path
 
 from spotter.hook import journal_path
@@ -42,9 +43,14 @@ from spotter.replay import (
 from spotter.snapshot import StepJournal
 
 CONTROL_PROMPT = "Continue the task."
+EXPERIMENT_RESULT_SCHEMA = "spotter.experiment_result"
 EXPERIMENT_RESULT_SCHEMA_VERSION = 3
 _OUTPUT_LIMIT = 4000
 _TOKENS_USED_RE = re.compile(r"tokens used\s*\n\s*([0-9][0-9,]*)", re.IGNORECASE)
+
+
+class ExperimentResultError(ValueError):
+    """A durable experiment result history is incompatible or corrupt."""
 
 
 class ArmClassification(StrEnum):
@@ -85,6 +91,71 @@ def results_path(session_id: str, step: int) -> Path:
     base = spotter_home() / "experiments"
     base.mkdir(parents=True, exist_ok=True)
     return base / f"{sanitize_session(session_id)}-step{step}.jsonl"
+
+
+def _append_result(path: Path, row: dict[str, object]) -> None:
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    with lock_path.open("a") as lock:
+        flock(lock, LOCK_EX)
+        _validate_result_history(path)
+        with path.open("a", encoding="utf-8") as sink:
+            sink.write(json.dumps(row) + "\n")
+            sink.flush()
+            os.fsync(sink.fileno())
+
+
+def _validate_result_history(path: Path) -> None:
+    if not path.exists():
+        return
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except UnicodeError as error:
+        raise ExperimentResultError(f"{path.name} is not valid UTF-8 ({error})") from error
+    for number, line in enumerate(lines, 1):
+        if not line.strip():
+            continue
+        try:
+            raw = json.loads(line)
+            if not isinstance(raw, dict):
+                raise TypeError("record is not an object")
+            schema = raw.get("schema")
+            schema_version = raw.get("schema_version")
+            version = raw.get("result_schema_version")
+            legacy_completion = (
+                schema is None
+                and schema_version is None
+                and version is None
+                and raw.get("complete") is True
+            )
+            if not legacy_completion and (
+                not isinstance(version, int) or isinstance(version, bool)
+            ):
+                raise ExperimentResultError(
+                    f"{path.name} line {number} has a non-integer result schema version"
+                )
+            if schema is None and schema_version is None:
+                pass
+            elif schema != EXPERIMENT_RESULT_SCHEMA:
+                raise ExperimentResultError(
+                    f"{path.name} line {number} uses unsupported schema {schema!r}"
+                )
+            elif not isinstance(schema_version, int) or isinstance(schema_version, bool):
+                raise ExperimentResultError(
+                    f"{path.name} line {number} has a non-integer schema version"
+                )
+            elif schema_version != version:
+                raise ExperimentResultError(
+                    f"{path.name} line {number} has mismatched schema versions"
+                )
+            if isinstance(version, int) and version not in {1, 2, EXPERIMENT_RESULT_SCHEMA_VERSION}:
+                raise ExperimentResultError(
+                    f"{path.name} line {number} uses result schema v{version}; "
+                    f"this build understands up to v{EXPERIMENT_RESULT_SCHEMA_VERSION}"
+                )
+        except (json.JSONDecodeError, TypeError, UnicodeError) as error:
+            raise ExperimentResultError(
+                f"{path.name} line {number} is unreadable ({error})"
+            ) from error
 
 
 def _run_arm(
@@ -392,6 +463,8 @@ def run_experiment(
     # Provenance header: rows are meaningless as measurements unless the exact
     # conditions that produced them can be recovered and compared.
     meta = {
+        "schema": EXPERIMENT_RESULT_SCHEMA,
+        "schema_version": EXPERIMENT_RESULT_SCHEMA_VERSION,
         "meta": True,
         "result_schema_version": EXPERIMENT_RESULT_SCHEMA_VERSION,
         "experiment_id": experiment_id,
@@ -415,8 +488,7 @@ def run_experiment(
         "environment_venv_or_cache": list(environment_venv_or_cache),
         "started_at": datetime.now(UTC).isoformat(),
     }
-    with out.open("a", encoding="utf-8") as sink:
-        sink.write(json.dumps(meta) + "\n")
+    _append_result(out, meta)
     results: list[ArmResult] = []
     for pair in range(pairs):
         arms = (
@@ -518,22 +590,28 @@ def run_experiment(
                 agent_elapsed_ms=agent_elapsed_ms,
             )
             results.append(result)
-            with out.open("a", encoding="utf-8") as sink:  # one row per run, crash-safe
-                sink.write(json.dumps(asdict(result)) + "\n")
+            _append_result(
+                out,
+                {
+                    "schema": EXPERIMENT_RESULT_SCHEMA,
+                    "schema_version": EXPERIMENT_RESULT_SCHEMA_VERSION,
+                    **asdict(result),
+                },
+            )
             if run and not keep_artifacts:
                 _cleanup(plan.worktree)
-    with out.open("a", encoding="utf-8") as sink:
-        sink.write(
-            json.dumps(
-                {
-                    "complete": True,
-                    "experiment_id": experiment_id,
-                    "results": len(results),
-                    "finished_at": datetime.now(UTC).isoformat(),
-                }
-            )
-            + "\n"
-        )
+    _append_result(
+        out,
+        {
+            "schema": EXPERIMENT_RESULT_SCHEMA,
+            "schema_version": EXPERIMENT_RESULT_SCHEMA_VERSION,
+            "result_schema_version": EXPERIMENT_RESULT_SCHEMA_VERSION,
+            "complete": True,
+            "experiment_id": experiment_id,
+            "results": len(results),
+            "finished_at": datetime.now(UTC).isoformat(),
+        },
+    )
     return results
 
 

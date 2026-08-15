@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from spotter.app_server import AppServerEvent
+from spotter.experiment import EXPERIMENT_RESULT_SCHEMA
 from spotter.hook import event_from_hook
 from spotter.identity import IdentityProvenance, RuntimeIdentity, ThreadId, TurnId
 from spotter.ingestion import CodexTraceNormalizer
@@ -182,6 +183,43 @@ def test_objective_outcomes_reject_unknown_persisted_schema(tmp_path: Path) -> N
 
     with pytest.raises(ObjectiveOutcomeError, match="unsupported experiment result schema 99"):
         measure_objective_outcomes([path])
+
+
+def test_objective_outcomes_reject_foreign_experiment_schema(tmp_path: Path) -> None:
+    path = tmp_path / "foreign.jsonl"
+    _write_rows(
+        path,
+        {
+            "schema": "someone.else",
+            "schema_version": 3,
+            "result_schema_version": 3,
+            "experiment_id": "foreign",
+            "pair": 0,
+            "arm": "neutral_a",
+            "classification": "PASS",
+        },
+    )
+
+    with pytest.raises(ObjectiveOutcomeError, match="unsupported experiment schema"):
+        measure_objective_outcomes([path])
+
+
+def test_objective_outcomes_accept_current_experiment_schema(tmp_path: Path) -> None:
+    path = tmp_path / "current.jsonl"
+    _write_rows(
+        path,
+        {
+            "schema": EXPERIMENT_RESULT_SCHEMA,
+            "schema_version": 3,
+            "result_schema_version": 3,
+            "experiment_id": "current",
+            "pair": 0,
+            "arm": "neutral_a",
+            "classification": "PASS",
+        },
+    )
+
+    assert measure_objective_outcomes([path]).passing_arms == 1
 
 
 def test_objective_outcomes_project_v3_experiment_agent_costs(tmp_path: Path) -> None:

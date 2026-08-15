@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from statistics import mean
 
+from spotter.experiment import EXPERIMENT_RESULT_SCHEMA
 from spotter.outcomes import outcome_failure
 from spotter.snapshot import StepRecord
 from spotter.trace import TraceEvent
@@ -1187,8 +1188,35 @@ def _result_rows(path: Path) -> tuple[Mapping[str, object], ...]:
             raise ObjectiveOutcomeError(f"{path}: corrupt row {index + 1}") from error
         if not isinstance(row, Mapping):
             raise ObjectiveOutcomeError(f"{path}: row {index + 1} is not an object")
+        if isinstance(row.get("experiment_id"), str) and row["experiment_id"]:
+            _validate_experiment_result_schema(row, path, index + 1)
         rows.append(row)
     return tuple(rows)
+
+
+def _validate_experiment_result_schema(row: Mapping[str, object], path: Path, number: int) -> None:
+    schema_name = row.get("schema")
+    schema_version = row.get("schema_version")
+    version = row.get("result_schema_version")
+    if schema_name is None and schema_version is None:
+        if version is None and row.get("complete") is True:
+            return
+    elif schema_name != EXPERIMENT_RESULT_SCHEMA:
+        raise ObjectiveOutcomeError(
+            f"{path}: row {number} uses unsupported experiment schema {schema_name!r}"
+        )
+    elif not isinstance(schema_version, int) or isinstance(schema_version, bool):
+        raise ObjectiveOutcomeError(
+            f"{path}: row {number} has a non-integer experiment schema version"
+        )
+    elif schema_version != version:
+        raise ObjectiveOutcomeError(
+            f"{path}: row {number} has mismatched experiment schema versions"
+        )
+    if not isinstance(version, int) or isinstance(version, bool):
+        raise ObjectiveOutcomeError(f"{path}: row {number} has no experiment schema version")
+    if version not in {1, 2, 3}:
+        raise ObjectiveOutcomeError(f"{path}: unsupported experiment result schema {version}")
 
 
 def _objective_arm(row: Mapping[str, object], path: Path) -> _ObjectiveArm | None:
@@ -1225,8 +1253,6 @@ def _objective_arm(row: Mapping[str, object], path: Path) -> _ObjectiveArm | Non
         and not isinstance(pair, bool)
         and pair >= 0
     ):
-        if schema not in {1, 2, 3}:
-            raise ObjectiveOutcomeError(f"{path}: unsupported experiment result schema {schema}")
         pair_key = f"experiment:{experiment_id}:{pair}"
         key = f"{pair_key}:{arm}"
     else:

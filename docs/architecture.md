@@ -442,12 +442,13 @@ mechanical classification to costs carried by the same stable run/pair/arm ident
 coverage when agent-reported tokens or elapsed timestamps are unavailable. Complete pairs are formed
 by stable pair identity before the report places aggregated control/guidance or neutral-arm cost
 coverage directly beside the corresponding paired outcome summary; orphan arms are never paired by
-role alone. Counterfactual result schema v3 records
+role alone. The independent `spotter.experiment_result` schema v3 reads legacy v1-v3 rows and
+refuses future, foreign, or corrupt history before each crash-durable append. It records
 the parsed token total and same-process monotonic agent duration for each executed arm; it does not
 persist raw agent stderr merely to recover the token count. Earlier v1/v2 rows remain readable.
 Unsupported newer result schemas fail visibly instead of being guessed; a torn final JSONL row is
-treated as an interrupted append. This projection does not label unscored user sessions as success
-or failure. `spotter analyze` additionally joins task-arm outcomes through
+treated as an interrupted append and blocks further mutation. This projection does not label
+unscored user sessions as success or failure. `spotter analyze` additionally joins task-arm outcomes through
 `replay_source_session_id` and replay outcomes through the persisted arm session or fork manifest's
 `prefix.source_session_id`. It does not infer a join from file names or timestamps; missing or broken
 fork provenance is reported instead of guessed.
