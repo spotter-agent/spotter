@@ -260,6 +260,22 @@ def test_git_push_records_class_and_external_effect(spotter_home: Path) -> None:
     assert effect.payload["tool_use_id"] == "push-1"
 
 
+def test_hook_persists_effect_classification_provenance() -> None:
+    event = event_from_hook(
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "sudo kubectl get pods"},
+        }
+    )
+
+    assert event.payload["reversibility_class"] == "A"
+    assert event.payload["effect_classifier"] == "kubectl"
+    assert event.payload["effect_reason"] == "recognized_semantics"
+    assert event.payload["effect_confidence"] == "bounded"
+    assert event.payload["semantic_operation"] == "kubectl.get"
+
+
 def test_unknown_events_still_journal(spotter_home: Path) -> None:
     payload = {"hook_event_name": "SessionStart", "session_id": "s2"}
     assert run_hook(payload, _config(observation_only=True)) is None

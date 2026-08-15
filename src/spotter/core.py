@@ -42,6 +42,10 @@ class SpotterRuntime:
             "reversibility_class": event.payload.get("reversibility_class"),
             "effect_kind": event.payload.get("effect_kind"),
             "resource": event.payload.get("resource"),
+            "effect_classifier": event.payload.get("effect_classifier"),
+            "effect_reason": event.payload.get("effect_reason"),
+            "effect_confidence": event.payload.get("effect_confidence"),
+            "semantic_operation": event.payload.get("semantic_operation"),
         }
         if decision.allowed:
             if decision.rule:

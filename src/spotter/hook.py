@@ -98,6 +98,10 @@ def event_from_hook(payload: dict[str, Any]) -> TraceEvent:
                 "effect_kind": classification.kind,
                 "resource": classification.resource,
                 "reversible": classification.reversible,
+                "effect_classifier": classification.classifier_id,
+                "effect_reason": classification.reason_code,
+                "effect_confidence": classification.parse_confidence,
+                "semantic_operation": classification.semantic_operation,
             },
         )
     if name == "PostToolUse":
@@ -115,6 +119,10 @@ def event_from_hook(payload: dict[str, Any]) -> TraceEvent:
                 "effect_kind": classification.kind,
                 "resource": classification.resource,
                 "reversible": classification.reversible,
+                "effect_classifier": classification.classifier_id,
+                "effect_reason": classification.reason_code,
+                "effect_confidence": classification.parse_confidence,
+                "semantic_operation": classification.semantic_operation,
             },
         )
     if name == "UserPromptSubmit":
