@@ -1,6 +1,6 @@
 """Human labels over recorded trajectories — the input to every plan decision.
 
-Three gates in the plan wait on the same thing: was a judgment right?
+The plan's evidence gates wait on the same thing: was a judgment right?
 - P1 observability ceiling: was a failure visible in the observable stream?
 - P3 active gates: what fraction of shadow blocks were false positives?
 - P4 injection: what fraction of reviewer nudges were correct?
@@ -48,7 +48,7 @@ class LabelError(ValueError):
     """Raised when a label cannot be applied to the thing it names."""
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 LEGACY_VERSION = 0
 
 
@@ -137,13 +137,13 @@ def add_label(
             ):
                 raise LabelError(f"step {step} repeats an earlier active signal candidate")
             allowed = STEP_VERDICTS
-        else:
-            allowed = STEP_VERDICTS
-        if (
+        elif (
             target.event.kind == "reviewer_decision"
             and target.event.payload.get("decision") == "continue"
         ):
-            raise LabelError(f"step {step} is a CONTINUE verdict; silence is not scored")
+            allowed = UNFLAGGED_VERDICTS
+        else:
+            allowed = STEP_VERDICTS
         mark = fingerprint(target)
     if verdict not in allowed:
         raise LabelError(f"verdict must be one of {allowed} for this target")

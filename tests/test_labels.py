@@ -20,6 +20,7 @@ from spotter.metrics import (
     agreement_session,
     merge,
     merge_agreement,
+    tally_reviewer_continues,
     tally_session,
     tally_signal_candidates,
     tally_unflagged_proposals,
@@ -128,8 +129,9 @@ def test_only_scored_records_accept_labels() -> None:
     )
     with pytest.raises(LabelError, match="only .* are scored"):
         add_label("s1", 0, "fp", "", records)  # agent_message is not scored
-    with pytest.raises(LabelError, match="silence is not scored"):
-        add_label("s1", 2, "tp", "", records)  # CONTINUE is never counted
+    with pytest.raises(LabelError, match="verdict must be"):
+        add_label("s1", 2, "tp", "", records)  # CONTINUE uses negative verdicts
+    add_label("s1", 2, "tn", "reviewer correctly abstained", records)
     add_label("s1", 1, "fp", "", records)  # the gate flag is fine
 
 
@@ -268,6 +270,24 @@ def test_continue_verdicts_are_not_scored() -> None:
     assert reviewer.total == 1
 
 
+def test_reviewer_continue_miss_rate_is_reported_separately() -> None:
+    records = _journal(
+        "s1",
+        [TraceEvent("reviewer_decision", {"decision": "continue"}) for _ in range(7)]
+        + [TraceEvent("reviewer_decision", {"decision": "nudge"})],
+    )
+    for step in range(5):
+        add_label("s1", step, "miss" if step < 2 else "tn", "", records)
+
+    reviewer_misses = tally_reviewer_continues("s1", records)
+    _, reviewer_precision, _ = tally_session("s1", records)
+
+    assert reviewer_misses.total == 7 and reviewer_misses.labeled == 5
+    assert reviewer_misses.positive == 2 and reviewer_misses.negative == 3
+    assert "miss-rate 40% of 5 decided" in reviewer_misses.rate_line("continues", "miss-rate")
+    assert reviewer_precision.total == 1
+
+
 def test_rate_is_withheld_below_minimum_samples() -> None:
     records = _journal("s1", _flagged(2))
     for step in (1, 3):
@@ -377,7 +397,7 @@ def test_unclear_labels_count_as_coverage_but_not_as_a_verdict() -> None:
 
 
 def test_cli_label_and_metrics_roundtrip(capsys: pytest.CaptureFixture[str]) -> None:
-    _journal("s1", _flagged(1))
+    _journal("s1", _flagged(1) + [TraceEvent("reviewer_decision", {"decision": "continue"})])
     assert (
         main(
             [
@@ -394,14 +414,32 @@ def test_cli_label_and_metrics_roundtrip(capsys: pytest.CaptureFixture[str]) -> 
         )
         == 0
     )
+    assert (
+        main(
+            [
+                "label",
+                "--session",
+                "s1",
+                "--step",
+                "2",
+                "--verdict",
+                "miss",
+                "--rater",
+                "bob",
+            ]
+        )
+        == 0
+    )
     assert main(["label", "--session", "s1", "--verdict", "invisible"]) == 0
     assert main(["metrics", "--session", "s1"]) == 0
     out = capsys.readouterr().out
     assert "step 1: fp by alice" in out
+    assert "step 2: miss by bob" in out
     assert "P3 gate false positives" in out
     assert "P3 gate misses" in out
     assert "Signal candidate precision" in out
     assert "P4 reviewer precision" in out
+    assert "Reviewer negative decisions" in out
     assert "P1 observability ceiling" in out
     assert "Runtime cost / efficiency (coverage-aware)" in out
     assert "Rater agreement (double-label subset)" in out

@@ -47,6 +47,7 @@ from spotter.metrics import (
     agreement_session,
     merge,
     merge_agreement,
+    tally_reviewer_continues,
     tally_session,
     tally_signal_candidates,
     tally_unflagged_proposals,
@@ -238,7 +239,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--verdict",
         help=(
-            "label: tp|fp|unclear for a flag/signal, miss|tn|unclear for an unflagged proposal, "
+            "label: tp|fp|unclear for a flag/signal/intervention, "
+            "miss|tn|unclear for an unflagged proposal or reviewer CONTINUE, "
             "visible|invisible|unclear for a session"
         ),
     )
@@ -970,7 +972,7 @@ def _label_main(session: str, step: int | None, verdict: str, note: str, rater: 
 
 
 def _metrics_main(session: str | None) -> int:
-    """Report the three numbers the plan gates on, each with its coverage."""
+    """Report each labeled measurement together with its coverage."""
     sessions_dir = journal_path({"session_id": "probe"}).parent
     journals = sorted(sessions_dir.glob("*.jsonl"))
     if session:
@@ -983,6 +985,7 @@ def _metrics_main(session: str | None) -> int:
     blind_spots: dict[str, int] = {}
     reviewer = ceiling = Tally()
     gate_misses = Tally()
+    reviewer_misses = Tally()
     uncorrelatable_proposals = 0
     signals: dict[str, Tally] = {}
     unattributed_signals = 0
@@ -1002,6 +1005,7 @@ def _metrics_main(session: str | None) -> int:
             session_signals, session_unattributed_signals = tally_signal_candidates(
                 journal.stem, records
             )
+            session_reviewer_misses = tally_reviewer_continues(journal.stem, records)
             session_agreement = agreement_session(journal.stem, records)
         except LabelError as error:
             print(f"metrics aborted: {error}", file=sys.stderr)
@@ -1015,6 +1019,7 @@ def _metrics_main(session: str | None) -> int:
         reviewer = merge(reviewer, session_reviewer)
         ceiling = merge(ceiling, session_ceiling)
         gate_misses = merge(gate_misses, session_misses)
+        reviewer_misses = merge(reviewer_misses, session_reviewer_misses)
         uncorrelatable_proposals += session_uncorrelatable
         for signal_type, tally in session_signals.items():
             signals[signal_type] = merge(signals.get(signal_type, Tally()), tally)
@@ -1061,6 +1066,9 @@ def _metrics_main(session: str | None) -> int:
         )
     print("P4 reviewer precision (label each verify/nudge tp|fp):")
     print("  " + reviewer.rate_line("interventions", "correct"))
+    print("Reviewer negative decisions (label each CONTINUE miss|tn):")
+    print("  " + reviewer_misses.rate_line("continues", "miss-rate"))
+    print("  sampling boundary: trajectories without a reviewer decision are outside this rate")
     print("P1 observability ceiling (label failed sessions visible|invisible):")
     print("  " + ceiling.rate_line("sessions", "visible"))
     print("Rater agreement (double-label subset):")

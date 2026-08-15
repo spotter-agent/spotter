@@ -1,4 +1,4 @@
-"""Turn labels into the three numbers the plan gates on.
+"""Turn human labels into coverage-aware detector and reviewer measurements.
 
 Every rate is reported with its coverage (labeled / total). A rate computed
 from a handful of labels is not a measurement, and this module refuses to
@@ -207,6 +207,21 @@ def tally_signal_candidates(
         verdict, stale = _verdict(labels, records, record.step)
         tallies[signal_type] = tallies.get(signal_type, Tally()).plus(verdict, stale=stale)
     return tallies, unattributed
+
+
+def tally_reviewer_continues(session: str, records: list[StepRecord]) -> Tally:
+    """Return coverage and miss labels for explicit reviewer abstentions."""
+
+    labels = load_labels(session)
+    tally = Tally()
+    for record in records:
+        if (
+            record.event.kind == "reviewer_decision"
+            and record.event.payload.get("decision") == "continue"
+        ):
+            verdict, stale = _verdict(labels, records, record.step)
+            tally = tally.plus(verdict, stale=stale)
+    return tally
 
 
 def merge(left: Tally, right: Tally) -> Tally:

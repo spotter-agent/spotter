@@ -713,11 +713,11 @@ The journal exists for:
 It is **not** the live-state database.
 
 Human labels remain in a separate append-only versioned store so they never enter reviewer input or
-shift replay step identity. Label schema v4 records a stable rater identity, `tp|fp|unclear`
-judgments for active signal candidates, and distinct `miss|tn|unclear` judgments for
-correlation-proven unflagged tool proposals while retaining v0-v3 read compatibility. Precision and
-miss metrics still use the latest judgment per target; signal precision is stratified by signal
-type, while agreement
+shift replay step identity. Label schema v5 records a stable rater identity, `tp|fp|unclear`
+judgments for active signal candidates and reviewer interventions, and distinct
+`miss|tn|unclear` judgments for correlation-proven unflagged tool proposals and explicit reviewer
+`CONTINUE` decisions while retaining v0-v4 read compatibility. Precision and miss metrics still use
+the latest judgment per target; signal precision is stratified by signal type, while agreement
 metrics independently use the latest judgment per rater and report exact agreement only for the
 explicitly double-labeled subset. Unattributed legacy, stale, and uncorrelatable proposal coverage
 remain visible.
