@@ -38,6 +38,7 @@ def test_layout_separates_ownership_without_creating_mutable_state(tmp_path: Pat
     assert layout.integration_dir == root / "integrations"
     assert layout.runtime_dir == root / "runtime"
     assert layout.log_dir == root / "logs"
+    assert layout.repository_registry == root / "repos.json"
     assert "package_assets_dir" not in layout.integration_record()
     assert not root.exists(), "layout discovery must not mutate user state"
 

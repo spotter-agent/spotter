@@ -30,6 +30,7 @@ from spotter.identity import (
 )
 from spotter.paths import secure_dir, spotter_home
 from spotter.redact import redact
+from spotter.repository_registry import RepositoryRegistry, RepositoryRegistryError
 from spotter.trace import TraceEvent, TraceProvenance
 
 _MONOTONIC_CLOCK_ID = uuid.uuid4().hex
@@ -121,14 +122,45 @@ def snapshot_worktree(repo: Path, previous: str | None = None) -> str:
                 # until gc runs, so reusing it without restoring the ref hands
                 # the journal a sha that gc will later destroy — the exact
                 # guarantee pinning exists to make (PR #19 review, P0).
-                _git(repo, "update-ref", f"refs/spotter/steps/{previous}", previous)
+                ref = f"refs/spotter/steps/{previous}"
+                prior_target = _optional_ref_target(repo, ref)
+                _git(repo, "update-ref", ref, previous)
+                _record_ref_or_rollback(repo, ref, previous, prior_target)
                 return previous
         sha = _git(repo, "commit-tree", tree, *parent_args, "-m", "spotter step snapshot")
-        _git(repo, "update-ref", f"refs/spotter/steps/{sha}", sha)
+        ref = f"refs/spotter/steps/{sha}"
+        prior_target = _optional_ref_target(repo, ref)
+        _git(repo, "update-ref", ref, sha)
+        _record_ref_or_rollback(repo, ref, sha, prior_target)
         return sha
     finally:
         if os.path.exists(index_path):
             os.unlink(index_path)
+
+
+def _optional_ref_target(repo: Path, ref: str) -> str | None:
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", "-q", ref],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _record_ref_or_rollback(repo: Path, ref: str, sha: str, prior_target: str | None) -> None:
+    try:
+        RepositoryRegistry().record_ref(repo, ref, sha)
+    except RepositoryRegistryError as error:
+        if prior_target is None:
+            subprocess.run(
+                ["git", "update-ref", "-d", ref, sha],
+                cwd=repo,
+                capture_output=True,
+                check=False,
+            )
+        raise SnapshotError(f"could not record ownership for {ref}: {error}") from error
 
 
 def restore_snapshot(repo: Path, sha: str, dest: Path) -> Path:
@@ -140,6 +172,16 @@ def restore_snapshot(repo: Path, sha: str, dest: Path) -> Path:
     if dest.exists():
         raise SnapshotError(f"restore destination already exists: {dest}")
     _git(repo, "worktree", "add", "--detach", str(dest), sha)
+    try:
+        RepositoryRegistry().record_worktree(repo, dest, sha)
+    except RepositoryRegistryError as error:
+        subprocess.run(
+            ["git", "worktree", "remove", "--force", str(dest)],
+            cwd=repo,
+            capture_output=True,
+            check=False,
+        )
+        raise SnapshotError(f"could not record ownership for worktree {dest}: {error}") from error
     return dest
 
 

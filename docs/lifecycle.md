@@ -287,6 +287,15 @@ snapshot/fork lineage
 
 That is why a true `purge --all` needs a repository registry and Git-aware cleanup.
 
+The implemented registry foundation records each newly created snapshot ref and detached restore
+worktree in `repos.json` with an independent schema version, repository Git-common-directory
+identity, exact expected target, and immutable resource generation. Registry writes are locked,
+fsynced atomic replacements. A moved repository is recognized by the retained Git-directory inode;
+a different repository appearing at the old path receives a separate entry. Unknown/corrupt
+registry schemas refuse new Git-resource creation rather than overwriting ownership evidence, and a
+resource whose ownership record cannot be committed is rolled back through Git. Enumeration,
+reachability policy, and the destructive `purge` command remain pending in #89.
+
 ---
 
 # 3. Install: package only
@@ -1626,7 +1635,7 @@ The lifecycle implies concrete components rather than one monolithic CLI.
 | `DaemonClient` | CLI ↔ spotterd control protocol |
 | `Doctor` | synthetic health diagnostics |
 | `MigrationManager` | config/journal/label/etc. schema migration |
-| `RepositoryRegistry` | track repositories containing Spotter refs/worktrees |
+| `RepositoryRegistry` | record exact ownership of repositories containing Spotter refs/worktrees |
 | `RetentionManager` | journal/snapshot/log lifecycle |
 | `PurgeManager` | safe destructive cleanup with dry-run |
 

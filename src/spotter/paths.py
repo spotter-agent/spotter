@@ -150,6 +150,10 @@ class RuntimeLayout:
     def integration_manifest(self) -> Path:
         return self.integration_dir / "codex.json"
 
+    @property
+    def repository_registry(self) -> Path:
+        return self.user_data_dir / "repos.json"
+
     def service_registration(self, platform: str, label: str) -> Path:
         if platform == "darwin":
             return self.user_home / "Library" / "LaunchAgents" / f"{label}.plist"
