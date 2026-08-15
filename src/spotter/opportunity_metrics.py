@@ -31,6 +31,22 @@ class OpportunityTimingReport:
     post_window_failed_outcomes: tuple[int, ...]
     post_window_unattributed_failed_outcomes: tuple[int, ...]
     post_window_files: tuple[int, ...]
+    linked_signal_annotations: int
+    review_jobs_queued: int
+    review_inferences_started: int
+    review_decisions: int
+    review_early: int
+    review_within_window: int
+    review_late: int
+    review_terminal_without_decision: int
+    review_unjudgeable: int
+    review_stale: int
+    review_step_from_earliest: tuple[int, ...]
+    review_step_from_latest: tuple[int, ...]
+    signal_to_queue_steps: tuple[int, ...]
+    queue_to_inference_steps: tuple[int, ...]
+    inference_to_decision_steps: tuple[int, ...]
+    queue_to_decision_steps: tuple[int, ...]
 
 
 def measure_opportunity_timing(session: str, records: list[StepRecord]) -> OpportunityTimingReport:
@@ -44,6 +60,15 @@ def measure_opportunity_timing(session: str, records: list[StepRecord]) -> Oppor
     post_window_failed: list[int] = []
     post_window_unattributed_failed: list[int] = []
     post_window_files: list[int] = []
+    linked_signals = review_queued = review_started = review_decisions = 0
+    review_early = review_within = review_late = 0
+    review_terminal_without_decision = review_unjudgeable = review_stale = 0
+    review_step_from_earliest: list[int] = []
+    review_step_from_latest: list[int] = []
+    signal_to_queue_steps: list[int] = []
+    queue_to_inference_steps: list[int] = []
+    inference_to_decision_steps: list[int] = []
+    queue_to_decision_steps: list[int] = []
 
     for window in windows:
         if not matches(window, records):
@@ -85,6 +110,51 @@ def measure_opportunity_timing(session: str, records: list[StepRecord]) -> Oppor
         post_window_failed.append(failed)
         post_window_unattributed_failed.append(unattributed_failed)
         post_window_files.append(len(_files(work)))
+        if candidate is None:
+            continue
+        linked_signals += 1
+        queued = _linked_review_job(candidate, records)
+        if queued is None:
+            if _has_observation_gap(records[candidate.step :]):
+                review_unjudgeable += 1
+            elif _window_closed(latest, records):
+                review_terminal_without_decision += 1
+            else:
+                review_unjudgeable += 1
+            continue
+        review_queued += 1
+        inference = _review_inference(queued, records)
+        if inference is not None:
+            review_started += 1
+        decision = _review_decision(queued, records)
+        review_end = decision.step if decision is not None else len(records) - 1
+        if _has_observation_gap(records[candidate.step : review_end + 1]):
+            review_unjudgeable += 1
+            continue
+        signal_to_queue_steps.append(queued.step - candidate.step)
+        if inference is not None:
+            queue_to_inference_steps.append(inference.step - queued.step)
+        if decision is None:
+            if _window_closed(queued.step, records):
+                review_terminal_without_decision += 1
+            else:
+                review_unjudgeable += 1
+            continue
+        if decision.event.payload.get("stale") is True:
+            review_stale += 1
+            continue
+        review_decisions += 1
+        review_step_from_earliest.append(decision.step - earliest)
+        review_step_from_latest.append(decision.step - latest)
+        queue_to_decision_steps.append(decision.step - queued.step)
+        if inference is not None and inference.step <= decision.step:
+            inference_to_decision_steps.append(decision.step - inference.step)
+        if decision.step < earliest:
+            review_early += 1
+        elif decision.step <= latest:
+            review_within += 1
+        else:
+            review_late += 1
 
     return OpportunityTimingReport(
         annotations=len(windows),
@@ -104,12 +174,31 @@ def measure_opportunity_timing(session: str, records: list[StepRecord]) -> Oppor
         post_window_failed_outcomes=tuple(post_window_failed),
         post_window_unattributed_failed_outcomes=tuple(post_window_unattributed_failed),
         post_window_files=tuple(post_window_files),
+        linked_signal_annotations=linked_signals,
+        review_jobs_queued=review_queued,
+        review_inferences_started=review_started,
+        review_decisions=review_decisions,
+        review_early=review_early,
+        review_within_window=review_within,
+        review_late=review_late,
+        review_terminal_without_decision=review_terminal_without_decision,
+        review_unjudgeable=review_unjudgeable,
+        review_stale=review_stale,
+        review_step_from_earliest=tuple(review_step_from_earliest),
+        review_step_from_latest=tuple(review_step_from_latest),
+        signal_to_queue_steps=tuple(signal_to_queue_steps),
+        queue_to_inference_steps=tuple(queue_to_inference_steps),
+        inference_to_decision_steps=tuple(inference_to_decision_steps),
+        queue_to_decision_steps=tuple(queue_to_decision_steps),
     )
 
 
 def render_opportunity_timing(report: OpportunityTimingReport) -> str:
     if not report.annotations:
         return "Intervention opportunity timing (annotation-aware):\n  no opportunity annotations"
+    linked = report.linked_signal_annotations
+    queued = report.review_jobs_queued
+    started = report.review_inferences_started
     return "\n".join(
         [
             "Intervention opportunity timing (annotation-aware):",
@@ -132,6 +221,20 @@ def render_opportunity_timing(report: OpportunityTimingReport) -> str:
             f"{sum(report.post_window_unattributed_failed_outcomes)}",
             "  Link rule: an active candidate must cite every required evidence event; "
             "unrelated candidates do not stop the clock",
+            "  Evidence-linked reviewer: "
+            f"signals={report.linked_signal_annotations}, queued={report.review_jobs_queued}, "
+            f"started={report.review_inferences_started}, decided={report.review_decisions}; "
+            f"EARLY={report.review_early} "
+            f"WITHIN_WINDOW={report.review_within_window} LATE={report.review_late} "
+            f"TERMINAL_NO_DECISION={report.review_terminal_without_decision} "
+            f"UNJUDGEABLE={report.review_unjudgeable} STALE={report.review_stale}",
+            "  Reviewer step delay: "
+            f"from_earliest={_sample(report.review_step_from_earliest, linked)}, "
+            f"from_latest={_sample(report.review_step_from_latest, linked)}, "
+            f"signal_to_queue={_sample(report.signal_to_queue_steps, linked)}, "
+            f"queue_to_inference={_sample(report.queue_to_inference_steps, queued)}, "
+            f"inference_to_decision={_sample(report.inference_to_decision_steps, started)}, "
+            f"queue_to_decision={_sample(report.queue_to_decision_steps, queued)}",
         ]
     )
 
@@ -167,6 +270,36 @@ def merge_opportunity_timing(
             value for report in reports for value in report.post_window_unattributed_failed_outcomes
         ),
         post_window_files=tuple(value for report in reports for value in report.post_window_files),
+        linked_signal_annotations=sum(report.linked_signal_annotations for report in reports),
+        review_jobs_queued=sum(report.review_jobs_queued for report in reports),
+        review_inferences_started=sum(report.review_inferences_started for report in reports),
+        review_decisions=sum(report.review_decisions for report in reports),
+        review_early=sum(report.review_early for report in reports),
+        review_within_window=sum(report.review_within_window for report in reports),
+        review_late=sum(report.review_late for report in reports),
+        review_terminal_without_decision=sum(
+            report.review_terminal_without_decision for report in reports
+        ),
+        review_unjudgeable=sum(report.review_unjudgeable for report in reports),
+        review_stale=sum(report.review_stale for report in reports),
+        review_step_from_earliest=tuple(
+            value for report in reports for value in report.review_step_from_earliest
+        ),
+        review_step_from_latest=tuple(
+            value for report in reports for value in report.review_step_from_latest
+        ),
+        signal_to_queue_steps=tuple(
+            value for report in reports for value in report.signal_to_queue_steps
+        ),
+        queue_to_inference_steps=tuple(
+            value for report in reports for value in report.queue_to_inference_steps
+        ),
+        inference_to_decision_steps=tuple(
+            value for report in reports for value in report.inference_to_decision_steps
+        ),
+        queue_to_decision_steps=tuple(
+            value for report in reports for value in report.queue_to_decision_steps
+        ),
     )
 
 
@@ -185,6 +318,52 @@ def _linked_signal(
         ):
             return record
     return None
+
+
+def _linked_review_job(candidate: StepRecord, records: list[StepRecord]) -> StepRecord | None:
+    candidate_id = candidate.event.event_id
+    if candidate_id is None:
+        return None
+    for record in records[candidate.step + 1 :]:
+        if record.event.kind != "review_job_queued":
+            continue
+        payload = record.event.payload
+        linked = payload.get("candidate_event_ids")
+        if payload.get("candidate_event_id") == candidate_id or (
+            isinstance(linked, list) and candidate_id in linked
+        ):
+            return record
+    return None
+
+
+def _review_decision(queued: StepRecord, records: list[StepRecord]) -> StepRecord | None:
+    job_id = queued.event.payload.get("review_job_id")
+    if not isinstance(job_id, str) or not job_id:
+        return None
+    return next(
+        (
+            record
+            for record in records[queued.step + 1 :]
+            if record.event.kind == "reviewer_decision"
+            and record.event.payload.get("review_job_id") == job_id
+        ),
+        None,
+    )
+
+
+def _review_inference(queued: StepRecord, records: list[StepRecord]) -> StepRecord | None:
+    job_id = queued.event.payload.get("review_job_id")
+    if not isinstance(job_id, str) or not job_id:
+        return None
+    return next(
+        (
+            record
+            for record in records[queued.step + 1 :]
+            if record.event.kind == "review_inference_started"
+            and record.event.payload.get("review_job_id") == job_id
+        ),
+        None,
+    )
 
 
 def _window_closed(latest: int, records: list[StepRecord]) -> bool:

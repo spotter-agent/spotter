@@ -165,8 +165,10 @@ From them derive detection delay, reviewer latency, supervision lead/lag, wasted
 The #24 instrument now records semantic and observable intervals independently against stable Trace
 IR identities. Its first consumer links an active signal only when the candidate cites every required
 evidence event, then reports interval-relative step/source-clock delay and deduplicated actions,
-failed outcomes, and files before detection. Open windows are `UNJUDGEABLE`, not `NEVER`; reviewer,
-control, and adoption linkage remain subsequent slices.
+failed outcomes, and files before detection. It also follows the candidate into a signal-driven
+review job and reports queue, inference-start, and decision step delay plus stale, terminal-without-
+decision, and gap-limited coverage. Open windows are `UNJUDGEABLE`, not `NEVER`; control and
+adoption linkage remain subsequent slices.
 
 ---
 

@@ -278,7 +278,8 @@ spotter label-opportunity --session <id> --opportunity-id <failure-id> \
 可重复使用 `--required-evidence`；独立双重标注时请使用 `--rater`。
 `spotter metrics --session <id>` 只关联引用了全部 required evidence 的 signal，并报告区间相对
 延迟以及 signal 前的 action、失败 outcome 和文件数量。尚未闭合的窗口保持为 `UNJUDGEABLE`，
-不会被误报为 `NEVER`。
+不会被误报为 `NEVER`。对于 signal-driven review，它还会通过 candidate event ID 跟踪队列、
+推理开始和决策，报告各阶段步数延迟，并显式区分 stale、终止前无决策和观察缺口覆盖。
 
 ### 存储维护
 

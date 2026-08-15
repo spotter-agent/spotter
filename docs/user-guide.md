@@ -314,7 +314,9 @@ opportunity ID and rater appends a correction while preserving annotation histor
 `spotter metrics --session <id>` links only candidates that cite every required evidence event. It
 reports early/within/late/never classifications, bounded delay, and actions, failed outcomes, and
 files observed after the actionable window opened. Stale annotations and still-open windows remain
-explicit instead of becoming misses.
+explicit instead of becoming misses. For signal-driven reviews, it also follows candidate event IDs
+through the queued job, inference start, and decision, reporting step delays and explicit stale,
+terminal-without-decision, or observation-gap coverage.
 
 ### Storage maintenance
 

@@ -744,6 +744,11 @@ fabricated `NEVER`. An observation gap crossing the measured interval also makes
 post-window work `UNJUDGEABLE` rather than pretending the missing surface was quiet.
 `NEVER` requires a terminal turn/thread/session event at or after the annotated window; unrelated
 later activity in a still-live trajectory keeps the opportunity `UNJUDGEABLE` and re-derivable.
+For an evidence-linked candidate, the same report follows durable `candidate_event_ids` into its
+signal-driven review job and `review_job_id` through inference start and decision. It reports
+candidate-to-queue, queue-to-inference, inference-to-decision, and queue-to-decision step coverage,
+classifies the decision against the observable window, and keeps stale decisions, missing decisions,
+and intervals crossed by observation gaps explicit instead of assigning them ordinary latency.
 
 ## 8.3 Snapshot state
 

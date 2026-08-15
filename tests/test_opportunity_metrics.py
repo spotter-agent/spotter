@@ -133,6 +133,8 @@ def test_signal_delay_requires_all_annotated_evidence_and_counts_post_window_wor
     assert report.post_window_failed_outcomes == (1, 0)
     assert report.post_window_unattributed_failed_outcomes == (0, 0)
     assert report.post_window_files == (2, 0)
+    assert report.linked_signal_annotations == 1
+    assert report.review_terminal_without_decision == 1
     rendered = render_opportunity_timing(report)
     assert "LATE=1 NEVER=1 UNJUDGEABLE=0" in rendered
     assert "unrelated candidates do not stop the clock" in rendered
@@ -223,6 +225,72 @@ def test_observation_gap_keeps_delay_and_post_window_work_unjudgeable() -> None:
     assert report.unjudgeable == 1
     assert report.late == report.never == 0
     assert report.post_window_actions == ()
+
+
+def test_reviewer_delay_follows_the_evidence_linked_signal_job() -> None:
+    records = [
+        _record(0, "tool_result", {}, event_id="evidence", occurred_at=1.0),
+        _record(
+            1,
+            "signal_candidate",
+            {"status": "active", "evidence_event_ids": ["evidence"]},
+            event_id="signal",
+            occurred_at=2.0,
+        ),
+        _record(
+            2,
+            "review_job_queued",
+            {
+                "review_job_id": "job-1",
+                "candidate_event_id": "signal",
+                "candidate_event_ids": ["signal"],
+            },
+            event_id="queued",
+            occurred_at=3.0,
+        ),
+        _record(
+            3,
+            "review_inference_started",
+            {"review_job_id": "job-1"},
+            event_id="started",
+            occurred_at=4.0,
+        ),
+        _record(
+            4,
+            "reviewer_decision",
+            {"review_job_id": "job-1", "decision": "verify", "stale": False},
+            event_id="decision",
+            occurred_at=5.0,
+        ),
+        _record(5, "turn_completed", {}, event_id="terminal", occurred_at=6.0),
+    ]
+    add_opportunity(
+        "s1",
+        "review-delay",
+        records,
+        semantic_earliest=0,
+        semantic_latest=0,
+        observable_earliest=0,
+        observable_latest=2,
+        required_evidence=(0,),
+        note="measure the linked reviewer decision",
+    )
+
+    report = measure_opportunity_timing("s1", records)
+
+    assert report.linked_signal_annotations == 1
+    assert report.review_jobs_queued == report.review_inferences_started == 1
+    assert report.review_decisions == 1
+    assert report.review_late == 1
+    assert report.review_early == report.review_within_window == 0
+    assert report.review_terminal_without_decision == report.review_unjudgeable == 0
+    assert report.review_step_from_earliest == (4,)
+    assert report.review_step_from_latest == (2,)
+    assert report.signal_to_queue_steps == (1,)
+    assert report.queue_to_inference_steps == (1,)
+    assert report.inference_to_decision_steps == (1,)
+    assert report.queue_to_decision_steps == (2,)
+    assert "signals=1, queued=1, started=1, decided=1" in render_opportunity_timing(report)
 
 
 def test_opportunity_reports_merge_without_inventing_coverage() -> None:

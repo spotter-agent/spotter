@@ -292,7 +292,9 @@ spotter label-opportunity --session <id> --opportunity-id <failure-id> \
 필요하면 `--required-evidence`를 반복하고, 독립 이중 라벨링에는 `--rater`를 사용하세요.
 `spotter metrics --session <id>`는 required evidence를 모두 인용한 signal만 연결해 구간 기준 지연과
 signal 전까지의 action, 실패 outcome, file 수를 보고합니다. 열린 window는 `NEVER`가 아니라
-`UNJUDGEABLE`로 유지됩니다.
+`UNJUDGEABLE`로 유지됩니다. Signal-driven review는 candidate event ID에서 queue, inference 시작,
+decision까지 추적해 단계별 지연과 stale, terminal-without-decision, observation-gap coverage를
+명시적으로 보고합니다.
 
 ### 저장소 관리
 
