@@ -1,3 +1,5 @@
+config_schema = "spotter.config"
+config_schema_version = 1
 observation_only = true
 
 [main_agent]

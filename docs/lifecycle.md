@@ -1501,6 +1501,11 @@ Intervention opportunity annotations use per-record `spotter.intervention_opport
 metadata. Released schema-name-less records remain readable, while locked appends validate all
 existing timing evidence and refuse unsupported or corrupt history without modifying it.
 
+User configuration uses the independent `spotter.config` schema. Existing schema-less files remain
+readable as legacy configuration, the reference file declares the current version, and explicit
+future or foreign schemas are rejected before settings can become active. Syntax compatibility here
+remains separate from the reload/restart/reconfigure activation boundaries owned by #90.
+
 ---
 
 # 20. Release lifecycle

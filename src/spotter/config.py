@@ -15,6 +15,9 @@ class ConfigurationError(ValueError):
 # multi-minute retry loop, and the reviewer model is an experimental variable
 # (plan Q6/P5), not a constant. Pin one explicitly only if your auth allows it.
 DEFAULT_REVIEWER_MODEL = "default"
+CONFIG_SCHEMA = "spotter.config"
+CONFIG_SCHEMA_VERSION = 1
+LEGACY_CONFIG_SCHEMA_VERSION = 0
 
 
 @dataclass(frozen=True)
@@ -65,6 +68,7 @@ class SpotterConfig:
     observation_only: bool = True
     snapshot_on_patch: bool = True
     mcp_semantics: tuple[McpToolSemantics, ...] = ()
+    config_schema_version: int = CONFIG_SCHEMA_VERSION
 
     @classmethod
     def from_toml(cls, path: Path) -> "SpotterConfig":
@@ -74,6 +78,7 @@ class SpotterConfig:
 
     @classmethod
     def from_mapping(cls, raw: dict[str, Any]) -> "SpotterConfig":
+        config_schema_version = _config_schema_version(raw)
         main_agent = _table(raw, "main_agent")
         reviewer = _optional_table(raw, "reviewer")
         gates = _optional_table(raw, "gates")
@@ -105,7 +110,25 @@ class SpotterConfig:
             mcp_semantics=_mcp_semantics(raw),
             observation_only=observation_only,
             snapshot_on_patch=_bool(raw, "snapshot_on_patch", True),
+            config_schema_version=config_schema_version,
         )
+
+
+def _config_schema_version(raw: dict[str, Any]) -> int:
+    schema = raw.get("config_schema")
+    version = raw.get("config_schema_version")
+    if schema is None and version is None:
+        return LEGACY_CONFIG_SCHEMA_VERSION
+    if schema != CONFIG_SCHEMA:
+        raise ConfigurationError(f"unsupported config schema {schema!r}")
+    if not isinstance(version, int) or isinstance(version, bool):
+        raise ConfigurationError("config_schema_version must be an integer")
+    if version != CONFIG_SCHEMA_VERSION:
+        direction = "newer" if version > CONFIG_SCHEMA_VERSION else "unsupported"
+        raise ConfigurationError(
+            f"{direction} config schema v{version}; this build understands v{CONFIG_SCHEMA_VERSION}"
+        )
+    return version
 
 
 def _mcp_semantics(raw: dict[str, Any]) -> tuple[McpToolSemantics, ...]:

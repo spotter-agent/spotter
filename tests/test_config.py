@@ -2,7 +2,13 @@ from pathlib import Path
 
 import pytest
 
-from spotter.config import ConfigurationError, SpotterConfig
+from spotter.config import (
+    CONFIG_SCHEMA,
+    CONFIG_SCHEMA_VERSION,
+    LEGACY_CONFIG_SCHEMA_VERSION,
+    ConfigurationError,
+    SpotterConfig,
+)
 
 
 def test_loads_example_configuration() -> None:
@@ -13,12 +19,49 @@ def test_loads_example_configuration() -> None:
     assert config.reviewer.on_signals is False
     assert config.reviewer.deliver_on_signals is False
     assert config.observation_only is True
+    assert config.config_schema_version == CONFIG_SCHEMA_VERSION
 
 
 def test_uses_default_reviewer_model_when_reviewer_is_omitted() -> None:
     config = SpotterConfig.from_mapping({"main_agent": {"adapter": "codex"}})
 
     assert config.reviewer.model == "default"
+    assert config.config_schema_version == LEGACY_CONFIG_SCHEMA_VERSION
+
+
+@pytest.mark.parametrize(
+    ("schema", "version", "message"),
+    [
+        (CONFIG_SCHEMA, CONFIG_SCHEMA_VERSION + 1, "newer config schema"),
+        (CONFIG_SCHEMA, 0, "unsupported config schema v0"),
+        ("future.config", CONFIG_SCHEMA_VERSION, "unsupported config schema"),
+        (CONFIG_SCHEMA, "one", "config_schema_version must be an integer"),
+        (CONFIG_SCHEMA, True, "config_schema_version must be an integer"),
+    ],
+)
+def test_refuses_unsupported_config_schema_before_activation(
+    schema: str, version: object, message: str
+) -> None:
+    with pytest.raises(ConfigurationError, match=message):
+        SpotterConfig.from_mapping(
+            {
+                "config_schema": schema,
+                "config_schema_version": version,
+                "main_agent": {"adapter": "codex"},
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "partial",
+    [
+        {"config_schema": CONFIG_SCHEMA},
+        {"config_schema_version": CONFIG_SCHEMA_VERSION},
+    ],
+)
+def test_refuses_partial_config_schema_identity(partial: dict[str, object]) -> None:
+    with pytest.raises(ConfigurationError, match="config schema|config_schema_version"):
+        SpotterConfig.from_mapping({**partial, "main_agent": {"adapter": "codex"}})
 
 
 def test_loads_exact_mcp_semantics_by_server_and_tool() -> None:
