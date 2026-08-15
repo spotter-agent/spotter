@@ -1251,16 +1251,31 @@ logical-OR, so a repository can tighten but cannot relax global enforcement. Inv
 layers are ignored with a visible diagnostic while the last valid lower-precedence snapshot remains
 active. A local `spotter.toml` is considered a repository layer only when a Git worktree root exists.
 
-Each configuration field should declare reload semantics.
+Each current effective-config field declares its earliest safe activation boundary. `HOT` applies to
+new work immediately; `NEXT_TURN` waits for a new turn; `DAEMON_RESTART` reconstructs long-lived
+runtime resources; `INTEGRATION_RECONFIGURE` regenerates owned host integration; and
+`SCHEMA_MIGRATION` requires the durable migration contract. The classifier reports only changed
+paths and boundaries, never values.
 
-| Setting class | Likely behavior |
-| --- | --- |
-| reviewer model/budget/cadence | hot reload where safe |
-| signal thresholds | hot reload |
-| deterministic gate rules | hot reload with atomic config swap |
-| socket/runtime path | daemon restart |
-| service strategy | setup/migration required |
-| App Server integration strategy | setup/migration required |
+| Setting | Activation boundary | Reason |
+| --- | --- | --- |
+| `config_schema_version` | `SCHEMA_MIGRATION` | Persisted interpretation changes only through the schema lifecycle |
+| `main_agent.adapter` | `INTEGRATION_RECONFIGURE` | Adapter choice changes generated agent/runtime wiring |
+| `reviewer.model` | `NEXT_TURN` | A turn must not mix reviewer/model generations |
+| `reviewer.on_signals` | `HOT` | Only future scheduling decisions observe the flag |
+| `reviewer.deliver_on_signals` | `NEXT_TURN` | Delivery policy is pinned for a target turn |
+| `reviewer.every_steps` | `HOT` | Only future periodic scheduling decisions change |
+| `reviewer.max_per_session` | `HOT` | Existing spend remains durable; new reservations use the limit |
+| `reviewer.max_per_day` | `HOT` | Existing spend remains durable; new reservations use the limit |
+| `gates.forbidden_paths` | `NEXT_TURN` | One turn must not mix deterministic policy generations |
+| `gates.block_dependency_changes` | `NEXT_TURN` | One turn must not mix deterministic policy generations |
+| `observation_only` | `NEXT_TURN` | Delivery/enforcement mode stays stable for a turn |
+| `snapshot_on_patch` | `HOT` | Only future completed patch observations are affected |
+| `mcp_semantics` | `NEXT_TURN` | A turn must not reinterpret tool effects midway through execution |
+
+No current `SpotterConfig` key is `DAEMON_RESTART`; App Server endpoints, IPC paths, and service
+construction still live in integration/runtime state and will use that boundary when they become
+part of the effective configuration contract.
 
 Config reload must not leave half-old/half-new gate policy during a synchronous request. Parse/validate new config first, then atomically replace the active snapshot.
 

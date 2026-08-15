@@ -6,7 +6,9 @@ import tomllib
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from spotter.paths import RuntimeLayout
@@ -14,6 +16,24 @@ from spotter.paths import RuntimeLayout
 
 class ConfigurationError(ValueError):
     """Raised when a Spotter configuration is malformed."""
+
+
+class ActivationBoundary(StrEnum):
+    """Earliest safe boundary at which a changed setting may take effect."""
+
+    HOT = "HOT"
+    NEXT_TURN = "NEXT_TURN"
+    DAEMON_RESTART = "DAEMON_RESTART"
+    INTEGRATION_RECONFIGURE = "INTEGRATION_RECONFIGURE"
+    SCHEMA_MIGRATION = "SCHEMA_MIGRATION"
+
+
+@dataclass(frozen=True)
+class ConfigChange:
+    """A value-free config delta suitable for status and reload planning."""
+
+    path: str
+    activation_boundary: ActivationBoundary
 
 
 # "default" delegates to the codex account's own model. A pinned id is an
@@ -42,6 +62,24 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "gates": {"forbidden_paths": [], "block_dependency_changes": False},
     "mcp_semantics": {},
 }
+
+CONFIG_ACTIVATION_BOUNDARIES: Mapping[str, ActivationBoundary] = MappingProxyType(
+    {
+        "config_schema_version": ActivationBoundary.SCHEMA_MIGRATION,
+        "main_agent.adapter": ActivationBoundary.INTEGRATION_RECONFIGURE,
+        "reviewer.model": ActivationBoundary.NEXT_TURN,
+        "reviewer.on_signals": ActivationBoundary.HOT,
+        "reviewer.deliver_on_signals": ActivationBoundary.NEXT_TURN,
+        "reviewer.every_steps": ActivationBoundary.HOT,
+        "reviewer.max_per_session": ActivationBoundary.HOT,
+        "reviewer.max_per_day": ActivationBoundary.HOT,
+        "gates.forbidden_paths": ActivationBoundary.NEXT_TURN,
+        "gates.block_dependency_changes": ActivationBoundary.NEXT_TURN,
+        "observation_only": ActivationBoundary.NEXT_TURN,
+        "snapshot_on_patch": ActivationBoundary.HOT,
+        "mcp_semantics": ActivationBoundary.NEXT_TURN,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -159,6 +197,29 @@ class SpotterConfig:
             snapshot_on_patch=_bool(raw, "snapshot_on_patch", True),
             config_schema_version=config_schema_version,
         )
+
+
+def classify_config_changes(
+    previous: SpotterConfig, candidate: SpotterConfig
+) -> tuple[ConfigChange, ...]:
+    """Classify changed fields without exposing their values."""
+
+    before = asdict(previous)
+    after = asdict(candidate)
+    return tuple(
+        ConfigChange(path=path, activation_boundary=boundary)
+        for path, boundary in CONFIG_ACTIVATION_BOUNDARIES.items()
+        if _path_value(before, path) != _path_value(after, path)
+    )
+
+
+def _path_value(raw: Mapping[str, Any], path: str) -> Any:
+    value: Any = raw
+    for part in path.split("."):
+        if not isinstance(value, Mapping):  # pragma: no cover - registry is exhaustively tested
+            raise KeyError(path)
+        value = value[part]
+    return value
 
 
 def resolve_config(

@@ -1,13 +1,19 @@
+from dataclasses import fields, is_dataclass, replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from spotter.config import (
+    CONFIG_ACTIVATION_BOUNDARIES,
     CONFIG_SCHEMA,
     CONFIG_SCHEMA_VERSION,
     LEGACY_CONFIG_SCHEMA_VERSION,
+    ActivationBoundary,
     ConfigurationError,
+    GatesConfig,
     SpotterConfig,
+    classify_config_changes,
     resolve_config,
 )
 from spotter.paths import RuntimeLayout
@@ -20,6 +26,18 @@ def _layout(tmp_path: Path) -> RuntimeLayout:
         argv0="__main__.py",
         environ={},
     )
+
+
+def _config_leaf_paths(value: Any, prefix: str = "") -> set[str]:
+    paths: set[str] = set()
+    for field in fields(value):
+        field_value = getattr(value, field.name)
+        path = f"{prefix}.{field.name}" if prefix else field.name
+        if is_dataclass(field_value):
+            paths.update(_config_leaf_paths(field_value, path))
+        else:
+            paths.add(path)
+    return paths
 
 
 def test_loads_example_configuration() -> None:
@@ -38,6 +56,39 @@ def test_uses_default_reviewer_model_when_reviewer_is_omitted() -> None:
 
     assert config.reviewer.model == "default"
     assert config.config_schema_version == LEGACY_CONFIG_SCHEMA_VERSION
+
+
+def test_every_effective_config_field_declares_an_activation_boundary(tmp_path: Path) -> None:
+    config = resolve_config(layout=_layout(tmp_path)).config
+
+    assert set(CONFIG_ACTIVATION_BOUNDARIES) == _config_leaf_paths(config)
+
+
+def test_classifies_config_changes_without_exposing_values(tmp_path: Path) -> None:
+    previous = resolve_config(layout=_layout(tmp_path)).config
+    candidate = replace(
+        previous,
+        main_agent=replace(previous.main_agent, adapter="future-adapter"),
+        reviewer=replace(previous.reviewer, model="future-model", max_per_day=7),
+        gates=GatesConfig(forbidden_paths=("private/*",), block_dependency_changes=True),
+        observation_only=False,
+        snapshot_on_patch=False,
+        config_schema_version=LEGACY_CONFIG_SCHEMA_VERSION,
+    )
+
+    changes = classify_config_changes(previous, candidate)
+
+    assert [(change.path, change.activation_boundary) for change in changes] == [
+        ("config_schema_version", ActivationBoundary.SCHEMA_MIGRATION),
+        ("main_agent.adapter", ActivationBoundary.INTEGRATION_RECONFIGURE),
+        ("reviewer.model", ActivationBoundary.NEXT_TURN),
+        ("reviewer.max_per_day", ActivationBoundary.HOT),
+        ("gates.forbidden_paths", ActivationBoundary.NEXT_TURN),
+        ("gates.block_dependency_changes", ActivationBoundary.NEXT_TURN),
+        ("observation_only", ActivationBoundary.NEXT_TURN),
+        ("snapshot_on_patch", ActivationBoundary.HOT),
+    ]
+    assert classify_config_changes(previous, previous) == ()
 
 
 def test_resolves_canonical_config_precedence_and_provenance(tmp_path: Path) -> None:
