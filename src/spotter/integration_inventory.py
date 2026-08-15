@@ -78,10 +78,8 @@ class IntegrationInventory:
                 or raw.get("schema_version") != MANIFEST_SCHEMA_VERSION
             ):
                 raise IntegrationError("manifest does not match the current exact schema")
-            manifest = IntegrationManifest.load(self.manifest_path)
-            if manifest is None:
-                raise IntegrationError("manifest disappeared during inspection")
-        except (OSError, ValueError, IntegrationError) as error:
+            manifest = IntegrationManifest(**raw)
+        except (OSError, ValueError, TypeError, IntegrationError) as error:
             inspections.append(self._ambiguous("manifest", self.manifest_path, str(error)))
             return None
         inspections.append(self._safe("manifest", self.manifest_path, "current manifest schema"))
@@ -112,6 +110,10 @@ class IntegrationInventory:
                         inspections.append(self._ambiguous("lock", entry, "not a regular file"))
                     elif manifest is not None:
                         inspections.append(self._safe("lock", entry, "manifest companion lock"))
+                    else:
+                        inspections.append(
+                            self._ambiguous("lock", entry, "lock has no ownership manifest")
+                        )
                 continue
             inspections.append(self._ambiguous("integration_file", entry, "unrecognized entry"))
         return inspections

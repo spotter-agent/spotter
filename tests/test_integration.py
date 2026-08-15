@@ -301,7 +301,25 @@ def test_integration_inventory_surfaces_hooks_without_manifest(
 
     inspections = IntegrationInventory(manager.layout, manager.codex_home).inspect()
 
-    assert sum(item.confidence.value == "AMBIGUOUS" for item in inspections) == 4
+    assert sum(item.confidence.value == "AMBIGUOUS" for item in inspections) == 5
+    assert any(item.resource_type == "lock" for item in inspections)
+
+
+def test_integration_inventory_constructs_manifest_from_validated_bytes(
+    homes: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager, _ = _manager(homes)
+    manager.setup()
+
+    monkeypatch.setattr(
+        IntegrationManifest,
+        "load",
+        lambda _: (_ for _ in ()).throw(AssertionError("manifest must not be read twice")),
+    )
+
+    inspections = IntegrationInventory(manager.layout, manager.codex_home).inspect()
+
+    assert any(item.resource_type == "manifest" for item in inspections)
 
 
 def test_integration_inventory_verifies_service_definition(

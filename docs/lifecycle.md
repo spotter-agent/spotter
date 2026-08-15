@@ -1398,7 +1398,7 @@ checks every recorded Hook entry, reconstructs and compares the managed service 
 manifest runtime layout, validates backup content against its fingerprinted filename, and reports
 the manifest and companion lock. Recorded resources already absent remain safely idempotent;
 unrecorded or modified Spotter-like Hooks, changed services/backups, future or legacy manifests,
-non-regular paths, and unknown integration-directory entries remain ambiguous. The preview is
+orphan locks, non-regular paths, and unknown integration-directory entries remain ambiguous. The preview is
 non-mutating and destructive `--integration` remains disabled.
 
 `purge --snapshots` removes only exact `SAFE_OWNED`, unreferenced registered worktrees and snapshot
