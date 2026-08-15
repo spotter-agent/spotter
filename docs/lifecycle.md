@@ -908,10 +908,12 @@ explicitly uncaptured limitations. Fork manifest schema v6 persists resource pur
 declared virtualenv/cache becomes `MISSING_VENV_OR_CACHE`; schema v1 through v5 manifests remain
 readable, with v1 providing no declared-resource coverage.
 
-With snapshotting enabled, the Codex `SessionStart` Hook pins a baseline snapshot for the reported
-Git working directory. Read-only proposals before the first mutation can therefore reuse that one
-anchor with their reconstructed rollout context; Spotter does not create a filesystem snapshot for
-every observation. Mutation boundaries keep the existing before/after snapshots and tree dedup.
+With snapshotting enabled, Codex App Server `thread/started` pins a baseline snapshot for the
+reported Git working directory. Completed local mutation items pin the resulting worktree state,
+while `PreToolUse` continues to capture the before-state required by synchronous enforcement during
+the Hook migration. Read-only proposals can therefore reuse an existing anchor with their
+reconstructed rollout context; Spotter does not create a filesystem snapshot for every observation.
+Snapshot refs retain the existing tree deduplication and prune serialization guarantees.
 
 Forked worktree lifecycle:
 

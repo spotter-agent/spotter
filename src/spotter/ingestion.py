@@ -24,7 +24,7 @@ from spotter.observability import (
     CoverageStatus,
     SourceAuditStore,
 )
-from spotter.snapshot import StepJournal, StepRecord
+from spotter.snapshot import SnapshotError, StepJournal, StepRecord, global_lock, snapshot_worktree
 from spotter.trace import TraceEvent, TraceProvenance
 
 _AGENT = "codex"
@@ -237,11 +237,16 @@ class AppServerTraceIngestor:
     """Append normalized events once, with restart-safe lifecycle reconciliation."""
 
     def __init__(
-        self, journals_dir: Path, mcp_semantics: tuple[McpToolSemantics, ...] = ()
+        self,
+        journals_dir: Path,
+        mcp_semantics: tuple[McpToolSemantics, ...] = (),
+        *,
+        snapshot_on_patch: bool = True,
     ) -> None:
         self.journals_dir = journals_dir
         self.journals_dir.mkdir(parents=True, exist_ok=True)
         self.normalizer = CodexTraceNormalizer(mcp_semantics=mcp_semantics)
+        self.snapshot_on_patch = snapshot_on_patch
         self.source_audit = SourceAuditStore(journals_dir / SOURCE_AUDIT_RELATIVE_PATH)
         self.last_source_audit_error: str | None = None
         self._seen: set[str] = set()
@@ -249,6 +254,7 @@ class AppServerTraceIngestor:
         self._terminal_turns: set[str] = set()
         self._last_at: dict[tuple[str, str, str], float] = {}
         self._last_arrival_seq: dict[int, int] = {}
+        self._repositories: dict[str, Path] = {}
         self.last_connection_epoch = 0
         # ponytail: recovery is O(all App Server history); #89 should checkpoint per-thread
         # reconciliation state when retained histories become measurably expensive.
@@ -344,7 +350,16 @@ class AppServerTraceIngestor:
             event = replace(event, arrival_seq=event.arrival_seq or previous_seq + 1)
 
         journal = StepJournal(self.journals_dir / route)
-        record = journal.record(event)
+        repository = self._snapshot_repository(event, route)
+        if repository is not None:
+            with global_lock(self.journals_dir.parent):
+                try:
+                    snapshot = snapshot_worktree(repository, journal.last_snapshot())
+                except SnapshotError:
+                    snapshot = None
+                record = journal.record(event, snapshot)
+        else:
+            record = journal.record(event)
         self._remember(record.event, route)
         effect = effect_event(event)
         if effect is not None:
@@ -404,6 +419,10 @@ class AppServerTraceIngestor:
             )
 
     def _remember(self, event: TraceEvent, route: str) -> None:
+        if event.kind == "thread_started":
+            cwd = event.payload.get("cwd")
+            if isinstance(cwd, str) and cwd:
+                self._repositories[route] = Path(cwd)
         if event.event_id is not None:
             self._seen.add(event.event_id)
         if event.operation_id is not None:
@@ -426,6 +445,18 @@ class AppServerTraceIngestor:
                 self._last_arrival_seq[event.connection_epoch] = max(
                     self._last_arrival_seq.get(event.connection_epoch, 0), event.arrival_seq
                 )
+
+    def _snapshot_repository(self, event: TraceEvent, route: str) -> Path | None:
+        if not self.snapshot_on_patch:
+            return None
+        if event.kind == "thread_started":
+            cwd = event.payload.get("cwd")
+            return Path(cwd) if isinstance(cwd, str) and cwd else None
+        if event.payload.get("expected_reversibility_class") != "B":
+            return None
+        if event.kind not in {"command_result", "file_edit", "tool_result"}:
+            return None
+        return self._repositories.get(route)
 
 
 def _normalize_item(

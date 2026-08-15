@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,23 @@ def _item_event(method: str, item: dict[str, Any], timestamp_ms: int = 1_000) ->
         method,
         {"threadId": "thread-1", "turnId": "turn-1", "item": item, timestamp: timestamp_ms},
     )
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def _repository(path: Path) -> Path:
+    path.mkdir()
+    _git(path, "init")
+    _git(path, "config", "user.email", "tests@spotter.invalid")
+    _git(path, "config", "user.name", "Spotter Tests")
+    (path / "tracked.txt").write_text("before\n")
+    _git(path, "add", "tracked.txt")
+    _git(path, "commit", "-m", "initial")
+    return path
 
 
 def test_normalizes_lifecycle_and_authoritative_item_families() -> None:
@@ -283,6 +301,53 @@ def test_app_server_downgrades_uncheckpointed_class_b_mutations(tmp_path: Path) 
     assert len(effects) == 1
     assert effects[0].payload["kind"] == "uncheckpointed_workspace_write"
     assert effects[0].payload["outcome"] == "succeeded"
+
+
+def test_app_server_snapshots_thread_start_and_completed_local_mutation(
+    tmp_path: Path,
+) -> None:
+    repo = _repository(tmp_path / "repo")
+    journals = tmp_path / "sessions"
+    started = AppServerTraceIngestor(journals).ingest(
+        _event(
+            "thread/started",
+            {"thread": {"id": "thread-1", "createdAt": 100, "cwd": str(repo)}},
+        )
+    )
+    assert started is not None and started.snapshot is not None
+    assert _git(repo, "show", f"{started.snapshot}:tracked.txt") == "before"
+
+    # Recovery must restore the thread-to-repository route before the next event.
+    resumed = AppServerTraceIngestor(journals)
+    resumed.ingest(_event("turn/started", {"threadId": "thread-1", "turn": _turn()}))
+    (repo / "tracked.txt").write_text("after\n")
+    completed = resumed.ingest(
+        _item_event(
+            "item/completed",
+            {
+                "id": "edit-1",
+                "type": "fileChange",
+                "changes": [{"path": "tracked.txt", "kind": "update"}],
+                "status": "completed",
+            },
+        )
+    )
+
+    assert completed is not None and completed.snapshot is not None
+    assert completed.snapshot != started.snapshot
+    assert _git(repo, "show", f"{completed.snapshot}:tracked.txt") == "after"
+
+
+def test_app_server_snapshotting_respects_disabled_config(tmp_path: Path) -> None:
+    repo = _repository(tmp_path / "repo")
+    started = AppServerTraceIngestor(tmp_path / "sessions", snapshot_on_patch=False).ingest(
+        _event(
+            "thread/started",
+            {"thread": {"id": "thread-1", "createdAt": 100, "cwd": str(repo)}},
+        )
+    )
+
+    assert started is not None and started.snapshot is None
 
 
 def test_normalizes_user_message_control_correlation() -> None:

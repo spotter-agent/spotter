@@ -491,10 +491,10 @@ The target Codex integration should keep only the hook surface that provides a u
 
 | Hook | Current use | Target |
 | --- | --- | --- |
-| `SessionStart` | session bootstrap/observation | replace with App Server lifecycle if coverage is sufficient |
+| `SessionStart` | legacy session baseline snapshot | App Server `thread/started` now owns the baseline; remove the redundant Hook |
 | `UserPromptSubmit` | user goal capture | replace with App Server user-message events |
 | `PreToolUse` | proposal observation + gate | **retain for deterministic atomic enforcement** |
-| `PostToolUse` | result/snapshot/reviewer cadence | replace with App Server result/diff events |
+| `PostToolUse` | legacy result/snapshot/reviewer cadence | App Server terminal items now own after-state snapshots; finish result/reviewer migration, then remove the Hook |
 
 ### Appropriate synchronous policies
 

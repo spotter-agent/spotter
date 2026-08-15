@@ -110,6 +110,7 @@ class AppServerRecoveryLoop:
         maximum_backoff: float = 30,
         control_telemetry_queue_size: int = 256,
         mcp_semantics: tuple[McpToolSemantics, ...] = (),
+        snapshot_on_patch: bool = True,
     ) -> None:
         if not endpoint.strip():
             raise ValueError("App Server endpoint must be non-empty")
@@ -119,7 +120,9 @@ class AppServerRecoveryLoop:
             raise ValueError("control telemetry queue size must be positive")
         self.endpoint = endpoint
         self.thread_states = thread_states
-        self.ingestor = AppServerTraceIngestor(journals_dir, mcp_semantics)
+        self.ingestor = AppServerTraceIngestor(
+            journals_dir, mcp_semantics, snapshot_on_patch=snapshot_on_patch
+        )
         self.on_state = on_state
         self.client_factory = client_factory or (lambda value: CodexAppServerClient(value))
         self.signals = signals or SignalEngine()

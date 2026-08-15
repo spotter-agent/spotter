@@ -266,6 +266,7 @@ class DaemonServer:
         layout: RuntimeLayout | None = None,
         reviewer_config: ReviewerConfig | None = None,
         mcp_semantics: tuple[McpToolSemantics, ...] = (),
+        snapshot_on_patch: bool = True,
         package_watch_interval: float = _PACKAGE_WATCH_INTERVAL,
         package_missing_grace: float = _PACKAGE_MISSING_GRACE,
     ) -> None:
@@ -284,6 +285,7 @@ class DaemonServer:
         self.review_executor: ReviewExecutor | None = None
         self.reviewer_config = reviewer_config or ReviewerConfig()
         self.mcp_semantics = mcp_semantics
+        self.snapshot_on_patch = snapshot_on_patch
         self._runtime_id = uuid.uuid4().hex
         self._gate_requests = 0
         self._resource_sample_seq = 0
@@ -344,6 +346,7 @@ class DaemonServer:
                 self.thread_states,
                 on_state=self._on_recovery_state,
                 mcp_semantics=self.mcp_semantics,
+                snapshot_on_patch=self.snapshot_on_patch,
             )
             self.recovery = recovery
             self.review_executor = ReviewExecutor(
@@ -901,11 +904,13 @@ def main(argv: list[str] | None = None) -> int:
         layout = RuntimeLayout.discover()
         reviewer_config = _configured_reviewer(layout)
         mcp_semantics = _configured_mcp_semantics(layout)
+        snapshot_on_patch = _configured_snapshot_on_patch(layout)
         asyncio.run(
             DaemonServer(
                 app_server_endpoint=_configured_app_server_endpoint(layout),
                 reviewer_config=reviewer_config,
                 mcp_semantics=mcp_semantics,
+                snapshot_on_patch=snapshot_on_patch,
                 layout=layout,
             ).serve()
         )
@@ -974,6 +979,30 @@ def _configured_mcp_semantics(
             file=sys.stderr,
         )
         return ()
+
+
+def _configured_snapshot_on_patch(layout: RuntimeLayout | None = None) -> bool:
+    runtime_layout = layout or RuntimeLayout.discover()
+    manifest_path = runtime_layout.integration_manifest
+    try:
+        raw = json.loads(manifest_path.read_bytes())
+    except (OSError, ValueError):
+        raw = {}
+    configured = raw.get("config_path") if isinstance(raw, dict) else None
+    config_path = Path(configured) if isinstance(configured, str) and configured else None
+    default_path = runtime_layout.user_config_dir / "spotter.toml"
+    config_path = config_path or (default_path if default_path.exists() else None)
+    if config_path is None:
+        return True
+    try:
+        return SpotterConfig.from_toml(config_path).snapshot_on_patch
+    except (OSError, ValueError) as error:
+        print(
+            f"spotterd: unusable snapshot config {config_path} ({error}); "
+            "App Server snapshots remain enabled",
+            file=sys.stderr,
+        )
+        return True
 
 
 if __name__ == "__main__":

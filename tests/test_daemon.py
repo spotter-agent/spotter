@@ -22,6 +22,7 @@ from spotter.daemon import (
     RuntimeHealth,
     _configured_mcp_semantics,
     _configured_reviewer,
+    _configured_snapshot_on_patch,
     _PackageBoundaryMonitor,
     runtime_socket,
 )
@@ -113,6 +114,19 @@ def test_daemon_loads_mcp_semantics_from_manifest_config(tmp_path: Path) -> None
         "lookup",
         "A",
     )
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_daemon_loads_snapshot_setting_from_manifest_config(tmp_path: Path, enabled: bool) -> None:
+    layout = RuntimeLayout.discover(spotter_root=tmp_path / "home")
+    config = tmp_path / "custom.toml"
+    config.write_text(
+        f'snapshot_on_patch = {str(enabled).lower()}\n[main_agent]\nadapter = "codex"\n'
+    )
+    layout.integration_manifest.parent.mkdir(parents=True)
+    layout.integration_manifest.write_text(json.dumps({"config_path": str(config)}))
+
+    assert _configured_snapshot_on_patch(layout) is enabled
 
 
 def test_daemon_stops_cleanly_after_the_stable_package_is_removed(
