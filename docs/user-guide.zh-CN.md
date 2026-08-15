@@ -266,7 +266,7 @@ spotter analyze
 工作上下文。
 
 检测延迟研究应同时记录回顾性的 semantic window，以及 Spotter 实际能够观察到必要证据的
-observable window。每个锚点必须对应具有稳定 Trace IR event ID 的日志步骤：
+observable window；不假设两个区间互相包含。每个锚点必须对应具有稳定 Trace IR event ID 的日志步骤：
 
 ```bash
 spotter label-opportunity --session <id> --opportunity-id <failure-id> \
@@ -276,6 +276,9 @@ spotter label-opportunity --session <id> --opportunity-id <failure-id> \
 ```
 
 可重复使用 `--required-evidence`；独立双重标注时请使用 `--rater`。
+`spotter metrics --session <id>` 只关联引用了全部 required evidence 的 signal，并报告区间相对
+延迟以及 signal 前的 action、失败 outcome 和文件数量。尚未闭合的窗口保持为 `UNJUDGEABLE`，
+不会被误报为 `NEVER`。
 
 ### 存储维护
 

@@ -297,10 +297,10 @@ suffix. Metrics preserve the frame probability and exclusions, report coverage s
 detector/event-kind/rate stratum, and explicitly avoid generalizing the result to unsampled event
 kinds.
 
-For detection-delay studies, record both the retrospective semantic window and the narrower window
-where Spotter could actually observe the required evidence. Every anchor must name a journal step
-with a stable Trace IR event ID; the stored annotation pins that identity rather than relying on a
-mutable line number:
+For detection-delay studies, record both the retrospective semantic window and the separate window
+where Spotter could actually observe the required evidence. The two intervals are not assumed to be
+nested. Every anchor must name a journal step with a stable Trace IR event ID; the stored annotation
+pins that identity rather than relying on a mutable line number:
 
 ```bash
 spotter label-opportunity --session <id> --opportunity-id <failure-id> \
@@ -311,6 +311,10 @@ spotter label-opportunity --session <id> --opportunity-id <failure-id> \
 
 Repeat `--required-evidence` as needed and use `--rater` when double-labeling a subset. Reusing one
 opportunity ID and rater appends a correction while preserving annotation history.
+`spotter metrics --session <id>` links only candidates that cite every required evidence event. It
+reports early/within/late/never classifications, bounded delay, and actions, failed outcomes, and
+files observed after the actionable window opened. Stale annotations and still-open windows remain
+explicit instead of becoming misses.
 
 ### Storage maintenance
 

@@ -280,7 +280,7 @@ mechanical outcome을 연결합니다. 파일명이나 timestamp로 outcome을 �
 
 탐지 지연 연구에서는 회고적 semantic window와 Spotter가 필요한 증거를 실제로 관측할 수 있었던
 observable window를 함께 기록합니다. 각 anchor는 stable Trace IR event ID가 있는 journal step이어야
-합니다.
+하며 두 window가 서로 포함된다고 가정하지 않습니다.
 
 ```bash
 spotter label-opportunity --session <id> --opportunity-id <failure-id> \
@@ -290,6 +290,9 @@ spotter label-opportunity --session <id> --opportunity-id <failure-id> \
 ```
 
 필요하면 `--required-evidence`를 반복하고, 독립 이중 라벨링에는 `--rater`를 사용하세요.
+`spotter metrics --session <id>`는 required evidence를 모두 인용한 signal만 연결해 구간 기준 지연과
+signal 전까지의 action, 실패 outcome, file 수를 보고합니다. 열린 window는 `NEVER`가 아니라
+`UNJUDGEABLE`로 유지됩니다.
 
 ### 저장소 관리
 

@@ -162,6 +162,12 @@ actual delivery point
 
 From them derive detection delay, reviewer latency, supervision lead/lag, wasted actions, and stale-intervention rate.
 
+The #24 instrument now records semantic and observable intervals independently against stable Trace
+IR identities. Its first consumer links an active signal only when the candidate cites every required
+evidence event, then reports interval-relative step/source-clock delay and deduplicated actions,
+failed outcomes, and files before detection. Open windows are `UNJUDGEABLE`, not `NEVER`; reviewer,
+control, and adoption linkage remain subsequent slices.
+
 ---
 
 ## RQ3 — Event-driven triggering

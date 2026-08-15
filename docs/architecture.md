@@ -735,7 +735,13 @@ semantic and observable earliest/latest bounds plus required evidence to stable 
 and content fingerprints. Journal steps remain only locators; a changed or missing event makes the
 annotation stale instead of silently moving the warranted window. Append-only corrections retain
 the latest window per opportunity and rater. These annotations do not enter reviewer input and do
-not yet claim a delay distribution; #24 metrics consume them separately.
+not assume that semantic and observable windows are nested. #24 metrics link a signal only when its
+active candidate cites every required evidence event, classify it as `EARLY`, `WITHIN_WINDOW`,
+`LATE`, `NEVER`, or `UNJUDGEABLE`, and report bounded step/source-clock delay plus deduplicated
+post-window actions, failed outcomes, and files. Unrelated candidates never stop the opportunity
+clock, stale annotations remain outside the distribution, and an open journal cannot become a
+fabricated `NEVER`. An observation gap crossing the measured interval also makes delay and
+post-window work `UNJUDGEABLE` rather than pretending the missing surface was quiet.
 
 ## 8.3 Snapshot state
 

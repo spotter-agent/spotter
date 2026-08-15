@@ -62,6 +62,12 @@ from spotter.observability import (
     render_observability,
 )
 from spotter.opportunities import OpportunityError, add_opportunity
+from spotter.opportunity_metrics import (
+    OpportunityTimingReport,
+    measure_opportunity_timing,
+    merge_opportunity_timing,
+    render_opportunity_timing,
+)
 from spotter.paths import RuntimeLayout, secure_dir, spotter_home
 from spotter.redact import scan_text
 from spotter.replay import (
@@ -1208,6 +1214,7 @@ def _metrics_main(session: str | None) -> int:
     signals: dict[str, Tally] = {}
     unattributed_signals = 0
     agreement = AgreementTally()
+    opportunity_reports: list[OpportunityTimingReport] = []
     for journal in journals:
         try:
             records = StepJournal.load(journal)
@@ -1231,7 +1238,8 @@ def _metrics_main(session: str | None) -> int:
                 journal.stem, records
             )
             session_agreement = agreement_session(journal.stem, records)
-        except (LabelError, SignalSampleError) as error:
+            opportunity_reports.append(measure_opportunity_timing(journal.stem, records))
+        except (LabelError, OpportunityError, SignalSampleError) as error:
             print(f"metrics aborted: {error}", file=sys.stderr)
             return 1
         for rule, tally in session_gates.items():
@@ -1333,6 +1341,7 @@ def _metrics_main(session: str | None) -> int:
     print("  " + ceiling.rate_line("sessions", "visible"))
     print("Rater agreement (double-label subset):")
     print("  " + agreement.rate_line())
+    print(render_opportunity_timing(merge_opportunity_timing(opportunity_reports)))
     print(render_runtime_costs(measure_runtime_costs(runtime_journals)))
     if objective_report is not None:
         print(render_objective_outcomes(objective_report))
