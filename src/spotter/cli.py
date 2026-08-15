@@ -69,6 +69,7 @@ from spotter.opportunity_metrics import (
     render_opportunity_timing,
 )
 from spotter.paths import RuntimeLayout, secure_dir, spotter_home
+from spotter.provenance import InterventionSummary, summarize_interventions
 from spotter.redact import scan_text
 from spotter.replay import (
     ReplayError,
@@ -135,6 +136,8 @@ def build_parser() -> argparse.ArgumentParser:
             "observability",
             "status",
             "doctor",
+            "interventions",
+            "explain",
             "daemon",
             "setup",
             "teardown",
@@ -156,6 +159,8 @@ def build_parser() -> argparse.ArgumentParser:
             "tasks: validate or preflight a frozen task set without running agents; "
             "status: what Spotter is storing, and whether it is actually running; "
             "doctor: verify supervision end to end (non-zero exit when broken); "
+            "interventions: list recent live supervision lifecycle records; "
+            "explain: inspect one intervention with --intervention-id; "
             "daemon: manually start, stop, restart, or inspect spotterd; "
             "setup/teardown: manage the owned Codex integration"
         ),
@@ -177,6 +182,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--session", help="session id (fork; analyze/metrics/observability filter to it)"
     )
+    parser.add_argument("--intervention-id", help="explain: stable Spotter intervention id")
     parser.add_argument("--step", type=int, help="journal step to branch at (fork)")
     parser.add_argument(
         "--repo", type=Path, help="repo path (prune; fork override when the journal lacks cwd)"
@@ -424,6 +430,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(f"--session {args.session!r} is not a valid session id")
     if args.command == "analyze":
         return _analyze_main(args.session)
+    if args.command == "interventions":
+        return _interventions_main()
+    if args.command == "explain":
+        if not args.intervention_id:
+            parser.error("explain requires --intervention-id")
+        return _explain_main(args.intervention_id)
     if args.command == "fork-coverage":
         if not args.session:
             parser.error("fork-coverage requires --session")
@@ -664,6 +676,72 @@ def _analyze_main(session: str | None) -> int:
                 f"{record.event.payload.get('rule')}: {summary}"
             )
     return 0
+
+
+def _intervention_history() -> tuple[InterventionSummary, ...]:
+    sessions_dir = journal_path({"session_id": "probe"}).parent
+    records: list[StepRecord] = []
+    for journal in sorted(sessions_dir.glob("app-server-*.jsonl")):
+        records.extend(StepJournal.load(journal, repair_tail=True))
+    return summarize_interventions(records)
+
+
+def _interventions_main() -> int:
+    try:
+        interventions = _intervention_history()
+    except (OSError, SnapshotError) as error:
+        print(f"interventions unavailable: {error}", file=sys.stderr)
+        return 1
+    if not interventions:
+        print("no live interventions recorded", file=sys.stderr)
+        return 1
+    for intervention in interventions:
+        print(
+            f"{intervention.intervention_id}  {intervention.action or 'UNKNOWN':8s}  "
+            f"{intervention.status:23s}  thread={intervention.thread_id or 'unknown'} "
+            f"turn={intervention.turn_id or 'unknown'}"
+        )
+    return 0
+
+
+def _explain_main(intervention_id: str) -> int:
+    try:
+        intervention = next(
+            item for item in _intervention_history() if item.intervention_id == intervention_id
+        )
+    except StopIteration:
+        print(f"intervention {intervention_id!r} was not found", file=sys.stderr)
+        return 1
+    except (OSError, SnapshotError) as error:
+        print(f"intervention explanation unavailable: {error}", file=sys.stderr)
+        return 1
+
+    print(f"Intervention\n  {intervention.intervention_id}")
+    print(f"Action\n  {intervention.action or 'UNKNOWN'}")
+    epoch = (
+        intervention.connection_epoch if intervention.connection_epoch is not None else "unknown"
+    )
+    print(
+        "Target\n"
+        f"  thread={intervention.thread_id or 'unknown'} "
+        f"turn={intervention.turn_id or 'unknown'} connection_epoch={epoch}"
+    )
+    print("Why Spotter acted (model judgment, not ground truth)")
+    confidence = intervention.confidence if intervention.confidence is not None else "unknown"
+    print(f"  class={intervention.failure_class or 'unknown'} confidence={confidence}")
+    print(f"  hypothesis={_bounded(intervention.hypothesis)}")
+    print(f"  reason={_bounded(intervention.reason)}")
+    print("Observed evidence references")
+    print(f"  signals={','.join(intervention.signal_ids) or 'unavailable'}")
+    print(f"  events={','.join(intervention.evidence_event_ids) or 'unavailable'}")
+    print("Delivery")
+    suffix = f" ({intervention.status_reason})" if intervention.status_reason else ""
+    print(f"  {intervention.status}{suffix}")
+    return 0
+
+
+def _bounded(value: str | None) -> str:
+    return " ".join((value or "unavailable").split())[:600]
 
 
 def _trigger_for(records: list[StepRecord], flagged: StepRecord) -> dict[str, object]:
