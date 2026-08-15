@@ -287,6 +287,9 @@ def test_branch_coverage_reports_signal_trigger_followups(repo: Path, codex_home
             ),
         ],
     )
+    records = StepJournal.load(journal_path({"session_id": OLD_ID}))
+    add_label(OLD_ID, 1, "tp", "signal opportunity", records)
+    add_label(OLD_ID, 3, "fp", "late signal", records)
 
     report = branch_coverage(OLD_ID, codex_home)
 
@@ -295,6 +298,9 @@ def test_branch_coverage_reports_signal_trigger_followups(repo: Path, codex_home
     assert report.signal_trigger_points[0].proposal_step == 2
     assert report.signal_trigger_points[0].status == BranchCoverageStatus.FORKABLE_EXACT
     assert report.signal_trigger_points[1].proposal_step is None
+    assert report.labeled_opportunities == report.labeled_opportunities_current == 2
+    assert report.labeled_opportunity_branch_points == 1
+    assert [point.proposal_step for point in report.labeled_opportunity_points] == [2, None]
     rendered = json.loads(branch_coverage_to_json(report))
     assert rendered["signal_trigger_points"][0]["status"] == "FORKABLE_EXACT"
 

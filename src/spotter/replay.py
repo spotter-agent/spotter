@@ -420,7 +420,7 @@ def _labeled_branch_coverage(
                     proposal = point_by_step[records[label.step - 1].step]
             elif target_kind == "tool_proposal":
                 proposal = point_by_step.get(target.step)
-            elif target_kind == "reviewer_decision":
+            elif target_kind in {"reviewer_decision", "signal_candidate"}:
                 proposal = next(
                     (
                         point_by_step[record.step]

@@ -176,6 +176,39 @@ def tally_unflagged_proposals(session: str, records: list[StepRecord]) -> tuple[
     return tally, uncorrelatable
 
 
+def tally_signal_candidates(
+    session: str, records: list[StepRecord]
+) -> tuple[dict[str, Tally], int]:
+    """Return active-candidate precision coverage by signal type and blind spots."""
+
+    labels = load_labels(session)
+    tallies: dict[str, Tally] = {}
+    seen: set[str] = set()
+    unattributed = 0
+    for record in records:
+        if (
+            record.event.kind != "signal_candidate"
+            or record.event.payload.get("status") != "active"
+        ):
+            continue
+        signal_id = record.event.payload.get("signal_id")
+        signal_type = record.event.payload.get("signal_type")
+        if (
+            not isinstance(signal_id, str)
+            or not signal_id
+            or not isinstance(signal_type, str)
+            or not signal_type
+        ):
+            unattributed += 1
+            continue
+        if signal_id in seen:
+            continue
+        seen.add(signal_id)
+        verdict, stale = _verdict(labels, records, record.step)
+        tallies[signal_type] = tallies.get(signal_type, Tally()).plus(verdict, stale=stale)
+    return tallies, unattributed
+
+
 def merge(left: Tally, right: Tally) -> Tally:
     return Tally(
         labeled=left.labeled + right.labeled,

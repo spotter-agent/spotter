@@ -48,6 +48,7 @@ from spotter.metrics import (
     merge,
     merge_agreement,
     tally_session,
+    tally_signal_candidates,
     tally_unflagged_proposals,
 )
 from spotter.observability import (
@@ -129,8 +130,8 @@ def build_parser() -> argparse.ArgumentParser:
             "prune: drop unreferenced refs/spotter snapshots (dry-run without --apply); "
             "review: run the shadow reviewer on a session (records only, injects nothing); "
             "experiment: guidance or identical-neutral fork pairs (needs --run to execute); "
-            "label: record a human verdict on a gate flag, reviewer decision, or session; "
-            "metrics: gate FP rate, reviewer precision and observability ceiling from labels; "
+            "label: record a human verdict on a gate flag, signal, reviewer decision, or session; "
+            "metrics: gate and signal precision, misses, reviewer precision, and ceiling; "
             "observability: compare Hook/App Server Trace IR and source-adapter coverage; "
             "tasks: validate or preflight a frozen task set without running agents; "
             "status: what Spotter is storing, and whether it is actually running; "
@@ -237,7 +238,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--verdict",
         help=(
-            "label: tp|fp|unclear for a flag, miss|tn|unclear for an unflagged proposal, "
+            "label: tp|fp|unclear for a flag/signal, miss|tn|unclear for an unflagged proposal, "
             "visible|invisible|unclear for a session"
         ),
     )
@@ -983,6 +984,8 @@ def _metrics_main(session: str | None) -> int:
     reviewer = ceiling = Tally()
     gate_misses = Tally()
     uncorrelatable_proposals = 0
+    signals: dict[str, Tally] = {}
+    unattributed_signals = 0
     agreement = AgreementTally()
     for journal in journals:
         try:
@@ -994,6 +997,9 @@ def _metrics_main(session: str | None) -> int:
         try:
             session_gates, session_reviewer, session_ceiling = tally_session(journal.stem, records)
             session_misses, session_uncorrelatable = tally_unflagged_proposals(
+                journal.stem, records
+            )
+            session_signals, session_unattributed_signals = tally_signal_candidates(
                 journal.stem, records
             )
             session_agreement = agreement_session(journal.stem, records)
@@ -1010,6 +1016,9 @@ def _metrics_main(session: str | None) -> int:
         ceiling = merge(ceiling, session_ceiling)
         gate_misses = merge(gate_misses, session_misses)
         uncorrelatable_proposals += session_uncorrelatable
+        for signal_type, tally in session_signals.items():
+            signals[signal_type] = merge(signals.get(signal_type, Tally()), tally)
+        unattributed_signals += session_unattributed_signals
         agreement = merge_agreement(agreement, session_agreement)
 
     objective_report = None
@@ -1039,6 +1048,16 @@ def _metrics_main(session: str | None) -> int:
         print(
             "  blind spots (not part of the rate): "
             f"{uncorrelatable_proposals} proposals lack a correlation id"
+        )
+    print("Signal candidate precision (label each active candidate tp|fp):")
+    if not signals:
+        print("  no active signal candidates recorded")
+    for signal_type, tally in sorted(signals.items()):
+        print("  " + tally.rate_line(signal_type, "correct"))
+    if unattributed_signals:
+        print(
+            "  blind spots (not part of the rate): "
+            f"{unattributed_signals} active candidates lack a stable type or identity"
         )
     print("P4 reviewer precision (label each verify/nudge tp|fp):")
     print("  " + reviewer.rate_line("interventions", "correct"))

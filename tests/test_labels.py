@@ -21,6 +21,7 @@ from spotter.metrics import (
     merge,
     merge_agreement,
     tally_session,
+    tally_signal_candidates,
     tally_unflagged_proposals,
 )
 from spotter.paths import sanitize_session
@@ -152,6 +153,47 @@ def test_only_proven_unflagged_proposals_accept_miss_labels() -> None:
         add_label("s1", 0, "tp", "", records)
 
 
+def test_only_active_identified_signal_candidates_accept_labels() -> None:
+    records = _journal(
+        "s1",
+        [
+            TraceEvent(
+                "signal_candidate",
+                {
+                    "signal_id": "signal-1",
+                    "signal_type": "failure_streak",
+                    "status": "active",
+                },
+            ),
+            TraceEvent(
+                "signal_candidate",
+                {
+                    "signal_id": "signal-1",
+                    "signal_type": "failure_streak",
+                    "status": "resolved",
+                },
+            ),
+            TraceEvent("signal_candidate", {"signal_type": "failure_streak", "status": "active"}),
+            TraceEvent(
+                "signal_candidate",
+                {
+                    "signal_id": "signal-1",
+                    "signal_type": "failure_streak",
+                    "status": "active",
+                },
+            ),
+        ],
+    )
+
+    assert add_label("s1", 0, "tp", "", records).verdict == "tp"
+    with pytest.raises(LabelError, match="not active"):
+        add_label("s1", 1, "fp", "", records)
+    with pytest.raises(LabelError, match="stable identity"):
+        add_label("s1", 2, "fp", "", records)
+    with pytest.raises(LabelError, match="repeats an earlier"):
+        add_label("s1", 3, "fp", "", records)
+
+
 def test_label_goes_stale_when_its_target_changes() -> None:
     records = _journal("s1", _flagged(1))
     add_label("s1", 1, "fp", "", records)
@@ -281,6 +323,53 @@ def test_gate_miss_rate_counts_only_correlated_unflagged_proposals() -> None:
     assert "miss-rate 40% of 5 decided" in tally.rate_line("unflagged proposals", "miss-rate")
 
 
+def test_signal_precision_is_stratified_and_deduplicated() -> None:
+    events = [
+        TraceEvent(
+            "signal_candidate",
+            {
+                "signal_id": f"failure-{index}",
+                "signal_type": "failure_streak",
+                "status": "active",
+            },
+        )
+        for index in range(5)
+    ]
+    events.extend(
+        [
+            TraceEvent(
+                "signal_candidate",
+                {
+                    "signal_id": "failure-0",
+                    "signal_type": "failure_streak",
+                    "status": "active",
+                },
+            ),
+            TraceEvent(
+                "signal_candidate",
+                {
+                    "signal_id": "repeat-1",
+                    "signal_type": "repeated_equivalent_tool_call",
+                    "status": "active",
+                },
+            ),
+            TraceEvent("signal_candidate", {"status": "active"}),
+        ]
+    )
+    records = _journal("s1", events)
+    for step in range(5):
+        add_label("s1", step, "fp" if step == 4 else "tp", "", records)
+
+    tallies, unattributed = tally_signal_candidates("s1", records)
+
+    failures = tallies["failure_streak"]
+    assert failures.total == failures.labeled == 5
+    assert failures.positive == 4 and failures.negative == 1
+    assert "correct 80% of 5 decided" in failures.rate_line("failure_streak", "correct")
+    assert tallies["repeated_equivalent_tool_call"].total == 1
+    assert unattributed == 1
+
+
 def test_unclear_labels_count_as_coverage_but_not_as_a_verdict() -> None:
     tally = Tally().plus("unclear").plus("tp").plus(None)
     assert tally.total == 3 and tally.labeled == 2 and tally.unclear == 1
@@ -311,6 +400,7 @@ def test_cli_label_and_metrics_roundtrip(capsys: pytest.CaptureFixture[str]) -> 
     assert "step 1: fp by alice" in out
     assert "P3 gate false positives" in out
     assert "P3 gate misses" in out
+    assert "Signal candidate precision" in out
     assert "P4 reviewer precision" in out
     assert "P1 observability ceiling" in out
     assert "Runtime cost / efficiency (coverage-aware)" in out

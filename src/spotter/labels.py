@@ -35,14 +35,20 @@ SESSION_VERDICTS = ("visible", "invisible", "unclear", "na")
 
 # Only records metrics actually scores may be labeled. Accepting a label on
 # anything else prints success and then silently discards the judgment.
-LABELABLE_KINDS = ("gate_shadow_block", "gate_block", "reviewer_decision", "tool_proposal")
+LABELABLE_KINDS = (
+    "gate_shadow_block",
+    "gate_block",
+    "reviewer_decision",
+    "signal_candidate",
+    "tool_proposal",
+)
 
 
 class LabelError(ValueError):
     """Raised when a label cannot be applied to the thing it names."""
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 LEGACY_VERSION = 0
 
 
@@ -115,6 +121,22 @@ def add_label(
             if not eligibility:
                 raise LabelError(f"step {step} proposal has a correlated gate flag")
             allowed = UNFLAGGED_VERDICTS
+        elif target.event.kind == "signal_candidate":
+            payload = target.event.payload
+            if payload.get("status") != "active":
+                raise LabelError(f"step {step} signal candidate is not active")
+            if not isinstance(payload.get("signal_id"), str) or not payload["signal_id"]:
+                raise LabelError(f"step {step} signal candidate has no stable identity")
+            if not isinstance(payload.get("signal_type"), str) or not payload["signal_type"]:
+                raise LabelError(f"step {step} signal candidate has no signal type")
+            if any(
+                record.event.kind == "signal_candidate"
+                and record.event.payload.get("status") == "active"
+                and record.event.payload.get("signal_id") == payload["signal_id"]
+                for record in records[:step]
+            ):
+                raise LabelError(f"step {step} repeats an earlier active signal candidate")
+            allowed = STEP_VERDICTS
         else:
             allowed = STEP_VERDICTS
         if (
