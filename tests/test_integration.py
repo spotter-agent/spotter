@@ -22,6 +22,7 @@ from spotter.integration import (
     IntegrationManager,
     IntegrationManifest,
 )
+from spotter.integration_inventory import IntegrationInventory
 from spotter.log_registry import LogRegistry
 from spotter.paths import RuntimeLayout
 
@@ -252,6 +253,79 @@ def test_setup_records_stable_layout_build_and_integration_generation(
     assert commands
     assert all(manifest.integration_generation in command for command in commands)
     assert all("SPOTTER_HOME=" in command and "|| true" in command for command in commands)
+
+
+def test_integration_inventory_proves_manifest_hooks_and_lock(
+    homes: tuple[Path, Path],
+) -> None:
+    manager, _ = _manager(homes)
+    manager.setup()
+
+    inspections = IntegrationInventory(manager.layout, manager.codex_home).inspect()
+
+    assert {item.confidence.value for item in inspections} == {"SAFE_OWNED"}
+    assert {item.resource_type for item in inspections} == {
+        "host_hook",
+        "lock",
+        "manifest",
+        "service",
+    }
+    assert sum(item.resource_type == "host_hook" for item in inspections) == 4
+    service = next(item for item in inspections if item.resource_type == "service")
+    assert service.presence.value == "ABSENT"
+
+
+def test_integration_inventory_surfaces_modified_hook(
+    homes: tuple[Path, Path],
+) -> None:
+    manager, _ = _manager(homes)
+    manager.setup()
+    raw = json.loads(manager.hooks_path.read_text())
+    raw["hooks"]["PreToolUse"][0]["hooks"][0]["command"] += " --changed"
+    manager.hooks_path.write_text(json.dumps(raw))
+
+    inspections = IntegrationInventory(manager.layout, manager.codex_home).inspect()
+
+    assert any(
+        item.resource_type == "host_hook" and item.confidence.value == "AMBIGUOUS"
+        for item in inspections
+    )
+
+
+def test_integration_inventory_surfaces_hooks_without_manifest(
+    homes: tuple[Path, Path],
+) -> None:
+    manager, _ = _manager(homes)
+    manager.setup()
+    manager.manifest_path.unlink()
+
+    inspections = IntegrationInventory(manager.layout, manager.codex_home).inspect()
+
+    assert sum(item.confidence.value == "AMBIGUOUS" for item in inspections) == 4
+
+
+def test_integration_inventory_verifies_service_definition(
+    homes: tuple[Path, Path],
+) -> None:
+    manager, fake = _manager(homes)
+    manager.setup()
+    service = ManagedServiceManager(
+        platform=sys.platform, registration_path=fake.registration_path, layout=manager.layout
+    )
+    service.registration_path.parent.mkdir(parents=True, exist_ok=True)
+    service.registration_path.write_bytes(service.expected_definition())
+
+    inspections = IntegrationInventory(manager.layout, manager.codex_home).inspect()
+
+    inspected = next(item for item in inspections if item.resource_type == "service")
+    assert inspected.confidence.value == "SAFE_OWNED"
+    service.registration_path.write_text("changed")
+    inspected = next(
+        item
+        for item in IntegrationInventory(manager.layout, manager.codex_home).inspect()
+        if item.resource_type == "service"
+    )
+    assert inspected.confidence.value == "AMBIGUOUS"
 
 
 def test_stale_cached_hook_generation_fails_open(

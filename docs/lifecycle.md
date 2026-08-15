@@ -1339,8 +1339,8 @@ If package-manager uninstall cannot run lifecycle cleanup reliably, `spotter tea
 
 # 16. Purge
 
-Purge is the target destructive data-cleanup operation. Repository and durable-data previews plus
-three explicit destructive scopes are implemented:
+Purge is the target destructive data-cleanup operation. Repository, durable-data, and integration
+previews plus three explicit destructive scopes are implemented:
 
 ```bash
 spotter purge --all --dry-run
@@ -1348,6 +1348,8 @@ spotter purge --all --dry-run --json
 spotter purge --data --dry-run
 spotter purge --data --dry-run --json
 spotter purge --data
+spotter purge --integration --dry-run
+spotter purge --integration --dry-run --json
 spotter purge --snapshots --dry-run
 spotter purge --snapshots
 spotter purge --logs --dry-run
@@ -1390,6 +1392,14 @@ inodes. Regular orphan locks are ignored on retries, while a non-regular lock bl
 Configuration and the repository, integration, runtime, and log scopes remain excluded. Safe files
 are still removed when another path is ambiguous, with a non-zero result reporting the partial
 outcome. An active writer may create new data after this point-in-time purge.
+
+`purge --integration --dry-run` derives ownership from an exact current integration manifest. It
+checks every recorded Hook entry, reconstructs and compares the managed service definition from the
+manifest runtime layout, validates backup content against its fingerprinted filename, and reports
+the manifest and companion lock. Recorded resources already absent remain safely idempotent;
+unrecorded or modified Spotter-like Hooks, changed services/backups, future or legacy manifests,
+non-regular paths, and unknown integration-directory entries remain ambiguous. The preview is
+non-mutating and destructive `--integration` remains disabled.
 
 `purge --snapshots` removes only exact `SAFE_OWNED`, unreferenced registered worktrees and snapshot
 refs. It holds the global snapshot lock, removes worktrees through Git first, recomputes reachability,

@@ -61,6 +61,11 @@ from spotter.feedback import FeedbackError, add_feedback, load_feedback
 from spotter.gates import Gate
 from spotter.hook import journal_path, run_hook
 from spotter.integration import IntegrationError, IntegrationManager, IntegrationManifest
+from spotter.integration_inventory import (
+    IntegrationInventory,
+    IntegrationInventoryError,
+    IntegrationResourceInspection,
+)
 from spotter.labels import LabelError, add_label, valid_session
 from spotter.log_registry import LogRegistry, LogRegistryError, LogResourceInspection
 from spotter.metrics import (
@@ -298,6 +303,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="purge: remove schema-proven durable user data",
     )
     parser.add_argument(
+        "--integration",
+        dest="purge_integration",
+        action="store_true",
+        help="purge: preview exact integration-owned resources",
+    )
+    parser.add_argument(
         "--logs",
         dest="purge_logs",
         action="store_true",
@@ -483,10 +494,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.purge_all
             or args.purge_snapshots
             or args.purge_data
+            or args.purge_integration
             or args.purge_logs
             or args.json_output
         ):
-            parser.error("--all, --snapshots, --data, --logs, and --json require purge")
+            parser.error(
+                "--all, --snapshots, --data, --integration, --logs, and --json require purge"
+            )
         if args.command == "teardown" and (args.dry_run or args.portable):
             parser.error("--dry-run and --portable are only supported by setup")
         return _integration_main(
@@ -496,16 +510,33 @@ def main(argv: Sequence[str] | None = None) -> int:
             dry_run=args.dry_run,
         )
     if args.command == "purge":
-        if sum((args.purge_all, args.purge_snapshots, args.purge_data, args.purge_logs)) != 1:
-            parser.error("purge requires exactly one of --all, --snapshots, --data, or --logs")
+        if (
+            sum(
+                (
+                    args.purge_all,
+                    args.purge_snapshots,
+                    args.purge_data,
+                    args.purge_integration,
+                    args.purge_logs,
+                )
+            )
+            != 1
+        ):
+            parser.error(
+                "purge requires exactly one of --all, --snapshots, --data, --integration, or --logs"
+            )
         if args.purge_all and not args.dry_run:
             parser.error("destructive --all is not implemented; use --dry-run")
+        if args.purge_integration and not args.dry_run:
+            parser.error("destructive --integration is not implemented; use --dry-run")
         if args.target is not None or args.portable:
             parser.error("purge accepts only a scope, optional --dry-run, and optional --json")
         if args.apply:
             parser.error("purge is destructive without --dry-run; do not pass --apply")
         if args.purge_data:
             return _purge_data_main(json_output=args.json_output, apply=not args.dry_run)
+        if args.purge_integration:
+            return _purge_integration_preview_main(json_output=args.json_output)
         if args.purge_logs:
             return _purge_logs_main(json_output=args.json_output, apply=not args.dry_run)
         return _purge_main(
@@ -585,10 +616,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.purge_all
         or args.purge_snapshots
         or args.purge_data
+        or args.purge_integration
         or args.purge_logs
         or args.json_output
     ):
-        parser.error("--all, --snapshots, --data, --logs, and --json require purge")
+        parser.error("--all, --snapshots, --data, --integration, --logs, and --json require purge")
 
     config = _load_config(parser, args.config)
     # One boundary check for every command that names a session: sanitizing
@@ -1950,6 +1982,69 @@ def _data_purge_outcome(item: DataResourceInspection) -> str:
     if item.relative_path.endswith(".lock"):
         return "preserved_synchronization"
     return "planned"
+
+
+def _purge_integration_preview_main(*, json_output: bool) -> int:
+    """Preview exact integration-owned resources without mutation."""
+    try:
+        inspections = IntegrationInventory().inspect()
+    except (OSError, IntegrationInventoryError) as error:
+        print(f"purge failed: {error}", file=sys.stderr)
+        return 1
+
+    def outcome(item: IntegrationResourceInspection) -> str:
+        if item.confidence != OwnershipConfidence.SAFE_OWNED:
+            return "skipped_ambiguous"
+        if item.presence == ResourcePresence.ABSENT:
+            return "already_absent"
+        if item.resource_type == "lock":
+            return "preserved_synchronization"
+        return "planned"
+
+    groups = ("SAFE_OWNED", "INACCESSIBLE", "AMBIGUOUS")
+    summary = {name: sum(item.confidence.value == name for item in inspections) for name in groups}
+    resources = [
+        {
+            "resource_type": item.resource_type,
+            "resource_id": item.resource_id,
+            "group": item.confidence.value,
+            "confidence": item.confidence.value,
+            "presence": item.presence.value,
+            "reason": item.reason,
+            "outcome": outcome(item),
+            "failure": None,
+        }
+        for item in inspections
+    ]
+    if json_output:
+        print(
+            json.dumps(
+                {
+                    "scope": "integration",
+                    "dry_run": True,
+                    "deletion_supported": False,
+                    "summary": summary,
+                    "resources": resources,
+                },
+                sort_keys=True,
+            )
+        )
+    else:
+        print("purge preview (dry-run); scope=integration")
+        for name in groups:
+            matching = [item for item in inspections if item.confidence.value == name]
+            print(f"{name} ({len(matching)})")
+            for item in matching:
+                print(
+                    f"  {item.resource_type} {item.resource_id} [{item.presence.value.lower()}] "
+                    f"- {outcome(item)} - {item.reason}"
+                )
+    return int(
+        any(
+            item.confidence in {OwnershipConfidence.INACCESSIBLE, OwnershipConfidence.AMBIGUOUS}
+            for item in inspections
+        )
+    )
 
 
 def _purge_data_main(*, json_output: bool, apply: bool) -> int:

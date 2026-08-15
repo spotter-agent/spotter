@@ -470,8 +470,10 @@ symlinked, unreadable, and unknown paths are skipped and reported. Remove those 
 `spotter purge --data`. Spotter locks and revalidates each file immediately before deletion, retains
 regular lock files to avoid splitting concurrent writers across lock inodes, and may receive newly
 created data from an active writer after the command. Integration/full destructive scopes remain
-pending in
-[#89](https://github.com/spotter-agent/spotter/issues/89).
+pending in [#89](https://github.com/spotter-agent/spotter/issues/89). Preview integration ownership
+without mutation with `spotter purge --integration --dry-run`. It verifies the current manifest's
+exact Hook entries, managed service definition, and fingerprinted backups; missing recorded
+resources are already absent, while modified or unrecorded Spotter-like state is ambiguous.
 
 If the package was removed before teardown, generated Hooks are designed to fail open. Reinstall the
 same package method, run `spotter teardown codex`, and uninstall again to remove the recorded owned

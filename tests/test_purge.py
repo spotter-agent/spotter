@@ -9,6 +9,7 @@ import pytest
 import spotter.cli as cli
 from spotter.cli import main
 from spotter.hook import journal_path
+from spotter.integration import MANIFEST_SCHEMA, IntegrationManifest
 from spotter.log_registry import LogRegistry, LogRegistryError, OwnedLog
 from spotter.replay import FORK_MANIFEST_SCHEMA, FORK_MANIFEST_SCHEMA_VERSION
 from spotter.repository_registry import RepositoryRegistry
@@ -465,6 +466,52 @@ def test_data_purge_preview_excludes_other_scope_roots(
     assert (spotter_home / "spotter.toml").exists()
 
 
+def test_integration_purge_preview_is_non_mutating(
+    spotter_home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    codex_home = tmp_path / "codex"
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    hooks_path = codex_home / "hooks.json"
+    hooks_path.parent.mkdir()
+    hook = {"type": "command", "command": "/bin/spotter hook"}
+    owned = {"event": "PreToolUse", "matcher": ".*", "hook": hook}
+    hooks_path.write_text(
+        json.dumps({"hooks": {"PreToolUse": [{"matcher": ".*", "hooks": [hook]}]}})
+    )
+    manifest_path = spotter_home / "integrations/codex.json"
+    IntegrationManifest(
+        schema=MANIFEST_SCHEMA,
+        state="ready",
+        agent="codex",
+        setup_by="test",
+        agent_path="/bin/codex",
+        agent_version="codex 1.0",
+        codex_home=str(codex_home),
+        app_server_strategy="pending-external",
+        app_server_endpoint=None,
+        runtime_mode="portable",
+        service_registration=None,
+        service_owned=False,
+        hooks_file=str(hooks_path),
+        hooks_file_created=True,
+        owned_hooks=[owned],
+    ).save(manifest_path)
+    (manifest_path.parent / "codex.lock").touch()
+    before = hooks_path.read_bytes()
+
+    assert main(["purge", "--integration", "--dry-run", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["scope"] == "integration"
+    assert payload["deletion_supported"] is False
+    assert {resource["group"] for resource in payload["resources"]} == {"SAFE_OWNED"}
+    assert manifest_path.exists()
+    assert hooks_path.read_bytes() == before
+
+
 def test_missing_repository_is_inaccessible(
     repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -518,9 +565,13 @@ def test_purge_refuses_non_preview_invocation() -> None:
     with pytest.raises(SystemExit):
         main(["purge", "--data", "--logs", "--dry-run"])
     with pytest.raises(SystemExit):
+        main(["purge", "--integration", "--data", "--dry-run"])
+    with pytest.raises(SystemExit):
         main(["purge", "--snapshots", "--apply"])
     with pytest.raises(SystemExit):
         main(["purge", "--logs", "--apply"])
+    with pytest.raises(SystemExit):
+        main(["purge", "--integration"])
     with pytest.raises(SystemExit):
         main(["purge", "codex", "--all", "--dry-run"])
 

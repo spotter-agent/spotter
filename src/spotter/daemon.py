@@ -725,11 +725,17 @@ class ManagedServiceManager:
             raise DaemonError(str(error)) from error
 
     def _definition(self) -> bytes:
-        home = secure_dir(self.layout.user_data_dir)
+        secure_dir(self.layout.user_data_dir)
         logs = secure_dir(self.layout.log_dir)
         log_path = logs / "spotterd.log"
         with suppress(LogRegistryError, OSError):
             LogRegistry(log_dir=logs).claim(log_path, "spotterd")
+        return self.expected_definition()
+
+    def expected_definition(self) -> bytes:
+        """Return the deterministic service definition without mutating its paths."""
+        home = self.layout.user_data_dir
+        log_path = self.layout.log_dir / "spotterd.log"
         if self.platform == "darwin":
             program = self._program()
             return plistlib.dumps(

@@ -396,7 +396,10 @@ snapshot을 명시적으로 보존하려면 `spotter pins add --repo <경로> --
 보고합니다. `spotter purge --data`로 입증된 파일만 제거할 수 있습니다. Spotter는 삭제 직전에 각
 파일을 lock하고 다시 검증하며, 동시 writer가 서로 다른 lock inode로 갈라지지 않도록 일반 lock
 파일은 보존합니다. 활성 writer는 명령 후 새 데이터를 만들 수 있습니다. integration/full 파괴 범위는
-[#89](https://github.com/spotter-agent/spotter/issues/89)에 남아 있습니다.
+[#89](https://github.com/spotter-agent/spotter/issues/89)에 남아 있습니다. 삭제 없이 integration 소유권을
+확인하려면 `spotter purge --integration --dry-run`을 사용하세요. 현재 manifest의 정확한 Hook 항목,
+관리형 service 정의, fingerprint backup을 검증하며, 수정되었거나 기록되지 않은 Spotter 유사 상태는
+불명확하게 보고합니다.
 
 통합 해제 전에 패키지를 제거했더라도 생성된 Hook은 fail-open으로 동작하도록 설계되어 있습니다.
 같은 방법으로 패키지를 다시 설치하고 `spotter teardown codex`를 실행한 뒤 다시 제거하면 기록된
