@@ -290,7 +290,127 @@ def test_reviewer_delay_follows_the_evidence_linked_signal_job() -> None:
     assert report.queue_to_inference_steps == (1,)
     assert report.inference_to_decision_steps == (1,)
     assert report.queue_to_decision_steps == (2,)
+    assert report.control_eligible_decisions == 1
+    assert report.control_terminal_without_dispatch == 1
     assert "signals=1, queued=1, started=1, decided=1" in render_opportunity_timing(report)
+
+
+def test_control_delay_follows_an_intervention_decision_to_rpc_acceptance() -> None:
+    records = [
+        _record(0, "tool_result", {}, event_id="evidence"),
+        _record(
+            1,
+            "signal_candidate",
+            {"status": "active", "evidence_event_ids": ["evidence"]},
+            event_id="signal",
+        ),
+        _record(
+            2,
+            "review_job_queued",
+            {
+                "review_job_id": "job-1",
+                "candidate_event_ids": ["signal"],
+            },
+            event_id="queued",
+        ),
+        _record(
+            3,
+            "review_inference_started",
+            {"review_job_id": "job-1"},
+            event_id="started",
+        ),
+        _record(
+            4,
+            "reviewer_decision",
+            {"review_job_id": "job-1", "decision": "nudge", "stale": False},
+            event_id="decision",
+        ),
+        _record(
+            5,
+            "control_dispatch_started",
+            {"review_job_id": "job-1", "control_id": "control-1"},
+            event_id="dispatch",
+        ),
+        _record(
+            6,
+            "control_rpc_accepted",
+            {"review_job_id": "job-1", "control_id": "control-1"},
+            event_id="accepted",
+        ),
+        _record(7, "turn_completed", {}, event_id="terminal"),
+    ]
+    add_opportunity(
+        "s1",
+        "control-delay",
+        records,
+        semantic_earliest=0,
+        semantic_latest=0,
+        observable_earliest=0,
+        observable_latest=2,
+        required_evidence=(0,),
+        note="measure control dispatch and RPC acceptance",
+    )
+
+    report = measure_opportunity_timing("s1", records)
+
+    assert report.control_eligible_decisions == report.control_dispatches == 1
+    assert report.control_rpc_accepted == 1
+    assert report.control_dispatch_late == 1
+    assert report.control_dispatch_early == report.control_dispatch_within_window == 0
+    assert report.control_step_from_earliest == (5,)
+    assert report.control_step_from_latest == (3,)
+    assert report.decision_to_dispatch_steps == (1,)
+    assert report.dispatch_to_resolution_steps == (1,)
+    assert "eligible=1, dispatched=1, accepted=1" in render_opportunity_timing(report)
+
+
+def test_stale_control_before_dispatch_is_not_counted_as_missing() -> None:
+    records = [
+        _record(0, "tool_result", {}, event_id="evidence"),
+        _record(
+            1,
+            "signal_candidate",
+            {"status": "active", "evidence_event_ids": ["evidence"]},
+            event_id="signal",
+        ),
+        _record(
+            2,
+            "review_job_queued",
+            {"review_job_id": "job-1", "candidate_event_ids": ["signal"]},
+            event_id="queued",
+        ),
+        _record(
+            3,
+            "reviewer_decision",
+            {"review_job_id": "job-1", "decision": "verify", "stale": False},
+            event_id="decision",
+        ),
+        _record(
+            4,
+            "control_terminal",
+            {"review_job_id": "job-1", "control_id": "control-1", "outcome": "stale"},
+            event_id="stale-control",
+        ),
+        _record(5, "turn_completed", {}, event_id="terminal"),
+    ]
+    add_opportunity(
+        "s1",
+        "stale-control",
+        records,
+        semantic_earliest=0,
+        semantic_latest=0,
+        observable_earliest=0,
+        observable_latest=1,
+        required_evidence=(0,),
+        note="control target was stale before dispatch",
+    )
+
+    report = measure_opportunity_timing("s1", records)
+
+    assert report.control_eligible_decisions == 1
+    assert report.control_dispatches == 0
+    assert report.control_stale_before_dispatch == 1
+    assert report.control_terminal_without_dispatch == 0
 
 
 def test_opportunity_reports_merge_without_inventing_coverage() -> None:

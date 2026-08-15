@@ -167,8 +167,10 @@ IR identities. Its first consumer links an active signal only when the candidate
 evidence event, then reports interval-relative step/source-clock delay and deduplicated actions,
 failed outcomes, and files before detection. It also follows the candidate into a signal-driven
 review job and reports queue, inference-start, and decision step delay plus stale, terminal-without-
-decision, and gap-limited coverage. Open windows are `UNJUDGEABLE`, not `NEVER`; control and
-adoption linkage remain subsequent slices.
+decision, and gap-limited coverage. Non-stale intervention decisions now continue through control
+dispatch and RPC acceptance/terminal outcome, with decision-to-dispatch and dispatch-to-resolution
+step coverage. Open windows are `UNJUDGEABLE`, not `NEVER`; observed adoption remains a subsequent
+slice.
 
 ---
 

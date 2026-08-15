@@ -280,6 +280,8 @@ spotter label-opportunity --session <id> --opportunity-id <failure-id> \
 延迟以及 signal 前的 action、失败 outcome 和文件数量。尚未闭合的窗口保持为 `UNJUDGEABLE`，
 不会被误报为 `NEVER`。对于 signal-driven review，它还会通过 candidate event ID 跟踪队列、
 推理开始和决策，报告各阶段步数延迟，并显式区分 stale、终止前无决策和观察缺口覆盖。
+对于非 stale 的 `VERIFY`/`NUDGE` 决策，它还会继续跟踪控制分发及 RPC 接受或终止结果；缺失、
+stale、失败、未知和跨观察缺口的控制阶段都会保留为独立覆盖状态。
 
 ### 存储维护
 

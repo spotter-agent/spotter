@@ -47,6 +47,23 @@ class OpportunityTimingReport:
     queue_to_inference_steps: tuple[int, ...]
     inference_to_decision_steps: tuple[int, ...]
     queue_to_decision_steps: tuple[int, ...]
+    control_eligible_decisions: int
+    control_dispatches: int
+    control_rpc_accepted: int
+    control_stale_before_dispatch: int
+    control_stale_after_dispatch: int
+    control_failed: int
+    control_unknown: int
+    control_terminal_without_dispatch: int
+    control_terminal_without_resolution: int
+    control_unjudgeable: int
+    control_dispatch_early: int
+    control_dispatch_within_window: int
+    control_dispatch_late: int
+    control_step_from_earliest: tuple[int, ...]
+    control_step_from_latest: tuple[int, ...]
+    decision_to_dispatch_steps: tuple[int, ...]
+    dispatch_to_resolution_steps: tuple[int, ...]
 
 
 def measure_opportunity_timing(session: str, records: list[StepRecord]) -> OpportunityTimingReport:
@@ -69,6 +86,16 @@ def measure_opportunity_timing(session: str, records: list[StepRecord]) -> Oppor
     queue_to_inference_steps: list[int] = []
     inference_to_decision_steps: list[int] = []
     queue_to_decision_steps: list[int] = []
+    control_eligible = control_dispatches = control_accepted = 0
+    control_stale_before_dispatch = control_stale_after_dispatch = 0
+    control_failed = control_unknown = 0
+    control_terminal_without_dispatch = control_terminal_without_resolution = 0
+    control_unjudgeable = 0
+    control_early = control_within = control_late = 0
+    control_step_from_earliest: list[int] = []
+    control_step_from_latest: list[int] = []
+    decision_to_dispatch_steps: list[int] = []
+    dispatch_to_resolution_steps: list[int] = []
 
     for window in windows:
         if not matches(window, records):
@@ -155,6 +182,60 @@ def measure_opportunity_timing(session: str, records: list[StepRecord]) -> Oppor
             review_within += 1
         else:
             review_late += 1
+        if not _requires_control(decision):
+            continue
+        control_eligible += 1
+        dispatch = _linked_control_start(decision, records)
+        if dispatch is None:
+            if _has_observation_gap(records[decision.step :]):
+                control_unjudgeable += 1
+            elif _window_closed(decision.step, records):
+                control_terminal_without_dispatch += 1
+            else:
+                control_unjudgeable += 1
+            continue
+        if dispatch.event.kind == "control_terminal":
+            if _has_observation_gap(records[decision.step : dispatch.step + 1]):
+                control_unjudgeable += 1
+            elif (outcome := dispatch.event.payload.get("outcome")) == "stale":
+                control_stale_before_dispatch += 1
+            elif outcome == "failed":
+                control_failed += 1
+            else:
+                control_unknown += 1
+            continue
+        control_dispatches += 1
+        resolution = _control_resolution(dispatch, records)
+        control_end = resolution.step if resolution is not None else len(records) - 1
+        if _has_observation_gap(records[decision.step : control_end + 1]):
+            control_unjudgeable += 1
+            continue
+        decision_to_dispatch_steps.append(dispatch.step - decision.step)
+        control_step_from_earliest.append(dispatch.step - earliest)
+        control_step_from_latest.append(dispatch.step - latest)
+        if dispatch.step < earliest:
+            control_early += 1
+        elif dispatch.step <= latest:
+            control_within += 1
+        else:
+            control_late += 1
+        if resolution is None:
+            if _window_closed(dispatch.step, records):
+                control_terminal_without_resolution += 1
+            else:
+                control_unjudgeable += 1
+            continue
+        dispatch_to_resolution_steps.append(resolution.step - dispatch.step)
+        if resolution.event.kind == "control_rpc_accepted":
+            control_accepted += 1
+            continue
+        outcome = resolution.event.payload.get("outcome")
+        if outcome == "failed":
+            control_failed += 1
+        elif outcome == "stale":
+            control_stale_after_dispatch += 1
+        else:
+            control_unknown += 1
 
     return OpportunityTimingReport(
         annotations=len(windows),
@@ -190,6 +271,23 @@ def measure_opportunity_timing(session: str, records: list[StepRecord]) -> Oppor
         queue_to_inference_steps=tuple(queue_to_inference_steps),
         inference_to_decision_steps=tuple(inference_to_decision_steps),
         queue_to_decision_steps=tuple(queue_to_decision_steps),
+        control_eligible_decisions=control_eligible,
+        control_dispatches=control_dispatches,
+        control_rpc_accepted=control_accepted,
+        control_stale_before_dispatch=control_stale_before_dispatch,
+        control_stale_after_dispatch=control_stale_after_dispatch,
+        control_failed=control_failed,
+        control_unknown=control_unknown,
+        control_terminal_without_dispatch=control_terminal_without_dispatch,
+        control_terminal_without_resolution=control_terminal_without_resolution,
+        control_unjudgeable=control_unjudgeable,
+        control_dispatch_early=control_early,
+        control_dispatch_within_window=control_within,
+        control_dispatch_late=control_late,
+        control_step_from_earliest=tuple(control_step_from_earliest),
+        control_step_from_latest=tuple(control_step_from_latest),
+        decision_to_dispatch_steps=tuple(decision_to_dispatch_steps),
+        dispatch_to_resolution_steps=tuple(dispatch_to_resolution_steps),
     )
 
 
@@ -199,6 +297,8 @@ def render_opportunity_timing(report: OpportunityTimingReport) -> str:
     linked = report.linked_signal_annotations
     queued = report.review_jobs_queued
     started = report.review_inferences_started
+    control_eligible = report.control_eligible_decisions
+    dispatched = report.control_dispatches
     return "\n".join(
         [
             "Intervention opportunity timing (annotation-aware):",
@@ -235,6 +335,24 @@ def render_opportunity_timing(report: OpportunityTimingReport) -> str:
             f"queue_to_inference={_sample(report.queue_to_inference_steps, queued)}, "
             f"inference_to_decision={_sample(report.inference_to_decision_steps, started)}, "
             f"queue_to_decision={_sample(report.queue_to_decision_steps, queued)}",
+            "  Evidence-linked control: "
+            f"eligible={report.control_eligible_decisions}, "
+            f"dispatched={report.control_dispatches}, accepted={report.control_rpc_accepted}; "
+            f"EARLY={report.control_dispatch_early} "
+            f"WITHIN_WINDOW={report.control_dispatch_within_window} "
+            f"LATE={report.control_dispatch_late} "
+            f"STALE_BEFORE_DISPATCH={report.control_stale_before_dispatch} "
+            f"STALE_AFTER_DISPATCH={report.control_stale_after_dispatch} "
+            f"FAILED={report.control_failed} UNKNOWN={report.control_unknown} "
+            f"TERMINAL_NO_DISPATCH={report.control_terminal_without_dispatch} "
+            f"TERMINAL_NO_RESOLUTION={report.control_terminal_without_resolution} "
+            f"UNJUDGEABLE={report.control_unjudgeable}",
+            "  Control step delay: "
+            f"from_earliest={_sample(report.control_step_from_earliest, dispatched)}, "
+            f"from_latest={_sample(report.control_step_from_latest, dispatched)}, "
+            f"decision_to_dispatch={_sample(report.decision_to_dispatch_steps, control_eligible)}, "
+            "dispatch_to_resolution="
+            f"{_sample(report.dispatch_to_resolution_steps, dispatched)}",
         ]
     )
 
@@ -300,6 +418,39 @@ def merge_opportunity_timing(
         queue_to_decision_steps=tuple(
             value for report in reports for value in report.queue_to_decision_steps
         ),
+        control_eligible_decisions=sum(report.control_eligible_decisions for report in reports),
+        control_dispatches=sum(report.control_dispatches for report in reports),
+        control_rpc_accepted=sum(report.control_rpc_accepted for report in reports),
+        control_stale_before_dispatch=sum(
+            report.control_stale_before_dispatch for report in reports
+        ),
+        control_stale_after_dispatch=sum(report.control_stale_after_dispatch for report in reports),
+        control_failed=sum(report.control_failed for report in reports),
+        control_unknown=sum(report.control_unknown for report in reports),
+        control_terminal_without_dispatch=sum(
+            report.control_terminal_without_dispatch for report in reports
+        ),
+        control_terminal_without_resolution=sum(
+            report.control_terminal_without_resolution for report in reports
+        ),
+        control_unjudgeable=sum(report.control_unjudgeable for report in reports),
+        control_dispatch_early=sum(report.control_dispatch_early for report in reports),
+        control_dispatch_within_window=sum(
+            report.control_dispatch_within_window for report in reports
+        ),
+        control_dispatch_late=sum(report.control_dispatch_late for report in reports),
+        control_step_from_earliest=tuple(
+            value for report in reports for value in report.control_step_from_earliest
+        ),
+        control_step_from_latest=tuple(
+            value for report in reports for value in report.control_step_from_latest
+        ),
+        decision_to_dispatch_steps=tuple(
+            value for report in reports for value in report.decision_to_dispatch_steps
+        ),
+        dispatch_to_resolution_steps=tuple(
+            value for report in reports for value in report.dispatch_to_resolution_steps
+        ),
     )
 
 
@@ -361,6 +512,41 @@ def _review_inference(queued: StepRecord, records: list[StepRecord]) -> StepReco
             for record in records[queued.step + 1 :]
             if record.event.kind == "review_inference_started"
             and record.event.payload.get("review_job_id") == job_id
+        ),
+        None,
+    )
+
+
+def _requires_control(decision: StepRecord) -> bool:
+    value = decision.event.payload.get("decision")
+    return isinstance(value, str) and value.lower() in {"verify", "nudge"}
+
+
+def _linked_control_start(decision: StepRecord, records: list[StepRecord]) -> StepRecord | None:
+    job_id = decision.event.payload.get("review_job_id")
+    if not isinstance(job_id, str) or not job_id:
+        return None
+    return next(
+        (
+            record
+            for record in records[decision.step + 1 :]
+            if record.event.kind in {"control_dispatch_started", "control_terminal"}
+            and record.event.payload.get("review_job_id") == job_id
+        ),
+        None,
+    )
+
+
+def _control_resolution(dispatch: StepRecord, records: list[StepRecord]) -> StepRecord | None:
+    control_id = dispatch.event.payload.get("control_id")
+    if not isinstance(control_id, str) or not control_id:
+        return None
+    return next(
+        (
+            record
+            for record in records[dispatch.step + 1 :]
+            if record.event.kind in {"control_rpc_accepted", "control_terminal"}
+            and record.event.payload.get("control_id") == control_id
         ),
         None,
     )

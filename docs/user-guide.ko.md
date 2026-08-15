@@ -294,7 +294,9 @@ spotter label-opportunity --session <id> --opportunity-id <failure-id> \
 signal 전까지의 action, 실패 outcome, file 수를 보고합니다. 열린 window는 `NEVER`가 아니라
 `UNJUDGEABLE`로 유지됩니다. Signal-driven review는 candidate event ID에서 queue, inference 시작,
 decision까지 추적해 단계별 지연과 stale, terminal-without-decision, observation-gap coverage를
-명시적으로 보고합니다.
+명시적으로 보고합니다. Stale하지 않은 `VERIFY`/`NUDGE` decision은 control dispatch와 RPC
+acceptance/terminal outcome까지 이어서 측정하며, 누락·stale·실패·unknown·gap 상태를 별도
+coverage로 유지합니다.
 
 ### 저장소 관리
 

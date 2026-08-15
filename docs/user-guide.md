@@ -316,7 +316,9 @@ reports early/within/late/never classifications, bounded delay, and actions, fai
 files observed after the actionable window opened. Stale annotations and still-open windows remain
 explicit instead of becoming misses. For signal-driven reviews, it also follows candidate event IDs
 through the queued job, inference start, and decision, reporting step delays and explicit stale,
-terminal-without-decision, or observation-gap coverage.
+terminal-without-decision, or observation-gap coverage. Non-stale `VERIFY`/`NUDGE` decisions are
+also followed through control dispatch and RPC acceptance/terminal outcome; missing, stale, failed,
+unknown, and gap-crossed control stages stay visible rather than receiving fabricated delay.
 
 ### Storage maintenance
 

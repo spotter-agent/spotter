@@ -749,6 +749,10 @@ signal-driven review job and `review_job_id` through inference start and decisio
 candidate-to-queue, queue-to-inference, inference-to-decision, and queue-to-decision step coverage,
 classifies the decision against the observable window, and keeps stale decisions, missing decisions,
 and intervals crossed by observation gaps explicit instead of assigning them ordinary latency.
+For non-stale `VERIFY`/`NUDGE` decisions, the report then follows `review_job_id` to the first control
+attempt and `control_id` to RPC acceptance or a terminal control outcome. Dispatch timing is
+classified against the same observable window; missing dispatch/resolution, stale controls,
+failures, unknown outcomes, and gap-crossed intervals remain separate coverage states.
 
 ## 8.3 Snapshot state
 
