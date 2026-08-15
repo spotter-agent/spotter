@@ -749,7 +749,9 @@ shift replay step identity. Label schema v6 records a stable rater identity, an 
 measurement scope, `tp|fp|unclear`
 judgments for active signal candidates and reviewer interventions, and distinct
 `miss|tn|unclear` judgments for correlation-proven unflagged tool proposals and explicit reviewer
-`CONTINUE` decisions while retaining v0-v5 read compatibility. Signal-sampling schema v1 stores
+`CONTINUE` decisions while retaining v0-v5 read compatibility. The independent
+`spotter.signal_sampling` schema v1 reads schema-less v1 history, writes explicit current record
+identity, and refuses future or foreign records before append. It stores
 disjoint deterministic journal-suffix frames with their detector type, declared event-kind strata,
 inclusion probability, exclusions, and target fingerprints before scoped silence labels are
 accepted. Precision and miss metrics still use

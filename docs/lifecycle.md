@@ -1451,6 +1451,7 @@ config_schema_version
 journal_schema_version
 journal_state_schema_version
 label_schema_version
+signal_sampling_schema_version
 experiment_schema_version
 integration_manifest_version
 review_spend_schema_version

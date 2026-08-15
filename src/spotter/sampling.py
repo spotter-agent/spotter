@@ -2,15 +2,19 @@
 
 import hashlib
 import json
+import os
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from fcntl import LOCK_EX, flock
 from pathlib import Path
 
 from spotter.paths import sanitize_session, spotter_home
 from spotter.signals import SignalType
 from spotter.snapshot import StepRecord
 
-SCHEMA_VERSION = 1
+SIGNAL_SAMPLING_SCHEMA = "spotter.signal_sampling"
+SIGNAL_SAMPLING_SCHEMA_VERSION = 1
+SCHEMA_VERSION = SIGNAL_SAMPLING_SCHEMA_VERSION
 _SIGNAL_TYPES = {signal_type.value for signal_type in SignalType}
 
 
@@ -75,7 +79,24 @@ def sample_signal_silence(
     if not 0 < probability <= 1:
         raise SignalSampleError("sample rate must be greater than 0 and at most 1")
 
-    existing_batches, _ = load_signal_sampling(session)
+    path = signal_samples_path(session)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    with lock_path.open("a") as lock:
+        flock(lock, LOCK_EX)
+        return _sample_signal_silence_locked(
+            session, records, normalized_type, kinds, probability, path
+        )
+
+
+def _sample_signal_silence_locked(
+    session: str,
+    records: list[StepRecord],
+    normalized_type: str,
+    kinds: tuple[str, ...],
+    probability: float,
+    path: Path,
+) -> SignalSamplingBatch:
+    existing_batches, _ = _load_signal_sampling_path(session, path)
     conflicting = next(
         (
             batch
@@ -174,9 +195,18 @@ def sample_signal_silence(
         excluded_unobservable,
         sampled_at,
     )
-    path = signal_samples_path(session)
     with path.open("a", encoding="utf-8") as sink:
-        sink.write(json.dumps({"record_type": "batch", **asdict(batch)}) + "\n")
+        sink.write(
+            json.dumps(
+                {
+                    "schema": SIGNAL_SAMPLING_SCHEMA,
+                    "schema_version": SIGNAL_SAMPLING_SCHEMA_VERSION,
+                    "record_type": "batch",
+                    **asdict(batch),
+                }
+            )
+            + "\n"
+        )
         for record in selected:
             assert record.event.event_id is not None
             sample = SignalSample(
@@ -189,7 +219,19 @@ def sample_signal_silence(
                 sample_fingerprint(record),
                 sampled_at,
             )
-            sink.write(json.dumps({"record_type": "sample", **asdict(sample)}) + "\n")
+            sink.write(
+                json.dumps(
+                    {
+                        "schema": SIGNAL_SAMPLING_SCHEMA,
+                        "schema_version": SIGNAL_SAMPLING_SCHEMA_VERSION,
+                        "record_type": "sample",
+                        **asdict(sample),
+                    }
+                )
+                + "\n"
+            )
+        sink.flush()
+        os.fsync(sink.fileno())
     return batch
 
 
@@ -197,6 +239,12 @@ def load_signal_sampling(
     session: str,
 ) -> tuple[tuple[SignalSamplingBatch, ...], tuple[SignalSample, ...]]:
     path = signal_samples_path(session)
+    return _load_signal_sampling_path(session, path)
+
+
+def _load_signal_sampling_path(
+    session: str, path: Path
+) -> tuple[tuple[SignalSamplingBatch, ...], tuple[SignalSample, ...]]:
     if not path.exists():
         return (), ()
     batches: list[SignalSamplingBatch] = []
@@ -206,9 +254,25 @@ def load_signal_sampling(
             continue
         try:
             raw = json.loads(line)
+            if not isinstance(raw, dict):
+                raise TypeError("record is not an object")
             version = raw.get("version")
             if not isinstance(version, int) or isinstance(version, bool):
                 raise SignalSampleError(f"{path.name} line {number} has a non-integer version")
+            schema = raw.get("schema")
+            schema_version = raw.get("schema_version")
+            if schema is None and schema_version is None:
+                pass
+            elif schema != SIGNAL_SAMPLING_SCHEMA:
+                raise SignalSampleError(
+                    f"{path.name} line {number} uses unsupported schema {schema!r}"
+                )
+            elif not isinstance(schema_version, int) or isinstance(schema_version, bool):
+                raise SignalSampleError(
+                    f"{path.name} line {number} has a non-integer schema version"
+                )
+            elif schema_version != version:
+                raise SignalSampleError(f"{path.name} line {number} has mismatched schema versions")
             if version > SCHEMA_VERSION:
                 raise SignalSampleError(
                     f"{path.name} line {number} was written by schema v{version}; "

@@ -10,6 +10,8 @@ from spotter.labels import LabelError, add_label, load_labels
 from spotter.metrics import agreement_session, tally_signal_silence
 from spotter.sampling import (
     SCHEMA_VERSION,
+    SIGNAL_SAMPLING_SCHEMA,
+    SIGNAL_SAMPLING_SCHEMA_VERSION,
     SignalSampleError,
     load_signal_sampling,
     sample_signal_silence,
@@ -92,6 +94,13 @@ def test_sampling_persists_non_emitted_observable_stratum_idempotently() -> None
     )
     assert [(sample.step, sample.event_id) for sample in samples] == [(0, "source-1")]
     assert len(signal_samples_path("s1").read_text().splitlines()) == 2
+    persisted = [json.loads(line) for line in signal_samples_path("s1").read_text().splitlines()]
+    assert all(
+        record["schema"] == SIGNAL_SAMPLING_SCHEMA
+        and record["schema_version"] == SIGNAL_SAMPLING_SCHEMA_VERSION
+        and record["version"] == SIGNAL_SAMPLING_SCHEMA_VERSION
+        for record in persisted
+    )
 
 
 def test_scoped_signal_labels_coexist_with_gate_negative_labels() -> None:
@@ -203,16 +212,61 @@ def test_sampling_rejects_overlapping_frames_with_incompatible_rates() -> None:
         sample_signal_silence("s1", records, "failure_streak", ("tool_proposal",), 1)
 
 
-def test_newer_sampling_schema_is_refused() -> None:
+def test_legacy_sampling_history_is_read_before_current_records_are_appended() -> None:
     records = _journal("s1", [_event("source-1")])
     sample_signal_silence("s1", records, "failure_streak", ("tool_proposal",), 1)
-    lines = signal_samples_path("s1").read_text().splitlines()
+    path = signal_samples_path("s1")
+    legacy = []
+    for line in path.read_text().splitlines():
+        raw = json.loads(line)
+        raw.pop("schema")
+        raw.pop("schema_version")
+        legacy.append(json.dumps(raw))
+    path.write_text("\n".join(legacy) + "\n")
+
+    records = _journal("s1", [_event("source-2")])
+    sample_signal_silence("s1", records, "failure_streak", ("tool_proposal",), 1)
+    batches, samples = load_signal_sampling("s1")
+    persisted = [json.loads(line) for line in path.read_text().splitlines()]
+
+    assert len(batches) == len(samples) == 2
+    assert "schema" not in persisted[0] and "schema" not in persisted[1]
+    assert all(record["schema"] == SIGNAL_SAMPLING_SCHEMA for record in persisted[2:])
+
+
+def test_newer_sampling_schema_is_refused_without_appending() -> None:
+    records = _journal("s1", [_event("source-1")])
+    sample_signal_silence("s1", records, "failure_streak", ("tool_proposal",), 1)
+    path = signal_samples_path("s1")
+    lines = path.read_text().splitlines()
     raw = json.loads(lines[0])
     raw["version"] = SCHEMA_VERSION + 1
+    raw["schema_version"] = SCHEMA_VERSION + 1
     lines[0] = json.dumps(raw)
-    signal_samples_path("s1").write_text("\n".join(lines) + "\n")
+    path.write_text("\n".join(lines) + "\n")
+    before = path.read_bytes()
+    records = _journal("s1", [_event("source-2")])
+
     with pytest.raises(SignalSampleError, match="understands up to"):
-        load_signal_sampling("s1")
+        sample_signal_silence("s1", records, "failure_streak", ("tool_proposal",), 1)
+    assert path.read_bytes() == before
+
+
+def test_foreign_sampling_schema_is_refused_without_appending() -> None:
+    records = _journal("s1", [_event("source-1")])
+    sample_signal_silence("s1", records, "failure_streak", ("tool_proposal",), 1)
+    path = signal_samples_path("s1")
+    lines = path.read_text().splitlines()
+    raw = json.loads(lines[0])
+    raw["schema"] = "someone.else"
+    lines[0] = json.dumps(raw)
+    path.write_text("\n".join(lines) + "\n")
+    before = path.read_bytes()
+    records = _journal("s1", [_event("source-2")])
+
+    with pytest.raises(SignalSampleError, match="unsupported schema"):
+        sample_signal_silence("s1", records, "failure_streak", ("tool_proposal",), 1)
+    assert path.read_bytes() == before
 
 
 def test_orphaned_sample_is_refused() -> None:
