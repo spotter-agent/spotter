@@ -811,7 +811,10 @@ shadow-only unless active mode and the separate `reviewer.deliver_on_signals = t
 fresh signal-driven `VERIFY`/`NUDGE` decisions issue one current-turn advisory through the exact
 App Server attachment/turn/epoch. RPC acceptance, stale/failed/unknown outcomes, and later observed
 input remain distinct durable states; ambiguous acceptance is never blindly retried. Both options
-are off by default, and configured session/day ceilings are enforced before inference.
+are off by default, and configured session/day ceilings are enforced before inference. A correlated
+advisory input is tagged as Spotter supervision before live-state reduction, so it cannot replace the
+user goal. Exact-target observation becomes `control_observed_in_turn`; the same intervention ID
+appearing outside its target becomes an `expired_advisory_visible` diagnostic instead of a new goal.
 
 At journal append, each lifecycle record receives local receipt wall time plus a monotonic timestamp
 and process clock-domain ID. Metrics correlate evidence, candidate, queue, start, and terminal events

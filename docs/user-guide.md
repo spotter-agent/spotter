@@ -328,7 +328,10 @@ also followed through control dispatch and RPC acceptance/terminal outcome; miss
 unknown, and gap-crossed control stages stay visible rather than receiving fabricated delay.
 Accepted steers count as adopted only when their client message ID is observed on the exact target
 thread, turn, and connection epoch. Target completion without that evidence remains
-`RPC_ACCEPTED_ONLY`; stale-after-accept and identity/gap-limited cases remain explicit.
+`RPC_ACCEPTED_ONLY`; stale-after-accept and identity/gap-limited cases remain explicit. Spotter-tagged
+advisory inputs stay in supervision state rather than replacing the user goal. If a known advisory
+ID appears outside its target turn or connection epoch, Spotter records an expired-advisory
+diagnostic for later safety evaluation.
 
 ### Storage maintenance
 

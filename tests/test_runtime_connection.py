@@ -3,6 +3,7 @@ import json
 import threading
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -10,6 +11,7 @@ import pytest
 from websockets.asyncio.server import ServerConnection, serve
 
 from spotter.app_server import AppServerRpcError, AppServerTransportError
+from spotter.identity import TurnId
 from spotter.runtime_connection import (
     AppServerRecoveryLoop,
     RecoveryState,
@@ -376,6 +378,127 @@ def test_control_rpc_does_not_wait_for_bounded_telemetry_io(
             assert controls[0].at is not None and controls[1].at is not None
             assert controls[0].at <= controls[1].at
             assert recovery.metrics.control_telemetry_errors == 0
+            await recovery.close()
+
+    asyncio.run(scenario())
+
+
+def test_intervention_input_is_correlated_without_replacing_user_goal(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        async def handler(connection: ServerConnection) -> None:
+            await _initialize(connection)
+            listed = await _receive(connection, "thread/list")
+            await _reply(
+                connection,
+                listed,
+                {"data": [{"id": "thread-1"}], "nextCursor": None},
+            )
+            read = await _receive(connection, "thread/read")
+            await _reply(
+                connection,
+                read,
+                {
+                    "thread": {
+                        "id": "thread-1",
+                        "turns": [{"id": "turn-1", "status": "active"}],
+                    }
+                },
+            )
+            request = await _receive(connection, "turn/steer")
+            await _reply(connection, request, {"turnId": "turn-1"})
+            await connection.send(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "item/completed",
+                        "params": {
+                            "threadId": "thread-1",
+                            "turnId": "turn-1",
+                            "item": {
+                                "id": "spotter-message-1",
+                                "type": "userMessage",
+                                "clientId": "spotter:intervention:job-1",
+                                "content": [
+                                    {"type": "text", "text": "Verify the retry assumption"}
+                                ],
+                            },
+                        },
+                    }
+                )
+            )
+            await connection.wait_closed()
+
+        async with _server(handler) as endpoint:
+            recovery = AppServerRecoveryLoop(endpoint, tmp_path / "sessions", ThreadStateStore())
+            await recovery.start()
+            await _wait_until(lambda: recovery.state == RecoveryState.READY)
+            state = recovery.thread_states.snapshots()[0]
+            recovery._record(
+                TraceEvent(
+                    "user_prompt",
+                    {"prompt": "Fix the original bug"},
+                    event_id="original-goal",
+                    identity=state.identity,
+                    connection_epoch=state.connection_epoch,
+                )
+            )
+            target = RuntimeControlTarget(state.identity, state.connection_epoch or 0)
+
+            await recovery.steer(
+                target,
+                "Verify the retry assumption",
+                control_id="spotter:intervention:job-1",
+                review_job_id="job-1",
+            )
+            await _wait_until(
+                lambda: any(
+                    record.event.kind == "control_observed_in_turn"
+                    for record in recovery.ingestor.records()
+                )
+            )
+            await recovery.flush_control_telemetry()
+
+            records = [record.event for record in recovery.ingestor.records()]
+            prompt = next(
+                event
+                for event in records
+                if event.kind == "user_prompt"
+                and event.payload.get("client_user_message_id") == "spotter:intervention:job-1"
+            )
+            observed = next(event for event in records if event.kind == "control_observed_in_turn")
+            current = recovery.thread_states.snapshots()[0]
+            assert prompt.payload["input_origin"] == "spotter_supervision"
+            assert prompt.payload["intervention_relation"] == "target_turn"
+            assert observed.payload["outcome"] == "observed_in_turn"
+            assert observed.payload["observed_input_event_id"] == prompt.event_id
+            assert current.task.goal is not None
+            assert current.task.goal.text == "Fix the original bug"
+            assert current.supervision.interventions[-1].text == "Verify the retry assumption"
+
+            later_identity = replace(
+                state.identity,
+                turn_id=TurnId("turn-2"),
+                provenance=replace(state.identity.provenance, agent_turn_id="turn-2"),
+            )
+            leaked = recovery._annotate_intervention_input(
+                TraceEvent(
+                    "user_prompt",
+                    {"client_user_message_id": "spotter:intervention:job-1", "prompt": "old"},
+                    event_id="leaked-advisory",
+                    identity=later_identity,
+                    connection_epoch=state.connection_epoch,
+                )
+            )
+            recovery._record(leaked)
+            leaked_observation = next(
+                record.event
+                for record in recovery.ingestor.records()
+                if record.event.kind == "control_observed_outside_target"
+            )
+            assert leaked.payload["intervention_relation"] == "outside_target"
+            assert leaked_observation.payload["outcome"] == "observed_outside_target"
+            assert leaked_observation.payload["reason_code"] == "expired_advisory_visible"
+            assert recovery.thread_states.snapshots()[0].task.goal.text == "Fix the original bug"  # type: ignore[union-attr]
             await recovery.close()
 
     asyncio.run(scenario())

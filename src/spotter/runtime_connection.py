@@ -137,6 +137,7 @@ class AppServerRecoveryLoop:
         self._control_telemetry_writer: asyncio.Task[None] | None = None
         self._control_telemetry_ids: set[str] = set()
         self._control_request_ids: set[str] = set()
+        self._control_requests: dict[str, dict[str, object]] = {}
 
         records = self.ingestor.records()
         self._control_telemetry_ids.update(
@@ -151,6 +152,15 @@ class AppServerRecoveryLoop:
             and isinstance(control_id, str)
             and control_id
         )
+        for record in records:
+            control_id = record.event.payload.get("control_id")
+            if (
+                isinstance(control_id, str)
+                and control_id
+                and record.event.payload.get("intervention_id") == control_id
+                and record.event.payload.get("outcome") != "stale"
+            ):
+                self._control_requests.setdefault(control_id, dict(record.event.payload))
         if records:
             self.thread_states.hydrate(records)
             for candidate, trigger in self.signals.hydrate(records):
@@ -336,6 +346,8 @@ class AppServerRecoveryLoop:
             )
             raise
 
+        if payload.get("intervention_id") == request_id:
+            self._control_requests[request_id] = dict(payload)
         self._record_control_event("control_dispatch_started", target, payload)
         try:
             if control_kind == "steer":
@@ -554,6 +566,7 @@ class AppServerRecoveryLoop:
                     identity=self._epoch_identity(event.identity, attachment_id),
                     connection_epoch=epoch,
                 )
+                event = self._annotate_intervention_input(event)
                 record = self._record(event)
                 state_status = None
                 if (
@@ -706,6 +719,8 @@ class AppServerRecoveryLoop:
         except ThreadStateError:
             state_before = None
         state = self.thread_states.observe(record.event)
+        if (observation := self._intervention_observation(record.event)) is not None:
+            self._append_derived(observation)
         self._record_review_transitions(
             self.review_scheduler.update(record.event, state_before, state)
         )
@@ -720,6 +735,75 @@ class AppServerRecoveryLoop:
                 self.review_scheduler.update_candidates(candidate_events, state, current)
             )
         return record
+
+    def _annotate_intervention_input(self, event: TraceEvent) -> TraceEvent:
+        if event.kind != "user_prompt":
+            return event
+        control_id = event.payload.get("client_user_message_id")
+        control = self._control_requests.get(control_id) if isinstance(control_id, str) else None
+        if control is None or control.get("intervention_id") != control_id:
+            return event
+        identity = event.identity
+        exact_target = (
+            identity is not None
+            and identity.turn_id is not None
+            and identity.turn_id.value == control.get("target_turn_id")
+            and event.connection_epoch == control.get("target_connection_epoch")
+            and (
+                identity.attachment_id is None
+                or identity.attachment_id.value == control.get("runtime_attachment_id")
+            )
+        )
+        return replace(
+            event,
+            payload={
+                **event.payload,
+                "input_origin": "spotter_supervision",
+                "intervention_id": control_id,
+                "review_job_id": control.get("review_job_id"),
+                "supervision_scope": control.get("supervision_scope"),
+                "must_not_become_user_goal": control.get("must_not_become_user_goal"),
+                "expires_on": control.get("expires_on"),
+                "intervention_relation": "target_turn" if exact_target else "outside_target",
+            },
+        )
+
+    def _intervention_observation(self, event: TraceEvent) -> TraceEvent | None:
+        if (
+            event.kind != "user_prompt"
+            or event.payload.get("input_origin") != "spotter_supervision"
+        ):
+            return None
+        control_id = event.payload.get("intervention_id")
+        if not isinstance(control_id, str) or not control_id:
+            return None
+        relation = event.payload.get("intervention_relation")
+        in_target = relation == "target_turn"
+        control = self._control_requests.get(control_id, {})
+        payload = {
+            **control,
+            "control_id": control_id,
+            "intervention_id": control_id,
+            "outcome": "observed_in_turn" if in_target else "observed_outside_target",
+            "observed_input_event_id": event.event_id,
+        }
+        if not in_target:
+            payload["reason_code"] = "expired_advisory_visible"
+        return TraceEvent(
+            "control_observed_in_turn" if in_target else "control_observed_outside_target",
+            payload,
+            event_id=(
+                f"spotter:control:{control_id}:observed_in_turn"
+                if in_target
+                else f"spotter:control:{control_id}:observed_outside_target:{event.event_id}"
+            ),
+            occurred_at=event.occurred_at,
+            identity=event.identity,
+            provenance=TraceProvenance("spotterd", "control_reconciliation"),
+            connection_epoch=event.connection_epoch,
+            observed_monotonic_ns=event.observed_monotonic_ns,
+            monotonic_clock_id=event.monotonic_clock_id,
+        )
 
     def _record_review_transitions(self, transitions: tuple[TraceEvent, ...]) -> None:
         for transition in transitions:

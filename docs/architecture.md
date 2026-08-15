@@ -1,7 +1,7 @@
 # Architecture
 
 > **Status:** this document describes both the current hook-based prototype and the target architecture. Active implementation is tracked by the [Roadmap](roadmap.md) and native GitHub Milestones.
-> The `spotterd` process/control foundation, bounded Hook gate IPC, shared-server PoC, production App Server transport, durable Trace IR ingestion, daemon reconnect/reconciliation, and stable packaged runtime layout are implemented. Live supervision delivery remains **target behavior**.
+> The `spotterd` process/control foundation, bounded Hook gate IPC, shared-server PoC, production App Server transport, durable Trace IR ingestion, daemon reconnect/reconciliation, stable packaged runtime layout, and off-by-default live advisory delivery are implemented. Broader live enablement remains evidence-gated.
 
 ---
 
@@ -399,10 +399,15 @@ failure records. Terminal outcomes distinguish an RPC rejection (`failed`), loss
 dispatch (`unknown`), and an epoch/turn freshness rejection (`stale`). For steering, the same ID is
 sent as App Server `clientUserMessageId`; the normalized `userMessage.clientId` becomes
 `client_user_message_id`. Only a matching ID on the same thread, turn, and connection epoch counts
-as an observed adoption, and that observation must be durably ordered after its dispatch. A control
+as an observed adoption, and that observation must be durably ordered after its dispatch. The live
+reconciler annotates that input as `spotter_supervision`, journals a `control_observed_in_turn`
+outcome, and reduces the advisory into supervision state without replacing the authoritative user
+goal. A known intervention ID observed outside its target identity instead journals
+`control_observed_outside_target` with `expired_advisory_visible`; it is diagnostic evidence, not a
+new user goal. A control
 ID already present in durable runtime history is rejected before RPC; ambiguous legacy history with
 multiple dispatches for one ID is reported and excluded from adoption. RPC acceptance alone does
-not. `spotter metrics` reports same-clock
+not prove observation. `spotter metrics` reports same-clock
 dispatch and adoption latency, evidence-to-adoption latency, adoption lead/lag against the target
 turn boundary, and decision-to-stale-delivery latency with coverage denominators. Dispatch lifecycle
 records capture receipt timing inline but enter a bounded queue; journal locking, history recovery,

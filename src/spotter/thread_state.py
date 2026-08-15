@@ -271,6 +271,22 @@ class ThreadStateReducer:
         )
         if event.kind == "user_prompt":
             text = _user_text(event.payload)
+            if event.payload.get("input_origin") == "spotter_supervision":
+                if not text:
+                    return state
+                intervention = StateItem(
+                    item_id,
+                    StateItemKind.INTERVENTION,
+                    text,
+                    provenance,
+                )
+                return replace(
+                    state,
+                    supervision=replace(
+                        state.supervision,
+                        interventions=_bounded(state.supervision.interventions + (intervention,)),
+                    ),
+                )
             if text:
                 goal = StateItem(item_id, StateItemKind.GOAL, text, provenance)
                 previous = state.task.goal

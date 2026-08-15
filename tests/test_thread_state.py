@@ -159,6 +159,30 @@ def test_interleaved_threads_remain_isolated() -> None:
     )
 
 
+def test_spotter_advisory_input_does_not_replace_the_user_goal() -> None:
+    store = ThreadStateStore()
+    original = store.observe(
+        _event("user_prompt", {"prompt": "Fix the login timeout"}, event_id="goal")
+    )
+
+    advised = store.observe(
+        _event(
+            "user_prompt",
+            {
+                "content": [{"type": "text", "text": "Verify the retry assumption"}],
+                "client_user_message_id": "spotter:intervention:job-1",
+                "input_origin": "spotter_supervision",
+                "intervention_relation": "target_turn",
+            },
+            event_id="advisory",
+        )
+    )
+
+    assert advised.task.goal == original.task.goal
+    assert advised.evidence.items == original.evidence.items
+    assert advised.supervision.interventions[-1].text == "Verify the retry assumption"
+
+
 def test_snapshot_is_deeply_immutable_and_version_anchored() -> None:
     store = ThreadStateStore()
     snapshot = store.observe(_event("user_prompt", {"prompt": "Goal"}, event_id="goal"))
