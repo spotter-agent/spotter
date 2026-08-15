@@ -265,6 +265,11 @@ def test_git_push_records_class_and_external_effect(spotter_home: Path) -> None:
     assert effect.payload["result"] == "unknown"
     assert effect.payload["outcome_evidence"] == "exit_zero_only"
     assert effect.payload["tool_use_id"] == "push-1"
+    assert effect.payload["correlation_quality"] == "exact"
+    assert effect.payload["source_event_ids"] == ["operation:push-1", "item:push-1", "tool:push-1"]
+    assert effect.operation_id == "push-1"
+    assert effect.identity is not None
+    assert effect.provenance is not None and effect.provenance.source == "codex_hook"
 
 
 def test_hook_persists_effect_classification_provenance() -> None:

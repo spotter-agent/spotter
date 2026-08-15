@@ -382,7 +382,12 @@ def test_class_c_result_becomes_effect_with_recovery_identity() -> None:
     )
     effect = effect_event(result)
     assert effect is not None
+    effect_id = effect.payload["effect_id"]
+    assert isinstance(effect_id, str) and effect_id.startswith("effect-")
     assert effect.payload == {
+        "effect_id": effect_id,
+        "correlation_quality": "exact",
+        "source_event_ids": ["tool:call-7"],
         "kind": "git_remote_write",
         "resource": "origin",
         "result": "unknown",
@@ -400,6 +405,68 @@ def test_class_c_result_becomes_effect_with_recovery_identity() -> None:
     records = [StepRecord(4, effect, "abc123")]
     assert external_effects(records) == [effect.payload]
     assert external_effects(records, through_step=3) == []
+
+
+def test_exact_effect_observations_correlate_without_hiding_conflicts() -> None:
+    first = effect_event(
+        TraceEvent(
+            "tool_result",
+            {
+                "reversibility_class": "C",
+                "effect_kind": "external_tool_write",
+                "resource": "remote",
+                "tool_response": {"ok": True},
+                "tool_use_id": "call-8",
+            },
+            event_id="hook-result",
+            operation_id="call-8",
+        )
+    )
+    second = effect_event(
+        TraceEvent(
+            "tool_result",
+            {
+                "reversibility_class": "C",
+                "effect_kind": "external_tool_write",
+                "resource": "remote",
+                "tool_response": {"exit_code": 1},
+                "tool_use_id": "call-8",
+            },
+            event_id="app-server-result",
+            operation_id="call-8",
+            item_id="call-8",
+        )
+    )
+    assert first is not None and second is not None
+    assert first.payload["effect_id"] == second.payload["effect_id"]
+
+    effects = external_effects([StepRecord(1, first, None), StepRecord(2, second, None)])
+
+    assert len(effects) == 1
+    assert effects[0]["observation_count"] == 2
+    assert effects[0]["source_event_ids"] == [
+        "event:hook-result",
+        "operation:call-8",
+        "tool:call-8",
+        "event:app-server-result",
+        "item:call-8",
+    ]
+    assert effects[0]["outcome"] == "unknown"
+    assert effects[0]["outcome_evidence"] == "conflicting_observations"
+    assert effects[0]["observed_outcomes"] == ["failed", "succeeded"]
+
+
+def test_inferred_effect_fingerprints_do_not_suppress_repeated_actions() -> None:
+    event = TraceEvent(
+        "external_effect",
+        {
+            "effect_id": "effect-inferred",
+            "correlation_quality": "inferred",
+            "outcome": "unknown",
+        },
+    )
+
+    assert len(external_effects([StepRecord(1, event, None), StepRecord(2, event, None)])) == 2
 
 
 def test_external_effect_outcomes_require_explicit_evidence() -> None:

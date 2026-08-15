@@ -65,6 +65,9 @@ def event_from_hook(
 ) -> TraceEvent:
     name = payload.get("hook_event_name")
     if name == "PreToolUse":
+        operation_id = payload.get("tool_use_id")
+        if not isinstance(operation_id, str):
+            operation_id = None
         tool_input = payload.get("tool_input")
         if not isinstance(tool_input, dict):
             tool_input = {}
@@ -105,8 +108,13 @@ def event_from_hook(
                 "effect_confidence": classification.parse_confidence,
                 "semantic_operation": classification.semantic_operation,
             },
+            operation_id=operation_id,
+            item_id=operation_id,
         )
     if name == "PostToolUse":
+        operation_id = payload.get("tool_use_id")
+        if not isinstance(operation_id, str):
+            operation_id = None
         tool_input = payload.get("tool_input")
         classification = classify(payload.get("tool_name"), tool_input, mcp_semantics)
         return TraceEvent(
@@ -126,6 +134,8 @@ def event_from_hook(
                 "effect_confidence": classification.parse_confidence,
                 "semantic_operation": classification.semantic_operation,
             },
+            operation_id=operation_id,
+            item_id=operation_id,
         )
     if name == "UserPromptSubmit":
         # The goal is the reviewer's anchor for spec-drift judgment; without it
@@ -250,13 +260,12 @@ def run_hook(
         session_id if isinstance(session_id, str) else None,
     )
     method = payload.get("hook_event_name")
-    adapter = JournalAdapter(
-        journal,
-        identity,
-        TraceProvenance("codex_hook", method if isinstance(method, str) else None),
-    )
+    provenance = TraceProvenance("codex_hook", method if isinstance(method, str) else None)
+    adapter = JournalAdapter(journal, identity, provenance)
     runtime = SpotterRuntime(config, adapter, gate)
-    event = event_from_hook(payload, config.mcp_semantics)
+    event = replace(
+        event_from_hook(payload, config.mcp_semantics), identity=identity, provenance=provenance
+    )
     gate_decision: GateDecision | None = None
     gate_telemetry: dict[str, Any] | None = None
     if event.kind == "tool_proposal":

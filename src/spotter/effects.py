@@ -10,6 +10,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Literal, cast
 from urllib.parse import urlsplit, urlunsplit
+from uuid import UUID, uuid5
 
 from spotter.config import McpToolSemantics
 from spotter.outcomes import outcome_failure
@@ -23,6 +24,7 @@ _MAX_COMMAND_CHARS = 4096
 _MAX_WRAPPER_DEPTH = 2
 _COMPOSITION = frozenset({"&&", "||", ";", "|", "&"})
 _OUTPUT_REDIRECTION = frozenset({">", ">>"})
+_EFFECT_NAMESPACE = UUID("264972c0-2308-4ea9-b6b4-08a0310d2a78")
 
 
 @dataclass(frozen=True)
@@ -262,9 +264,13 @@ def effect_event(result: TraceEvent) -> TraceEvent | None:
     if result.kind != "tool_result" or result.payload.get("reversibility_class") != "C":
         return None
     outcome, evidence = _effect_outcome(result.payload)
+    effect_id, correlation_quality = _effect_identity(result)
     return TraceEvent(
         "external_effect",
         {
+            "effect_id": effect_id,
+            "correlation_quality": correlation_quality,
+            "source_event_ids": _source_event_ids(result),
             "kind": result.payload.get("effect_kind"),
             "resource": result.payload.get("resource"),
             "result": outcome,
@@ -279,7 +285,45 @@ def effect_event(result: TraceEvent) -> TraceEvent | None:
             "confidence": result.payload.get("effect_confidence"),
             "semantic_operation": result.payload.get("semantic_operation"),
         },
+        identity=result.identity,
+        operation_id=result.operation_id,
+        item_id=result.item_id,
+        provenance=result.provenance,
+        connection_epoch=result.connection_epoch,
     )
+
+
+def _effect_identity(event: TraceEvent) -> tuple[str, str]:
+    operation_id = event.operation_id or _optional_identifier(event.payload.get("tool_use_id"))
+    if operation_id is not None:
+        return f"effect-{uuid5(_EFFECT_NAMESPACE, f'operation:{operation_id}').hex}", "exact"
+
+    components = [
+        _optional_identifier(event.event_id),
+        _optional_identifier(event.payload.get("turn_id")),
+        _optional_identifier(event.payload.get("semantic_operation")),
+        _optional_identifier(event.payload.get("resource")),
+    ]
+    fingerprint = "\x1f".join(value for value in components if value is not None)
+    return f"effect-{uuid5(_EFFECT_NAMESPACE, f'fingerprint:{fingerprint}').hex}", "inferred"
+
+
+def _source_event_ids(event: TraceEvent) -> list[str]:
+    candidates = (
+        ("event", event.event_id),
+        ("operation", event.operation_id),
+        ("item", event.item_id),
+        ("tool", event.payload.get("tool_use_id")),
+    )
+    return [
+        f"{kind}:{value}"[:300]
+        for kind, raw in candidates
+        if (value := _optional_identifier(raw)) is not None
+    ][:8]
+
+
+def _optional_identifier(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
 
 
 def _effect_outcome(payload: Mapping[str, object]) -> tuple[str, str]:
@@ -329,12 +373,64 @@ def _has_zero_exit_code(payload: Mapping[str, object], response: object) -> bool
 def external_effects(records: list[Any], through_step: int | None = None) -> list[dict[str, Any]]:
     """Enumerate effects a local restore cannot claim to have undone."""
 
-    return [
-        dict(record.event.payload)
-        for record in records
-        if record.event.kind == "external_effect"
-        and (through_step is None or record.step <= through_step)
-    ]
+    effects: list[dict[str, Any]] = []
+    exact: dict[str, int] = {}
+    for record in records:
+        if record.event.kind != "external_effect" or (
+            through_step is not None and record.step > through_step
+        ):
+            continue
+        payload = dict(record.event.payload)
+        effect_id = _optional_identifier(payload.get("effect_id"))
+        if payload.get("correlation_quality") != "exact" or effect_id is None:
+            effects.append(payload)
+            continue
+        previous = exact.get(effect_id)
+        if previous is None:
+            exact[effect_id] = len(effects)
+            effects.append(payload)
+        else:
+            effects[previous] = _merge_effect_observations(effects[previous], payload)
+    return effects
+
+
+def _merge_effect_observations(previous: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
+    merged = {**previous, **current}
+    merged["source_event_ids"] = list(
+        dict.fromkeys(
+            (
+                *_identifier_list(previous.get("source_event_ids")),
+                *_identifier_list(current.get("source_event_ids")),
+            )
+        )
+    )[:16]
+    merged["observation_count"] = _observation_count(previous) + _observation_count(current)
+    outcomes = {
+        value
+        for value in (
+            *_identifier_list(previous.get("observed_outcomes")),
+            previous.get("outcome"),
+            current.get("outcome"),
+        )
+        if isinstance(value, str)
+    }
+    if len(outcomes) > 1:
+        merged["result"] = "unknown"
+        merged["outcome"] = "unknown"
+        merged["outcome_evidence"] = "conflicting_observations"
+        merged["observed_outcomes"] = sorted(outcomes)
+    return merged
+
+
+def _identifier_list(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(item for item in value if isinstance(item, str) and item)
+
+
+def _observation_count(payload: Mapping[str, object]) -> int:
+    value = payload.get("observation_count", 1)
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 1
 
 
 def _classify_command(
