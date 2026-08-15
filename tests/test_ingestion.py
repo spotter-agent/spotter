@@ -220,6 +220,41 @@ def test_app_server_mcp_calls_use_exact_configured_semantics() -> None:
     assert read.payload["effect_classifier"] == delete.payload["effect_classifier"] == "mcp_config"
 
 
+def test_unknown_dynamic_adapter_operations_remain_conservative_effects(tmp_path: Path) -> None:
+    ingestor = AppServerTraceIngestor(tmp_path)
+    ingestor.ingest(_event("thread/started", {"thread": {"id": "thread-1", "createdAt": 100}}))
+    ingestor.ingest(_event("turn/started", {"threadId": "thread-1", "turn": _turn()}))
+    item = {
+        "id": "dynamic-1",
+        "type": "dynamicToolCall",
+        "namespace": "custom",
+        "tool": "read_resource",
+        "arguments": {"resource": "remote-7", "description": "safe read"},
+    }
+
+    started = ingestor.ingest(_item_event("item/started", {**item, "status": "in_progress"}))
+    completed = ingestor.ingest(
+        _item_event("item/completed", {**item, "status": "completed", "success": True})
+    )
+    assert started is not None and completed is not None
+    assert (
+        started.event.payload["reversibility_class"],
+        started.event.payload["effect_classifier"],
+        started.event.payload["effect_reason"],
+        started.event.payload["effect_confidence"],
+        started.event.payload["resource"],
+    ) == ("C", "fallback", "unknown_tool_effect", "unknown", "remote-7")
+
+    effects = external_effects(ingestor.records())
+    assert len(effects) == 1
+    assert (
+        effects[0]["lifecycle"],
+        effects[0]["outcome"],
+        effects[0]["correlation_quality"],
+        effects[0]["observation_count"],
+    ) == ("completed", "succeeded", "exact", 2)
+
+
 def test_app_server_downgrades_uncheckpointed_class_b_mutations(tmp_path: Path) -> None:
     ingestor = AppServerTraceIngestor(tmp_path)
     ingestor.ingest(_event("thread/started", {"thread": {"id": "thread-1", "createdAt": 100}}))
