@@ -261,7 +261,8 @@ spotter analyze
 ```
 
 对 `analyze`、`metrics` 或 `observability` 使用 `--session <id>`，可以把输出限制到一个已记录
-会话。请把日志和诊断视为潜在敏感信息：它们可能包含仓库路径、提示词、工具 payload 和其他
+会话。Reviewer 调用和已标注结果还会按 `signal`、`periodic`、`manual` 启动来源拆分，避免静默
+混合 A/B 队列。请把日志和诊断视为潜在敏感信息：它们可能包含仓库路径、提示词、工具 payload 和其他
 工作上下文。
 
 ### 存储维护

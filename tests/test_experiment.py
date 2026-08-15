@@ -704,7 +704,8 @@ def test_cadence_forwards_user_config(monkeypatch: pytest.MonkeyPatch, tmp_path:
     assert "--reservation" in argv and len(argv[argv.index("--reservation") + 1]) == 32
     assert argv[argv.index("--review-job-id") + 1] == "proposal:1"
     records = StepJournal.load(journal_path({"session_id": "cadence"}))
-    assert any(record.event.kind == "review_job_queued" for record in records)
+    queued = next(record.event for record in records if record.event.kind == "review_job_queued")
+    assert queued.payload["review_trigger"] == "periodic"
 
 
 def test_failed_agent_is_not_checked_or_counted_as_success(

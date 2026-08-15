@@ -43,6 +43,7 @@ class ReviewerJob:
                 "state_version": self.state_version,
                 "candidate_event_id": self.candidate_event_id,
                 "candidate_event_ids": list(self.candidate_event_ids),
+                "review_trigger": "signal",
                 "input_coverage": self.reviewer_input.coverage(),
             },
             event_id=f"spotter:review-job:{self.job_id}:queued",

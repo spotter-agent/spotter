@@ -190,6 +190,7 @@ class ReviewExecutor:
         *,
         occurred_at: float | None = None,
     ) -> TraceEvent:
+        payload = {**payload, "review_trigger": "signal"}
         return TraceEvent(
             kind,
             payload,

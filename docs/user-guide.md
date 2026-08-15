@@ -275,6 +275,8 @@ places a compact version of those costs beside each session's recorded intervent
 mechanical task/replay outcomes only when their durable arm or fork-prefix provenance names that
 session. It never guesses an outcome link from a file name or timestamp. Reviewer token output
 includes session and call coverage and says `partial` or `unavailable` when totals are incomplete.
+Reviewer calls and labeled reviewer outcomes are also split by `signal`, `periodic`, and `manual`
+launch provenance so A/B cohorts are not silently pooled.
 Treat journals and diagnostics as potentially sensitive: they can contain repository paths,
 prompts, tool payloads, and other work context.
 

@@ -272,7 +272,9 @@ spotter analyze
 experiment 비용을 분리하고 누락된 관측의 커버리지를 표시합니다. `analyze`는 세션별 intervention과
 비용을 함께 보여 주며, task arm 또는 fork prefix의 durable provenance가 해당 세션을 명시할 때만
 mechanical outcome을 연결합니다. 파일명이나 timestamp로 outcome을 추정하지 않습니다. Reviewer token
-합계가 불완전하면 session/call denominator와 함께 `partial` 또는 `unavailable`로 표시합니다. 저널과
+합계가 불완전하면 session/call denominator와 함께 `partial` 또는 `unavailable`로 표시합니다.
+레이블된 reviewer 결과는 `signal`, `periodic`, `manual` 실행 출처별로도 분리되어 A/B cohort가
+자동으로 섞이지 않습니다. 저널과
 진단에는 저장소 경로, 프롬프트, 도구 payload 등 작업 맥락이 포함될 수 있으므로 민감한 데이터로
 취급하세요.
 

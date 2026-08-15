@@ -173,7 +173,7 @@ def _maybe_spawn_shadow_review(
         StepJournal(journal_file).record(
             TraceEvent(
                 "review_job_queued",
-                {"review_job_id": review_job_id},
+                {"review_job_id": review_job_id, "review_trigger": "periodic"},
             )
         )
     args = [

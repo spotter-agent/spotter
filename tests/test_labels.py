@@ -21,6 +21,7 @@ from spotter.metrics import (
     merge,
     merge_agreement,
     tally_reviewer_continues,
+    tally_reviewer_triggers,
     tally_session,
     tally_signal_candidates,
     tally_unflagged_proposals,
@@ -288,6 +289,39 @@ def test_reviewer_continue_miss_rate_is_reported_separately() -> None:
     assert reviewer_precision.total == 1
 
 
+def test_reviewer_labels_are_stratified_by_launch_trigger() -> None:
+    records = _journal(
+        "s1",
+        [
+            TraceEvent(
+                "review_job_queued",
+                {"review_job_id": "signal-job", "signal_id": "s1"},
+            ),
+            TraceEvent(
+                "reviewer_decision",
+                {"review_job_id": "signal-job", "decision": "verify"},
+            ),
+            TraceEvent(
+                "reviewer_decision",
+                {"review_job_id": "proposal:2", "decision": "nudge"},
+            ),
+            TraceEvent(
+                "reviewer_decision",
+                {"review_trigger": "manual", "decision": "continue"},
+            ),
+        ],
+    )
+    add_label("s1", 1, "tp", "signal was useful", records)
+    add_label("s1", 2, "fp", "periodic review was noise", records)
+    add_label("s1", 3, "tn", "manual continue was correct", records)
+
+    interventions, continues = tally_reviewer_triggers("s1", records)
+
+    assert interventions["signal"].positive == 1
+    assert interventions["periodic"].negative == 1
+    assert continues["manual"].negative == 1
+
+
 def test_rate_is_withheld_below_minimum_samples() -> None:
     records = _journal("s1", _flagged(2))
     for step in (1, 3):
@@ -441,6 +475,7 @@ def test_cli_label_and_metrics_roundtrip(capsys: pytest.CaptureFixture[str]) -> 
     assert "Signal candidate precision" in out
     assert "P4 reviewer precision" in out
     assert "Reviewer negative decisions" in out
+    assert "manual: 1/1 labeled" in out
     assert "P1 observability ceiling" in out
     assert "Runtime cost / efficiency (coverage-aware)" in out
     assert "Rater agreement (double-label subset)" in out

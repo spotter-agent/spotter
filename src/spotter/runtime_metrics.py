@@ -83,6 +83,7 @@ class RuntimeCostReport:
     cumulative_main_tokens: int | None
     main_token_breakdown: TokenBreakdown
     reviewer_calls: int
+    reviewer_calls_by_trigger: Mapping[str, int]
     reviewer_tokens: int | None
     reviewer_sessions: int
     reviewer_token_sessions: int
@@ -226,6 +227,7 @@ def measure_runtime_costs(
     sessions = events = completed_turns = token_turns = token_observations = 0
     reviewer_calls = reviewer_tokens = journal_bytes = gate_calls = 0
     reviewer_sessions = reviewer_token_sessions = reviewer_token_observations = 0
+    reviewer_calls_by_trigger: Counter[str] = Counter()
     signal_candidates_active = reviewer_jobs_queued = reviewer_jobs_started = 0
     repeated_actions = [0, 0, 0]
     no_frontier_reads = [0, 0, 0]
@@ -279,6 +281,7 @@ def measure_runtime_costs(
         latest_main_tokens: Mapping[str, object] | None = None
         latest_reviewer_tokens: int | None = None
         session_reviewer_calls = 0
+        review_job_triggers = _review_job_triggers(records)
         for record in records:
             event = record.event
             surface = _event_surface(event)
@@ -337,6 +340,7 @@ def measure_runtime_costs(
             if event.kind == "reviewer_decision":
                 reviewer_calls += 1
                 session_reviewer_calls += 1
+                reviewer_calls_by_trigger[_review_trigger(event, review_job_triggers)] += 1
                 latest_reviewer_tokens = None
                 spend = event.payload.get("spend")
                 if isinstance(spend, Mapping):
@@ -463,6 +467,7 @@ def measure_runtime_costs(
         cumulative_main_tokens=token_breakdown.total.value,
         main_token_breakdown=token_breakdown,
         reviewer_calls=reviewer_calls,
+        reviewer_calls_by_trigger=dict(reviewer_calls_by_trigger),
         reviewer_tokens=reviewer_tokens if reviewer_token_sessions else None,
         reviewer_sessions=reviewer_sessions,
         reviewer_token_sessions=reviewer_token_sessions,
@@ -940,6 +945,7 @@ def render_runtime_costs(report: RuntimeCostReport) -> str:
     decision_lag = _sample(report.reviewer_decision_lag_ms, report.reviewer_jobs_decided)
     lines.append(
         f"  Spotter semantic: reviewer_calls={report.reviewer_calls}, "
+        f"triggers={_counts(report.reviewer_calls_by_trigger)}; "
         f"recorded_session_tokens={_reviewer_token_coverage(report)}; queue={queue}, "
         f"inference={inference}"
     )
@@ -1313,6 +1319,37 @@ def _event_surface(event: TraceEvent) -> str:
     )
 
 
+def _review_job_triggers(records: tuple[StepRecord, ...]) -> dict[str, str]:
+    triggers: dict[str, str] = {}
+    for record in records:
+        if record.event.kind != "review_job_queued":
+            continue
+        payload = record.event.payload
+        job_id = _payload_id(payload, "review_job_id")
+        if job_id is None:
+            continue
+        trigger = payload.get("review_trigger")
+        if isinstance(trigger, str) and trigger:
+            triggers[job_id] = trigger
+        elif isinstance(payload.get("signal_id"), str):
+            triggers[job_id] = "signal"
+        elif job_id.startswith("proposal:"):
+            triggers[job_id] = "periodic"
+    return triggers
+
+
+def _review_trigger(event: TraceEvent, job_triggers: Mapping[str, str]) -> str:
+    trigger = event.payload.get("review_trigger")
+    if isinstance(trigger, str) and trigger:
+        return trigger
+    job_id = _payload_id(event.payload, "review_job_id")
+    if job_id is None:
+        return "manual"
+    if job_id in job_triggers:
+        return job_triggers[job_id]
+    return "periodic" if job_id.startswith("proposal:") else "unknown"
+
+
 def _action_key(record: StepRecord) -> str | None:
     event = record.event
     value = event.operation_id or event.payload.get("tool_use_id")
@@ -1439,6 +1476,10 @@ def _sample(values: tuple[float, ...], eligible: int) -> str:
 
 def _observations(count: int) -> str:
     return f"{count} observation{'s' if count != 1 else ''}"
+
+
+def _counts(values: Mapping[str, int]) -> str:
+    return ",".join(f"{key}={value}" for key, value in sorted(values.items())) or "none"
 
 
 def _covered_tokens(metric: CoveredTokens, eligible: int) -> str:

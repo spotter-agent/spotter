@@ -305,13 +305,16 @@ existing session/day budget ledger before inference, and journals queue latency,
 token spend, errors/caps, and stale decisions. The decision remains shadow-only and cannot steer the
 agent.
 
-The second implemented family detects repeated equivalent successful tool calls. It uses normalized
-tool identity, explicit resource scope, and stable normalized arguments; opaque or differently
-scoped calls do not collapse into one candidate. Like failure streaks, it emits a bounded durable
-candidate, cools down duplicate emissions, and becomes stale at a target or lifecycle boundary.
-These two families establish the signal-to-shadow-review mechanism, not its precision, recall, or
-replacement of periodic review. Candidate merging/priority policy and broader signal coverage remain
-open.
+The implemented engine covers all eight initial families: failure streaks, repeated equivalent
+calls, reads without frontier expansion, recurrence after a deterministic block, touched-scope
+growth, edits without scope-matched validation, stale-hypothesis reuse, and relative budget
+anomalies. Candidates from one immutable state can merge into a single priority-ordered, budgeted
+review job without losing their individual evidence identities. Every queued job and terminal
+reviewer decision records whether it was launched by a signal, the periodic Hook cadence, or a
+manual request. Legacy queue identity is classified conservatively. This lets `spotter metrics`
+compare reviewer calls, precision, and negative-decision misses by trigger instead of pooling the
+periodic-only, event-driven, and mixed cohorts. The evidence decision about replacing periodic
+review remains with #38/#24; trigger provenance does not itself prove better outcomes.
 
 ## 4.3 Semantic review
 

@@ -48,6 +48,7 @@ from spotter.metrics import (
     merge,
     merge_agreement,
     tally_reviewer_continues,
+    tally_reviewer_triggers,
     tally_session,
     tally_signal_candidates,
     tally_signal_silence,
@@ -677,6 +678,20 @@ def _review_main(
         ),
         None,
     )
+    review_trigger = next(
+        (
+            record.event.payload.get("review_trigger")
+            for record in reversed(records)
+            if record.event.kind == "review_job_queued"
+            and record.event.payload.get("review_job_id") == review_job_id
+            and isinstance(record.event.payload.get("review_trigger"), str)
+        ),
+        "manual"
+        if review_job_id is None
+        else "periodic"
+        if review_job_id.startswith("proposal:")
+        else "unknown",
+    )
     try:
         # Check the ledger before spending, not after: the manual path calls
         # the model first, so a corrupt ledger would otherwise pay for a review
@@ -690,6 +705,7 @@ def _review_main(
             "review_inference_started",
             {
                 "review_job_id": review_job_id,
+                "review_trigger": review_trigger,
                 "queue_ms": max(0.0, (time.time() - queued_at) * 1000)
                 if queued_at is not None
                 else None,
@@ -709,7 +725,11 @@ def _review_main(
             StepJournal(journal_file).record(
                 TraceEvent(
                     "reviewer_error",
-                    {"error": str(error)[:300], "review_job_id": review_job_id},
+                    {
+                        "error": str(error)[:300],
+                        "review_job_id": review_job_id,
+                        "review_trigger": review_trigger,
+                    },
                 )
             )
         return 1
@@ -730,6 +750,7 @@ def _review_main(
                 "model": config.reviewer.model,
                 "reviewed_upto": records[-1].step,
                 "review_job_id": review_job_id,
+                "review_trigger": review_trigger,
                 "timing": {
                     "queue_ms": started.event.payload.get("queue_ms"),
                     "inference_ms": decision.inference_ms,
@@ -1084,6 +1105,8 @@ def _metrics_main(session: str | None) -> int:
     reviewer = ceiling = Tally()
     gate_misses = Tally()
     reviewer_misses = Tally()
+    reviewer_by_trigger: dict[str, Tally] = {}
+    reviewer_misses_by_trigger: dict[str, Tally] = {}
     signal_misses: dict[str, Tally] = {}
     signal_sampling_batches: list[SignalSamplingBatch] = []
     uncorrelatable_proposals = 0
@@ -1106,6 +1129,9 @@ def _metrics_main(session: str | None) -> int:
                 journal.stem, records
             )
             session_reviewer_misses = tally_reviewer_continues(journal.stem, records)
+            session_reviewer_by_trigger, session_reviewer_misses_by_trigger = (
+                tally_reviewer_triggers(journal.stem, records)
+            )
             session_signal_misses, session_sampling_batches = tally_signal_silence(
                 journal.stem, records
             )
@@ -1123,6 +1149,12 @@ def _metrics_main(session: str | None) -> int:
         ceiling = merge(ceiling, session_ceiling)
         gate_misses = merge(gate_misses, session_misses)
         reviewer_misses = merge(reviewer_misses, session_reviewer_misses)
+        for trigger, tally in session_reviewer_by_trigger.items():
+            reviewer_by_trigger[trigger] = merge(reviewer_by_trigger.get(trigger, Tally()), tally)
+        for trigger, tally in session_reviewer_misses_by_trigger.items():
+            reviewer_misses_by_trigger[trigger] = merge(
+                reviewer_misses_by_trigger.get(trigger, Tally()), tally
+            )
         for stratum, tally in session_signal_misses.items():
             signal_misses[stratum] = merge(signal_misses.get(stratum, Tally()), tally)
         signal_sampling_batches.extend(session_sampling_batches)
@@ -1195,8 +1227,12 @@ def _metrics_main(session: str | None) -> int:
         print("  bias: rates represent only the declared event-kind strata, not all trajectories")
     print("P4 reviewer precision (label each verify/nudge tp|fp):")
     print("  " + reviewer.rate_line("interventions", "correct"))
+    for trigger, tally in sorted(reviewer_by_trigger.items()):
+        print("    " + tally.rate_line(trigger, "correct"))
     print("Reviewer negative decisions (label each CONTINUE miss|tn):")
     print("  " + reviewer_misses.rate_line("continues", "miss-rate"))
+    for trigger, tally in sorted(reviewer_misses_by_trigger.items()):
+        print("    " + tally.rate_line(trigger, "miss-rate"))
     print("  sampling boundary: trajectories without a reviewer decision are outside this rate")
     print("P1 observability ceiling (label failed sessions visible|invisible):")
     print("  " + ceiling.rate_line("sessions", "visible"))

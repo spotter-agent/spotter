@@ -84,6 +84,7 @@ def test_signal_review_runs_asynchronously_and_finishes_durably(
         records = [record.event for record in runtime.ingestor.records()]
         decision = next(event for event in records if event.kind == "reviewer_decision")
         assert decision.payload["decision"] == "verify"
+        assert decision.payload["review_trigger"] == "signal"
         assert decision.payload["stale"] is False
         assert decision.payload["shadow"] is True
         assert decision.payload["spend"] == {"session_reviews": 1, "session_tokens": 7}

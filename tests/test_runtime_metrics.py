@@ -294,7 +294,10 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
         ),
         _record(
             3,
-            TraceEvent("review_job_queued", {"review_job_id": "review-1"}),
+            TraceEvent(
+                "review_job_queued",
+                {"review_job_id": "review-1", "review_trigger": "signal"},
+            ),
         ),
         _record(
             4,
@@ -308,6 +311,7 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
             TraceEvent(
                 "reviewer_decision",
                 {
+                    "review_job_id": "review-1",
                     "spend": {"session_tokens": 25},
                     "timing": {"queue_ms": 4.0, "inference_ms": 8.0},
                 },
@@ -401,6 +405,7 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
     assert report.main_token_breakdown.input.covered_sessions == 1
     assert report.main_token_breakdown.reasoning_output.value == 1
     assert report.reviewer_calls == 1
+    assert report.reviewer_calls_by_trigger == {"signal": 1}
     assert report.reviewer_tokens == 25
     assert report.reviewer_sessions == 1
     assert report.reviewer_token_sessions == 1
@@ -418,6 +423,7 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
     assert report.source_timestamps == 5
     assert report.receipt_timestamps == report.events == 11
     assert report.arrival_ordered_events == report.arrival_order_eligible_events == 5
+    assert "triggers=signal=1" in render_runtime_costs(report)
     assert report.journal_bytes == 300
 
     rendered = render_runtime_costs(report)
@@ -428,7 +434,7 @@ def test_runtime_costs_keep_surfaces_domains_and_coverage_separate() -> None:
     )
     assert "command actions=1 failed=0/1 classified" in rendered
     assert "resources=2 unique (1/1 actions declared)" in rendered
-    assert "jobs queued=1 started=1 decided=0 errors=0 capped=0 discarded=0 stale=0" in rendered
+    assert "jobs queued=1 started=1 decided=1 errors=0 capped=0 discarded=0 stale=0" in rendered
     assert "Main tokens: 14 (1/2 sessions) cumulative/unknown-scope" in rendered
     assert "input=10 (1/2 sessions)" in rendered
     assert "cpu=0.250s, peak_rss=1024 bytes; samples=1/1 gate calls" in rendered

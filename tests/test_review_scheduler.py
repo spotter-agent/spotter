@@ -83,6 +83,7 @@ def test_active_candidate_queues_one_immutable_snapshot() -> None:
 
     assert len(queued) == 1
     assert queued[0].kind == "review_job_queued"
+    assert queued[0].payload["review_trigger"] == "signal"
     assert duplicate == ()
     assert len(scheduler.pending()) == 1
     assert scheduler.pending()[0].snapshot is snapshot

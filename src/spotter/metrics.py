@@ -227,6 +227,56 @@ def tally_reviewer_continues(session: str, records: list[StepRecord]) -> Tally:
     return tally
 
 
+def tally_reviewer_triggers(
+    session: str, records: list[StepRecord]
+) -> tuple[dict[str, Tally], dict[str, Tally]]:
+    """Stratify reviewer precision and misses by the durable launch trigger."""
+
+    labels = load_labels(session)
+    job_triggers = _review_job_triggers(records)
+    interventions: dict[str, Tally] = {}
+    continues: dict[str, Tally] = {}
+    for record in records:
+        if record.event.kind != "reviewer_decision":
+            continue
+        trigger = _review_trigger(record, job_triggers)
+        verdict, stale = _verdict(labels, records, record.step)
+        target = continues if record.event.payload.get("decision") == "continue" else interventions
+        target[trigger] = target.get(trigger, Tally()).plus(verdict, stale=stale)
+    return interventions, continues
+
+
+def _review_job_triggers(records: list[StepRecord]) -> dict[str, str]:
+    triggers: dict[str, str] = {}
+    for record in records:
+        if record.event.kind != "review_job_queued":
+            continue
+        job_id = record.event.payload.get("review_job_id")
+        if not isinstance(job_id, str) or not job_id:
+            continue
+        trigger = record.event.payload.get("review_trigger")
+        if isinstance(trigger, str) and trigger:
+            triggers[job_id] = trigger
+        elif isinstance(record.event.payload.get("signal_id"), str):
+            triggers[job_id] = "signal"
+        elif job_id.startswith("proposal:"):
+            triggers[job_id] = "periodic"
+    return triggers
+
+
+def _review_trigger(record: StepRecord, job_triggers: dict[str, str]) -> str:
+    payload = record.event.payload
+    trigger = payload.get("review_trigger")
+    if isinstance(trigger, str) and trigger:
+        return trigger
+    job_id = payload.get("review_job_id")
+    if not isinstance(job_id, str) or not job_id:
+        return "manual"
+    if job_id in job_triggers:
+        return job_triggers[job_id]
+    return "periodic" if job_id.startswith("proposal:") else "unknown"
+
+
 def tally_signal_silence(
     session: str, records: list[StepRecord]
 ) -> tuple[dict[str, Tally], tuple[SignalSamplingBatch, ...]]:
