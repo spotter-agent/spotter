@@ -26,6 +26,9 @@ def test_claim_creates_private_log_and_exact_ownership(registry: LogRegistry) ->
     assert owned.resource_id == "spotterd"
     assert owned.owner == "spotter"
     assert owned.expected_path == str(path)
+    assert Path(owned.identity_path).parent == registry.identity_dir
+    assert Path(owned.identity_path).stat().st_ino == path.stat().st_ino
+    assert path.stat().st_nlink == 2
     assert (owned.device, owned.inode) == (path.stat().st_dev, path.stat().st_ino)
 
 
@@ -66,17 +69,42 @@ def test_claim_does_not_adopt_replaced_log(registry: LogRegistry) -> None:
     assert after.inode != path.stat().st_ino
 
 
-def test_claim_recreates_a_missing_owned_log_with_new_identity(registry: LogRegistry) -> None:
+def test_claim_restores_a_missing_owned_log_from_identity_anchor(registry: LogRegistry) -> None:
     path = registry.log_dir / "spotterd.log"
     assert registry.claim(path, "spotterd") is True
+    path.write_text("kept")
     [before] = registry.load()
     path.unlink()
 
     assert registry.claim(path, "spotterd") is True
 
     [after] = registry.load()
-    assert after.expected_path == before.expected_path
+    assert after == before
+    assert path.read_text() == "kept"
     assert (after.device, after.inode) == (path.stat().st_dev, path.stat().st_ino)
+
+
+def test_missing_path_and_anchor_create_a_new_generation(registry: LogRegistry) -> None:
+    path = registry.log_dir / "spotterd.log"
+    assert registry.claim(path, "spotterd") is True
+    [before] = registry.load()
+    path.unlink()
+    Path(before.identity_path).unlink()
+
+    assert registry.claim(path, "spotterd") is True
+
+    [after] = registry.load()
+    assert after.generation_id != before.generation_id
+    assert Path(after.identity_path).stat().st_ino == path.stat().st_ino
+
+
+def test_missing_anchor_makes_existing_path_ambiguous(registry: LogRegistry) -> None:
+    path = registry.log_dir / "spotterd.log"
+    assert registry.claim(path, "spotterd") is True
+    [owned] = registry.load()
+    Path(owned.identity_path).unlink()
+
+    assert registry.claim(path, "spotterd") is False
 
 
 def test_claim_refuses_path_outside_log_directory(registry: LogRegistry, tmp_path: Path) -> None:
@@ -111,6 +139,13 @@ def test_registry_refuses_owned_path_outside_boundary(
     assert registry.claim(registry.log_dir / "spotterd.log", "spotterd") is True
     payload = json.loads(registry.path.read_text())
     payload["resources"][0]["expected_path"] = str(tmp_path / "foreign.log")
+    registry.path.write_text(json.dumps(payload))
+
+    with pytest.raises(LogRegistryError, match="outside its ownership boundary"):
+        registry.load()
+
+    payload["resources"][0]["expected_path"] = str(registry.log_dir / "spotterd.log")
+    payload["resources"][0]["identity_path"] = str(tmp_path / "foreign-anchor")
     registry.path.write_text(json.dumps(payload))
 
     with pytest.raises(LogRegistryError, match="outside its ownership boundary"):

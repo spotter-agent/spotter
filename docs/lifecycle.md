@@ -1381,9 +1381,11 @@ resource as `planned`, `skipped_referenced`, `skipped_ambiguous`, `already_absen
 `failed_retryable`, or `failed_manual_recovery`; one repository failure does not undo successful
 cleanup in another. Ownership records remain as idempotent audit evidence until a future full purge.
 New daemon and reviewer logs now receive a separate exact, schema-versioned ownership record when
-Spotter creates the file. A pre-existing or inode-replaced log remains unowned rather than being
-adopted from its filename, so a future log purge can distinguish safe resources from ambiguous
-ones. Destructive data, log, integration, and `--all` scopes remain pending.
+Spotter creates the file. A private hard-link identity anchor keeps the original inode allocated,
+so inode recycling cannot make a replacement look owned; pre-existing, replaced, or anchorless
+logs remain unowned rather than being adopted from their filename. A future log purge can therefore
+distinguish safe resources from ambiguous ones. Destructive data, log, integration, and `--all`
+scopes remain pending.
 
 Examples:
 
