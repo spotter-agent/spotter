@@ -339,6 +339,9 @@ sent. Commentary or messages without a phase do not trigger this conservative fe
 If Codex rejects a steer because no active turn exists or the expected turn mismatches, telemetry
 reports that request as stale with the stable reason `no_active_turn` or `turn_mismatch`. A known
 non-steerable active turn remains a failed control; unrecognized rejection text stays generic.
+When RPC acceptance has no matching advisory input before the target final-answer/turn boundary,
+the journal records `rpc_accepted_only`. This is explicit non-observation coverage, not evidence that
+Main consumed or acted on the steer.
 
 ### Storage maintenance
 

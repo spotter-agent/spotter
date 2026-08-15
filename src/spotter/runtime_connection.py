@@ -144,6 +144,8 @@ class AppServerRecoveryLoop:
         self._control_telemetry_ids: set[str] = set()
         self._control_request_ids: set[str] = set()
         self._control_requests: dict[str, dict[str, object]] = {}
+        self._accepted_controls: dict[str, dict[str, object]] = {}
+        self._observed_control_ids: set[str] = set()
 
         records = self.ingestor.records()
         self._control_telemetry_ids.update(
@@ -167,6 +169,13 @@ class AppServerRecoveryLoop:
                 and record.event.payload.get("outcome") != "stale"
             ):
                 self._control_requests.setdefault(control_id, dict(record.event.payload))
+                if record.event.kind == "control_rpc_accepted":
+                    self._accepted_controls.setdefault(control_id, dict(record.event.payload))
+                elif record.event.kind in {
+                    "control_observed_in_turn",
+                    "control_observed_outside_target",
+                }:
+                    self._observed_control_ids.add(control_id)
         if records:
             self.thread_states.hydrate(records)
             for candidate, trigger in self.signals.hydrate(records):
@@ -421,7 +430,9 @@ class AppServerRecoveryLoop:
         accepted_turn_id = result.get("turnId")
         if isinstance(accepted_turn_id, str) and accepted_turn_id:
             accepted["accepted_turn_id"] = accepted_turn_id
+        self._accepted_controls[request_id] = accepted
         self._record_control_event("control_rpc_accepted", target, accepted)
+        self._reconcile_settled_acceptance(target, accepted)
         return result
 
     def _record_control_event(
@@ -747,6 +758,21 @@ class AppServerRecoveryLoop:
         state = self.thread_states.observe(record.event)
         if (observation := self._intervention_observation(record.event)) is not None:
             self._append_derived(observation)
+            control_id = observation.payload["control_id"]
+            assert isinstance(control_id, str)
+            self._observed_control_ids.add(control_id)
+        if record.event.kind == "turn_completed":
+            self._reconcile_unobserved_acceptances(
+                record.event, "target_completed_without_observed_input"
+            )
+        elif (
+            record.event.kind == "agent_message"
+            and record.event.payload.get("phase") == "final_answer"
+            and record.event.payload.get("lifecycle") == "completed"
+        ):
+            self._reconcile_unobserved_acceptances(
+                record.event, "terminal_answer_without_observed_input"
+            )
         self._record_review_transitions(
             self.review_scheduler.update(record.event, state_before, state)
         )
@@ -770,6 +796,22 @@ class AppServerRecoveryLoop:
         if control is None or control.get("intervention_id") != control_id:
             return event
         identity = event.identity
+        live_target = False
+        if identity is not None and identity.thread_id is not None:
+            try:
+                state = self.thread_states.snapshot(identity.thread_id)
+            except ThreadStateError:
+                pass
+            else:
+                terminal_answer = state.execution.terminal_answer
+                live_target = (
+                    state.active_turn_id == identity.turn_id
+                    and state.connection_epoch == event.connection_epoch
+                    and (
+                        terminal_answer is None
+                        or terminal_answer.provenance.turn_id != identity.turn_id
+                    )
+                )
         exact_target = (
             identity is not None
             and identity.turn_id is not None
@@ -779,6 +821,7 @@ class AppServerRecoveryLoop:
                 identity.attachment_id is None
                 or identity.attachment_id.value == control.get("runtime_attachment_id")
             )
+            and live_target
         )
         return replace(
             event,
@@ -829,6 +872,55 @@ class AppServerRecoveryLoop:
             connection_epoch=event.connection_epoch,
             observed_monotonic_ns=event.observed_monotonic_ns,
             monotonic_clock_id=event.monotonic_clock_id,
+        )
+
+    def _reconcile_unobserved_acceptances(self, boundary: TraceEvent, reason_code: str) -> None:
+        identity = boundary.identity
+        if identity is None or identity.turn_id is None:
+            return
+        for control_id, payload in self._accepted_controls.items():
+            if (
+                control_id in self._observed_control_ids
+                or payload.get("control_kind") != "steer"
+                or payload.get("target_turn_id") != identity.turn_id.value
+                or payload.get("target_connection_epoch") != boundary.connection_epoch
+            ):
+                continue
+            target = RuntimeControlTarget(identity, boundary.connection_epoch or 0)
+            self._record_control_event(
+                "control_terminal",
+                target,
+                payload,
+                outcome="rpc_accepted_only",
+                reason_code=reason_code,
+            )
+
+    def _reconcile_settled_acceptance(
+        self, target: RuntimeControlTarget, payload: Mapping[str, object]
+    ) -> None:
+        identity = target.identity
+        if identity.thread_id is None or identity.turn_id is None:
+            return
+        try:
+            state = self.thread_states.snapshot(identity.thread_id)
+        except ThreadStateError:
+            return
+        if identity.turn_id in state.execution.completed_turns:
+            reason_code = "target_completed_without_observed_input"
+        else:
+            terminal_answer = state.execution.terminal_answer
+            if terminal_answer is None or terminal_answer.provenance.turn_id != identity.turn_id:
+                return
+            reason_code = "terminal_answer_without_observed_input"
+        control_id = payload.get("control_id")
+        if not isinstance(control_id, str) or control_id in self._observed_control_ids:
+            return
+        self._record_control_event(
+            "control_terminal",
+            target,
+            payload,
+            outcome="rpc_accepted_only",
+            reason_code=reason_code,
         )
 
     def _record_review_transitions(self, transitions: tuple[TraceEvent, ...]) -> None:

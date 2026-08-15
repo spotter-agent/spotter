@@ -3,7 +3,6 @@ import json
 import threading
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -15,7 +14,6 @@ from spotter.app_server import (
     AppServerRpcError,
     AppServerTransportError,
 )
-from spotter.identity import TurnId
 from spotter.runtime_connection import (
     AppServerRecoveryLoop,
     RecoveryState,
@@ -372,6 +370,108 @@ def test_control_rejection_and_unknown_acceptance_are_distinct(tmp_path: Path) -
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize(
+    ("method", "params", "reason_code"),
+    [
+        (
+            "turn/completed",
+            {
+                "threadId": "thread-1",
+                "turn": {"id": "turn-1", "status": "completed"},
+            },
+            "target_completed_without_observed_input",
+        ),
+        (
+            "item/completed",
+            {
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "item": {
+                    "id": "answer-1",
+                    "type": "agentMessage",
+                    "text": "Done",
+                    "phase": "final_answer",
+                },
+            },
+            "terminal_answer_without_observed_input",
+        ),
+    ],
+)
+def test_accepted_steer_without_observed_input_finishes_durably(
+    tmp_path: Path,
+    method: str,
+    params: dict[str, object],
+    reason_code: str,
+) -> None:
+    async def scenario() -> None:
+        async def handler(connection: ServerConnection) -> None:
+            await _initialize(connection)
+            listed = await _receive(connection, "thread/list")
+            await _reply(
+                connection,
+                listed,
+                {"data": [{"id": "thread-1"}], "nextCursor": None},
+            )
+            read = await _receive(connection, "thread/read")
+            await _reply(
+                connection,
+                read,
+                {
+                    "thread": {
+                        "id": "thread-1",
+                        "turns": [{"id": "turn-1", "status": "active"}],
+                    }
+                },
+            )
+            steer = await _receive(connection, "turn/steer")
+            await _reply(connection, steer, {"turnId": "turn-1"})
+            await connection.send(
+                json.dumps({"jsonrpc": "2.0", "method": method, "params": params})
+            )
+            await connection.wait_closed()
+
+        async with _server(handler) as endpoint:
+            recovery = AppServerRecoveryLoop(endpoint, tmp_path / "sessions", ThreadStateStore())
+            await recovery.start()
+            await _wait_until(lambda: recovery.state == RecoveryState.READY)
+            state = recovery.thread_states.snapshots()[0]
+            target = RuntimeControlTarget(state.identity, state.connection_epoch or 0)
+
+            await recovery.steer(
+                target,
+                "verify",
+                control_id="spotter:intervention:job-1",
+                review_job_id="job-1",
+            )
+            await _wait_until(
+                lambda: any(
+                    record.event.kind in {"turn_completed", "agent_message"}
+                    for record in recovery.ingestor.records()
+                )
+            )
+            await recovery.flush_control_telemetry()
+
+            controls = [
+                record.event
+                for record in recovery.ingestor.records()
+                if record.event.payload.get("control_id") == "spotter:intervention:job-1"
+            ]
+            assert [event.kind for event in controls] == [
+                "control_dispatch_started",
+                "control_rpc_accepted",
+                "control_terminal",
+            ]
+            assert controls[-1].payload["outcome"] == "rpc_accepted_only"
+            assert controls[-1].payload["reason_code"] == reason_code
+            assert not any(
+                event.kind.startswith("control_observed")
+                for event in (record.event for record in recovery.ingestor.records())
+            )
+            await recovery.close()
+
+    asyncio.run(scenario())
+
+
 def test_control_rpc_does_not_wait_for_bounded_telemetry_io(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -550,17 +650,21 @@ def test_intervention_input_is_correlated_without_replacing_user_goal(tmp_path: 
             assert current.task.goal.text == "Fix the original bug"
             assert current.supervision.interventions[-1].text == "Verify the retry assumption"
 
-            later_identity = replace(
-                state.identity,
-                turn_id=TurnId("turn-2"),
-                provenance=replace(state.identity.provenance, agent_turn_id="turn-2"),
+            recovery._record(
+                TraceEvent(
+                    "turn_completed",
+                    {"status": "completed"},
+                    event_id="turn-completed",
+                    identity=state.identity,
+                    connection_epoch=state.connection_epoch,
+                )
             )
             leaked = recovery._annotate_intervention_input(
                 TraceEvent(
                     "user_prompt",
                     {"client_user_message_id": "spotter:intervention:job-1", "prompt": "old"},
                     event_id="leaked-advisory",
-                    identity=later_identity,
+                    identity=state.identity,
                     connection_epoch=state.connection_epoch,
                 )
             )

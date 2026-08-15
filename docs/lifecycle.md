@@ -819,6 +819,10 @@ If a completed App Server `agentMessage` is explicitly phased as `final_answer`,
 soft-intervention window as settled before `turn/completed`: queued/running reviews become stale and
 new steers are rejected with `terminal_answer_settled`. Started messages, commentary, and messages
 without a phase remain non-terminal rather than guessing across provider compatibility gaps.
+An accepted steer with no correlated input stays pending. If its target then completes or settles a
+final answer, Spotter durably closes it as `rpc_accepted_only`; acceptance and the terminal boundary
+are reconciled in either arrival order. A later appearance is expired/outside-target evidence, not
+proof that Main observed the advisory in time.
 When Codex rejects `turn/steer`, its adapter also maps structured non-steerable data and the current
 version-specific no-active-turn/expected-turn-mismatch messages into stable Spotter reason codes.
 The supervision core never parses English RPC text; unknown rejections remain generic failures.

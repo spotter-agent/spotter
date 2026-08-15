@@ -422,6 +422,13 @@ pending/running review jobs become stale and a later steer is rejected locally w
 fence because providers do not populate the field consistently. Interrupt remains a separate
 recovery control and is not disabled by this soft-intervention fence.
 
+Accepted steers remain pending until correlated input or a trustworthy target boundary appears. If
+the target emits a completed `final_answer` or `turn/completed` first, the controller journals a
+terminal `rpc_accepted_only` outcome with the specific boundary reason. This reconciliation runs
+both when the boundary arrives and immediately after RPC acceptance, so response/notification
+ordering cannot lose the terminal classification. A matching input that becomes visible only after
+the boundary is classified outside-target rather than retroactively proving in-turn adoption.
+
 Codex control-error compatibility is confined to the App Server adapter. Structured
 `activeTurnNotSteerable` data maps to `turn_not_steerable`; current version-specific messages for
 no active turn and expected-turn mismatch map to `no_active_turn` and `turn_mismatch`. Core runtime
