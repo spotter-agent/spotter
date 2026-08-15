@@ -207,6 +207,43 @@ def test_curl_unknown_shapes_never_inherit_get_semantics() -> None:
     )
 
 
+def test_curl_clustered_short_options_preserve_methods_and_local_outputs() -> None:
+    download = classify(
+        "Bash",
+        {"command": "curl -so result.json https://api.example.com/items"},
+    )
+    post = classify(
+        "Bash",
+        {"command": "curl -sXPOST https://api.example.com/items"},
+    )
+    data = classify(
+        "Bash",
+        {"command": "curl -sd payload https://api.example.com/items"},
+    )
+    config = classify(
+        "Bash",
+        {"command": "curl -sKrequest.conf https://api.example.com/items"},
+    )
+
+    assert (download.reversibility_class, download.resource) == (
+        "B",
+        "result.json <- https://api.example.com/items",
+    )
+    assert (post.reversibility_class, post.semantic_operation) == ("C", "http.post")
+    assert (data.reversibility_class, data.semantic_operation) == ("C", "http.post")
+    assert config.reason_code == "unsupported_curl_shape"
+
+
+def test_invalid_url_port_fallback_still_redacts_credentials() -> None:
+    assessment = classify(
+        "Bash",
+        {"command": ("curl 'https://user:secret@example.com:99999/items?token=secret#fragment'")},
+    )
+
+    assert assessment.reversibility_class == "A"
+    assert assessment.resource == "https://example.com:99999/items"
+
+
 def test_database_cli_classification_limits_reads_to_bounded_metadata_queries() -> None:
     postgres_list = classify(
         "Bash",

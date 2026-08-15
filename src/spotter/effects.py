@@ -636,12 +636,22 @@ def _option_values(words: Sequence[str], *names: str) -> list[str]:
             if len(name) == 2 and token.startswith(name) and len(token) > len(name):
                 values.append(token[len(name) :])
                 break
+            if len(name) == 2 and _short_cluster_contains(token, name[1]):
+                suffix = token[token.index(name[1], 1) + 1 :]
+                if suffix:
+                    values.append(suffix)
+                elif index + 1 < len(words):
+                    values.append(words[index + 1])
+                break
     return values
 
 
 def _has_option(words: Sequence[str], *names: str) -> bool:
     return any(
-        token in names or any(token.startswith(name + "=") for name in names) for token in words
+        token in names
+        or any(token.startswith(name + "=") for name in names)
+        or any(len(name) == 2 and _short_cluster_contains(token, name[1]) for name in names)
+        for token in words
     )
 
 
@@ -652,15 +662,17 @@ def _has_option_prefix(words: Sequence[str], *names: str) -> bool:
                 return True
             if len(name) == 2 and token.startswith(name) and len(token) > len(name):
                 return True
+            if len(name) == 2 and _short_cluster_contains(token, name[1]):
+                return True
     return False
 
 
 def _has_short_flag(words: Sequence[str], flag: str) -> bool:
-    return any(
-        token == f"-{flag}"
-        or (token.startswith("-") and not token.startswith("--") and flag in token[1:])
-        for token in words
-    )
+    return any(token == f"-{flag}" or _short_cluster_contains(token, flag) for token in words)
+
+
+def _short_cluster_contains(token: str, flag: str) -> bool:
+    return token.startswith("-") and not token.startswith("--") and flag in token[1:]
 
 
 def _executable(value: str) -> str:
@@ -741,7 +753,11 @@ def _sanitize_remote_resource(value: str) -> str:
         parsed = urlsplit(value)
         port = parsed.port
     except ValueError:
-        return value.partition("?")[0].partition("#")[0][:300]
+        without_query = value.partition("?")[0].partition("#")[0]
+        scheme, separator, remainder = without_query.partition("://")
+        if separator:
+            return f"{scheme}{separator}{remainder.rsplit('@', 1)[-1]}"[:300]
+        return without_query[:300]
     if not parsed.scheme or not parsed.hostname:
         return value.partition("?")[0].partition("#")[0][:300]
     host = parsed.hostname
