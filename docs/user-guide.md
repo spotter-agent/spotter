@@ -460,7 +460,10 @@ Protect an exact registered snapshot explicitly with `spotter pins add --repo <p
 <uuid>`. Manual pins also survive `prune --max-age-days` until removed.
 Preview exact snapshot cleanup with `spotter purge --snapshots --dry-run`; remove only proven-owned,
 unreferenced worktrees and snapshot refs with `spotter purge --snapshots`. Referenced or ambiguous
-resources are skipped and reported. Data/log/full destructive scopes remain pending in
+resources are skipped and reported. Preview owned log clearing with `spotter purge --logs --dry-run`
+and clear current contents with `spotter purge --logs`. Spotter truncates exact ownership anchors so
+active writers remain valid, never touches replaced or unregistered paths, and may receive new log
+bytes immediately from an active writer. Data/integration/full destructive scopes remain pending in
 [#89](https://github.com/spotter-agent/spotter/issues/89).
 
 If the package was removed before teardown, generated Hooks are designed to fail open. Reinstall the

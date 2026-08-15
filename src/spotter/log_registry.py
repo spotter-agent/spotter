@@ -11,6 +11,7 @@ from pathlib import Path
 
 from spotter.build_identity import current_build_identity
 from spotter.paths import RuntimeLayout, secure_dir
+from spotter.repository_registry import OwnershipConfidence, ResourcePresence
 
 LOG_REGISTRY_SCHEMA = "spotter.log_registry"
 LOG_REGISTRY_SCHEMA_VERSION = 1
@@ -32,6 +33,19 @@ class OwnedLog:
     identity_path: str
     device: int
     inode: int
+
+
+@dataclass(frozen=True)
+class LogResourceInspection:
+    resource_id: str
+    expected_path: str
+    identity_path: str | None
+    generation_id: str | None
+    confidence: OwnershipConfidence
+    presence: ResourcePresence
+    size_bytes: int | None
+    reason: str
+    owned: OwnedLog | None
 
 
 def _now() -> str:
@@ -251,6 +265,189 @@ class LogRegistry:
                 updated += (claimed,)
             _atomic_write(self.path, updated)
             return True
+
+    def inspect(
+        self, resources: tuple[OwnedLog, ...] | None = None
+    ) -> tuple[LogResourceInspection, ...]:
+        """Inspect exact owned anchors and surface every unowned log-dir entry."""
+        owned_logs = resources if resources is not None else self.load()
+        inspections: list[LogResourceInspection] = []
+        recognized_paths: set[Path] = set()
+        known_anchors = {Path(resource.identity_path) for resource in owned_logs}
+
+        for resource in owned_logs:
+            expected = Path(resource.expected_path)
+            anchor, ambiguous = self._anchor_status(resource)
+            if ambiguous:
+                inspections.append(
+                    self._inspection(
+                        resource,
+                        OwnershipConfidence.AMBIGUOUS,
+                        ResourcePresence.UNKNOWN,
+                        None,
+                        "identity anchor no longer matches its ownership record",
+                    )
+                )
+                recognized_paths.add(expected)
+                continue
+            if anchor is None:
+                try:
+                    expected_status = expected.stat(follow_symlinks=False)
+                except FileNotFoundError:
+                    inspections.append(
+                        self._inspection(
+                            resource,
+                            OwnershipConfidence.SAFE_OWNED,
+                            ResourcePresence.ABSENT,
+                            0,
+                            "owned log and identity anchor are already absent",
+                        )
+                    )
+                except OSError:
+                    inspections.append(
+                        self._inspection(
+                            resource,
+                            OwnershipConfidence.INACCESSIBLE,
+                            ResourcePresence.UNKNOWN,
+                            None,
+                            "identity anchor is absent and the log path is inaccessible",
+                        )
+                    )
+                else:
+                    inspections.append(
+                        self._inspection(
+                            resource,
+                            OwnershipConfidence.AMBIGUOUS,
+                            ResourcePresence.PRESENT,
+                            expected_status.st_size
+                            if stat.S_ISREG(expected_status.st_mode)
+                            else None,
+                            "log path exists without its identity anchor",
+                        )
+                    )
+                recognized_paths.add(expected)
+                continue
+
+            public_reason = "public log path is absent"
+            try:
+                expected_status = expected.stat(follow_symlinks=False)
+            except FileNotFoundError:
+                recognized_paths.add(expected)
+            except OSError:
+                public_reason = "public log path is inaccessible and will not be touched"
+            else:
+                if (expected_status.st_dev, expected_status.st_ino) == (
+                    resource.device,
+                    resource.inode,
+                ):
+                    recognized_paths.add(expected)
+                    public_reason = "public log path and identity anchor match"
+                else:
+                    public_reason = "public log path was replaced and will not be touched"
+            inspections.append(
+                self._inspection(
+                    resource,
+                    OwnershipConfidence.SAFE_OWNED,
+                    ResourcePresence.PRESENT if anchor.st_size else ResourcePresence.ABSENT,
+                    anchor.st_size,
+                    f"exact owned identity anchor; {public_reason}",
+                )
+            )
+
+        reserved = {self.path.absolute(), self.lock_path.absolute(), self.identity_dir}
+        if self.log_dir.exists():
+            try:
+                entries = tuple(self.log_dir.iterdir())
+            except OSError as error:
+                raise LogRegistryError(f"log directory is inaccessible: {error}") from error
+            for entry in entries:
+                absolute = entry.absolute()
+                if absolute in reserved or absolute in recognized_paths:
+                    continue
+                inspections.append(self._unowned_inspection(absolute))
+        if self.identity_dir.exists():
+            try:
+                anchors = tuple(self.identity_dir.iterdir())
+            except OSError as error:
+                raise LogRegistryError(
+                    f"log identity directory is inaccessible: {error}"
+                ) from error
+            for anchor_path in anchors:
+                if anchor_path.absolute() not in known_anchors:
+                    inspections.append(self._unowned_inspection(anchor_path.absolute()))
+        return tuple(inspections)
+
+    def clear(self, resource: OwnedLog) -> int:
+        """Truncate one exact owned anchor and return the removed byte count."""
+        secure_dir(self.log_dir)
+        with self.lock_path.open("a+") as lock:
+            flock(lock.fileno(), LOCK_EX)
+            if resource not in self.load():
+                raise LogRegistryError(f"log ownership changed for {resource.resource_id}")
+            flags = os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
+            try:
+                descriptor = os.open(resource.identity_path, flags)
+            except OSError as error:
+                raise LogRegistryError(
+                    f"could not open identity anchor for {resource.resource_id}: {error}"
+                ) from error
+            try:
+                status = os.fstat(descriptor)
+                if not stat.S_ISREG(status.st_mode) or (status.st_dev, status.st_ino) != (
+                    resource.device,
+                    resource.inode,
+                ):
+                    raise LogRegistryError(
+                        f"identity anchor changed for {resource.resource_id}; refusing to clear"
+                    )
+                removed = status.st_size
+                os.ftruncate(descriptor, 0)
+                os.fsync(descriptor)
+                return removed
+            finally:
+                os.close(descriptor)
+
+    @staticmethod
+    def _inspection(
+        resource: OwnedLog,
+        confidence: OwnershipConfidence,
+        presence: ResourcePresence,
+        size_bytes: int | None,
+        reason: str,
+    ) -> LogResourceInspection:
+        return LogResourceInspection(
+            resource.resource_id,
+            resource.expected_path,
+            resource.identity_path,
+            resource.generation_id,
+            confidence,
+            presence,
+            size_bytes,
+            reason,
+            resource,
+        )
+
+    @staticmethod
+    def _unowned_inspection(path: Path) -> LogResourceInspection:
+        try:
+            status = path.stat(follow_symlinks=False)
+        except OSError:
+            presence = ResourcePresence.UNKNOWN
+            size_bytes = None
+        else:
+            presence = ResourcePresence.PRESENT
+            size_bytes = status.st_size if stat.S_ISREG(status.st_mode) else None
+        return LogResourceInspection(
+            f"unregistered:{path.name}",
+            str(path),
+            None,
+            None,
+            OwnershipConfidence.AMBIGUOUS,
+            presence,
+            size_bytes,
+            "no exact Spotter log ownership record",
+            None,
+        )
 
     @staticmethod
     def _create(path: Path) -> os.stat_result:

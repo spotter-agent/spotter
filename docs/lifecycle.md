@@ -1339,14 +1339,16 @@ If package-manager uninstall cannot run lifecycle cleanup reliably, `spotter tea
 
 # 16. Purge
 
-Purge is the target destructive data-cleanup operation. Repository preview and the first explicit
-destructive scope are implemented:
+Purge is the target destructive data-cleanup operation. Repository preview and two explicit
+destructive scopes are implemented:
 
 ```bash
 spotter purge --all --dry-run
 spotter purge --all --dry-run --json
 spotter purge --snapshots --dry-run
 spotter purge --snapshots
+spotter purge --logs --dry-run
+spotter purge --logs
 ```
 
 It revalidates the registry's repository inode, exact ref target, and worktree Git administrative
@@ -1370,7 +1372,7 @@ spotter pins remove --pin-id <uuid>
 Only an exact registered Spotter-owned snapshot can be pinned. A pin protects the snapshot from
 both ordinary prune and explicit age expiry until it is removed. An unreadable, future-version, or
 stale pin store makes purge eligibility unknown rather than silently dropping the claim.
-Destructive scopes other than `--snapshots` remain tracked by
+Destructive scopes other than `--snapshots` and `--logs` remain tracked by
 [#89](https://github.com/spotter-agent/spotter/issues/89) and refuse mutation.
 
 `purge --snapshots` removes only exact `SAFE_OWNED`, unreferenced registered worktrees and snapshot
@@ -1380,12 +1382,15 @@ referenced. Dry-run simulates that ordering without mutation. Human and JSON out
 resource as `planned`, `skipped_referenced`, `skipped_ambiguous`, `already_absent`, `removed`,
 `failed_retryable`, or `failed_manual_recovery`; one repository failure does not undo successful
 cleanup in another. Ownership records remain as idempotent audit evidence until a future full purge.
-New daemon and reviewer logs now receive a separate exact, schema-versioned ownership record when
+New daemon and reviewer logs receive a separate exact, schema-versioned ownership record when
 Spotter creates the file. A private hard-link identity anchor keeps the original inode allocated,
 so inode recycling cannot make a replacement look owned; pre-existing, replaced, or anchorless
-logs remain unowned rather than being adopted from their filename. A future log purge can therefore
-distinguish safe resources from ambiguous ones. Destructive data, log, integration, and `--all`
-scopes remain pending.
+logs remain unowned rather than being adopted from their filename. `purge --logs` truncates exact
+owned anchors instead of unlinking live files, so current writers keep a valid destination. It
+reports every unregistered log-directory entry as `AMBIGUOUS`, never touches a replaced public
+path, preserves ownership evidence for idempotent reruns, and returns non-zero for skipped or failed
+resources. This is a point-in-time clear: an active writer may append new bytes immediately after
+the command. Destructive data, integration, and `--all` scopes remain pending.
 
 Examples:
 

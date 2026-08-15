@@ -366,7 +366,10 @@ worktree 所引用的 snapshot 会标为 `REFERENCED`，而不是成为删除候
 `prune --max-age-days` 删除。
 可用 `spotter purge --snapshots --dry-run` 预览精确的 snapshot 清理，并用
 `spotter purge --snapshots` 仅删除所有权已证实且未被引用的 worktree 和 snapshot ref。
-仍被引用或状态不明的资源会跳过并报告。data/log/full 破坏性范围仍在
+仍被引用或状态不明的资源会跳过并报告。可用 `spotter purge --logs --dry-run` 预览日志清理，
+并用 `spotter purge --logs` 清空当前内容。Spotter 会截断所有权已证实的 anchor 以保持活跃
+writer 的路径有效，绝不触碰已替换或未登记的路径；活跃 writer 可能在命令结束后立即写入新日志。
+data/integration/full 破坏性范围仍在
 [#89](https://github.com/spotter-agent/spotter/issues/89) 中跟踪。
 
 如果在 teardown 前就卸载了软件包，生成的 Hook 会按设计采用 fail-open 行为。使用相同方式

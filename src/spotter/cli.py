@@ -57,6 +57,7 @@ from spotter.gates import Gate
 from spotter.hook import journal_path, run_hook
 from spotter.integration import IntegrationError, IntegrationManager, IntegrationManifest
 from spotter.labels import LabelError, add_label, valid_session
+from spotter.log_registry import LogRegistry, LogRegistryError, LogResourceInspection
 from spotter.metrics import (
     AgreementTally,
     Tally,
@@ -189,7 +190,7 @@ def build_parser() -> argparse.ArgumentParser:
             "analyze: summarize journaled sessions; fork: branch a session at a step; "
             "fork-coverage: classify each session proposal for replay eligibility; "
             "prune: drop unreferenced refs/spotter snapshots (dry-run without --apply); "
-            "purge: preview resources or remove exact unreferenced snapshot resources; "
+            "purge: preview resources, remove snapshots, or clear exact owned logs; "
             "pins: add, remove, or list durable manual snapshot roots; "
             "review: run the shadow reviewer on a session (records only, injects nothing); "
             "experiment: guidance or identical-neutral fork pairs (needs --run to execute); "
@@ -284,6 +285,12 @@ def build_parser() -> argparse.ArgumentParser:
         dest="purge_snapshots",
         action="store_true",
         help="purge: remove exact unreferenced Spotter-owned worktrees and snapshot refs",
+    )
+    parser.add_argument(
+        "--logs",
+        dest="purge_logs",
+        action="store_true",
+        help="purge: clear exact Spotter-owned log contents",
     )
     parser.add_argument(
         "--json",
@@ -461,8 +468,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command in {"setup", "teardown"}:
         if args.target != "codex":
             parser.error(f"{args.command} requires the codex target")
-        if args.purge_all or args.purge_snapshots or args.json_output:
-            parser.error("--all, --snapshots, and --json require purge")
+        if args.purge_all or args.purge_snapshots or args.purge_logs or args.json_output:
+            parser.error("--all, --snapshots, --logs, and --json require purge")
         if args.command == "teardown" and (args.dry_run or args.portable):
             parser.error("--dry-run and --portable are only supported by setup")
         return _integration_main(
@@ -472,14 +479,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             dry_run=args.dry_run,
         )
     if args.command == "purge":
-        if args.purge_all == args.purge_snapshots:
-            parser.error("purge requires exactly one of --all or --snapshots")
+        if sum((args.purge_all, args.purge_snapshots, args.purge_logs)) != 1:
+            parser.error("purge requires exactly one of --all, --snapshots, or --logs")
         if args.purge_all and not args.dry_run:
             parser.error("destructive --all is not implemented; use --dry-run")
         if args.target is not None or args.portable:
             parser.error("purge accepts only a scope, optional --dry-run, and optional --json")
         if args.apply:
             parser.error("purge is destructive without --dry-run; do not pass --apply")
+        if args.purge_logs:
+            return _purge_logs_main(json_output=args.json_output, apply=not args.dry_run)
         return _purge_main(
             json_output=args.json_output,
             snapshot_scope=args.purge_snapshots,
@@ -553,8 +562,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--resume requires tasks run")
     if args.dry_run or args.portable:
         parser.error("--dry-run and --portable require setup")
-    if args.purge_all or args.purge_snapshots or args.json_output:
-        parser.error("--all, --snapshots, and --json require purge")
+    if args.purge_all or args.purge_snapshots or args.purge_logs or args.json_output:
+        parser.error("--all, --snapshots, --logs, and --json require purge")
 
     config = _load_config(parser, args.config)
     # One boundary check for every command that names a session: sanitizing
@@ -1908,6 +1917,114 @@ def _pins_main(
     except (OSError, RepositoryRegistryError, SnapshotPinError) as error:
         print(f"pins {action} failed: {error}", file=sys.stderr)
         return 1
+
+
+LogPurgeKey = tuple[str, str, str | None]
+
+
+def _log_purge_key(item: LogResourceInspection) -> LogPurgeKey:
+    return (item.resource_id, item.expected_path, item.identity_path)
+
+
+def _log_purge_group(item: LogResourceInspection) -> str:
+    return item.confidence.value
+
+
+def _log_purge_outcome(item: LogResourceInspection) -> str:
+    if item.confidence != OwnershipConfidence.SAFE_OWNED:
+        return "skipped_ambiguous"
+    if item.presence == ResourcePresence.ABSENT:
+        return "already_absent"
+    return "planned"
+
+
+def _purge_logs_main(*, json_output: bool, apply: bool) -> int:
+    """Plan or clear exact owned log contents without unlinking live files."""
+    registry = LogRegistry()
+    outcomes: dict[LogPurgeKey, str] = {}
+    failures: dict[LogPurgeKey, str] = {}
+    removed_bytes: dict[LogPurgeKey, int] = {}
+    try:
+        resources = registry.load()
+        inspections = registry.inspect(resources)
+        for item in inspections:
+            outcomes[_log_purge_key(item)] = _log_purge_outcome(item)
+        if apply:
+            for item in inspections:
+                key = _log_purge_key(item)
+                if outcomes[key] != "planned" or item.owned is None:
+                    continue
+                try:
+                    removed_bytes[key] = registry.clear(item.owned)
+                except (OSError, LogRegistryError) as error:
+                    outcomes[key] = "failed_retryable"
+                    failures[key] = str(error)
+                else:
+                    outcomes[key] = "removed"
+            inspections = registry.inspect()
+    except (OSError, LogRegistryError) as error:
+        print(f"purge failed: {error}", file=sys.stderr)
+        return 1
+
+    groups = ("SAFE_OWNED", "INACCESSIBLE", "AMBIGUOUS")
+    summary = {name: sum(_log_purge_group(item) == name for item in inspections) for name in groups}
+    resources_output = []
+    for item in inspections:
+        key = _log_purge_key(item)
+        outcome = outcomes.get(key, _log_purge_outcome(item))
+        resources_output.append(
+            {
+                "resource_type": "log",
+                "resource_id": item.resource_id,
+                "expected_path": item.expected_path,
+                "identity_path": item.identity_path,
+                "generation_id": item.generation_id,
+                "group": _log_purge_group(item),
+                "confidence": item.confidence.value,
+                "presence": item.presence.value,
+                "size_bytes": item.size_bytes,
+                "reason": item.reason,
+                "outcome": outcome,
+                "removed_bytes": removed_bytes.get(key),
+                "failure": failures.get(key),
+            }
+        )
+    if json_output:
+        print(
+            json.dumps(
+                {
+                    "scope": "logs",
+                    "dry_run": not apply,
+                    "deletion_supported": True,
+                    "summary": summary,
+                    "resources": resources_output,
+                },
+                sort_keys=True,
+            )
+        )
+    else:
+        action = "purge results" if apply else "purge preview (dry-run)"
+        print(f"{action}; scope=logs")
+        for name in groups:
+            matching = [item for item in inspections if _log_purge_group(item) == name]
+            print(f"{name} ({len(matching)})")
+            for item in matching:
+                key = _log_purge_key(item)
+                outcome = outcomes.get(key, _log_purge_outcome(item))
+                size = "unknown" if item.size_bytes is None else str(item.size_bytes)
+                print(
+                    f"  log {item.expected_path} [{item.presence.value.lower()}, {size} bytes] "
+                    f"- {outcome} - {item.reason}"
+                )
+                if key in failures:
+                    print(f"    failure: {failures[key]}")
+    return int(
+        bool(failures)
+        or any(
+            item.confidence in {OwnershipConfidence.INACCESSIBLE, OwnershipConfidence.AMBIGUOUS}
+            for item in inspections
+        )
+    )
 
 
 PurgeResourceKey = tuple[str, str, str]

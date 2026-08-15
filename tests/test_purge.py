@@ -9,6 +9,7 @@ import pytest
 import spotter.cli as cli
 from spotter.cli import main
 from spotter.hook import journal_path
+from spotter.log_registry import LogRegistry, LogRegistryError, OwnedLog
 from spotter.replay import FORK_MANIFEST_SCHEMA, FORK_MANIFEST_SCHEMA_VERSION
 from spotter.repository_registry import RepositoryRegistry
 from spotter.snapshot import StepJournal, restore_snapshot, snapshot_worktree
@@ -243,6 +244,99 @@ def test_snapshot_purge_continues_past_inaccessible_repository(
     assert _ref_exists(moved, other_sha)
 
 
+def test_log_purge_dry_run_then_clear_is_idempotent(
+    spotter_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    registry = LogRegistry()
+    log = registry.log_dir / "spotterd.log"
+    assert registry.claim(log, "spotterd") is True
+    log.write_text("owned log")
+
+    assert main(["purge", "--logs", "--dry-run", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["scope"] == "logs"
+    assert payload["dry_run"] is True
+    assert payload["resources"][0]["outcome"] == "planned"
+    assert payload["resources"][0]["size_bytes"] == len("owned log")
+    assert log.read_text() == "owned log"
+
+    assert main(["purge", "--logs", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["resources"][0]["outcome"] == "removed"
+    assert payload["resources"][0]["removed_bytes"] == len("owned log")
+    assert log.read_bytes() == b""
+    assert registry.load(), "ownership evidence survives content purge"
+
+    assert main(["purge", "--logs", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["resources"][0]["outcome"] == "already_absent"
+
+
+def test_log_purge_reports_unregistered_file_without_deleting_it(
+    spotter_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    logs = spotter_home / "logs"
+    logs.mkdir(parents=True)
+    foreign = logs / "foreign.log"
+    foreign.write_text("keep")
+
+    assert main(["purge", "--logs", "--json"]) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    [resource] = payload["resources"]
+    assert resource["group"] == "AMBIGUOUS"
+    assert resource["outcome"] == "skipped_ambiguous"
+    assert foreign.read_text() == "keep"
+
+
+def test_log_purge_clears_owned_anchor_but_preserves_replaced_public_path(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    registry = LogRegistry()
+    log = registry.log_dir / "spotterd.log"
+    assert registry.claim(log, "spotterd") is True
+    log.write_text("owned")
+    log.unlink()
+    log.write_text("foreign")
+
+    assert main(["purge", "--logs", "--json"]) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    outcomes = {resource["group"]: resource["outcome"] for resource in payload["resources"]}
+    assert outcomes == {"SAFE_OWNED": "removed", "AMBIGUOUS": "skipped_ambiguous"}
+    assert log.read_text() == "foreign"
+    [owned] = registry.load()
+    assert Path(owned.identity_path).read_bytes() == b""
+
+
+def test_log_purge_continues_after_retryable_clear_failure(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = LogRegistry()
+    daemon_log = registry.log_dir / "spotterd.log"
+    review_log = registry.log_dir / "review-s1.log"
+    assert registry.claim(daemon_log, "spotterd") is True
+    assert registry.claim(review_log, "review:s1") is True
+    daemon_log.write_text("daemon")
+    review_log.write_text("review")
+    original_clear = LogRegistry.clear
+
+    def selective_clear(self: LogRegistry, resource: OwnedLog) -> int:
+        if resource.resource_id == "spotterd":
+            raise LogRegistryError("busy")
+        return original_clear(self, resource)
+
+    monkeypatch.setattr(LogRegistry, "clear", selective_clear)
+
+    assert main(["purge", "--logs", "--json"]) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    outcomes = {resource["resource_id"]: resource["outcome"] for resource in payload["resources"]}
+    assert outcomes == {"spotterd": "failed_retryable", "review:s1": "removed"}
+    assert daemon_log.read_text() == "daemon"
+    assert review_log.read_bytes() == b""
+
+
 def test_missing_repository_is_inaccessible(
     repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -292,7 +386,11 @@ def test_purge_refuses_non_preview_invocation() -> None:
     with pytest.raises(SystemExit):
         main(["purge", "--all", "--snapshots", "--dry-run"])
     with pytest.raises(SystemExit):
+        main(["purge", "--logs", "--snapshots", "--dry-run"])
+    with pytest.raises(SystemExit):
         main(["purge", "--snapshots", "--apply"])
+    with pytest.raises(SystemExit):
+        main(["purge", "--logs", "--apply"])
     with pytest.raises(SystemExit):
         main(["purge", "codex", "--all", "--dry-run"])
 
