@@ -46,13 +46,13 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 needs experiment · ❌ m
 | real trajectory collection | ✅ | Spotter records real Codex Hook trajectories |
 | deterministic pre-action policy | ✅ | implemented and hardened with real false-positive cases |
 | snapshot/fork/replay | ✅ | machinery exists and can branch from recorded prefixes |
-| model-backed semantic judgment | ✅ shadow | reviewer produces plausible structured verdicts but does not affect Main |
+| model-backed semantic judgment | ✅ shadow / opt-in live | reviewer produces structured verdicts; fresh signal-driven VERIFY/NUDGE can steer with a separate off-by-default opt-in, without established benefit |
 | claim/evidence ledger | 🟡 | works only where the observation surface exposes usable outcomes |
 | counterfactual experiment framework | ✅ | frozen/resumable machinery completed its first 6-arm development qualification run |
 | ground-truth task set | 🟡 | six synthetic frozen tasks across five failure families; external/ecosystem breadth remains missing |
 | positive intervention advantage | ❌ | not established |
 | event-driven reviewer dispatch | 🟡 | periodic Hook review remains, while opted-in failure-streak and repeated-equivalent-tool signals also queue bounded asynchronous shadow reviews; merge/priority policy, broader signal coverage, and comparative detection evidence remain open |
-| live `VERIFY / NUDGE` delivery | ❌ | target: `turn/steer` |
+| live `VERIFY / NUDGE` delivery | 🟡 | exact-target signal-driven `turn/steer` is opt-in; task-ownership and harm evidence remain |
 | `INTERRUPT / RESTART` | ❌ | target only |
 | App Server observation/control viability | ✅ PoC | #78 proved a Spotter-managed external App Server can be shared by the real TUI and Spotter and can steer the active turn |
 | production App Server observation path | 🟡 | configured endpoints have normalized event routing, identity reconciliation, reconnect, durable Trace IR, and incremental ThreadState; setup endpoint selection and representative labeled-failure evidence remain |

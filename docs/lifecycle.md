@@ -804,11 +804,14 @@ U7 still active?
 
 Every delivery decision is journaled.
 
-Current behavior stops before delivery: with `reviewer.on_signals = true`, `spotterd` executes the
-bounded immutable job input asynchronously, records `review_inference_started` and a shadow
-`reviewer_decision` (or visible cap/error), and marks a result stale when its turn/epoch ended while
-the model was running. The option is off by default because enabling it spends model tokens; the
-configured per-session and per-day ceilings are enforced before inference.
+With `reviewer.on_signals = true`, `spotterd` executes the bounded immutable job input
+asynchronously, records `review_inference_started` and a `reviewer_decision` (or visible cap/error),
+and marks a result stale when its turn/epoch ended while the model was running. Reviews remain
+shadow-only unless active mode and the separate `reviewer.deliver_on_signals = true` opt-in are set. In that mode,
+fresh signal-driven `VERIFY`/`NUDGE` decisions issue one current-turn advisory through the exact
+App Server attachment/turn/epoch. RPC acceptance, stale/failed/unknown outcomes, and later observed
+input remain distinct durable states; ambiguous acceptance is never blindly retried. Both options
+are off by default, and configured session/day ceilings are enforced before inference.
 
 At journal append, each lifecycle record receives local receipt wall time plus a monotonic timestamp
 and process clock-domain ID. Metrics correlate evidence, candidate, queue, start, and terminal events

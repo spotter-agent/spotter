@@ -347,6 +347,7 @@ class DaemonServer:
                 self.reviewer_config,
                 recovery.record_review_event,
                 recovery.review_job_is_fresh,
+                deliver=recovery.deliver_review_decision,
             )
             recovery.set_review_job_callback(self.review_executor.submit)
             await recovery.start()

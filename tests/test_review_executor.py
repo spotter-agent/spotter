@@ -93,6 +93,77 @@ def test_signal_review_runs_asynchronously_and_finishes_durably(
     asyncio.run(scenario())
 
 
+def test_live_opt_in_delivers_a_fresh_intervention_decision(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        runtime = AppServerRecoveryLoop("ws://unused", tmp_path / "sessions", ThreadStateStore())
+        delivered: list[tuple[ReviewerJob, ReviewerDecision]] = []
+
+        async def reviewer(input_: object, model: str) -> tuple[ReviewerDecision, int]:
+            return ReviewerDecision("nudge", "tool_failure_loop", "retrying blindly", 0.9), 2
+
+        async def deliver(job: ReviewerJob, decision: ReviewerDecision) -> None:
+            delivered.append((job, decision))
+
+        executor = ReviewExecutor(
+            ReviewerConfig(on_signals=True, deliver_on_signals=True),
+            runtime.record_review_event,
+            runtime.review_job_is_fresh,
+            reviewer=reviewer,
+            deliver=deliver,
+        )
+        runtime.set_review_job_callback(executor.submit)
+
+        _trigger(runtime)
+        await executor.drain()
+
+        assert len(delivered) == 1
+        assert delivered[0][1].decision == "nudge"
+        decision = next(
+            record.event
+            for record in runtime.ingestor.records()
+            if record.event.kind == "reviewer_decision"
+        )
+        assert decision.payload["shadow"] is False
+
+    asyncio.run(scenario())
+
+
+def test_live_advisory_keeps_current_turn_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def scenario() -> None:
+        runtime = AppServerRecoveryLoop("ws://unused", tmp_path / "sessions", ThreadStateStore())
+        jobs: list[ReviewerJob] = []
+        sent: list[tuple[str, str, str | None]] = []
+        runtime.set_review_job_callback(jobs.append)
+        _trigger(runtime)
+
+        async def steer(
+            target: object,
+            text: str,
+            *,
+            control_id: str | None = None,
+            review_job_id: str | None = None,
+        ) -> dict[str, object]:
+            sent.append((text, control_id or "", review_job_id))
+            return {}
+
+        monkeypatch.setattr(runtime, "steer", steer)
+        decision = ReviewerDecision("verify", "tool_failure_loop", "check the failures", 0.8)
+
+        await runtime.deliver_review_decision(jobs[0], decision)
+
+        text, control_id, review_job_id = sent[0]
+        assert "not a new user requirement" in text
+        assert "continue the original user task" in text
+        assert "VERIFY: Check this assumption with evidence" in text
+        assert "check the failures" in text
+        assert control_id == f"spotter:intervention:{jobs[0].job_id}"
+        assert review_job_id == jobs[0].job_id
+
+    asyncio.run(scenario())
+
+
 def test_running_review_is_recorded_stale_after_target_turn_ends(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -102,17 +173,22 @@ def test_running_review_is_recorded_stale_after_target_turn_ends(
         runtime = AppServerRecoveryLoop("ws://unused", tmp_path / "sessions", ThreadStateStore())
         entered = asyncio.Event()
         release = asyncio.Event()
+        delivered: list[ReviewerDecision] = []
 
         async def reviewer(input_: object, model: str) -> tuple[ReviewerDecision, int]:
             entered.set()
             await release.wait()
             return ReviewerDecision("nudge", "tool_failure_loop", "retrying", 0.9), 5
 
+        async def deliver(job: ReviewerJob, decision: ReviewerDecision) -> None:
+            delivered.append(decision)
+
         executor = ReviewExecutor(
-            ReviewerConfig(on_signals=True),
+            ReviewerConfig(on_signals=True, deliver_on_signals=True),
             runtime.record_review_event,
             runtime.review_job_is_fresh,
             reviewer=reviewer,
+            deliver=deliver,
         )
         runtime.set_review_job_callback(executor.submit)
         _trigger(runtime)
@@ -127,6 +203,7 @@ def test_running_review_is_recorded_stale_after_target_turn_ends(
         decision = next(event for event in records if event.kind == "reviewer_decision")
         assert decision.payload["stale"] is True
         assert decision.payload["decision"] == "nudge"
+        assert delivered == []
 
     asyncio.run(scenario())
 

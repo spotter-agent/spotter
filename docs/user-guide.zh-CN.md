@@ -203,6 +203,7 @@ adapter = "codex"
 [reviewer]
 model = "default"
 # on_signals = true
+# deliver_on_signals = true  # 需要 on_signals 和 observation_only = false
 # every_steps = 25
 max_per_session = 20
 max_per_day = 100

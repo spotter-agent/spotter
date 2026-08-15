@@ -209,6 +209,7 @@ adapter = "codex"
 [reviewer]
 model = "default"
 # on_signals = true
+# deliver_on_signals = true  # also requires on_signals and observation_only = false
 # every_steps = 25
 max_per_session = 20
 max_per_day = 100
@@ -217,6 +218,12 @@ max_per_day = 100
 forbidden_paths = []
 block_dependency_changes = false
 ```
+
+`deliver_on_signals` is intentionally separate from reviewer execution and requires active mode
+(`observation_only = false`). When enabled, only fresh
+signal-driven `VERIFY`/`NUDGE` decisions steer the exact active turn; `CONTINUE`, stale decisions,
+and ambiguous outcomes are never retried. The advisory is recorded as current-turn Spotter
+supervision and explicitly does not replace the user's task.
 
 Validate and register an explicit configuration with:
 

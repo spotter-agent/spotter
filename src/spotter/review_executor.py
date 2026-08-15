@@ -15,6 +15,7 @@ from spotter.trace import TraceEvent, TraceProvenance
 RecordEvent = Callable[[TraceEvent], object]
 FreshnessCheck = Callable[[ReviewerJob], bool]
 ReviewFunction = Callable[[ReviewerInput, str], Awaitable[tuple[ReviewerDecision, int]]]
+DeliveryFunction = Callable[[ReviewerJob, ReviewerDecision], Awaitable[None]]
 
 
 class ReviewExecutor:
@@ -27,11 +28,13 @@ class ReviewExecutor:
         is_fresh: FreshnessCheck,
         *,
         reviewer: ReviewFunction = review_bounded_input,
+        deliver: DeliveryFunction | None = None,
     ) -> None:
         self.config = config
         self.record = record
         self.is_fresh = is_fresh
         self.reviewer = reviewer
+        self.deliver = deliver
         self._queue: asyncio.PriorityQueue[tuple[float, int, int, ReviewerJob]] = (
             asyncio.PriorityQueue()
         )
@@ -171,7 +174,7 @@ class ReviewExecutor:
                     "target_turn_id": job.target_turn_id.value,
                     "target_connection_epoch": job.target_connection_epoch,
                     "stale": stale,
-                    "shadow": True,
+                    "shadow": not self.config.deliver_on_signals,
                     "inputs": job.reviewer_input.coverage(),
                     "timing": {
                         "queue_ms": queue_ms,
@@ -181,6 +184,39 @@ class ReviewExecutor:
                 },
             )
         )
+        if (
+            stale
+            or not self.config.deliver_on_signals
+            or decision.decision not in {"verify", "nudge"}
+        ):
+            return
+        if self.deliver is None:
+            self.record(
+                self._event(
+                    job,
+                    "intervention_delivery_error",
+                    {
+                        "review_job_id": job.job_id,
+                        "error": "live delivery is enabled but no delivery controller is available",
+                    },
+                )
+            )
+            return
+        try:
+            await self.deliver(job, decision)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:  # noqa: BLE001 — the control path also journals wire outcomes
+            self.record(
+                self._event(
+                    job,
+                    "intervention_delivery_error",
+                    {
+                        "review_job_id": job.job_id,
+                        "error": str(error)[:300],
+                    },
+                )
+            )
 
     @staticmethod
     def _event(

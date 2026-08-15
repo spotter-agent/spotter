@@ -122,9 +122,14 @@ def test_reconnect_reconciles_epoch_gap_and_stale_control(tmp_path: Path) -> Non
             assert first.control_ready is True
             assert first.coverage.history == HistoryStatus.PARTIAL
             target = RuntimeControlTarget(first.identity, 1)
-            assert (await recovery.steer(target, "verify", control_id="control-1"))[
-                "turnId"
-            ] == "turn-1"
+            assert (
+                await recovery.steer(
+                    target,
+                    "verify",
+                    control_id="control-1",
+                    review_job_id="job-1",
+                )
+            )["turnId"] == "turn-1"
             with pytest.raises(ValueError, match="unique across durable runtime history"):
                 await recovery.steer(target, "duplicate", control_id="control-1")
             await recovery.flush_control_telemetry()
@@ -142,6 +147,10 @@ def test_reconnect_reconciles_epoch_gap_and_stale_control(tmp_path: Path) -> Non
             assert first.identity.turn_id is not None
             assert controls[0].payload["target_turn_id"] == first.identity.turn_id.value
             assert controls[0].payload["client_user_message_id"] == "control-1"
+            assert controls[0].payload["intervention_id"] == "control-1"
+            assert controls[0].payload["supervision_scope"] == "current_turn"
+            assert controls[0].payload["must_not_become_user_goal"] is True
+            assert controls[0].payload["expires_on"] == "target_turn_terminal"
 
             await connections[0].close()
             await _wait_until(

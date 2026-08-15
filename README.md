@@ -77,14 +77,14 @@ The current runtime can:
 - enforce bounded deterministic gates before risky tool use;
 - detect candidate loops, stalled exploration, scope growth, missing validation, and stale
   hypotheses;
-- run optional semantic reviews in shadow mode;
+- run optional semantic reviews in shadow mode, with a separate live-advisory opt-in;
 - expose health and integration diagnostics through `spotter status` and `spotter doctor`;
 - preserve Git-backed snapshots and replay material for recovery and analysis.
 
 > [!IMPORTANT]
-> Spotter is under active development. Deterministic gates are active, but semantic `VERIFY` and
-> `NUDGE` decisions are currently recorded rather than delivered into live turns. Some App Server
-> observation and control capabilities still require explicit configuration. Check
+> Spotter is under active development. Deterministic gates are active; semantic `VERIFY` and
+> `NUDGE` decisions remain shadow-only by default and can steer only with explicit active-mode
+> configuration. Live advisory benefit and task-ownership safety are not yet established. Check
 > [Status](docs/status.md) for the exact current boundary.
 
 Codex is the primary standalone integration.
@@ -99,7 +99,7 @@ Codex
                                    ▼
                                 spotterd
                                    │
-                 journal · live state · signals · shadow review
+                 journal · live state · signals · review · opt-in advisory
 ```
 
 Deterministic gates stay bounded, while slower semantic review remains off synchronous
@@ -162,8 +162,9 @@ codex
 
 Configuration is optional. Use [spotter.example.toml](spotter.example.toml) as the reference when
 you need to customize gates, storage, snapshots, or reviewer budgets. Signal-driven semantic
-reviews spend model tokens and are disabled by default; enable them deliberately and keep the
-provided per-session and per-day limits.
+reviews spend model tokens and are disabled by default. Live delivery is a second opt-in that also
+requires active mode; enable either deliberately and keep the provided per-session and per-day
+limits.
 
 ## Upgrade
 

@@ -11,6 +11,7 @@ def test_loads_example_configuration() -> None:
     assert config.main_agent.adapter == "codex"
     assert config.reviewer.model == "default"
     assert config.reviewer.on_signals is False
+    assert config.reviewer.deliver_on_signals is False
     assert config.observation_only is True
 
 
@@ -34,4 +35,27 @@ def test_signal_reviews_require_an_explicit_boolean_opt_in() -> None:
     with pytest.raises(ConfigurationError, match="on_signals must be a boolean"):
         SpotterConfig.from_mapping(
             {"main_agent": {"adapter": "codex"}, "reviewer": {"on_signals": "yes"}}
+        )
+
+
+def test_live_delivery_requires_signal_review_opt_in() -> None:
+    config = SpotterConfig.from_mapping(
+        {
+            "observation_only": False,
+            "main_agent": {"adapter": "codex"},
+            "reviewer": {"on_signals": True, "deliver_on_signals": True},
+        }
+    )
+
+    assert config.reviewer.deliver_on_signals is True
+    with pytest.raises(ConfigurationError, match="requires reviewer.on_signals"):
+        SpotterConfig.from_mapping(
+            {"main_agent": {"adapter": "codex"}, "reviewer": {"deliver_on_signals": True}}
+        )
+    with pytest.raises(ConfigurationError, match="requires observation_only = false"):
+        SpotterConfig.from_mapping(
+            {
+                "main_agent": {"adapter": "codex"},
+                "reviewer": {"on_signals": True, "deliver_on_signals": True},
+            }
         )

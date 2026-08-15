@@ -302,8 +302,11 @@ coverage gaps. Per-field truncation is explicit in the durable queue event; the 
 not copied into the job. With explicit `reviewer.on_signals = true`, `spotterd` now runs these jobs
 asynchronously through a cancellation-safe Codex subprocess, serializes paid calls, enforces the
 existing session/day budget ledger before inference, and journals queue latency, inference timing,
-token spend, errors/caps, and stale decisions. The decision remains shadow-only and cannot steer the
-agent.
+token spend, errors/caps, and stale decisions. Delivery remains separately off by default. With
+explicit active-mode `reviewer.deliver_on_signals = true`, a fresh signal-driven `VERIFY`/`NUDGE` is sent once
+through the exact attachment/turn/epoch control target; `CONTINUE` and stale decisions never send.
+The compact advisory states that it is not a new user requirement, retains current-turn scope in
+durable control telemetry, and never retries an ambiguously accepted steer.
 
 The implemented engine covers all eight initial families: failure streaks, repeated equivalent
 calls, reads without frontier expansion, recurrence after a deterministic block, touched-scope

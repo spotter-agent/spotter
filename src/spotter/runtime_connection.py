@@ -26,6 +26,7 @@ from spotter.identity import AttachmentId, RuntimeIdentity, ThreadId
 from spotter.ingestion import AppServerTraceIngestor, IngestionError
 from spotter.observability import state_coverage_status
 from spotter.review_scheduler import ReviewerJob, ReviewScheduler
+from spotter.reviewer import ReviewerDecision
 from spotter.signals import SignalEngine, deterministic_block_equivalence
 from spotter.snapshot import StepRecord, capture_receipt_timing
 from spotter.thread_state import ThreadState, ThreadStateError, ThreadStateStore
@@ -278,6 +279,18 @@ class AppServerRecoveryLoop:
             text=text,
             control_id=control_id,
             review_job_id=review_job_id,
+        )
+
+    async def deliver_review_decision(self, job: ReviewerJob, decision: ReviewerDecision) -> None:
+        """Deliver one current-turn advisory without retargeting or retrying it."""
+
+        if job.target_connection_epoch is None:
+            raise StaleControlTarget("review job has no controllable connection epoch")
+        await self.steer(
+            RuntimeControlTarget(job.snapshot.identity, job.target_connection_epoch),
+            _review_advisory(decision),
+            control_id=f"spotter:intervention:{job.job_id}",
+            review_job_id=job.job_id,
         )
 
     async def interrupt(
@@ -866,7 +879,35 @@ def _control_payload(
         payload["review_job_id"] = review_job_id
     if control_kind == "steer":
         payload["client_user_message_id"] = control_id
+        if review_job_id is not None:
+            payload.update(
+                {
+                    "intervention_id": control_id,
+                    "supervision_scope": "current_turn",
+                    "must_not_become_user_goal": True,
+                    "expires_on": "target_turn_terminal",
+                }
+            )
     return payload
+
+
+def _review_advisory(decision: ReviewerDecision) -> str:
+    action = decision.decision.upper()
+    concern = " ".join((decision.hypothesis or decision.reason).split())[:600]
+    reason = " ".join(decision.reason.split())[:600]
+    guidance = (
+        f"Check this assumption with evidence before continuing: {concern}"
+        if decision.decision == "verify"
+        else f"Re-evaluate the current approach before continuing: {concern}"
+    )
+    return (
+        "[Spotter supervision — advisory for the current turn]\n"
+        "This is not a new user requirement and does not replace the user's active task.\n\n"
+        f"{action}: {guidance}\n"
+        f"Reason: {reason}\n\n"
+        "After checking this, continue the original user task unless the evidence itself "
+        "requires a change."
+    )
 
 
 def _active_turn_id(thread: Mapping[str, Any]) -> str | None:
