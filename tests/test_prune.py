@@ -319,7 +319,9 @@ def test_sigkill_between_fsync_and_sidecar_update_keeps_numbering() -> None:
         journal = Path(scratch) / "j.jsonl"
         StepJournal(journal).record(TraceEvent("before_crash"))
         assert (
-            _crash_child(journal, "from pathlib import Path as _P\n_P.write_text = die")
+            _crash_child(
+                journal, "import spotter.snapshot as _snapshot\n_snapshot._write_state_cache = die"
+            )
             == -signal.SIGKILL
         )
 

@@ -1449,6 +1449,7 @@ spotter_version
 ipc_protocol_version
 config_schema_version
 journal_schema_version
+journal_state_schema_version
 label_schema_version
 experiment_schema_version
 integration_manifest_version
@@ -1511,6 +1512,12 @@ retaining its released numeric `schema` field for compatibility. Schema 1-3 mani
 memory to current ownership evidence before atomic persistence; foreign, mismatched, and future
 formats refuse use. Manifest and owned host-state replacements fsync both temporary content and the
 parent directory so successful setup/teardown boundaries survive crashes.
+
+Trace journal records use the independent `spotter.trace_event` schema while retaining the released
+`v` field for mixed-history compatibility. The `spotter.journal_state` sidecar is only a versioned,
+rebuildable index: unsupported or corrupt cache state is discarded and reconstructed from the
+journal, whose full schema validation remains authoritative before append. Both journal records and
+atomic sidecar replacements are fsynced.
 
 ---
 

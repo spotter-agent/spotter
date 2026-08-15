@@ -147,7 +147,11 @@ def restore_snapshot(repo: Path, sha: str, dest: Path) -> Path:
 # a reader that cannot tell which rules produced a record cannot refuse the
 # ones it would misread — and journals are the evidence base for every rate
 # this project publishes, read by tools that delete and spend (issue #47).
-SCHEMA_VERSION = 1
+JOURNAL_SCHEMA = "spotter.trace_event"
+JOURNAL_SCHEMA_VERSION = 1
+JOURNAL_STATE_SCHEMA = "spotter.journal_state"
+JOURNAL_STATE_SCHEMA_VERSION = 1
+SCHEMA_VERSION = JOURNAL_SCHEMA_VERSION
 LEGACY_VERSION = 0  # records written before versioning existed
 
 
@@ -183,6 +187,59 @@ def _as_version(value: object, offset: int) -> int:
     return value
 
 
+def _record_version(raw: dict[str, Any], offset: int) -> int:
+    version = _as_version(raw.get("v"), offset)
+    schema = raw.get("schema")
+    schema_version = raw.get("schema_version")
+    if schema is None and schema_version is None:
+        return version
+    if schema != JOURNAL_SCHEMA:
+        raise SnapshotError(f"journal record at byte {offset} uses unsupported schema {schema!r}")
+    if not isinstance(schema_version, int) or isinstance(schema_version, bool):
+        raise SnapshotError(f"journal record at byte {offset} has a non-integer schema version")
+    if schema_version != version:
+        raise SnapshotError(f"journal record at byte {offset} has mismatched schema versions")
+    return version
+
+
+def _load_state_cache(path: Path, journal_size: int) -> dict[str, Any] | None:
+    try:
+        candidate = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError, UnicodeError):
+        return None
+    if not isinstance(candidate, dict) or candidate.get("size") != journal_size:
+        return None
+    if (
+        candidate.get("schema") != JOURNAL_STATE_SCHEMA
+        or candidate.get("schema_version") != JOURNAL_STATE_SCHEMA_VERSION
+        or candidate.get("journal_schema_version") != JOURNAL_SCHEMA_VERSION
+    ):
+        return None
+    for key in ("steps", "proposals"):
+        value = candidate.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            return None
+    last_snapshot = candidate.get("last_snapshot")
+    if last_snapshot is not None and not isinstance(last_snapshot, str):
+        return None
+    return candidate
+
+
+def _write_state_cache(path: Path, state: dict[str, Any]) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as sink:
+        json.dump(state, sink, separators=(",", ":"))
+        sink.flush()
+        os.fsync(sink.fileno())
+    os.replace(temporary, path)
+    directory = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
 class StepJournal:
     """Append-only JSONL journal of trajectory steps."""
 
@@ -203,15 +260,13 @@ class StepJournal:
             try:
                 state: dict[str, Any] | None = None
                 if state_path.exists() and self.path.exists():
-                    try:
-                        candidate = json.loads(state_path.read_text())
-                        if candidate.get("size") == self.path.stat().st_size:
-                            state = candidate
-                    except (json.JSONDecodeError, OSError):
-                        pass
+                    state = _load_state_cache(state_path, self.path.stat().st_size)
                 if state is None:
                     records = self.load(self.path, repair_tail=True) if self.path.exists() else []
                     state = {
+                        "schema": JOURNAL_STATE_SCHEMA,
+                        "schema_version": JOURNAL_STATE_SCHEMA_VERSION,
+                        "journal_schema_version": JOURNAL_SCHEMA_VERSION,
                         "steps": len(records),
                         "proposals": sum(r.event.kind == "tool_proposal" for r in records),
                         "last_snapshot": next(
@@ -252,6 +307,8 @@ class StepJournal:
                 record = StepRecord(step, stored_event, snapshot, recorded_at, SCHEMA_VERSION)
                 line = json.dumps(
                     {
+                        "schema": JOURNAL_SCHEMA,
+                        "schema_version": JOURNAL_SCHEMA_VERSION,
                         "v": record.version,
                         "step": record.step,
                         "at": record.at,
@@ -272,9 +329,10 @@ class StepJournal:
                 if snapshot:
                     state["last_snapshot"] = snapshot
                 state["size"] = self.path.stat().st_size
-                temporary = state_path.with_suffix(state_path.suffix + ".tmp")
-                temporary.write_text(json.dumps(state))
-                os.replace(temporary, state_path)
+                state["schema"] = JOURNAL_STATE_SCHEMA
+                state["schema_version"] = JOURNAL_STATE_SCHEMA_VERSION
+                state["journal_schema_version"] = JOURNAL_SCHEMA_VERSION
+                _write_state_cache(state_path, state)
                 return record
             finally:
                 flock(lock, LOCK_UN)
@@ -289,10 +347,10 @@ class StepJournal:
         if not (state_path.exists() and self.path.exists()):
             return None
         try:
-            state = json.loads(state_path.read_text())
-            if state.get("size") != self.path.stat().st_size:
-                return None
-        except (json.JSONDecodeError, OSError):
+            state = _load_state_cache(state_path, self.path.stat().st_size)
+        except OSError:
+            return None
+        if state is None:
             return None
         sha = state.get("last_snapshot")
         return str(sha) if sha else None
@@ -312,7 +370,7 @@ class StepJournal:
                 if not line.strip():
                     continue  # tolerate a torn trailing write; keep the prefix
                 try:
-                    raw: dict[str, Any] = json.loads(line)
+                    loaded = json.loads(line)
                 except json.JSONDecodeError:
                     if strict:
                         raise SnapshotError(
@@ -326,12 +384,15 @@ class StepJournal:
                         journal.seek(line_start)
                         journal.truncate()
                     break  # crash mid-write leaves a bad tail; the prefix is still valid
+                if not isinstance(loaded, dict):
+                    raise SnapshotError(f"invalid journal record at byte {line_start}")
+                raw: dict[str, Any] = loaded
                 step = len(records)
                 if raw.get("step") != step:
                     raise SnapshotError(
                         f"journal step mismatch: expected {step}, got {raw.get('step')!r}"
                     )
-                version = _as_version(raw.get("v"), line_start)
+                version = _record_version(raw, line_start)
                 at = raw.get("at")
                 records.append(
                     StepRecord(

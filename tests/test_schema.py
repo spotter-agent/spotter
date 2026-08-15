@@ -15,7 +15,16 @@ from spotter.labels import (
     labels_path,
     load_labels,
 )
-from spotter.snapshot import LEGACY_VERSION, SCHEMA_VERSION, SnapshotError, StepJournal
+from spotter.snapshot import (
+    JOURNAL_SCHEMA,
+    JOURNAL_SCHEMA_VERSION,
+    JOURNAL_STATE_SCHEMA,
+    JOURNAL_STATE_SCHEMA_VERSION,
+    LEGACY_VERSION,
+    SCHEMA_VERSION,
+    SnapshotError,
+    StepJournal,
+)
 from spotter.trace import TraceEvent
 
 
@@ -140,6 +149,10 @@ def test_records_carry_the_current_schema_version() -> None:
     StepJournal(_journal()).record(TraceEvent("a"))
     raw = json.loads(_journal().read_text().splitlines()[0])
     assert raw["v"] == SCHEMA_VERSION
+    assert (raw["schema"], raw["schema_version"]) == (
+        JOURNAL_SCHEMA,
+        JOURNAL_SCHEMA_VERSION,
+    )
     assert StepJournal.load(_journal())[0].version == SCHEMA_VERSION
 
 
@@ -147,6 +160,8 @@ def test_a_newer_schema_is_refused_not_guessed() -> None:
     """A newer writer may have changed what a field means; reading it anyway
     is how old evidence gets silently misinterpreted."""
     future = {
+        "schema": JOURNAL_SCHEMA,
+        "schema_version": SCHEMA_VERSION + 1,
         "v": SCHEMA_VERSION + 1,
         "step": 0,
         "kind": "tool_proposal",
@@ -174,6 +189,62 @@ def test_a_non_integer_version_is_refused() -> None:
     _journal().write_text(json.dumps(bad) + "\n")
     with pytest.raises(SnapshotError, match="non-integer version"):
         StepJournal.load(_journal())
+
+
+def test_a_non_object_journal_record_is_corrupt() -> None:
+    _journal().write_text("[]\n")
+    with pytest.raises(SnapshotError, match="invalid journal record"):
+        StepJournal.load(_journal())
+
+
+def test_future_journal_cannot_hide_behind_a_matching_state_cache() -> None:
+    journal = StepJournal(_journal())
+    journal.record(TraceEvent("a"))
+    raw = json.loads(_journal().read_text())
+    raw["v"] = JOURNAL_SCHEMA_VERSION + 1
+    raw["schema_version"] = JOURNAL_SCHEMA_VERSION + 1
+    _journal().write_text(json.dumps(raw) + "\n")
+    state_path = _journal().with_suffix(_journal().suffix + ".state")
+    state_path.write_text(
+        json.dumps(
+            {
+                "schema": JOURNAL_STATE_SCHEMA,
+                "schema_version": JOURNAL_STATE_SCHEMA_VERSION + 1,
+                "journal_schema_version": JOURNAL_SCHEMA_VERSION + 1,
+                "steps": 1,
+                "proposals": 0,
+                "last_snapshot": None,
+                "size": _journal().stat().st_size,
+            }
+        )
+    )
+    journal_before = _journal().read_bytes()
+    state_before = state_path.read_bytes()
+
+    with pytest.raises(SnapshotError, match="understands up to"):
+        journal.record(TraceEvent("must-not-append"))
+
+    assert _journal().read_bytes() == journal_before
+    assert state_path.read_bytes() == state_before
+
+
+def test_unsupported_state_cache_is_rebuilt_from_current_journal() -> None:
+    journal = StepJournal(_journal())
+    journal.record(TraceEvent("a"))
+    state_path = _journal().with_suffix(_journal().suffix + ".state")
+    state = json.loads(state_path.read_text())
+    state["schema_version"] = JOURNAL_STATE_SCHEMA_VERSION + 1
+    state_path.write_text(json.dumps(state))
+
+    journal.record(TraceEvent("b"))
+
+    assert [record.event.kind for record in StepJournal.load(_journal())] == ["a", "b"]
+    rebuilt = json.loads(state_path.read_text())
+    assert (rebuilt["schema"], rebuilt["schema_version"], rebuilt["journal_schema_version"]) == (
+        JOURNAL_STATE_SCHEMA,
+        JOURNAL_STATE_SCHEMA_VERSION,
+        JOURNAL_SCHEMA_VERSION,
+    )
 
 
 def test_labels_are_versioned_too() -> None:
