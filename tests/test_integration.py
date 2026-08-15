@@ -15,6 +15,8 @@ from spotter.cli import main
 from spotter.daemon import DaemonStatus, ManagedServiceManager, RuntimeHealth
 from spotter.integration import (
     MANIFEST_SCHEMA,
+    MANIFEST_SCHEMA_NAME,
+    MANIFEST_SCHEMA_VERSION,
     CodexInstall,
     IntegrationError,
     IntegrationManager,
@@ -234,6 +236,13 @@ def test_setup_records_stable_layout_build_and_integration_generation(
     manifest = manager.setup()
 
     assert manifest.schema == MANIFEST_SCHEMA == 4
+    assert manifest.schema_name == MANIFEST_SCHEMA_NAME
+    assert manifest.schema_version == MANIFEST_SCHEMA_VERSION
+    persisted = json.loads(manager.manifest_path.read_text())
+    assert (persisted["schema_name"], persisted["schema_version"]) == (
+        MANIFEST_SCHEMA_NAME,
+        MANIFEST_SCHEMA_VERSION,
+    )
     assert manifest.setup_build_id == current_build_identity().build_id
     assert len(manifest.integration_generation) == 64
     assert manifest.runtime_layout["cli_executable"] == "/opt/homebrew/bin/spotter"
@@ -579,6 +588,31 @@ def test_newer_manifest_schema_is_refused(homes: tuple[Path, Path]) -> None:
         IntegrationManifest.load(manager.manifest_path)
 
 
+@pytest.mark.parametrize(
+    ("schema_name", "schema_version", "message"),
+    [
+        ("future.integration_manifest", MANIFEST_SCHEMA_VERSION, "unsupported"),
+        (MANIFEST_SCHEMA_NAME, MANIFEST_SCHEMA_VERSION + 1, "mismatched"),
+        (MANIFEST_SCHEMA_NAME, "four", "must be an integer"),
+    ],
+)
+def test_named_manifest_schema_is_validated_before_use(
+    homes: tuple[Path, Path], schema_name: str, schema_version: object, message: str
+) -> None:
+    manager, _ = _manager(homes)
+    manager.setup()
+    raw = json.loads(manager.manifest_path.read_text())
+    raw["schema_name"] = schema_name
+    raw["schema_version"] = schema_version
+    manager.manifest_path.write_text(json.dumps(raw))
+    before = manager.manifest_path.read_bytes()
+
+    with pytest.raises(IntegrationError, match=message):
+        IntegrationManifest.load(manager.manifest_path)
+
+    assert manager.manifest_path.read_bytes() == before
+
+
 def test_schema_one_manifest_is_reconciled_with_observation_hooks(
     homes: tuple[Path, Path],
 ) -> None:
@@ -586,6 +620,8 @@ def test_schema_one_manifest_is_reconciled_with_observation_hooks(
     manager.setup()
     manifest = json.loads(manager.manifest_path.read_text())
     manifest["schema"] = 1
+    manifest.pop("schema_name")
+    manifest.pop("schema_version")
     manifest["owned_hook"] = manifest.pop("owned_hooks")[0]
     manager.manifest_path.write_text(json.dumps(manifest))
     hooks = json.loads(manager.hooks_path.read_text())
@@ -610,6 +646,8 @@ def test_schema_two_manifest_is_reconciled_with_observation_hooks(
     manager.setup()
     manifest = json.loads(manager.manifest_path.read_text())
     manifest["schema"] = 2
+    manifest.pop("schema_name")
+    manifest.pop("schema_version")
     manifest["owned_hooks"] = manifest["owned_hooks"][:2]
     manager.manifest_path.write_text(json.dumps(manifest))
     hooks = json.loads(manager.hooks_path.read_text())
@@ -635,6 +673,8 @@ def test_schema_three_manifest_is_upgraded_with_layout_and_generation(
     manager.setup()
     raw = json.loads(manager.manifest_path.read_text())
     raw["schema"] = 3
+    raw.pop("schema_name")
+    raw.pop("schema_version")
     raw.pop("setup_build_id")
     raw.pop("integration_generation")
     raw.pop("runtime_layout")
@@ -643,6 +683,8 @@ def test_schema_three_manifest_is_upgraded_with_layout_and_generation(
     upgraded = manager.setup()
 
     assert upgraded.schema == MANIFEST_SCHEMA
+    assert upgraded.schema_name == MANIFEST_SCHEMA_NAME
+    assert upgraded.schema_version == MANIFEST_SCHEMA_VERSION
     assert upgraded.setup_build_id == current_build_identity().build_id
     assert len(upgraded.integration_generation) == 64
     assert upgraded.runtime_layout["bridge_command"] == ["/opt/homebrew/bin/spotter", "hook"]

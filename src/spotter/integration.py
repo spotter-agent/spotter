@@ -28,7 +28,9 @@ from spotter.daemon import (
 from spotter.doctor import OK, check_roundtrip
 from spotter.paths import RuntimeLayout, RuntimeLayoutError, secure_dir
 
-MANIFEST_SCHEMA = 4
+MANIFEST_SCHEMA_NAME = "spotter.integration_manifest"
+MANIFEST_SCHEMA_VERSION = 4
+MANIFEST_SCHEMA = MANIFEST_SCHEMA_VERSION
 
 
 class IntegrationError(RuntimeError):
@@ -64,9 +66,17 @@ def _integration_generation(layout: RuntimeLayout, config_path: Path | None) -> 
 def _atomic_write(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_bytes(content)
-    temporary.chmod(0o600)
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "wb") as sink:
+        sink.write(content)
+        sink.flush()
+        os.fsync(sink.fileno())
     os.replace(temporary, path)
+    directory = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
 def is_spotter_hook(hook: object) -> bool:
@@ -209,6 +219,8 @@ class IntegrationManifest:
     created_at: str = field(default_factory=_now)
     updated_at: str = field(default_factory=_now)
     error: str | None = None
+    schema_name: str = MANIFEST_SCHEMA_NAME
+    schema_version: int = MANIFEST_SCHEMA_VERSION
 
     @classmethod
     def load(cls, path: Path) -> "IntegrationManifest | None":
@@ -221,6 +233,16 @@ class IntegrationManifest:
         if not isinstance(raw, dict):
             raise IntegrationError("integration manifest must be a JSON object")
         schema = raw.get("schema")
+        schema_name = raw.get("schema_name")
+        schema_version = raw.get("schema_version")
+        if schema_name is None and schema_version is None:
+            pass
+        elif schema_name != MANIFEST_SCHEMA_NAME:
+            raise IntegrationError(f"unsupported integration manifest schema {schema_name!r}")
+        elif not isinstance(schema_version, int) or isinstance(schema_version, bool):
+            raise IntegrationError("integration manifest schema_version must be an integer")
+        elif schema_version != schema:
+            raise IntegrationError("integration manifest has mismatched schema versions")
         if schema in {1, 2, 3}:
             if schema == 1:
                 raw["owned_hooks"] = [raw.pop("owned_hook", None)]
@@ -250,6 +272,8 @@ class IntegrationManifest:
             raw.setdefault("runtime_layout", {})
         elif schema != MANIFEST_SCHEMA:
             raise IntegrationError(f"unsupported integration manifest schema {raw.get('schema')!r}")
+        raw["schema_name"] = MANIFEST_SCHEMA_NAME
+        raw["schema_version"] = MANIFEST_SCHEMA_VERSION
         try:
             return cls(**raw)
         except TypeError as error:

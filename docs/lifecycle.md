@@ -1506,6 +1506,12 @@ readable as legacy configuration, the reference file declares the current versio
 future or foreign schemas are rejected before settings can become active. Syntax compatibility here
 remains separate from the reload/restart/reconfigure activation boundaries owned by #90.
 
+The Codex ownership manifest uses the independent `spotter.integration_manifest` schema while
+retaining its released numeric `schema` field for compatibility. Schema 1-3 manifests upgrade in
+memory to current ownership evidence before atomic persistence; foreign, mismatched, and future
+formats refuse use. Manifest and owned host-state replacements fsync both temporary content and the
+parent directory so successful setup/teardown boundaries survive crashes.
+
 ---
 
 # 20. Release lifecycle
