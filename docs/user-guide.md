@@ -452,7 +452,8 @@ and source checkout with your normal file-management tools.
 
 Normal uninstall does not delete `~/.spotter` (or `SPOTTER_HOME`) user data. Preview all registered
 repository resources without deleting anything with `spotter purge --all --dry-run`; add `--json`
-for machine-readable output. The preview returns non-zero for inaccessible or ambiguous ownership.
+for machine-readable output. Journal, fork-manifest, and live-worktree roots appear as `REFERENCED`
+instead of deletion candidates. The preview returns non-zero for inaccessible or ambiguous state.
 Destructive purge is not implemented yet, so continue to use `spotter prune` for supported Git-aware
 cleanup and follow [#89](https://github.com/spotter-agent/spotter/issues/89).
 

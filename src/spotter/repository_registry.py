@@ -238,10 +238,12 @@ class RepositoryRegistry:
             raise RepositoryRegistryError("repository registry contains duplicate entry ids")
         return entries
 
-    def inspect(self) -> tuple[RepositoryResourceInspection, ...]:
+    def inspect(
+        self, entries: tuple[RepositoryEntry, ...] | None = None
+    ) -> tuple[RepositoryResourceInspection, ...]:
         """Re-check recorded resources without mutating Git or registry state."""
         inspections: list[RepositoryResourceInspection] = []
-        for entry in self.load():
+        for entry in entries if entries is not None else self.load():
             repository = Path(entry.last_known_path)
             if not repository.exists():
                 inspections.extend(

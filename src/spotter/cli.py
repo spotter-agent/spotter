@@ -103,7 +103,10 @@ from spotter.repository_registry import (
     OwnershipConfidence,
     RepositoryRegistry,
     RepositoryRegistryError,
+    RepositoryResourceInspection,
+    ResourcePresence,
 )
+from spotter.retention import RetentionState, inspect_snapshot_retention, retention_for
 from spotter.reviewer import last_usage, review
 from spotter.runtime_metrics import (
     ObjectiveOutcomeError,
@@ -1802,15 +1805,28 @@ def _prune_main(
 def _purge_main(*, json_output: bool) -> int:
     """Preview exact repository ownership; destructive purge remains disabled."""
     try:
-        inspections = RepositoryRegistry().inspect()
+        registry = RepositoryRegistry()
+        entries = registry.load()
+        inspections = registry.inspect(entries)
+        reachability = inspect_snapshot_retention(
+            entries, inspections, RuntimeLayout.discover().user_data_dir
+        )
     except RepositoryRegistryError as error:
         print(f"purge preview failed: {error}", file=sys.stderr)
         return 1
 
-    summary = {
-        confidence.value: sum(item.confidence == confidence for item in inspections)
-        for confidence in OwnershipConfidence
-    }
+    def group(item: RepositoryResourceInspection) -> str:
+        if item.confidence != OwnershipConfidence.SAFE_OWNED:
+            return item.confidence.value
+        retention = retention_for(item, reachability)
+        if retention.state == RetentionState.REFERENCED:
+            return "REFERENCED"
+        if retention.state == RetentionState.UNKNOWN:
+            return "AMBIGUOUS"
+        return "SAFE_OWNED"
+
+    groups = ("SAFE_OWNED", "REFERENCED", "INACCESSIBLE", "AMBIGUOUS")
+    summary = {name: sum(group(item) == name for item in inspections) for name in groups}
     if json_output:
         print(
             json.dumps(
@@ -1825,9 +1841,15 @@ def _purge_main(*, json_output: bool) -> int:
                             "resource_type": item.resource_type,
                             "resource_id": item.resource_id,
                             "expected_target": item.expected_target,
+                            "group": group(item),
                             "confidence": item.confidence.value,
                             "presence": item.presence.value,
                             "reason": item.reason,
+                            "retention": retention_for(item, reachability).state.value,
+                            "references": list(retention_for(item, reachability).references),
+                            "retention_diagnostics": list(
+                                retention_for(item, reachability).diagnostics
+                            ),
                         }
                         for item in inspections
                     ],
@@ -1837,17 +1859,28 @@ def _purge_main(*, json_output: bool) -> int:
         )
     else:
         print("purge preview (dry-run; deletion is not implemented)")
-        for confidence in OwnershipConfidence:
-            matching = [item for item in inspections if item.confidence == confidence]
-            print(f"{confidence.value} ({len(matching)})")
+        for name in groups:
+            matching = [item for item in inspections if group(item) == name]
+            print(f"{name} ({len(matching)})")
             for item in matching:
+                retention = retention_for(item, reachability)
                 print(
                     f"  {item.resource_type} {item.resource_id} "
                     f"[{item.presence.value.lower()}] - {item.reason}"
                 )
+                for reference in retention.references:
+                    print(f"    retained by: {reference}")
+                for diagnostic in retention.diagnostics:
+                    print(f"    retention unknown: {diagnostic}")
         if not inspections:
             print("no registered repository resources")
-    return int(any(item.confidence != OwnershipConfidence.SAFE_OWNED for item in inspections))
+    return int(
+        any(
+            group(item) in {"INACCESSIBLE", "AMBIGUOUS"}
+            or (group(item) == "REFERENCED" and item.presence != ResourcePresence.PRESENT)
+            for item in inspections
+        )
+    )
 
 
 def _hook_main(
