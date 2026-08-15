@@ -5,7 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from spotter.config import GatesConfig, MainAgentConfig, ReviewerConfig, SpotterConfig
+from spotter.config import (
+    GatesConfig,
+    MainAgentConfig,
+    McpToolSemantics,
+    ReviewerConfig,
+    SpotterConfig,
+)
 from spotter.daemon import DaemonClient, DaemonProtocolError, DaemonServer, DaemonTimeout
 from spotter.hook import event_from_hook, journal_path, run_hook
 from spotter.replay import fork
@@ -274,6 +280,21 @@ def test_hook_persists_effect_classification_provenance() -> None:
     assert event.payload["effect_reason"] == "recognized_semantics"
     assert event.payload["effect_confidence"] == "bounded"
     assert event.payload["semantic_operation"] == "kubectl.get"
+
+
+def test_hook_uses_configured_mcp_semantics() -> None:
+    event = event_from_hook(
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "mcp__inventory__lookup",
+            "tool_input": {"item_id": "widget-1", "description": "mutating admin tool"},
+        },
+        (McpToolSemantics("inventory", "lookup", "read", "A", ("item_id",)),),
+    )
+
+    assert event.payload["reversibility_class"] == "A"
+    assert event.payload["effect_classifier"] == "mcp_config"
+    assert event.payload["resource"] == "item_id=widget-1"
 
 
 def test_unknown_events_still_journal(spotter_home: Path) -> None:

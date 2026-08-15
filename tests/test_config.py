@@ -21,6 +21,59 @@ def test_uses_default_reviewer_model_when_reviewer_is_omitted() -> None:
     assert config.reviewer.model == "default"
 
 
+def test_loads_exact_mcp_semantics_by_server_and_tool() -> None:
+    config = SpotterConfig.from_mapping(
+        {
+            "main_agent": {"adapter": "codex"},
+            "mcp_semantics": {
+                "inventory": {
+                    "lookup": {
+                        "operation": "read",
+                        "reversibility": "A",
+                        "resource_fields": ["item_id"],
+                    }
+                },
+                "admin": {
+                    "lookup": {
+                        "operation": "write",
+                        "reversibility": "C",
+                    }
+                },
+            },
+        }
+    )
+
+    assert [(rule.server, rule.tool, rule.reversibility) for rule in config.mcp_semantics] == [
+        ("inventory", "lookup", "A"),
+        ("admin", "lookup", "C"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("semantics", "message"),
+    [
+        ({"operation": "read", "reversibility": "C"}, "read operations must use"),
+        ({"operation": "write", "reversibility": "A"}, "mutations cannot use"),
+        ({"operation": "unknown", "reversibility": "B"}, "unknown operations must use"),
+        (
+            {"operation": "read", "reversibility": "A", "resource_fields": ["access_token"]},
+            "secret-bearing names",
+        ),
+        ({"operation": "observe", "reversibility": "A"}, "operation must be one of"),
+    ],
+)
+def test_rejects_unsafe_or_malformed_mcp_semantics(
+    semantics: dict[str, object], message: str
+) -> None:
+    with pytest.raises(ConfigurationError, match=message):
+        SpotterConfig.from_mapping(
+            {
+                "main_agent": {"adapter": "codex"},
+                "mcp_semantics": {"server": {"tool": semantics}},
+            }
+        )
+
+
 def test_rejects_invalid_reviewer_table() -> None:
     with pytest.raises(ConfigurationError, match="reviewer must be a table"):
         SpotterConfig.from_mapping({"main_agent": {"adapter": "codex"}, "reviewer": "invalid"})

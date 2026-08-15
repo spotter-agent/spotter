@@ -217,7 +217,19 @@ max_per_day = 100
 [gates]
 forbidden_paths = []
 block_dependency_changes = false
+
+# Optional exact metadata for an MCP server/tool pair.
+[mcp_semantics."inventory"."lookup_item"]
+operation = "read"
+reversibility = "A"
+resource_fields = ["item_id"]
 ```
+
+Configured MCP semantics are keyed by exact server and tool identity, so equally named tools on
+different servers can have different effects. `read` must use Class A, `write`/`delete` may use
+Class B or C, and `unknown` must use Class C. Only declared, non-secret scalar resource fields are
+journaled. Missing metadata falls back to bounded known-name rules and then conservative Class C;
+tool descriptions never authorize a safer class.
 
 `deliver_on_signals` is intentionally separate from reviewer execution and requires active mode
 (`observation_only = false`). When enabled, only fresh

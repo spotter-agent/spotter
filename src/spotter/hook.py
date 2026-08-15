@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from spotter.budget import cancel, reserve
-from spotter.config import SpotterConfig
+from spotter.config import McpToolSemantics, SpotterConfig
 from spotter.core import SpotterRuntime
 from spotter.daemon import (
     GATE_TIMEOUT,
@@ -60,7 +60,9 @@ class JournalAdapter:
         self.next_snapshot = None  # attaches to the first (proposal) event only
 
 
-def event_from_hook(payload: dict[str, Any]) -> TraceEvent:
+def event_from_hook(
+    payload: dict[str, Any], mcp_semantics: tuple[McpToolSemantics, ...] = ()
+) -> TraceEvent:
     name = payload.get("hook_event_name")
     if name == "PreToolUse":
         tool_input = payload.get("tool_input")
@@ -81,7 +83,7 @@ def event_from_hook(payload: dict[str, Any]) -> TraceEvent:
             # A patch body is not a shell command; judging it as one produced
             # real FPs (a patch editing gates.py tripped the gate it edits).
             patch, command = command, None
-        classification = classify(payload.get("tool_name"), tool_input)
+        classification = classify(payload.get("tool_name"), tool_input, mcp_semantics)
         return TraceEvent(
             "tool_proposal",
             {
@@ -106,7 +108,7 @@ def event_from_hook(payload: dict[str, Any]) -> TraceEvent:
         )
     if name == "PostToolUse":
         tool_input = payload.get("tool_input")
-        classification = classify(payload.get("tool_name"), tool_input)
+        classification = classify(payload.get("tool_name"), tool_input, mcp_semantics)
         return TraceEvent(
             "tool_result",
             {
@@ -254,7 +256,7 @@ def run_hook(
         TraceProvenance("codex_hook", method if isinstance(method, str) else None),
     )
     runtime = SpotterRuntime(config, adapter, gate)
-    event = event_from_hook(payload)
+    event = event_from_hook(payload, config.mcp_semantics)
     gate_decision: GateDecision | None = None
     gate_telemetry: dict[str, Any] | None = None
     if event.kind == "tool_proposal":

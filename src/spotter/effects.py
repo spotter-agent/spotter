@@ -8,9 +8,10 @@ unknown command shapes still map to Class C without being mislabeled as known wr
 import shlex
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from urllib.parse import urlsplit, urlunsplit
 
+from spotter.config import McpToolSemantics
 from spotter.trace import TraceEvent
 
 ReversibilityClass = Literal["A", "B", "C"]
@@ -165,7 +166,11 @@ _SQL_WRITE_VERBS = frozenset(
 )
 
 
-def classify(tool: object, tool_input: object) -> Classification:
+def classify(
+    tool: object,
+    tool_input: object,
+    mcp_semantics: Sequence[McpToolSemantics] = (),
+) -> Classification:
     """Classify an action without I/O, model calls, or unbounded inspection."""
 
     name = str(tool or "")
@@ -175,6 +180,10 @@ def classify(tool: object, tool_input: object) -> Classification:
 
     lowered = name.lower()
     if lowered.startswith("mcp__") or lowered.startswith("mcp_"):
+        identity = _mcp_identity(lowered)
+        configured = _configured_mcp(identity, values, mcp_semantics)
+        if configured is not None:
+            return configured
         operation = lowered.rsplit("__", 1)[-1]
         verb = operation.partition("_")[0]
         resource = _external_resource(values, name)
@@ -190,6 +199,60 @@ def classify(tool: object, tool_input: object) -> Classification:
             return _known("A", "observation", _first_path(values), True, "native", lowered)
         return _unknown("unknown_tool_effect", _external_resource(values, name), "fallback")
     return _classify_command(command, values, depth=0, wrapped=False)
+
+
+def _mcp_identity(name: str) -> tuple[str, str] | None:
+    parts = name.split("__", 2)
+    if len(parts) != 3 or parts[0] != "mcp" or not parts[1] or not parts[2]:
+        return None
+    return parts[1].casefold(), parts[2].casefold()
+
+
+def _configured_mcp(
+    identity: tuple[str, str] | None,
+    values: dict[str, Any],
+    semantics: Sequence[McpToolSemantics],
+) -> Classification | None:
+    if identity is None:
+        return None
+    for rule in semantics[:256]:
+        if (rule.server, rule.tool) != identity:
+            continue
+        resource = _configured_mcp_resource(identity, values, rule.resource_fields)
+        cls = cast(ReversibilityClass, rule.reversibility)
+        kind = (
+            "external_read"
+            if cls == "A"
+            else ("configured_tool_write" if cls == "B" else "external_tool_write")
+        )
+        return Classification(
+            cls,
+            kind,
+            resource,
+            cls != "C",
+            "mcp_config",
+            "configured_semantics",
+            "exact",
+            f"mcp.{identity[0]}.{identity[1]}.{rule.operation}",
+        )
+    return None
+
+
+def _configured_mcp_resource(
+    identity: tuple[str, str], values: dict[str, Any], fields: Sequence[str]
+) -> str:
+    parts: list[str] = []
+    for field in fields:
+        value = values.get(field)
+        if not isinstance(value, (str, int, bool)):
+            continue
+        rendered = str(value)
+        if isinstance(value, str) and "://" in value:
+            rendered = _sanitize_remote_resource(value)
+        parts.append(f"{field}={rendered}")
+    if parts:
+        return "|".join(parts)[:300]
+    return f"mcp:{identity[0]}/{identity[1]}"
 
 
 def effect_event(result: TraceEvent) -> TraceEvent | None:

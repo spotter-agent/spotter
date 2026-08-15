@@ -13,3 +13,10 @@ model = "default"
 # Each decision records signal/periodic/manual trigger provenance for cohort comparison.
 # max_per_session = 20   # ceilings on review spend; a cadence without one
 # max_per_day = 100      # offers an unbounded background bill (issue #52)
+
+# Exact server/tool metadata takes precedence over MCP name heuristics. Unknown
+# MCP operations remain conservative Class C. Never list secret-bearing fields.
+# [mcp_semantics."inventory"."lookup_item"]
+# operation = "read"
+# reversibility = "A"
+# resource_fields = ["item_id"]

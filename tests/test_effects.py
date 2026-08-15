@@ -1,3 +1,4 @@
+from spotter.config import McpToolSemantics
 from spotter.effects import classify, effect_event, external_effects
 from spotter.snapshot import StepRecord
 from spotter.trace import TraceEvent
@@ -21,6 +22,55 @@ def test_external_tool_writes_are_conservatively_class_c() -> None:
     read = classify("mcp__github__list_issues", {"repository": "org/repo"})
     assert (write.reversibility_class, write.resource) == ("C", "org/repo")
     assert read.reversibility_class == "A"
+
+
+def test_configured_mcp_semantics_are_exact_to_server_and_tool() -> None:
+    semantics = (
+        McpToolSemantics("inventory", "lookup", "read", "A", ("item_id", "url")),
+        McpToolSemantics("admin", "lookup", "delete", "C", ("item_id",)),
+    )
+
+    read = classify(
+        "mcp__inventory__lookup",
+        {"item_id": 42, "url": "https://user:secret@example.com/items?token=secret"},
+        semantics,
+    )
+    delete = classify("mcp__admin__lookup", {"item_id": 42}, semantics)
+    unknown_server = classify("mcp__other__lookup", {"description": "safe read"}, semantics)
+
+    assert (
+        read.reversibility_class,
+        read.classifier_id,
+        read.semantic_operation,
+        read.resource,
+    ) == (
+        "A",
+        "mcp_config",
+        "mcp.inventory.lookup.read",
+        "item_id=42|url=https://example.com/items",
+    )
+    assert (delete.reversibility_class, delete.semantic_operation, delete.resource) == (
+        "C",
+        "mcp.admin.lookup.delete",
+        "item_id=42",
+    )
+    assert (unknown_server.reversibility_class, unknown_server.reason_code) == (
+        "C",
+        "unknown_mcp_tool",
+    )
+
+
+def test_configured_mcp_class_b_remains_checkpoint_eligible() -> None:
+    semantics = (McpToolSemantics("local", "write_file", "write", "B", ("path",)),)
+
+    assessment = classify("mcp__local__write_file", {"path": "notes.txt"}, semantics)
+
+    assert (
+        assessment.reversibility_class,
+        assessment.reversible,
+        assessment.kind,
+        assessment.reason_code,
+    ) == ("B", True, "configured_tool_write", "configured_semantics")
 
 
 def test_remote_cli_classification_uses_supported_operation_semantics() -> None:
