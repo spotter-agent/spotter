@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import spotter.cli as cli
 from spotter.cli import main
 from spotter.hook import journal_path
 from spotter.replay import FORK_MANIFEST_SCHEMA, FORK_MANIFEST_SCHEMA_VERSION
@@ -77,6 +78,18 @@ def _fork_manifest(repo: Path, spotter_home: Path, sha: str, fork_id: str) -> di
     }
 
 
+def _ref_exists(repo: Path, sha: str) -> bool:
+    return (
+        subprocess.run(
+            ["git", "rev-parse", "--verify", f"refs/spotter/steps/{sha}"],
+            cwd=repo,
+            capture_output=True,
+            check=False,
+        ).returncode
+        == 0
+    )
+
+
 def test_purge_preview_reports_exact_ref_and_worktree_without_deleting(
     repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -121,6 +134,113 @@ def test_purge_preview_json_is_machine_readable(
     }
     assert payload["resources"][0]["resource_id"] == f"refs/spotter/steps/{sha}"
     assert payload["resources"][0]["retention"] == "UNREFERENCED"
+
+
+def test_snapshot_purge_dry_run_plans_worktree_then_ref(
+    repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sha = snapshot_worktree(repo)
+    worktree = restore_snapshot(repo, sha, tmp_path / "restored")
+
+    assert main(["purge", "--snapshots", "--dry-run", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["scope"] == "snapshots"
+    assert payload["dry_run"] is True
+    assert payload["deletion_supported"] is True
+    assert {resource["outcome"] for resource in payload["resources"]} == {"planned"}
+    assert worktree.exists()
+    assert _ref_exists(repo, sha)
+
+
+def test_snapshot_purge_removes_worktree_then_ref(
+    repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sha = snapshot_worktree(repo)
+    worktree = restore_snapshot(repo, sha, tmp_path / "restored")
+
+    assert main(["purge", "--snapshots", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["dry_run"] is False
+    assert {resource["outcome"] for resource in payload["resources"]} == {"removed"}
+    assert {resource["presence"] for resource in payload["resources"]} == {"ABSENT"}
+    assert not worktree.exists()
+    assert not _ref_exists(repo, sha)
+
+    assert main(["purge", "--snapshots", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert {resource["outcome"] for resource in payload["resources"]} == {"already_absent"}
+
+
+def test_snapshot_purge_keeps_ref_when_worktree_removal_fails(
+    repo: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sha = snapshot_worktree(repo)
+    worktree = restore_snapshot(repo, sha, tmp_path / "restored")
+    monkeypatch.setattr(cli, "_remove_owned_worktree", lambda _item: "busy")
+
+    assert main(["purge", "--snapshots", "--json"]) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    outcomes = {resource["resource_type"]: resource["outcome"] for resource in payload["resources"]}
+    assert outcomes == {
+        "git_ref": "skipped_referenced",
+        "worktree": "failed_retryable",
+    }
+    assert worktree.exists()
+    assert _ref_exists(repo, sha)
+
+
+def test_snapshot_purge_skips_referenced_ref(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sha = snapshot_worktree(repo)
+    StepJournal(journal_path({"session_id": "live"})).record(
+        TraceEvent("tool_proposal", {"cwd": str(repo)}), snapshot=sha
+    )
+
+    assert main(["purge", "--snapshots", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    [resource] = payload["resources"]
+    assert resource["outcome"] == "skipped_referenced"
+    assert resource["references"] == ["journal:live:step:0"]
+    assert _ref_exists(repo, sha)
+
+
+def test_snapshot_purge_continues_past_inaccessible_repository(
+    repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    healthy_sha = snapshot_worktree(repo)
+    other = tmp_path / "other"
+    other.mkdir()
+    for command in (
+        ["git", "init", "-q"],
+        ["git", "config", "user.email", "test@example.com"],
+        ["git", "config", "user.name", "Test"],
+    ):
+        subprocess.run(command, cwd=other, check=True)
+    (other / "tracked.txt").write_text("other")
+    other_sha = snapshot_worktree(other)
+    moved = tmp_path / "other-moved"
+    other.rename(moved)
+
+    assert main(["purge", "--snapshots", "--json"]) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    outcomes = {
+        resource["expected_target"]: resource["outcome"] for resource in payload["resources"]
+    }
+    assert outcomes == {
+        healthy_sha: "removed",
+        other_sha: "skipped_ambiguous",
+    }
+    assert not _ref_exists(repo, healthy_sha)
+    assert _ref_exists(moved, other_sha)
 
 
 def test_missing_repository_is_inaccessible(
@@ -170,6 +290,10 @@ def test_purge_refuses_non_preview_invocation() -> None:
     with pytest.raises(SystemExit):
         main(["purge", "--all"])
     with pytest.raises(SystemExit):
+        main(["purge", "--all", "--snapshots", "--dry-run"])
+    with pytest.raises(SystemExit):
+        main(["purge", "--snapshots", "--apply"])
+    with pytest.raises(SystemExit):
         main(["purge", "codex", "--all", "--dry-run"])
 
 
@@ -194,6 +318,11 @@ def test_missing_worktree_with_disagreeing_metadata_is_ambiguous(
 
     output = capsys.readouterr().out
     assert "worktree path and Git administrative metadata disagree" in output
+
+    assert main(["purge", "--snapshots", "--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert {resource["outcome"] for resource in payload["resources"]} == {"skipped_ambiguous"}
+    assert _ref_exists(repo, sha)
 
 
 def test_journal_reference_retains_snapshot(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:

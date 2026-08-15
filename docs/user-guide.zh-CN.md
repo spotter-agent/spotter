@@ -364,8 +364,10 @@ worktree 所引用的 snapshot 会标为 `REFERENCED`，而不是成为删除候
 可用 `spotter pins add --repo <路径> --snapshot <sha>` 显式保留 snapshot，通过 `spotter pins list`
 查看，并用 `spotter pins remove --pin-id <uuid>` 解除。手动 pin 在解除前也不会被
 `prune --max-age-days` 删除。
-破坏性 purge 尚未实现，请继续使用 `spotter prune` 执行受支持的 Git 感知清理，并通过
-[#89](https://github.com/spotter-agent/spotter/issues/89) 跟踪后续支持。
+可用 `spotter purge --snapshots --dry-run` 预览精确的 snapshot 清理，并用
+`spotter purge --snapshots` 仅删除所有权已证实且未被引用的 worktree 和 snapshot ref。
+仍被引用或状态不明的资源会跳过并报告。data/log/full 破坏性范围仍在
+[#89](https://github.com/spotter-agent/spotter/issues/89) 中跟踪。
 
 如果在 teardown 前就卸载了软件包，生成的 Hook 会按设计采用 fail-open 行为。使用相同方式
 重新安装软件包，运行 `spotter teardown codex`，然后再次卸载，即可安全清理已记录的所有

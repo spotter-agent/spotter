@@ -458,8 +458,10 @@ instead of deletion candidates. The preview returns non-zero for inaccessible or
 Protect an exact registered snapshot explicitly with `spotter pins add --repo <path> --snapshot
 <sha>`; inspect roots with `spotter pins list` and release one with `spotter pins remove --pin-id
 <uuid>`. Manual pins also survive `prune --max-age-days` until removed.
-Destructive purge is not implemented yet, so continue to use `spotter prune` for supported Git-aware
-cleanup and follow [#89](https://github.com/spotter-agent/spotter/issues/89).
+Preview exact snapshot cleanup with `spotter purge --snapshots --dry-run`; remove only proven-owned,
+unreferenced worktrees and snapshot refs with `spotter purge --snapshots`. Referenced or ambiguous
+resources are skipped and reported. Data/log/full destructive scopes remain pending in
+[#89](https://github.com/spotter-agent/spotter/issues/89).
 
 If the package was removed before teardown, generated Hooks are designed to fail open. Reinstall the
 same package method, run `spotter teardown codex`, and uninstall again to remove the recorded owned

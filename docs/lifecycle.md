@@ -1339,12 +1339,14 @@ If package-manager uninstall cannot run lifecycle cleanup reliably, `spotter tea
 
 # 16. Purge
 
-Purge is the target destructive data-cleanup operation. A read-only repository preview is now
-implemented:
+Purge is the target destructive data-cleanup operation. Repository preview and the first explicit
+destructive scope are implemented:
 
 ```bash
 spotter purge --all --dry-run
 spotter purge --all --dry-run --json
+spotter purge --snapshots --dry-run
+spotter purge --snapshots
 ```
 
 It revalidates the registry's repository inode, exact ref target, and worktree Git administrative
@@ -1352,8 +1354,8 @@ identity. Snapshot refs still named by a journal record or its recovery checkpoi
 fork manifest, durable experiment result, or live registered worktree are grouped as `REFERENCED`;
 unreferenced exact ownership is `SAFE_OWNED`. Experiment results may retain manifests outside the
 current manifest directory; missing or invalid result backreferences make deletion eligibility
-unknown. Missing paths,
-changed ownership, and unreadable reachability sources remain `INACCESSIBLE` or `AMBIGUOUS` rather
+unknown. Missing paths, changed ownership, and unreadable reachability sources remain
+`INACCESSIBLE` or `AMBIGUOUS` rather
 than becoming deletion candidates. Journal roots match by snapshot identity rather than stale path,
 so moving a repository cannot orphan its lineage. The preview never mutates Git or the registry and
 returns non-zero when ownership/reachability is unknown or referenced data is already missing.
@@ -1368,8 +1370,17 @@ spotter pins remove --pin-id <uuid>
 Only an exact registered Spotter-owned snapshot can be pinned. A pin protects the snapshot from
 both ordinary prune and explicit age expiry until it is removed. An unreadable, future-version, or
 stale pin store makes purge eligibility unknown rather than silently dropping the claim.
-Destructive scopes remain tracked by [#89](https://github.com/spotter-agent/spotter/issues/89);
-invoking `purge` without `--dry-run` is refused.
+Destructive scopes other than `--snapshots` remain tracked by
+[#89](https://github.com/spotter-agent/spotter/issues/89) and refuse mutation.
+
+`purge --snapshots` removes only exact `SAFE_OWNED`, unreferenced registered worktrees and snapshot
+refs. It holds the global snapshot lock, removes worktrees through Git first, recomputes reachability,
+then deletes refs with an exact expected-target compare. A failed worktree removal keeps its ref
+referenced. Dry-run simulates that ordering without mutation. Human and JSON output record each
+resource as `planned`, `skipped_referenced`, `skipped_ambiguous`, `already_absent`, `removed`,
+`failed_retryable`, or `failed_manual_recovery`; one repository failure does not undo successful
+cleanup in another. Ownership records remain as idempotent audit evidence until a future full purge.
+Destructive data, log, integration, and `--all` scopes remain pending.
 
 Examples:
 

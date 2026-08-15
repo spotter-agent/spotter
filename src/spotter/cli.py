@@ -8,7 +8,7 @@ import sys
 import time
 import tomllib
 from collections.abc import Sequence
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from dataclasses import replace
 from fcntl import LOCK_EX, LOCK_NB, LOCK_UN, flock
 from pathlib import Path
@@ -106,7 +106,13 @@ from spotter.repository_registry import (
     RepositoryResourceInspection,
     ResourcePresence,
 )
-from spotter.retention import RetentionState, inspect_snapshot_retention, retention_for
+from spotter.retention import (
+    ArtifactKey,
+    ArtifactRetention,
+    RetentionState,
+    inspect_snapshot_retention,
+    retention_for,
+)
 from spotter.reviewer import last_usage, review
 from spotter.runtime_metrics import (
     ObjectiveOutcomeError,
@@ -183,7 +189,7 @@ def build_parser() -> argparse.ArgumentParser:
             "analyze: summarize journaled sessions; fork: branch a session at a step; "
             "fork-coverage: classify each session proposal for replay eligibility; "
             "prune: drop unreferenced refs/spotter snapshots (dry-run without --apply); "
-            "purge: preview registered Spotter-owned resources without deleting them; "
+            "purge: preview resources or remove exact unreferenced snapshot resources; "
             "pins: add, remove, or list durable manual snapshot roots; "
             "review: run the shadow reviewer on a session (records only, injects nothing); "
             "experiment: guidance or identical-neutral fork pairs (needs --run to execute); "
@@ -272,6 +278,12 @@ def build_parser() -> argparse.ArgumentParser:
         dest="purge_all",
         action="store_true",
         help="purge: include every registered repository resource",
+    )
+    parser.add_argument(
+        "--snapshots",
+        dest="purge_snapshots",
+        action="store_true",
+        help="purge: remove exact unreferenced Spotter-owned worktrees and snapshot refs",
     )
     parser.add_argument(
         "--json",
@@ -449,8 +461,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command in {"setup", "teardown"}:
         if args.target != "codex":
             parser.error(f"{args.command} requires the codex target")
-        if args.purge_all or args.json_output:
-            parser.error("--all and --json require purge")
+        if args.purge_all or args.purge_snapshots or args.json_output:
+            parser.error("--all, --snapshots, and --json require purge")
         if args.command == "teardown" and (args.dry_run or args.portable):
             parser.error("--dry-run and --portable are only supported by setup")
         return _integration_main(
@@ -460,13 +472,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             dry_run=args.dry_run,
         )
     if args.command == "purge":
-        if not args.purge_all or not args.dry_run:
-            parser.error("purge currently requires --all --dry-run; deletion is not implemented")
+        if args.purge_all == args.purge_snapshots:
+            parser.error("purge requires exactly one of --all or --snapshots")
+        if args.purge_all and not args.dry_run:
+            parser.error("destructive --all is not implemented; use --dry-run")
         if args.target is not None or args.portable:
-            parser.error("purge preview accepts only --all, --dry-run, and optional --json")
+            parser.error("purge accepts only a scope, optional --dry-run, and optional --json")
         if args.apply:
-            parser.error("purge deletion is not implemented")
-        return _purge_main(json_output=args.json_output)
+            parser.error("purge is destructive without --dry-run; do not pass --apply")
+        return _purge_main(
+            json_output=args.json_output,
+            snapshot_scope=args.purge_snapshots,
+            apply=not args.dry_run,
+        )
     if args.command == "pins":
         if args.target not in {"add", "remove", "list"}:
             parser.error("pins requires add, remove, or list")
@@ -535,8 +553,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--resume requires tasks run")
     if args.dry_run or args.portable:
         parser.error("--dry-run and --portable require setup")
-    if args.purge_all or args.json_output:
-        parser.error("--all and --json require purge")
+    if args.purge_all or args.purge_snapshots or args.json_output:
+        parser.error("--all, --snapshots, and --json require purge")
 
     config = _load_config(parser, args.config)
     # One boundary check for every command that names a session: sanitizing
@@ -1892,82 +1910,190 @@ def _pins_main(
         return 1
 
 
-def _purge_main(*, json_output: bool) -> int:
-    """Preview exact repository ownership; destructive purge remains disabled."""
+PurgeResourceKey = tuple[str, str, str]
+
+
+def _purge_key(item: RepositoryResourceInspection) -> PurgeResourceKey:
+    return (item.registry_entry_id, item.resource_type, item.resource_id)
+
+
+def _purge_group(
+    item: RepositoryResourceInspection,
+    reachability: dict[ArtifactKey, ArtifactRetention],
+) -> str:
+    if item.confidence != OwnershipConfidence.SAFE_OWNED:
+        return item.confidence.value
+    retention = retention_for(item, reachability)
+    if retention.state == RetentionState.REFERENCED:
+        return "REFERENCED"
+    if retention.state == RetentionState.UNKNOWN:
+        return "AMBIGUOUS"
+    return "SAFE_OWNED"
+
+
+def _purge_outcome(item: RepositoryResourceInspection, group: str) -> str:
+    if group == "REFERENCED":
+        return "skipped_referenced"
+    if group in {"AMBIGUOUS", "INACCESSIBLE"}:
+        return "skipped_ambiguous"
+    if item.presence == ResourcePresence.ABSENT:
+        return "already_absent"
+    return "planned"
+
+
+def _remove_owned_worktree(item: RepositoryResourceInspection) -> str | None:
     try:
-        registry = RepositoryRegistry()
-        entries = registry.load()
-        inspections = registry.inspect(entries)
-        reachability = inspect_snapshot_retention(
-            entries, inspections, RuntimeLayout.discover().user_data_dir
+        result = subprocess.run(
+            ["git", "worktree", "remove", "--force", item.resource_id],
+            cwd=item.repository_path,
+            capture_output=True,
+            text=True,
+            check=False,
         )
-    except (RepositoryRegistryError, SnapshotPinError) as error:
-        print(f"purge preview failed: {error}", file=sys.stderr)
+    except OSError as error:
+        return str(error)
+    return None if result.returncode == 0 else result.stderr.strip() or "git worktree remove failed"
+
+
+def _remove_owned_ref(item: RepositoryResourceInspection) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "update-ref", "-d", item.resource_id, item.expected_target],
+            cwd=item.repository_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as error:
+        return str(error)
+    return None if result.returncode == 0 else result.stderr.strip() or "git update-ref failed"
+
+
+def _purge_main(*, json_output: bool, snapshot_scope: bool, apply: bool) -> int:
+    """Plan or remove exact unreferenced repository snapshot resources."""
+    registry = RepositoryRegistry()
+    data_dir = RuntimeLayout.discover().user_data_dir
+    outcomes: dict[PurgeResourceKey, str] = {}
+    failures: dict[PurgeResourceKey, str] = {}
+
+    try:
+        lock = global_lock() if apply else nullcontext()
+        with lock:
+            entries = registry.load()
+            inspections = registry.inspect(entries)
+            selected_worktrees = frozenset(
+                (item.registry_entry_id, item.resource_id)
+                for item in inspections
+                if snapshot_scope
+                and item.resource_type == "worktree"
+                and item.confidence == OwnershipConfidence.SAFE_OWNED
+                and item.presence == ResourcePresence.PRESENT
+            )
+            reachability = inspect_snapshot_retention(
+                entries,
+                inspections,
+                data_dir,
+                exclude_worktrees=selected_worktrees,
+            )
+            for item in inspections:
+                group = _purge_group(item, reachability)
+                outcomes[_purge_key(item)] = _purge_outcome(item, group)
+
+            if apply:
+                for item in inspections:
+                    key = _purge_key(item)
+                    if item.resource_type != "worktree" or outcomes[key] != "planned":
+                        continue
+                    error = _remove_owned_worktree(item)
+                    outcomes[key] = "removed" if error is None else "failed_retryable"
+                    if error is not None:
+                        failures[key] = error
+
+                inspections = registry.inspect(entries)
+                reachability = inspect_snapshot_retention(entries, inspections, data_dir)
+                for item in inspections:
+                    key = _purge_key(item)
+                    if item.resource_type != "git_ref":
+                        continue
+                    group = _purge_group(item, reachability)
+                    if group != "SAFE_OWNED":
+                        outcomes[key] = _purge_outcome(item, group)
+                        continue
+                    if item.presence == ResourcePresence.ABSENT:
+                        outcomes[key] = "already_absent"
+                        continue
+                    error = _remove_owned_ref(item)
+                    outcomes[key] = "removed" if error is None else "failed_manual_recovery"
+                    if error is not None:
+                        failures[key] = error
+
+                inspections = registry.inspect(entries)
+                reachability = inspect_snapshot_retention(entries, inspections, data_dir)
+    except (OSError, RepositoryRegistryError, SnapshotPinError) as error:
+        print(f"purge failed: {error}", file=sys.stderr)
         return 1
 
-    def group(item: RepositoryResourceInspection) -> str:
-        if item.confidence != OwnershipConfidence.SAFE_OWNED:
-            return item.confidence.value
-        retention = retention_for(item, reachability)
-        if retention.state == RetentionState.REFERENCED:
-            return "REFERENCED"
-        if retention.state == RetentionState.UNKNOWN:
-            return "AMBIGUOUS"
-        return "SAFE_OWNED"
-
     groups = ("SAFE_OWNED", "REFERENCED", "INACCESSIBLE", "AMBIGUOUS")
-    summary = {name: sum(group(item) == name for item in inspections) for name in groups}
+    grouped = {item: _purge_group(item, reachability) for item in inspections}
+    summary = {name: sum(grouped[item] == name for item in inspections) for name in groups}
+    resources = [
+        {
+            "registry_entry_id": item.registry_entry_id,
+            "repository_path": item.repository_path,
+            "resource_type": item.resource_type,
+            "resource_id": item.resource_id,
+            "expected_target": item.expected_target,
+            "group": grouped[item],
+            "confidence": item.confidence.value,
+            "presence": item.presence.value,
+            "reason": item.reason,
+            "retention": retention_for(item, reachability).state.value,
+            "references": list(retention_for(item, reachability).references),
+            "retention_diagnostics": list(retention_for(item, reachability).diagnostics),
+            "outcome": outcomes[_purge_key(item)],
+            "failure": failures.get(_purge_key(item)),
+        }
+        for item in inspections
+    ]
     if json_output:
         print(
             json.dumps(
                 {
-                    "dry_run": True,
-                    "deletion_supported": False,
+                    "scope": "snapshots" if snapshot_scope else "all",
+                    "dry_run": not apply,
+                    "deletion_supported": snapshot_scope,
                     "summary": summary,
-                    "resources": [
-                        {
-                            "registry_entry_id": item.registry_entry_id,
-                            "repository_path": item.repository_path,
-                            "resource_type": item.resource_type,
-                            "resource_id": item.resource_id,
-                            "expected_target": item.expected_target,
-                            "group": group(item),
-                            "confidence": item.confidence.value,
-                            "presence": item.presence.value,
-                            "reason": item.reason,
-                            "retention": retention_for(item, reachability).state.value,
-                            "references": list(retention_for(item, reachability).references),
-                            "retention_diagnostics": list(
-                                retention_for(item, reachability).diagnostics
-                            ),
-                        }
-                        for item in inspections
-                    ],
+                    "resources": resources,
                 },
                 sort_keys=True,
             )
         )
     else:
-        print("purge preview (dry-run; deletion is not implemented)")
+        action = "purge results" if apply else "purge preview (dry-run)"
+        print(f"{action}; scope={'snapshots' if snapshot_scope else 'all'}")
         for name in groups:
-            matching = [item for item in inspections if group(item) == name]
+            matching = [item for item in inspections if grouped[item] == name]
             print(f"{name} ({len(matching)})")
             for item in matching:
                 retention = retention_for(item, reachability)
+                key = _purge_key(item)
                 print(
                     f"  {item.resource_type} {item.resource_id} "
-                    f"[{item.presence.value.lower()}] - {item.reason}"
+                    f"[{item.presence.value.lower()}] - {outcomes[key]} - {item.reason}"
                 )
                 for reference in retention.references:
                     print(f"    retained by: {reference}")
                 for diagnostic in retention.diagnostics:
                     print(f"    retention unknown: {diagnostic}")
+                if key in failures:
+                    print(f"    failure: {failures[key]}")
         if not inspections:
             print("no registered repository resources")
     return int(
-        any(
-            group(item) in {"INACCESSIBLE", "AMBIGUOUS"}
-            or (group(item) == "REFERENCED" and item.presence != ResourcePresence.PRESENT)
+        bool(failures)
+        or any(
+            grouped[item] in {"INACCESSIBLE", "AMBIGUOUS"}
+            or (grouped[item] == "REFERENCED" and item.presence != ResourcePresence.PRESENT)
             for item in inspections
         )
     )

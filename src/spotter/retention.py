@@ -37,6 +37,8 @@ def inspect_snapshot_retention(
     entries: tuple[RepositoryEntry, ...],
     inspections: tuple[RepositoryResourceInspection, ...],
     data_dir: Path,
+    *,
+    exclude_worktrees: frozenset[tuple[str, str]] = frozenset(),
 ) -> dict[ArtifactKey, ArtifactRetention]:
     """Build conservative roots for every registered snapshot ref.
 
@@ -158,15 +160,27 @@ def inspect_snapshot_retention(
                 )
 
     for inspection in inspections:
-        if (
-            inspection.resource_type != "worktree"
-            or inspection.confidence != OwnershipConfidence.SAFE_OWNED
-            or inspection.presence != ResourcePresence.PRESENT
-        ):
+        if inspection.resource_type != "worktree":
             continue
         key = (inspection.registry_entry_id, inspection.expected_target)
-        if key in references:
+        if key not in references:
+            continue
+        worktree_key = (inspection.registry_entry_id, inspection.resource_id)
+        if (
+            worktree_key in exclude_worktrees
+            and inspection.confidence == OwnershipConfidence.SAFE_OWNED
+            and inspection.presence == ResourcePresence.PRESENT
+        ):
+            continue
+        if (
+            inspection.confidence == OwnershipConfidence.SAFE_OWNED
+            and inspection.presence == ResourcePresence.PRESENT
+        ):
             references[key].add(f"worktree:{inspection.resource_id}")
+        elif inspection.confidence != OwnershipConfidence.SAFE_OWNED:
+            diagnostics[key].add(
+                f"worktree reachability unavailable: {inspection.resource_id}: {inspection.reason}"
+            )
 
     result: dict[ArtifactKey, ArtifactRetention] = {}
     for key in keys:

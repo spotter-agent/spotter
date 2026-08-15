@@ -384,8 +384,10 @@ spotter daemon stop
 snapshot을 명시적으로 보존하려면 `spotter pins add --repo <경로> --snapshot <sha>`를 사용하고,
 `spotter pins list`로 확인하거나 `spotter pins remove --pin-id <uuid>`로 해제하세요. 수동 pin은
 해제할 때까지 `prune --max-age-days`에서도 보존됩니다.
-파괴적 purge는 아직 구현되지 않았으므로 지원되는 Git 인식
-정리에는 `spotter prune`을 사용하고 [#89](https://github.com/spotter-agent/spotter/issues/89)를 확인하세요.
+`spotter purge --snapshots --dry-run`으로 정확한 snapshot 정리를 미리 확인하고,
+`spotter purge --snapshots`로 소유권이 입증된 미참조 worktree와 snapshot ref만 제거할 수 있습니다.
+참조 중이거나 불명확한 리소스는 건너뛰고 결과에 표시합니다. data/log/full 파괴 범위는
+[#89](https://github.com/spotter-agent/spotter/issues/89)에 남아 있습니다.
 
 통합 해제 전에 패키지를 제거했더라도 생성된 Hook은 fail-open으로 동작하도록 설계되어 있습니다.
 같은 방법으로 패키지를 다시 설치하고 `spotter teardown codex`를 실행한 뒤 다시 제거하면 기록된
