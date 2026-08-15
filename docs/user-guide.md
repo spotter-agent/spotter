@@ -316,6 +316,8 @@ session. It never guesses an outcome link from a file name or timestamp. Reviewe
 includes session and call coverage and says `partial` or `unavailable` when totals are incomplete.
 Reviewer calls and labeled reviewer outcomes are also split by `signal`, `periodic`, and `manual`
 launch provenance so A/B cohorts are not silently pooled.
+Effect coverage separately reports exact and bounded classifications, unknown family/shell/MCP/
+adapter buckets, conservative Class C fallbacks, and the concrete unknown reason counts.
 Treat journals and diagnostics as potentially sensitive: they can contain repository paths,
 prompts, tool payloads, and other work context.
 

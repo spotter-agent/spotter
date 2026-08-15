@@ -42,6 +42,8 @@ from spotter.effects import (
     EffectResolutionError,
     effect_resolution_event,
     external_effects,
+    measure_effect_coverage,
+    render_effect_coverage,
 )
 from spotter.experiment import list_forks, results_path, run_experiment, summarize
 from spotter.feedback import FeedbackError, add_feedback, load_feedback
@@ -1635,6 +1637,11 @@ def _metrics_main(session: str | None) -> int:
     print("Rater agreement (double-label subset):")
     print("  " + agreement.rate_line())
     print(render_opportunity_timing(merge_opportunity_timing(opportunity_reports)))
+    print(
+        render_effect_coverage(
+            measure_effect_coverage(record for rows, _ in runtime_journals for record in rows)
+        )
+    )
     print(render_runtime_costs(measure_runtime_costs(runtime_journals)))
     if objective_report is not None:
         print(render_objective_outcomes(objective_report))

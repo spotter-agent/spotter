@@ -6,7 +6,8 @@ unknown command shapes still map to Class C without being mislabeled as known wr
 """
 
 import shlex
-from collections.abc import Mapping, Sequence
+from collections import Counter
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Literal, cast
 from urllib.parse import urlsplit, urlunsplit
@@ -44,6 +45,20 @@ class Classification:
 
 class EffectResolutionError(ValueError):
     """An explicit effect-resolution record is malformed or ambiguous."""
+
+
+@dataclass(frozen=True)
+class EffectCoverageReport:
+    operations_total: int
+    classified_exact: int
+    classified_bounded: int
+    unknown_family: int
+    unknown_shell_shape: int
+    unknown_mcp_tool: int
+    unknown_adapter_operation: int
+    conservative_c_from_unknown: int
+    missing_provenance: int
+    unknown_reasons: Mapping[str, int]
 
 
 _READ_COMMANDS = frozenset(
@@ -409,6 +424,69 @@ def external_effects(records: list[Any], through_step: int | None = None) -> lis
                 effects[exact[target]], resolution, set(exact)
             )
     return effects
+
+
+def measure_effect_coverage(records: Iterable[Any]) -> EffectCoverageReport:
+    """Measure classifier support from proposal records without double-counting results."""
+
+    total = exact = bounded = conservative = missing = 0
+    buckets: Counter[str] = Counter()
+    reasons: Counter[str] = Counter()
+    for record in records:
+        event = getattr(record, "event", None)
+        if not isinstance(event, TraceEvent) or event.kind != "tool_proposal":
+            continue
+        total += 1
+        confidence = event.payload.get("effect_confidence")
+        if confidence == "exact":
+            exact += 1
+            continue
+        if confidence == "bounded":
+            bounded += 1
+            continue
+        if confidence != "unknown":
+            missing += 1
+            continue
+        reason = event.payload.get("effect_reason")
+        classifier = event.payload.get("effect_classifier")
+        reason_name = reason if isinstance(reason, str) and reason else "unknown_reason"
+        reasons[reason_name] += 1
+        if event.payload.get("reversibility_class") == "C":
+            conservative += 1
+        if reason_name == "unknown_mcp_tool":
+            buckets["mcp"] += 1
+        elif classifier == "shell_structure":
+            buckets["shell"] += 1
+        elif reason_name == "unknown_tool_effect":
+            buckets["adapter"] += 1
+        else:
+            buckets["family"] += 1
+    return EffectCoverageReport(
+        operations_total=total,
+        classified_exact=exact,
+        classified_bounded=bounded,
+        unknown_family=buckets["family"],
+        unknown_shell_shape=buckets["shell"],
+        unknown_mcp_tool=buckets["mcp"],
+        unknown_adapter_operation=buckets["adapter"],
+        conservative_c_from_unknown=conservative,
+        missing_provenance=missing,
+        unknown_reasons=dict(sorted(reasons.items())),
+    )
+
+
+def render_effect_coverage(report: EffectCoverageReport) -> str:
+    reasons = ", ".join(f"{key}={value}" for key, value in report.unknown_reasons.items()) or "none"
+    return (
+        "Effect classification coverage:\n"
+        f"  operations={report.operations_total}, exact={report.classified_exact}, "
+        f"bounded={report.classified_bounded}, missing_provenance={report.missing_provenance}\n"
+        f"  unknown family={report.unknown_family}, shell_shape={report.unknown_shell_shape}, "
+        f"mcp_tool={report.unknown_mcp_tool}, "
+        f"adapter_operation={report.unknown_adapter_operation}, "
+        f"conservative_C={report.conservative_c_from_unknown}\n"
+        f"  unknown reasons: {reasons}"
+    )
 
 
 def effect_resolution_event(

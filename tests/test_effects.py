@@ -9,6 +9,8 @@ from spotter.effects import (
     effect_event,
     effect_resolution_event,
     external_effects,
+    measure_effect_coverage,
+    render_effect_coverage,
 )
 from spotter.snapshot import StepJournal, StepRecord
 from spotter.trace import TraceEvent
@@ -716,3 +718,50 @@ def test_external_effect_outcomes_require_explicit_evidence() -> None:
     assert effect({"exit_code": 1}) == ("failed", "explicit_failure")
     assert effect({"status": "partial"}) == ("partial", "partial_result")
     assert effect(None) == ("unknown", "no_conclusive_result")
+
+
+def test_effect_coverage_counts_unknowns_by_bounded_classifier_family() -> None:
+    from spotter.hook import event_from_hook
+
+    payloads = [
+        ("Bash", {"command": "git status"}),
+        ("Bash", {"command": "sudo kubectl get pods"}),
+        ("Bash", {"command": "mystery-command"}),
+        ("Bash", {"command": "gh pr view 'unterminated"}),
+        ("mcp__custom__execute", {}),
+        ("custom_tool", {}),
+    ]
+    records = [
+        StepRecord(
+            step,
+            event_from_hook(
+                {"hook_event_name": "PreToolUse", "tool_name": tool, "tool_input": tool_input}
+            ),
+            None,
+        )
+        for step, (tool, tool_input) in enumerate(payloads)
+    ]
+    records.append(StepRecord(10, TraceEvent("tool_proposal", {}), None))
+
+    report = measure_effect_coverage(records)
+
+    assert (
+        report.operations_total,
+        report.classified_exact,
+        report.classified_bounded,
+        report.unknown_family,
+        report.unknown_shell_shape,
+        report.unknown_mcp_tool,
+        report.unknown_adapter_operation,
+        report.conservative_c_from_unknown,
+        report.missing_provenance,
+    ) == (7, 1, 1, 1, 1, 1, 1, 4, 1)
+    assert report.unknown_reasons == {
+        "malformed_shell": 1,
+        "unclassified_command_effect": 1,
+        "unknown_mcp_tool": 1,
+        "unknown_tool_effect": 1,
+    }
+    rendered = render_effect_coverage(report)
+    assert "operations=7, exact=1, bounded=1, missing_provenance=1" in rendered
+    assert "unknown family=1, shell_shape=1, mcp_tool=1, adapter_operation=1" in rendered
