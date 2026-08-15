@@ -819,6 +819,9 @@ If a completed App Server `agentMessage` is explicitly phased as `final_answer`,
 soft-intervention window as settled before `turn/completed`: queued/running reviews become stale and
 new steers are rejected with `terminal_answer_settled`. Started messages, commentary, and messages
 without a phase remain non-terminal rather than guessing across provider compatibility gaps.
+When Codex rejects `turn/steer`, its adapter also maps structured non-steerable data and the current
+version-specific no-active-turn/expected-turn-mismatch messages into stable Spotter reason codes.
+The supervision core never parses English RPC text; unknown rejections remain generic failures.
 
 At journal append, each lifecycle record receives local receipt wall time plus a monotonic timestamp
 and process clock-domain ID. Metrics correlate evidence, candidate, queue, start, and terminal events

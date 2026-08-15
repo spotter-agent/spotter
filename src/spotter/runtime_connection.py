@@ -16,11 +16,13 @@ from uuid import uuid4
 
 from spotter.app_server import (
     AppServerCapabilities,
+    AppServerControlError,
     AppServerError,
     AppServerRpcError,
     AppServerTransportError,
     CapabilityStatus,
     CodexAppServerClient,
+    ControlFailureReason,
 )
 from spotter.identity import AttachmentId, RuntimeIdentity, ThreadId
 from spotter.ingestion import AppServerTraceIngestor, IngestionError
@@ -377,6 +379,20 @@ class AppServerRecoveryLoop:
                 payload,
                 outcome="unknown",
                 reason_code="cancelled_after_dispatch",
+                error=error,
+            )
+            raise
+        except AppServerControlError as error:
+            stale = error.reason in {
+                ControlFailureReason.NO_ACTIVE_TURN,
+                ControlFailureReason.TURN_MISMATCH,
+            }
+            self._record_control_event(
+                "control_terminal",
+                target,
+                payload,
+                outcome="stale" if stale else "failed",
+                reason_code=error.reason.value,
                 error=error,
             )
             raise

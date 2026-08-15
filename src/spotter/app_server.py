@@ -73,7 +73,29 @@ class AppServerRpcError(AppServerError):
         super().__init__(f"{method} failed ({code}): {message}")
         self.method = method
         self.code = code
+        self.message = message
         self.data = data
+
+
+class ControlFailureReason(StrEnum):
+    NO_ACTIVE_TURN = "no_active_turn"
+    TURN_MISMATCH = "turn_mismatch"
+    TURN_NOT_STEERABLE = "turn_not_steerable"
+
+
+class AppServerControlError(AppServerRpcError):
+    """A control RPC failed with a semantic reason isolated at the Codex adapter."""
+
+    def __init__(
+        self,
+        method: str,
+        code: int,
+        message: str,
+        reason: ControlFailureReason,
+        data: Any = None,
+    ) -> None:
+        super().__init__(method, code, message, data)
+        self.reason = reason
 
 
 class UnsupportedAppServerCapability(AppServerRpcError):
@@ -331,7 +353,10 @@ class CodexAppServerClient:
                 if self.state == ConnectionState.CONNECTED:
                     self.state = ConnectionState.DEGRADED
                 raise unsupported
-            raise AppServerRpcError(method, code, message, rpc_error.get("data"))
+            data = rpc_error.get("data")
+            if (reason := _control_failure_reason(method, message, data)) is not None:
+                raise AppServerControlError(method, code, message, reason, data)
+            raise AppServerRpcError(method, code, message, data)
 
         capability = _CAPABILITY_BY_METHOD.get(method)
         if capability is not None:
@@ -433,3 +458,21 @@ class CodexAppServerClient:
     @staticmethod
     def _is_request_id(value: Any) -> bool:
         return isinstance(value, (int, str)) and not isinstance(value, bool)
+
+
+def _control_failure_reason(method: str, message: str, data: Any) -> ControlFailureReason | None:
+    if method != "turn/steer":
+        return None
+    if isinstance(data, Mapping):
+        info = data.get("codexErrorInfo")
+        if isinstance(info, Mapping) and "activeTurnNotSteerable" in info:
+            return ControlFailureReason.TURN_NOT_STEERABLE
+    normalized = " ".join(message.casefold().split())
+    if normalized == "no active turn to steer" or (
+        normalized.startswith("cannot steer conversation ")
+        and normalized.endswith(" because its active turn already ended")
+    ):
+        return ControlFailureReason.NO_ACTIVE_TURN
+    if normalized.startswith("expected active turn id ") and " but found " in normalized:
+        return ControlFailureReason.TURN_MISMATCH
+    return None

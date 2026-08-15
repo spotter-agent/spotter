@@ -10,7 +10,11 @@ from typing import Any, cast
 import pytest
 from websockets.asyncio.server import ServerConnection, serve
 
-from spotter.app_server import AppServerRpcError, AppServerTransportError
+from spotter.app_server import (
+    AppServerControlError,
+    AppServerRpcError,
+    AppServerTransportError,
+)
 from spotter.identity import TurnId
 from spotter.runtime_connection import (
     AppServerRecoveryLoop,
@@ -321,6 +325,8 @@ def test_control_rejection_and_unknown_acceptance_are_distinct(tmp_path: Path) -
                     }
                 },
             )
+            stale = await _receive(connection, "turn/steer")
+            await _reply_error(connection, stale, -32000, "no active turn to steer")
             rejected = await _receive(connection, "turn/steer")
             await _reply_error(connection, rejected, -32000, "not steerable")
             await _receive(connection, "turn/steer")
@@ -340,6 +346,8 @@ def test_control_rejection_and_unknown_acceptance_are_distinct(tmp_path: Path) -
             state = store.snapshots()[0]
             target = RuntimeControlTarget(state.identity, state.connection_epoch or 0)
 
+            with pytest.raises(AppServerControlError):
+                await recovery.steer(target, "verify", control_id="control-stale")
             with pytest.raises(AppServerRpcError):
                 await recovery.steer(target, "verify", control_id="control-rejected")
             with pytest.raises(AppServerTransportError):
@@ -347,13 +355,17 @@ def test_control_rejection_and_unknown_acceptance_are_distinct(tmp_path: Path) -
             await recovery.flush_control_telemetry()
 
             terminals = {
-                record.event.payload["control_id"]: record.event.payload["outcome"]
+                record.event.payload["control_id"]: (
+                    record.event.payload["outcome"],
+                    record.event.payload["reason_code"],
+                )
                 for record in recovery.ingestor.records()
                 if record.event.kind == "control_terminal"
             }
             assert terminals == {
-                "control-rejected": "failed",
-                "control-unknown": "unknown",
+                "control-stale": ("stale", "no_active_turn"),
+                "control-rejected": ("failed", "rpc_rejected"),
+                "control-unknown": ("unknown", "acceptance_unknown"),
             }
             await recovery.close()
 

@@ -422,6 +422,13 @@ pending/running review jobs become stale and a later steer is rejected locally w
 fence because providers do not populate the field consistently. Interrupt remains a separate
 recovery control and is not disabled by this soft-intervention fence.
 
+Codex control-error compatibility is confined to the App Server adapter. Structured
+`activeTurnNotSteerable` data maps to `turn_not_steerable`; current version-specific messages for
+no active turn and expected-turn mismatch map to `no_active_turn` and `turn_mismatch`. Core runtime
+control sees only those semantic reasons: no-active/mismatch outcomes are stale, not generic RPC
+failures, while a non-steerable active turn remains failed. Unknown messages remain `rpc_rejected`
+rather than being guessed, and transport loss after dispatch remains acceptance-unknown.
+
 Objective task outcomes remain outside ordinary user-session telemetry. For global reports,
 `spotter metrics` reads versioned counterfactual and frozen-task result journals, joins each
 mechanical classification to costs carried by the same stable run/pair/arm identity, and reports

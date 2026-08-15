@@ -336,6 +336,9 @@ diagnostic for later safety evaluation.
 A completed assistant message explicitly marked `final_answer` closes Spotter's soft-intervention
 window even before `turn/completed`. Pending review results then become stale and a late steer is not
 sent. Commentary or messages without a phase do not trigger this conservative fence.
+If Codex rejects a steer because no active turn exists or the expected turn mismatches, telemetry
+reports that request as stale with the stable reason `no_active_turn` or `turn_mismatch`. A known
+non-steerable active turn remains a failed control; unrecognized rejection text stays generic.
 
 ### Storage maintenance
 

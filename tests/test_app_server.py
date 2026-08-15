@@ -4,14 +4,18 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from typing import Any, cast
 
+import pytest
 from websockets.asyncio.server import ServerConnection, serve
 
 from spotter.app_server import (
+    AppServerControlError,
     AppServerProtocolError,
+    AppServerRpcError,
     AppServerTransportError,
     CapabilityStatus,
     CodexAppServerClient,
     ConnectionState,
+    ControlFailureReason,
     UnsupportedAppServerCapability,
 )
 
@@ -153,6 +157,54 @@ def test_concurrent_requests_are_matched_by_id() -> None:
             )
             assert first["thread"] == {"id": "thread-1"}
             assert second["thread"] == {"id": "thread-2"}
+            await client.disconnect()
+
+    asyncio.run(scenario())
+
+
+def test_steer_rejections_are_mapped_inside_the_codex_adapter() -> None:
+    async def scenario() -> None:
+        responses = [
+            {"code": -32000, "message": "no active turn to steer"},
+            {
+                "code": -32000,
+                "message": "expected active turn id turn-old but found turn-current",
+            },
+            {
+                "code": -32000,
+                "message": "active turn is not steerable",
+                "data": {
+                    "message": "active turn is not steerable",
+                    "codexErrorInfo": {"activeTurnNotSteerable": {"turnKind": "review"}},
+                },
+            },
+            {"code": -32000, "message": "another rejection"},
+        ]
+
+        async def handler(connection: ServerConnection) -> None:
+            await _ready(connection)
+            for error in responses:
+                request = await _receive(connection, "turn/steer")
+                await connection.send(
+                    json.dumps({"jsonrpc": "2.0", "id": request["id"], "error": error})
+                )
+            await connection.wait_closed()
+
+        async with _server(handler) as endpoint:
+            client = CodexAppServerClient(endpoint)
+            await client.connect()
+            for expected in (
+                ControlFailureReason.NO_ACTIVE_TURN,
+                ControlFailureReason.TURN_MISMATCH,
+                ControlFailureReason.TURN_NOT_STEERABLE,
+            ):
+                with pytest.raises(AppServerControlError) as control_raised:
+                    await client.steer("thread-1", "turn-1", "verify")
+                assert control_raised.value.reason == expected
+            with pytest.raises(AppServerRpcError) as rpc_raised:
+                await client.steer("thread-1", "turn-1", "verify")
+            assert not isinstance(rpc_raised.value, AppServerControlError)
+            assert rpc_raised.value.message == "another rejection"
             await client.disconnect()
 
     asyncio.run(scenario())
