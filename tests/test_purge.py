@@ -337,6 +337,62 @@ def test_log_purge_continues_after_retryable_clear_failure(
     assert review_log.read_bytes() == b""
 
 
+def test_data_purge_preview_reports_current_journal_family(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    journal = StepJournal(journal_path({"session_id": "owned"}))
+    journal.record(TraceEvent("user_prompt", {"prompt": "test"}))
+
+    assert main(["purge", "--data", "--dry-run", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["scope"] == "data"
+    assert payload["deletion_supported"] is False
+    resources = {resource["resource_id"]: resource for resource in payload["resources"]}
+    assert set(resources) == {
+        "sessions/owned.jsonl",
+        "sessions/owned.jsonl.lock",
+        "sessions/owned.jsonl.state",
+    }
+    assert {resource["group"] for resource in resources.values()} == {"SAFE_OWNED"}
+    assert {resource["outcome"] for resource in resources.values()} == {"planned"}
+    assert journal.path.exists(), "preview must not delete data"
+
+
+def test_data_purge_preview_surfaces_unknown_or_corrupt_data(
+    spotter_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    labels = spotter_home / "labels"
+    labels.mkdir(parents=True)
+    (labels / "broken.jsonl").write_text("{")
+    source = spotter_home / "task-sources"
+    source.mkdir()
+    (source / "foreign.txt").write_text("keep")
+
+    assert main(["purge", "--data", "--dry-run", "--json"]) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    resources = {resource["resource_id"]: resource for resource in payload["resources"]}
+    assert set(resources) == {"labels/broken.jsonl", "task-sources"}
+    assert {resource["group"] for resource in resources.values()} == {"AMBIGUOUS"}
+    assert (source / "foreign.txt").read_text() == "keep"
+
+
+def test_data_purge_preview_excludes_other_scope_roots(
+    spotter_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    logs = spotter_home / "logs"
+    logs.mkdir(parents=True)
+    (logs / "foreign.log").write_text("keep")
+    (spotter_home / "spotter.toml").write_text("[main_agent]\nadapter = 'codex'\n")
+
+    assert main(["purge", "--data", "--dry-run", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["resources"] == []
+    assert (logs / "foreign.log").read_text() == "keep"
+
+
 def test_missing_repository_is_inaccessible(
     repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -388,9 +444,13 @@ def test_purge_refuses_non_preview_invocation() -> None:
     with pytest.raises(SystemExit):
         main(["purge", "--logs", "--snapshots", "--dry-run"])
     with pytest.raises(SystemExit):
+        main(["purge", "--data", "--logs", "--dry-run"])
+    with pytest.raises(SystemExit):
         main(["purge", "--snapshots", "--apply"])
     with pytest.raises(SystemExit):
         main(["purge", "--logs", "--apply"])
+    with pytest.raises(SystemExit):
+        main(["purge", "--data"])
     with pytest.raises(SystemExit):
         main(["purge", "codex", "--all", "--dry-run"])
 

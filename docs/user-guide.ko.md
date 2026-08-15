@@ -389,7 +389,11 @@ snapshot을 명시적으로 보존하려면 `spotter pins add --repo <경로> --
 참조 중이거나 불명확한 리소스는 건너뛰고 결과에 표시합니다. `spotter purge --logs --dry-run`으로
 소유 로그 정리를 미리 확인하고 `spotter purge --logs`로 현재 내용을 비울 수 있습니다. Spotter는
 활성 writer의 경로를 유지하도록 정확한 소유 anchor를 truncate하며, 교체되었거나 등록되지 않은
-경로는 건드리지 않습니다. 활성 writer는 명령 직후 새 로그를 추가할 수 있습니다. data/integration/full 파괴 범위는
+경로는 건드리지 않습니다. 활성 writer는 명령 직후 새 로그를 추가할 수 있습니다.
+`spotter purge --data --dry-run`으로 영구 사용자 데이터를 미리 확인할 수 있습니다. 파일 전체가
+현재 family schema와 일치하고 정확한 일반 lock companion인 경우에만 안전한 소유 대상으로
+분류합니다. legacy, 손상, 빈 파일, 미래 버전, symlink, 접근 불가, 알 수 없는 경로는 건너뛰고
+보고합니다. data/integration/full 파괴 범위는
 [#89](https://github.com/spotter-agent/spotter/issues/89)에 남아 있습니다.
 
 통합 해제 전에 패키지를 제거했더라도 생성된 Hook은 fail-open으로 동작하도록 설계되어 있습니다.

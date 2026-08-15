@@ -1339,12 +1339,14 @@ If package-manager uninstall cannot run lifecycle cleanup reliably, `spotter tea
 
 # 16. Purge
 
-Purge is the target destructive data-cleanup operation. Repository preview and two explicit
-destructive scopes are implemented:
+Purge is the target destructive data-cleanup operation. Repository and durable-data previews plus
+two explicit destructive scopes are implemented:
 
 ```bash
 spotter purge --all --dry-run
 spotter purge --all --dry-run --json
+spotter purge --data --dry-run
+spotter purge --data --dry-run --json
 spotter purge --snapshots --dry-run
 spotter purge --snapshots
 spotter purge --logs --dry-run
@@ -1375,6 +1377,13 @@ stale pin store makes purge eligibility unknown rather than silently dropping th
 Destructive scopes other than `--snapshots` and `--logs` remain tracked by
 [#89](https://github.com/spotter-agent/spotter/issues/89) and refuse mutation.
 
+`purge --data --dry-run` inventories durable data independently of repository snapshots and logs.
+Every record in a file must match that family's current schema name and version before the file is
+`SAFE_OWNED`; an exact regular `.lock` companion inherits that proof. Legacy schema-less, empty,
+future-version, corrupt, symlinked, non-regular, unreadable, and unknown paths remain `AMBIGUOUS` or
+`INACCESSIBLE`. The preview excludes configuration and the repository, integration, runtime, and
+log scopes, never mutates files, and returns non-zero when any path is not safely attributable.
+
 `purge --snapshots` removes only exact `SAFE_OWNED`, unreferenced registered worktrees and snapshot
 refs. It holds the global snapshot lock, removes worktrees through Git first, recomputes reachability,
 then deletes refs with an exact expected-target compare. A failed worktree removal keeps its ref
@@ -1395,7 +1404,7 @@ the command. Destructive data, integration, and `--all` scopes remain pending.
 Examples:
 
 ```bash
-spotter purge --data
+spotter purge --data --dry-run
 spotter purge --snapshots
 spotter purge --logs
 spotter purge --all
@@ -1414,10 +1423,11 @@ Safe order:
 6. remove repository registry last
 ```
 
-Purge supports dry-run for repository-affecting inspection:
+Purge supports dry-run for repository and durable-data inspection:
 
 ```bash
 spotter purge --all --dry-run
+spotter purge --data --dry-run
 ```
 
 Never remove non-Spotter refs/worktrees based on path guessing.

@@ -369,7 +369,9 @@ worktree 所引用的 snapshot 会标为 `REFERENCED`，而不是成为删除候
 仍被引用或状态不明的资源会跳过并报告。可用 `spotter purge --logs --dry-run` 预览日志清理，
 并用 `spotter purge --logs` 清空当前内容。Spotter 会截断所有权已证实的 anchor 以保持活跃
 writer 的路径有效，绝不触碰已替换或未登记的路径；活跃 writer 可能在命令结束后立即写入新日志。
-data/integration/full 破坏性范围仍在
+可用 `spotter purge --data --dry-run` 预览持久用户数据；只有全部内容都匹配当前 family schema
+的文件及其精确的普通 lock companion 才会被认定为安全所有。旧版、损坏、空、未来版本、
+symlink、不可访问和未知路径会被跳过并报告。data/integration/full 破坏性范围仍在
 [#89](https://github.com/spotter-agent/spotter/issues/89) 中跟踪。
 
 如果在 teardown 前就卸载了软件包，生成的 Hook 会按设计采用 fail-open 行为。使用相同方式

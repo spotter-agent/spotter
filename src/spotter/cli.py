@@ -35,6 +35,7 @@ from spotter.daemon import (
     RuntimeHealth,
     ServiceManager,
 )
+from spotter.data_inventory import DataInventory, DataInventoryError, DataResourceInspection
 from spotter.doctor import FAIL, INFO, OK, WARN, check_runtime, worst
 from spotter.doctor import run as run_doctor
 from spotter.effects import (
@@ -287,6 +288,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="purge: remove exact unreferenced Spotter-owned worktrees and snapshot refs",
     )
     parser.add_argument(
+        "--data",
+        dest="purge_data",
+        action="store_true",
+        help="purge: preview schema-proven durable user data",
+    )
+    parser.add_argument(
         "--logs",
         dest="purge_logs",
         action="store_true",
@@ -468,8 +475,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command in {"setup", "teardown"}:
         if args.target != "codex":
             parser.error(f"{args.command} requires the codex target")
-        if args.purge_all or args.purge_snapshots or args.purge_logs or args.json_output:
-            parser.error("--all, --snapshots, --logs, and --json require purge")
+        if (
+            args.purge_all
+            or args.purge_snapshots
+            or args.purge_data
+            or args.purge_logs
+            or args.json_output
+        ):
+            parser.error("--all, --snapshots, --data, --logs, and --json require purge")
         if args.command == "teardown" and (args.dry_run or args.portable):
             parser.error("--dry-run and --portable are only supported by setup")
         return _integration_main(
@@ -479,14 +492,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             dry_run=args.dry_run,
         )
     if args.command == "purge":
-        if sum((args.purge_all, args.purge_snapshots, args.purge_logs)) != 1:
-            parser.error("purge requires exactly one of --all, --snapshots, or --logs")
+        if sum((args.purge_all, args.purge_snapshots, args.purge_data, args.purge_logs)) != 1:
+            parser.error("purge requires exactly one of --all, --snapshots, --data, or --logs")
         if args.purge_all and not args.dry_run:
             parser.error("destructive --all is not implemented; use --dry-run")
+        if args.purge_data and not args.dry_run:
+            parser.error("destructive --data is not implemented; use --dry-run")
         if args.target is not None or args.portable:
             parser.error("purge accepts only a scope, optional --dry-run, and optional --json")
         if args.apply:
             parser.error("purge is destructive without --dry-run; do not pass --apply")
+        if args.purge_data:
+            return _purge_data_preview_main(json_output=args.json_output)
         if args.purge_logs:
             return _purge_logs_main(json_output=args.json_output, apply=not args.dry_run)
         return _purge_main(
@@ -562,8 +579,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--resume requires tasks run")
     if args.dry_run or args.portable:
         parser.error("--dry-run and --portable require setup")
-    if args.purge_all or args.purge_snapshots or args.purge_logs or args.json_output:
-        parser.error("--all, --snapshots, --logs, and --json require purge")
+    if (
+        args.purge_all
+        or args.purge_snapshots
+        or args.purge_data
+        or args.purge_logs
+        or args.json_output
+    ):
+        parser.error("--all, --snapshots, --data, --logs, and --json require purge")
 
     config = _load_config(parser, args.config)
     # One boundary check for every command that names a session: sanitizing
@@ -1917,6 +1940,67 @@ def _pins_main(
     except (OSError, RepositoryRegistryError, SnapshotPinError) as error:
         print(f"pins {action} failed: {error}", file=sys.stderr)
         return 1
+
+
+def _data_purge_outcome(item: DataResourceInspection) -> str:
+    return "planned" if item.confidence == OwnershipConfidence.SAFE_OWNED else "skipped_ambiguous"
+
+
+def _purge_data_preview_main(*, json_output: bool) -> int:
+    """Preview schema-proven user data without mutating durable state."""
+    try:
+        inspections = DataInventory().inspect()
+    except (OSError, DataInventoryError) as error:
+        print(f"purge failed: {error}", file=sys.stderr)
+        return 1
+    groups = ("SAFE_OWNED", "INACCESSIBLE", "AMBIGUOUS")
+    summary = {name: sum(item.confidence.value == name for item in inspections) for name in groups}
+    resources = [
+        {
+            "resource_type": "data",
+            "resource_id": item.relative_path,
+            "expected_schema": item.expected_schema,
+            "schema_version": item.schema_version,
+            "group": item.confidence.value,
+            "confidence": item.confidence.value,
+            "presence": item.presence.value,
+            "size_bytes": item.size_bytes,
+            "reason": item.reason,
+            "outcome": _data_purge_outcome(item),
+            "failure": None,
+        }
+        for item in inspections
+    ]
+    if json_output:
+        print(
+            json.dumps(
+                {
+                    "scope": "data",
+                    "dry_run": True,
+                    "deletion_supported": False,
+                    "summary": summary,
+                    "resources": resources,
+                },
+                sort_keys=True,
+            )
+        )
+    else:
+        print("purge preview (dry-run); scope=data")
+        for name in groups:
+            matching = [item for item in inspections if item.confidence.value == name]
+            print(f"{name} ({len(matching)})")
+            for item in matching:
+                size = "unknown" if item.size_bytes is None else str(item.size_bytes)
+                print(
+                    f"  data {item.relative_path} [{item.presence.value.lower()}, {size} bytes] "
+                    f"- {_data_purge_outcome(item)} - {item.reason}"
+                )
+    return int(
+        any(
+            item.confidence in {OwnershipConfidence.INACCESSIBLE, OwnershipConfidence.AMBIGUOUS}
+            for item in inspections
+        )
+    )
 
 
 LogPurgeKey = tuple[str, str, str | None]
