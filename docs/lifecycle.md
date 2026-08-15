@@ -1536,6 +1536,33 @@ v1-v6 reads. New CREATING, READY, and FAILED states write v6 identity through a 
 atomic replacement. Before replacing an existing manifest, the writer validates its schema under
 the same resource lock; future, foreign, or corrupt lineage is never overwritten.
 
+## 19.1 Implemented compatibility matrix
+
+| Durable family | Current identity | Supported old / migration behavior | Future, foreign, or corrupt behavior |
+| --- | --- | --- | --- |
+| Trace IR journal | `spotter.trace_event` v1 | Schema-name-less released rows remain immutable and readable | Refuse append; torn-tail repair only after validating the readable prefix |
+| Journal state cache | `spotter.journal_state` v1 | Rebuild from the authoritative journal | Discard and rebuild; never reinterpret as journal corruption |
+| Labels | `spotter.label` v6 | Read v0-v5 and write only v6 | Refuse append |
+| Signal-sampling evidence | `spotter.signal_sampling` v1 | Read schema-name-less v1 and write current rows | Refuse append |
+| Intervention opportunities | `spotter.intervention_opportunity` v1 | Read schema-name-less v1 and write current rows | Refuse append |
+| Intervention feedback | `spotter.intervention_feedback` v1 | Read schema-name-less v1 and write current rows | Refuse append |
+| Counterfactual results | `spotter.experiment_result` v3 | Read v1-v3, including released version-less completion rows | Refuse append |
+| Frozen task manifest | `spotter.task` v1 | Read schema-name-less v1 | Refuse validation/execution |
+| Frozen task-set manifest | `spotter.task_set` v1 | Read schema-name-less v1 | Refuse validation/execution |
+| Frozen task-batch results | `spotter.task_batch` v1 | Read schema-name-less v1; atomically repair only a validated torn tail | Refuse preflight, repair, and append |
+| Fork lineage | `spotter.fork_manifest` v6 | Read v1-v6 with explicit historical coverage defaults | Refuse replacement |
+| Integration ownership | `spotter.integration_manifest` v4 | Migrate v1-v3 in memory and persist current ownership evidence atomically | Refuse setup, teardown, or destructive reconciliation |
+| User/repository config | `spotter.config` v1 | Read schema-less legacy config without inventing activation state | Refuse activation |
+| Reviewer spend | `spotter.review_spend` v1 | Read legacy state and upgrade on the next successful mutation | Refuse mutation |
+| Source audit container | `spotter.source_audit` v1 | Prefix legacy samples atomically before append | Degrade audit visibly and preserve primary journals |
+
+External-effect observations are Trace IR events rather than a second uncoordinated file format.
+`ThreadState` is rebuilt from Trace IR and is not separately persisted. launchd/systemd service
+definitions use their host-native formats, and reviewer output schemas live only in deleted scratch
+directories; none is a Spotter durable evidence family. Package version, IPC/Hook/App Server
+protocol versions, installation generation, and resolved-config generation remain separate
+compatibility axes rather than aliases for any row above.
+
 ---
 
 # 20. Release lifecycle
