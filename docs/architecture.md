@@ -730,6 +730,13 @@ explicitly double-labeled subset. Unattributed legacy, stale, uncorrelatable, an
 coverage remains visible; sampled miss rates state that they do not generalize beyond their declared
 event-kind strata.
 
+Intervention timing annotations use a separate opportunity schema v1. Each independent rater pins
+semantic and observable earliest/latest bounds plus required evidence to stable Trace IR event IDs
+and content fingerprints. Journal steps remain only locators; a changed or missing event makes the
+annotation stale instead of silently moving the warranted window. Append-only corrections retain
+the latest window per opportunity and rater. These annotations do not enter reviewer input and do
+not yet claim a delay distribution; #24 metrics consume them separately.
+
 ## 8.3 Snapshot state
 
 A Git snapshot is a separate resource representing repository state at a branch/recovery point.
@@ -952,6 +959,7 @@ USER_DURABLE
   spotter.toml
   sessions/
   labels/
+  opportunities/
   experiments/
   logs/
   repos.json

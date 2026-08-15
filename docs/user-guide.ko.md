@@ -278,6 +278,19 @@ mechanical outcome을 연결합니다. 파일명이나 timestamp로 outcome을 �
 진단에는 저장소 경로, 프롬프트, 도구 payload 등 작업 맥락이 포함될 수 있으므로 민감한 데이터로
 취급하세요.
 
+탐지 지연 연구에서는 회고적 semantic window와 Spotter가 필요한 증거를 실제로 관측할 수 있었던
+observable window를 함께 기록합니다. 각 anchor는 stable Trace IR event ID가 있는 journal step이어야
+합니다.
+
+```bash
+spotter label-opportunity --session <id> --opportunity-id <failure-id> \
+  --semantic-earliest <step> --semantic-latest <step> \
+  --observable-earliest <step> --observable-latest <step> \
+  --required-evidence <step> --note "개입이 필요했던 근거"
+```
+
+필요하면 `--required-evidence`를 반복하고, 독립 이중 라벨링에는 `--rater`를 사용하세요.
+
 ### 저장소 관리
 
 스냅샷 정리는 기본적으로 dry-run입니다. 관련 저장소 안에서 실행하거나 저장소 경로를 지정합니다.

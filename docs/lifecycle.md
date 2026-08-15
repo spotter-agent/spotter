@@ -1332,7 +1332,7 @@ Safe order:
 1. identify registered repositories/resources
 2. clean Spotter-created detached worktrees through Git
 3. clean Spotter-owned refs according to explicit policy
-4. remove journals/labels/experiments/logs
+4. remove journals/labels/opportunity annotations/experiments/logs
 5. remove integration/runtime metadata if requested
 6. remove repository registry last
 ```

@@ -155,6 +155,7 @@ codex
 | `spotter daemon status` | Inspect the packaged `spotterd` process and build identity |
 | `spotter metrics` | Summarize collected runtime and evaluation metrics |
 | `spotter sample-signals` | Persist a deterministic detector-silence sampling frame |
+| `spotter label-opportunity` | Record semantic and observable intervention windows |
 | `spotter analyze` | Review per-session interventions, costs, and provenance-linked outcomes |
 | `spotter observability` | Inspect which trajectory sources and normalized events are available |
 | `spotter --help` | Show the complete command surface |

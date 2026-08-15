@@ -265,6 +265,18 @@ spotter analyze
 混合 A/B 队列。请把日志和诊断视为潜在敏感信息：它们可能包含仓库路径、提示词、工具 payload 和其他
 工作上下文。
 
+检测延迟研究应同时记录回顾性的 semantic window，以及 Spotter 实际能够观察到必要证据的
+observable window。每个锚点必须对应具有稳定 Trace IR event ID 的日志步骤：
+
+```bash
+spotter label-opportunity --session <id> --opportunity-id <failure-id> \
+  --semantic-earliest <step> --semantic-latest <step> \
+  --observable-earliest <step> --observable-latest <step> \
+  --required-evidence <step> --note "需要干预的依据"
+```
+
+可重复使用 `--required-evidence`；独立双重标注时请使用 `--rater`。
+
 ### 存储维护
 
 快照清理默认是 dry-run。请在相关仓库内运行，或显式指定仓库：

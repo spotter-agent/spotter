@@ -61,6 +61,7 @@ from spotter.observability import (
     measure_observability,
     render_observability,
 )
+from spotter.opportunities import OpportunityError, add_opportunity
 from spotter.paths import RuntimeLayout, secure_dir, spotter_home
 from spotter.redact import scan_text
 from spotter.replay import (
@@ -122,6 +123,7 @@ def build_parser() -> argparse.ArgumentParser:
             "review",
             "experiment",
             "label",
+            "label-opportunity",
             "sample-signals",
             "metrics",
             "observability",
@@ -141,6 +143,7 @@ def build_parser() -> argparse.ArgumentParser:
             "review: run the shadow reviewer on a session (records only, injects nothing); "
             "experiment: guidance or identical-neutral fork pairs (needs --run to execute); "
             "label: record a human verdict on a gate flag, signal, reviewer decision, or session; "
+            "label-opportunity: record semantic and observable intervention windows; "
             "sample-signals: persist a stratified random frame for detector misses; "
             "metrics: gate and signal precision, misses, reviewer precision, and ceiling; "
             "observability: compare Hook/App Server Trace IR and source-adapter coverage; "
@@ -257,10 +260,35 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--note",
         default="",
-        help="label: written criteria (required for sampled signal verdicts)",
+        help="label/label-opportunity: written criteria or warranted-window rationale",
     )
     parser.add_argument(
-        "--rater", help="label: stable human rater identity (defaults to the OS account)"
+        "--rater",
+        help="label/label-opportunity: stable human rater identity (defaults to the OS account)",
+    )
+    parser.add_argument("--opportunity-id", help="label-opportunity: stable opportunity identity")
+    parser.add_argument(
+        "--semantic-earliest", type=int, help="label-opportunity: earliest warranted journal step"
+    )
+    parser.add_argument(
+        "--semantic-latest", type=int, help="label-opportunity: latest warranted journal step"
+    )
+    parser.add_argument(
+        "--observable-earliest",
+        type=int,
+        help="label-opportunity: earliest observably warranted journal step",
+    )
+    parser.add_argument(
+        "--observable-latest",
+        type=int,
+        help="label-opportunity: latest observably warranted journal step",
+    )
+    parser.add_argument(
+        "--required-evidence",
+        action="append",
+        type=int,
+        default=[],
+        help="label-opportunity: required evidence journal step (repeatable)",
     )
     parser.add_argument(
         "--signal-type",
@@ -452,6 +480,37 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.note,
             args.rater,
             args.signal_type,
+        )
+    if args.command == "label-opportunity":
+        required = (
+            args.session,
+            args.opportunity_id,
+            args.semantic_earliest,
+            args.semantic_latest,
+            args.observable_earliest,
+            args.observable_latest,
+        )
+        if any(value is None for value in required) or not args.required_evidence or not args.note:
+            parser.error(
+                "label-opportunity requires --session, --opportunity-id, semantic/observable "
+                "earliest/latest steps, --required-evidence, and --note"
+            )
+        assert args.session is not None
+        assert args.opportunity_id is not None
+        assert args.semantic_earliest is not None
+        assert args.semantic_latest is not None
+        assert args.observable_earliest is not None
+        assert args.observable_latest is not None
+        return _label_opportunity_main(
+            args.session,
+            args.opportunity_id,
+            args.semantic_earliest,
+            args.semantic_latest,
+            args.observable_earliest,
+            args.observable_latest,
+            tuple(args.required_evidence),
+            args.note,
+            args.rater,
         )
     if args.command == "sample-signals":
         if (
@@ -1056,6 +1115,42 @@ def _label_main(
     target = "session" if step is None else f"step {step}"
     scope = f" [{label.scope}]" if label.scope else ""
     print(f"labeled {session} {target}{scope}: {label.verdict} by {label.rater}")
+    return 0
+
+
+def _label_opportunity_main(
+    session: str,
+    opportunity_id: str,
+    semantic_earliest: int,
+    semantic_latest: int,
+    observable_earliest: int,
+    observable_latest: int,
+    required_evidence: tuple[int, ...],
+    note: str,
+    rater: str | None,
+) -> int:
+    try:
+        records = StepJournal.load(journal_path({"session_id": session}))
+        window = add_opportunity(
+            session,
+            opportunity_id,
+            records,
+            semantic_earliest=semantic_earliest,
+            semantic_latest=semantic_latest,
+            observable_earliest=observable_earliest,
+            observable_latest=observable_latest,
+            required_evidence=required_evidence,
+            note=note,
+            rater=rater,
+        )
+    except (OSError, SnapshotError, OpportunityError) as error:
+        print(f"opportunity label failed: {error}", file=sys.stderr)
+        return 1
+    print(
+        f"labeled {session} opportunity {window.opportunity_id} by {window.rater}: "
+        f"semantic={window.semantic_earliest.step}..{window.semantic_latest.step}, "
+        f"observable={window.observable_earliest.step}..{window.observable_latest.step}"
+    )
     return 0
 
 
