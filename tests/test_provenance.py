@@ -180,3 +180,52 @@ def test_cli_refuses_feedback_for_unknown_intervention(
         == 1
     )
     assert "was not found" in capsys.readouterr().err
+
+
+def test_cli_explains_block_policy_resource_and_safe_remedy(
+    intervention_journal: StepJournal, capsys: pytest.CaptureFixture[str]
+) -> None:
+    journal = StepJournal(intervention_journal.path.parent / "hook-session.jsonl")
+    journal.record(
+        TraceEvent(
+            "gate_block",
+            {
+                "supervision_event_id": "spt-block-0123456789ab",
+                "rule": "dependency_change",
+                "rule_version": 1,
+                "reason": "manifest edit: pyproject.toml",
+                "tool": "apply_patch",
+                "resource": "pyproject.toml",
+                "reversibility_class": "B",
+                "effect_kind": "workspace_write",
+            },
+            identity=RuntimeIdentity.legacy_hook("codex", "session-1"),
+        )
+    )
+
+    assert main(["interventions"]) == 0
+    listed = capsys.readouterr().out
+    assert "spt-block-0123456789ab  BLOCK" in listed
+    assert "ENFORCED" in listed
+
+    assert main(["explain", "--supervision-id", "spt-block-0123456789ab"]) == 0
+    explained = capsys.readouterr().out
+    assert "Action\n  BLOCK (ENFORCED)" in explained
+    assert "rule=dependency_change version=1" in explained
+    assert "resource=pyproject.toml" in explained
+    assert "block_dependency_changes configuration" in explained
+
+    assert (
+        main(
+            [
+                "feedback",
+                "--supervision-id",
+                "spt-block-0123456789ab",
+                "--category",
+                "block_correct",
+                "--rater",
+                "developer-1",
+            ]
+        )
+        == 0
+    )

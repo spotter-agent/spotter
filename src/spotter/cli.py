@@ -70,7 +70,12 @@ from spotter.opportunity_metrics import (
     render_opportunity_timing,
 )
 from spotter.paths import RuntimeLayout, secure_dir, spotter_home
-from spotter.provenance import InterventionSummary, summarize_interventions
+from spotter.provenance import (
+    BlockSummary,
+    InterventionSummary,
+    summarize_blocks,
+    summarize_interventions,
+)
 from spotter.redact import scan_text
 from spotter.replay import (
     ReplayError,
@@ -161,7 +166,7 @@ def build_parser() -> argparse.ArgumentParser:
             "tasks: validate or preflight a frozen task set without running agents; "
             "status: what Spotter is storing, and whether it is actually running; "
             "doctor: verify supervision end to end (non-zero exit when broken); "
-            "interventions: list recent live supervision lifecycle records; "
+            "interventions: list recent BLOCK/VERIFY/NUDGE lifecycle records; "
             "explain: inspect one intervention with --intervention-id; "
             "feedback: append structured human feedback to an intervention; "
             "daemon: manually start, stop, restart, or inspect spotterd; "
@@ -186,7 +191,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--session", help="session id (fork; analyze/metrics/observability filter to it)"
     )
     parser.add_argument(
-        "--intervention-id", help="explain/feedback: stable Spotter intervention id"
+        "--intervention-id",
+        "--supervision-id",
+        dest="intervention_id",
+        help="explain/feedback: stable Spotter supervision id",
     )
     parser.add_argument("--category", help="feedback: structured feedback category")
     parser.add_argument("--step", type=int, help="journal step to branch at (fork)")
@@ -696,14 +704,23 @@ def _intervention_history() -> tuple[InterventionSummary, ...]:
     return summarize_interventions(records)
 
 
+def _block_history() -> tuple[BlockSummary, ...]:
+    sessions_dir = journal_path({"session_id": "probe"}).parent
+    records: list[StepRecord] = []
+    for journal in sorted(sessions_dir.glob("*.jsonl")):
+        records.extend(StepJournal.load(journal, repair_tail=True))
+    return summarize_blocks(records)
+
+
 def _interventions_main() -> int:
     try:
         interventions = _intervention_history()
+        blocks = _block_history()
     except (OSError, SnapshotError) as error:
         print(f"interventions unavailable: {error}", file=sys.stderr)
         return 1
-    if not interventions:
-        print("no live interventions recorded", file=sys.stderr)
+    if not interventions and not blocks:
+        print("no supervision actions recorded", file=sys.stderr)
         return 1
     for intervention in interventions:
         print(
@@ -711,20 +728,33 @@ def _interventions_main() -> int:
             f"{intervention.status:23s}  thread={intervention.thread_id or 'unknown'} "
             f"turn={intervention.turn_id or 'unknown'}"
         )
+    for block in blocks:
+        status = "ENFORCED" if block.enforced else "SHADOW"
+        print(
+            f"{block.supervision_event_id}  BLOCK     {status:23s}  "
+            f"session={block.session_id or 'unknown'} rule={block.rule or 'unknown'}"
+        )
     return 0
 
 
 def _explain_main(intervention_id: str) -> int:
     try:
         intervention = next(
-            item for item in _intervention_history() if item.intervention_id == intervention_id
+            (item for item in _intervention_history() if item.intervention_id == intervention_id),
+            None,
         )
-    except StopIteration:
-        print(f"intervention {intervention_id!r} was not found", file=sys.stderr)
-        return 1
+        block = next(
+            (item for item in _block_history() if item.supervision_event_id == intervention_id),
+            None,
+        )
     except (OSError, SnapshotError) as error:
         print(f"intervention explanation unavailable: {error}", file=sys.stderr)
         return 1
+    if intervention is None:
+        if block is None:
+            print(f"supervision action {intervention_id!r} was not found", file=sys.stderr)
+            return 1
+        return _explain_block(block)
 
     print(f"Intervention\n  {intervention.intervention_id}")
     print(f"Action\n  {intervention.action or 'UNKNOWN'}")
@@ -747,8 +777,30 @@ def _explain_main(intervention_id: str) -> int:
     print("Delivery")
     suffix = f" ({intervention.status_reason})" if intervention.status_reason else ""
     print(f"  {intervention.status}{suffix}")
+    return _print_feedback(intervention_id)
+
+
+def _explain_block(block: BlockSummary) -> int:
+    status = "ENFORCED" if block.enforced else "SHADOW_ONLY"
+    print(f"Supervision action\n  {block.supervision_event_id}")
+    print(f"Action\n  BLOCK ({status})")
+    print(f"Target\n  session={block.session_id or 'unknown'} journal_step={block.step}")
+    print("Observed policy facts")
+    print(f"  rule={block.rule or 'unknown'} version={block.rule_version or 'unknown'}")
+    print(f"  reason={_bounded(block.reason)}")
+    print(f"  tool={block.tool or 'unknown'} resource={block.resource or 'unknown'}")
+    print(
+        f"  reversibility={block.reversibility_class or 'unknown'} "
+        f"effect={block.effect_kind or 'unknown'}"
+    )
+    print("Safe next action")
+    print(f"  {block.remedy}")
+    return _print_feedback(block.supervision_event_id)
+
+
+def _print_feedback(supervision_event_id: str) -> int:
     try:
-        feedback = load_feedback(intervention_id)
+        feedback = load_feedback(supervision_event_id)
     except FeedbackError as error:
         print(f"human feedback unavailable: {error}", file=sys.stderr)
         return 1
@@ -763,7 +815,9 @@ def _explain_main(intervention_id: str) -> int:
 
 def _feedback_main(intervention_id: str, category: str, note: str, rater: str | None) -> int:
     try:
-        known = any(item.intervention_id == intervention_id for item in _intervention_history())
+        known = any(
+            item.intervention_id == intervention_id for item in _intervention_history()
+        ) or any(item.supervision_event_id == intervention_id for item in _block_history())
     except (OSError, SnapshotError) as error:
         print(f"feedback refused: intervention history unavailable ({error})", file=sys.stderr)
         return 1

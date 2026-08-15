@@ -143,6 +143,13 @@ def test_missing_daemon_uses_local_gate_with_telemetry() -> None:
         "gate_ipc",
     ]
     assert records[1].event.payload["rule"] == "rm_root"
+    assert records[1].event.payload["rule_version"] == 1
+    assert records[1].event.payload["supervision_event_id"].startswith("spt-block-")
+    assert records[1].event.payload["reversibility_class"] == "B"
+    assert records[1].event.payload["effect_kind"] == "local_write"
+    assert records[1].event.event_id == (
+        f"spotter:supervision:{records[1].event.payload['supervision_event_id']}"
+    )
     assert records[2].event.payload["status"] == "unavailable"
 
 

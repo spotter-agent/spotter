@@ -20,6 +20,8 @@ from fnmatch import fnmatch
 
 from spotter.trace import TraceEvent
 
+GATE_RULE_VERSION = 1
+
 
 @dataclass(frozen=True)
 class GateDecision:
