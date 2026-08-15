@@ -37,6 +37,11 @@ def test_remote_cli_classification_uses_supported_operation_semantics() -> None:
             "gh.api.patch",
             "github:repos/org/repo/issues/1",
         ),
+        "gh api -XPOST repos/org/repo/issues": (
+            "C",
+            "gh.api.post",
+            "github:repos/org/repo/issues",
+        ),
         "kubectl get pods -n prod": ("A", "kubectl.get", "kubernetes:namespace/prod:pods"),
         "kubectl apply -f deployment.yaml": (
             "C",

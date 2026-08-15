@@ -510,6 +510,8 @@ def _option_value(words: Sequence[str], *names: str) -> str | None:
         for name in names:
             if token.startswith(name + "="):
                 return token.partition("=")[2]
+            if len(name) == 2 and token.startswith(name) and len(token) > len(name):
+                return token[len(name) :]
     return None
 
 
