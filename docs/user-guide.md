@@ -319,6 +319,9 @@ through the queued job, inference start, and decision, reporting step delays and
 terminal-without-decision, or observation-gap coverage. Non-stale `VERIFY`/`NUDGE` decisions are
 also followed through control dispatch and RPC acceptance/terminal outcome; missing, stale, failed,
 unknown, and gap-crossed control stages stay visible rather than receiving fabricated delay.
+Accepted steers count as adopted only when their client message ID is observed on the exact target
+thread, turn, and connection epoch. Target completion without that evidence remains
+`RPC_ACCEPTED_ONLY`; stale-after-accept and identity/gap-limited cases remain explicit.
 
 ### Storage maintenance
 

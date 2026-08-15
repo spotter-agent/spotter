@@ -297,6 +297,9 @@ decision까지 추적해 단계별 지연과 stale, terminal-without-decision, o
 명시적으로 보고합니다. Stale하지 않은 `VERIFY`/`NUDGE` decision은 control dispatch와 RPC
 acceptance/terminal outcome까지 이어서 측정하며, 누락·stale·실패·unknown·gap 상태를 별도
 coverage로 유지합니다.
+Accepted steer는 client message ID가 정확한 target thread, turn, connection epoch에서 관측된
+경우에만 adopted로 계산합니다. 해당 증거 없이 target turn이 끝나면 `RPC_ACCEPTED_ONLY`이며,
+stale-after-accept와 identity/gap 한계도 명시적으로 남습니다.
 
 ### 저장소 관리
 

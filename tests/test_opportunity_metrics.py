@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from spotter.identity import IdentityProvenance, RuntimeIdentity, ThreadId, TurnId
 from spotter.opportunities import add_opportunity
 from spotter.opportunity_metrics import (
     measure_opportunity_timing,
@@ -26,6 +27,7 @@ def _record(
     operation_id: str | None = None,
     occurred_at: float | None = None,
     epoch: int | None = 1,
+    identity: RuntimeIdentity | None = None,
 ) -> StepRecord:
     return StepRecord(
         step,
@@ -35,6 +37,7 @@ def _record(
             event_id=event_id,
             operation_id=operation_id,
             occurred_at=occurred_at,
+            identity=identity,
             connection_epoch=epoch,
         ),
         None,
@@ -90,6 +93,15 @@ def _records() -> list[StepRecord]:
         _record(7, "tool_result", {}, event_id="never-evidence", occurred_at=8.0),
         _record(8, "turn_completed", {}, event_id="terminal", occurred_at=9.0),
     ]
+
+
+def _identity(turn: str = "turn-1") -> RuntimeIdentity:
+    return RuntimeIdentity(
+        ThreadId("thread-1"),
+        TurnId(turn),
+        None,
+        IdentityProvenance("codex"),
+    )
 
 
 def test_signal_delay_requires_all_annotated_evidence_and_counts_post_window_work() -> None:
@@ -361,7 +373,9 @@ def test_control_delay_follows_an_intervention_decision_to_rpc_acceptance() -> N
     assert report.control_step_from_latest == (3,)
     assert report.decision_to_dispatch_steps == (1,)
     assert report.dispatch_to_resolution_steps == (1,)
-    assert "eligible=1, dispatched=1, accepted=1" in render_opportunity_timing(report)
+    rendered = render_opportunity_timing(report)
+    assert "eligible=1, dispatched=1" in rendered
+    assert "Control resolution: ACCEPTED=1" in rendered
 
 
 def test_stale_control_before_dispatch_is_not_counted_as_missing() -> None:
@@ -411,6 +425,174 @@ def test_stale_control_before_dispatch_is_not_counted_as_missing() -> None:
     assert report.control_dispatches == 0
     assert report.control_stale_before_dispatch == 1
     assert report.control_terminal_without_dispatch == 0
+
+
+def test_adoption_delay_requires_the_accepted_steer_identity() -> None:
+    identity = _identity()
+    target = {"target_turn_id": "turn-1", "target_connection_epoch": 1}
+    records = [
+        _record(0, "tool_result", {}, event_id="evidence", identity=identity),
+        _record(
+            1,
+            "signal_candidate",
+            {"status": "active", "evidence_event_ids": ["evidence"]},
+            event_id="signal",
+            identity=identity,
+        ),
+        _record(
+            2,
+            "review_job_queued",
+            {"review_job_id": "job-1", "candidate_event_ids": ["signal"]},
+            event_id="queued",
+            identity=identity,
+        ),
+        _record(
+            3,
+            "reviewer_decision",
+            {"review_job_id": "job-1", "decision": "nudge", "stale": False},
+            event_id="decision",
+            identity=identity,
+        ),
+        _record(
+            4,
+            "control_dispatch_started",
+            {
+                "review_job_id": "job-1",
+                "control_id": "control-1",
+                "control_kind": "steer",
+                "client_user_message_id": "message-1",
+                **target,
+            },
+            event_id="dispatch",
+            identity=identity,
+        ),
+        _record(
+            5,
+            "control_rpc_accepted",
+            {
+                "review_job_id": "job-1",
+                "control_id": "control-1",
+                "control_kind": "steer",
+                "client_user_message_id": "message-1",
+                **target,
+            },
+            event_id="accepted",
+            identity=identity,
+        ),
+        _record(
+            6,
+            "user_prompt",
+            {"client_user_message_id": "message-1"},
+            event_id="adopted",
+            identity=identity,
+        ),
+        _record(7, "turn_completed", {}, event_id="terminal", identity=identity),
+    ]
+    add_opportunity(
+        "s1",
+        "adoption-delay",
+        records,
+        semantic_earliest=0,
+        semantic_latest=0,
+        observable_earliest=0,
+        observable_latest=2,
+        required_evidence=(0,),
+        note="measure observed steer adoption",
+    )
+
+    report = measure_opportunity_timing("s1", records)
+
+    assert report.control_adoption_eligible == report.control_adoptions == 1
+    assert report.control_adoption_late == 1
+    assert report.control_adoption_early == report.control_adoption_within_window == 0
+    assert report.control_rpc_accepted_only == report.control_adoption_unknown == 0
+    assert report.adoption_step_from_earliest == (6,)
+    assert report.adoption_step_from_latest == (4,)
+    assert report.acceptance_to_adoption_steps == (1,)
+    assert report.decision_to_adoption_steps == (3,)
+    assert "eligible=1, observed=1" in render_opportunity_timing(report)
+
+
+def test_same_message_id_on_another_turn_is_not_adoption() -> None:
+    identity = _identity()
+    other_turn = _identity("turn-2")
+    target = {"target_turn_id": "turn-1", "target_connection_epoch": 1}
+    records = [
+        _record(0, "tool_result", {}, event_id="evidence", identity=identity),
+        _record(
+            1,
+            "signal_candidate",
+            {"status": "active", "evidence_event_ids": ["evidence"]},
+            event_id="signal",
+            identity=identity,
+        ),
+        _record(
+            2,
+            "review_job_queued",
+            {"review_job_id": "job-1", "candidate_event_ids": ["signal"]},
+            event_id="queued",
+            identity=identity,
+        ),
+        _record(
+            3,
+            "reviewer_decision",
+            {"review_job_id": "job-1", "decision": "verify", "stale": False},
+            event_id="decision",
+            identity=identity,
+        ),
+        _record(
+            4,
+            "control_dispatch_started",
+            {
+                "review_job_id": "job-1",
+                "control_id": "control-1",
+                "control_kind": "steer",
+                "client_user_message_id": "message-1",
+                **target,
+            },
+            event_id="dispatch",
+            identity=identity,
+        ),
+        _record(
+            5,
+            "control_rpc_accepted",
+            {
+                "review_job_id": "job-1",
+                "control_id": "control-1",
+                "control_kind": "steer",
+                "client_user_message_id": "message-1",
+                **target,
+            },
+            event_id="accepted",
+            identity=identity,
+        ),
+        _record(
+            6,
+            "user_prompt",
+            {"client_user_message_id": "message-1"},
+            event_id="wrong-turn-prompt",
+            identity=other_turn,
+        ),
+        _record(7, "turn_completed", {}, event_id="terminal", identity=identity),
+    ]
+    add_opportunity(
+        "s1",
+        "accepted-only",
+        records,
+        semantic_earliest=0,
+        semantic_latest=0,
+        observable_earliest=0,
+        observable_latest=2,
+        required_evidence=(0,),
+        note="matching message id on another turn is not adoption",
+    )
+
+    report = measure_opportunity_timing("s1", records)
+
+    assert report.control_adoption_eligible == 1
+    assert report.control_adoptions == 0
+    assert report.control_rpc_accepted_only == 1
+    assert report.control_adoption_unknown == 0
 
 
 def test_opportunity_reports_merge_without_inventing_coverage() -> None:

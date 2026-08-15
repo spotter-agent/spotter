@@ -753,6 +753,10 @@ For non-stale `VERIFY`/`NUDGE` decisions, the report then follows `review_job_id
 attempt and `control_id` to RPC acceptance or a terminal control outcome. Dispatch timing is
 classified against the same observable window; missing dispatch/resolution, stale controls,
 failures, unknown outcomes, and gap-crossed intervals remain separate coverage states.
+Accepted steers are adoption-eligible only when they expose a client message ID and exact
+thread/turn/connection target. A matching `user_prompt` observed after dispatch is classified
+against the opportunity window; a target-turn terminal without that observation is
+`RPC_ACCEPTED_ONLY`, while stale-after-accept and identity/gap-limited cases stay separate.
 
 ## 8.3 Snapshot state
 

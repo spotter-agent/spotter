@@ -50,8 +50,13 @@ class OpportunityTimingReport:
     control_eligible_decisions: int
     control_dispatches: int
     control_rpc_accepted: int
+    control_adoption_eligible: int
+    control_adoptions: int
+    control_rpc_accepted_only: int
+    control_adoption_unknown: int
     control_stale_before_dispatch: int
     control_stale_after_dispatch: int
+    control_stale_after_accept: int
     control_failed: int
     control_unknown: int
     control_terminal_without_dispatch: int
@@ -64,6 +69,13 @@ class OpportunityTimingReport:
     control_step_from_latest: tuple[int, ...]
     decision_to_dispatch_steps: tuple[int, ...]
     dispatch_to_resolution_steps: tuple[int, ...]
+    control_adoption_early: int
+    control_adoption_within_window: int
+    control_adoption_late: int
+    adoption_step_from_earliest: tuple[int, ...]
+    adoption_step_from_latest: tuple[int, ...]
+    acceptance_to_adoption_steps: tuple[int, ...]
+    decision_to_adoption_steps: tuple[int, ...]
 
 
 def measure_opportunity_timing(session: str, records: list[StepRecord]) -> OpportunityTimingReport:
@@ -87,7 +99,9 @@ def measure_opportunity_timing(session: str, records: list[StepRecord]) -> Oppor
     inference_to_decision_steps: list[int] = []
     queue_to_decision_steps: list[int] = []
     control_eligible = control_dispatches = control_accepted = 0
-    control_stale_before_dispatch = control_stale_after_dispatch = 0
+    control_adoption_eligible = control_adoptions = 0
+    control_rpc_accepted_only = control_adoption_unknown = 0
+    control_stale_before_dispatch = control_stale_after_dispatch = control_stale_after_accept = 0
     control_failed = control_unknown = 0
     control_terminal_without_dispatch = control_terminal_without_resolution = 0
     control_unjudgeable = 0
@@ -96,6 +110,11 @@ def measure_opportunity_timing(session: str, records: list[StepRecord]) -> Oppor
     control_step_from_latest: list[int] = []
     decision_to_dispatch_steps: list[int] = []
     dispatch_to_resolution_steps: list[int] = []
+    adoption_early = adoption_within = adoption_late = 0
+    adoption_step_from_earliest: list[int] = []
+    adoption_step_from_latest: list[int] = []
+    acceptance_to_adoption_steps: list[int] = []
+    decision_to_adoption_steps: list[int] = []
 
     for window in windows:
         if not matches(window, records):
@@ -228,6 +247,34 @@ def measure_opportunity_timing(session: str, records: list[StepRecord]) -> Oppor
         dispatch_to_resolution_steps.append(resolution.step - dispatch.step)
         if resolution.event.kind == "control_rpc_accepted":
             control_accepted += 1
+            if not _adoption_eligible(resolution):
+                continue
+            control_adoption_eligible += 1
+            adoption = _control_adoption(dispatch, resolution, records)
+            adoption_end = adoption.step if adoption is not None else len(records) - 1
+            if _has_observation_gap(records[dispatch.step : adoption_end + 1]):
+                control_adoption_unknown += 1
+                continue
+            if adoption is None:
+                if _control_stale_after(resolution, records):
+                    control_stale_after_accept += 1
+                elif _target_window_closed(resolution, records):
+                    control_rpc_accepted_only += 1
+                else:
+                    control_adoption_unknown += 1
+                continue
+            control_adoptions += 1
+            adoption_step_from_earliest.append(adoption.step - earliest)
+            adoption_step_from_latest.append(adoption.step - latest)
+            decision_to_adoption_steps.append(adoption.step - decision.step)
+            if adoption.step >= resolution.step:
+                acceptance_to_adoption_steps.append(adoption.step - resolution.step)
+            if adoption.step < earliest:
+                adoption_early += 1
+            elif adoption.step <= latest:
+                adoption_within += 1
+            else:
+                adoption_late += 1
             continue
         outcome = resolution.event.payload.get("outcome")
         if outcome == "failed":
@@ -274,8 +321,13 @@ def measure_opportunity_timing(session: str, records: list[StepRecord]) -> Oppor
         control_eligible_decisions=control_eligible,
         control_dispatches=control_dispatches,
         control_rpc_accepted=control_accepted,
+        control_adoption_eligible=control_adoption_eligible,
+        control_adoptions=control_adoptions,
+        control_rpc_accepted_only=control_rpc_accepted_only,
+        control_adoption_unknown=control_adoption_unknown,
         control_stale_before_dispatch=control_stale_before_dispatch,
         control_stale_after_dispatch=control_stale_after_dispatch,
+        control_stale_after_accept=control_stale_after_accept,
         control_failed=control_failed,
         control_unknown=control_unknown,
         control_terminal_without_dispatch=control_terminal_without_dispatch,
@@ -288,6 +340,13 @@ def measure_opportunity_timing(session: str, records: list[StepRecord]) -> Oppor
         control_step_from_latest=tuple(control_step_from_latest),
         decision_to_dispatch_steps=tuple(decision_to_dispatch_steps),
         dispatch_to_resolution_steps=tuple(dispatch_to_resolution_steps),
+        control_adoption_early=adoption_early,
+        control_adoption_within_window=adoption_within,
+        control_adoption_late=adoption_late,
+        adoption_step_from_earliest=tuple(adoption_step_from_earliest),
+        adoption_step_from_latest=tuple(adoption_step_from_latest),
+        acceptance_to_adoption_steps=tuple(acceptance_to_adoption_steps),
+        decision_to_adoption_steps=tuple(decision_to_adoption_steps),
     )
 
 
@@ -299,6 +358,8 @@ def render_opportunity_timing(report: OpportunityTimingReport) -> str:
     started = report.review_inferences_started
     control_eligible = report.control_eligible_decisions
     dispatched = report.control_dispatches
+    adoption_eligible = report.control_adoption_eligible
+    adopted = report.control_adoptions
     return "\n".join(
         [
             "Intervention opportunity timing (annotation-aware):",
@@ -335,12 +396,14 @@ def render_opportunity_timing(report: OpportunityTimingReport) -> str:
             f"queue_to_inference={_sample(report.queue_to_inference_steps, queued)}, "
             f"inference_to_decision={_sample(report.inference_to_decision_steps, started)}, "
             f"queue_to_decision={_sample(report.queue_to_decision_steps, queued)}",
-            "  Evidence-linked control: "
-            f"eligible={report.control_eligible_decisions}, "
-            f"dispatched={report.control_dispatches}, accepted={report.control_rpc_accepted}; "
+            "  Evidence-linked control coverage: "
+            f"eligible={report.control_eligible_decisions}, dispatched={report.control_dispatches}",
+            "  Control dispatch timing: "
             f"EARLY={report.control_dispatch_early} "
             f"WITHIN_WINDOW={report.control_dispatch_within_window} "
-            f"LATE={report.control_dispatch_late} "
+            f"LATE={report.control_dispatch_late}",
+            "  Control resolution: "
+            f"ACCEPTED={report.control_rpc_accepted} "
             f"STALE_BEFORE_DISPATCH={report.control_stale_before_dispatch} "
             f"STALE_AFTER_DISPATCH={report.control_stale_after_dispatch} "
             f"FAILED={report.control_failed} UNKNOWN={report.control_unknown} "
@@ -353,6 +416,21 @@ def render_opportunity_timing(report: OpportunityTimingReport) -> str:
             f"decision_to_dispatch={_sample(report.decision_to_dispatch_steps, control_eligible)}, "
             "dispatch_to_resolution="
             f"{_sample(report.dispatch_to_resolution_steps, dispatched)}",
+            "  Control adoption: "
+            f"eligible={report.control_adoption_eligible}, observed={report.control_adoptions}; "
+            f"EARLY={report.control_adoption_early} "
+            f"WITHIN_WINDOW={report.control_adoption_within_window} "
+            f"LATE={report.control_adoption_late} "
+            f"RPC_ACCEPTED_ONLY={report.control_rpc_accepted_only} "
+            f"STALE_AFTER_ACCEPT={report.control_stale_after_accept} "
+            f"ADOPTION_UNKNOWN={report.control_adoption_unknown}",
+            "  Adoption step delay: "
+            f"from_earliest={_sample(report.adoption_step_from_earliest, adopted)}, "
+            f"from_latest={_sample(report.adoption_step_from_latest, adopted)}, "
+            "acceptance_to_adoption="
+            f"{_sample(report.acceptance_to_adoption_steps, adoption_eligible)}, "
+            "decision_to_adoption="
+            f"{_sample(report.decision_to_adoption_steps, adoption_eligible)}",
         ]
     )
 
@@ -421,10 +499,15 @@ def merge_opportunity_timing(
         control_eligible_decisions=sum(report.control_eligible_decisions for report in reports),
         control_dispatches=sum(report.control_dispatches for report in reports),
         control_rpc_accepted=sum(report.control_rpc_accepted for report in reports),
+        control_adoption_eligible=sum(report.control_adoption_eligible for report in reports),
+        control_adoptions=sum(report.control_adoptions for report in reports),
+        control_rpc_accepted_only=sum(report.control_rpc_accepted_only for report in reports),
+        control_adoption_unknown=sum(report.control_adoption_unknown for report in reports),
         control_stale_before_dispatch=sum(
             report.control_stale_before_dispatch for report in reports
         ),
         control_stale_after_dispatch=sum(report.control_stale_after_dispatch for report in reports),
+        control_stale_after_accept=sum(report.control_stale_after_accept for report in reports),
         control_failed=sum(report.control_failed for report in reports),
         control_unknown=sum(report.control_unknown for report in reports),
         control_terminal_without_dispatch=sum(
@@ -450,6 +533,23 @@ def merge_opportunity_timing(
         ),
         dispatch_to_resolution_steps=tuple(
             value for report in reports for value in report.dispatch_to_resolution_steps
+        ),
+        control_adoption_early=sum(report.control_adoption_early for report in reports),
+        control_adoption_within_window=sum(
+            report.control_adoption_within_window for report in reports
+        ),
+        control_adoption_late=sum(report.control_adoption_late for report in reports),
+        adoption_step_from_earliest=tuple(
+            value for report in reports for value in report.adoption_step_from_earliest
+        ),
+        adoption_step_from_latest=tuple(
+            value for report in reports for value in report.adoption_step_from_latest
+        ),
+        acceptance_to_adoption_steps=tuple(
+            value for report in reports for value in report.acceptance_to_adoption_steps
+        ),
+        decision_to_adoption_steps=tuple(
+            value for report in reports for value in report.decision_to_adoption_steps
         ),
     )
 
@@ -550,6 +650,74 @@ def _control_resolution(dispatch: StepRecord, records: list[StepRecord]) -> Step
         ),
         None,
     )
+
+
+def _adoption_eligible(accepted: StepRecord) -> bool:
+    payload = accepted.event.payload
+    client_id = payload.get("client_user_message_id")
+    return payload.get("control_kind") == "steer" and isinstance(client_id, str) and bool(client_id)
+
+
+def _control_adoption(
+    dispatch: StepRecord, accepted: StepRecord, records: list[StepRecord]
+) -> StepRecord | None:
+    client_id = accepted.event.payload.get("client_user_message_id")
+    target = _control_target_key(accepted)
+    if not isinstance(client_id, str) or not client_id or target is None:
+        return None
+    return next(
+        (
+            record
+            for record in records[dispatch.step + 1 :]
+            if record.event.kind == "user_prompt"
+            and record.event.payload.get("client_user_message_id") == client_id
+            and _control_target_key(record) == target
+        ),
+        None,
+    )
+
+
+def _control_stale_after(accepted: StepRecord, records: list[StepRecord]) -> bool:
+    control_id = accepted.event.payload.get("control_id")
+    if not isinstance(control_id, str) or not control_id:
+        return False
+    return any(
+        record.event.kind == "control_terminal"
+        and record.event.payload.get("control_id") == control_id
+        and record.event.payload.get("outcome") == "stale"
+        for record in records[accepted.step + 1 :]
+    )
+
+
+def _target_window_closed(accepted: StepRecord, records: list[StepRecord]) -> bool:
+    target = _control_target_key(accepted)
+    return target is not None and any(
+        record.event.kind == "turn_completed" and _control_target_key(record) == target
+        for record in records[accepted.step + 1 :]
+    )
+
+
+def _control_target_key(record: StepRecord) -> tuple[str, str, int] | None:
+    event = record.event
+    identity = event.identity
+    thread_id = identity.thread_id.value if identity is not None and identity.thread_id else None
+    target_turn = event.payload.get("target_turn_id")
+    turn_id = (
+        target_turn
+        if isinstance(target_turn, str) and target_turn
+        else identity.turn_id.value
+        if identity is not None and identity.turn_id is not None
+        else None
+    )
+    target_epoch = event.payload.get("target_connection_epoch")
+    epoch = (
+        target_epoch
+        if isinstance(target_epoch, int) and not isinstance(target_epoch, bool)
+        else event.connection_epoch
+    )
+    if thread_id is None or turn_id is None or epoch is None:
+        return None
+    return thread_id, turn_id, epoch
 
 
 def _window_closed(latest: int, records: list[StepRecord]) -> bool:

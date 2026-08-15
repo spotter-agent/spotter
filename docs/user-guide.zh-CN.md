@@ -282,6 +282,9 @@ spotter label-opportunity --session <id> --opportunity-id <failure-id> \
 推理开始和决策，报告各阶段步数延迟，并显式区分 stale、终止前无决策和观察缺口覆盖。
 对于非 stale 的 `VERIFY`/`NUDGE` 决策，它还会继续跟踪控制分发及 RPC 接受或终止结果；缺失、
 stale、失败、未知和跨观察缺口的控制阶段都会保留为独立覆盖状态。
+只有在精确匹配目标 thread、turn 和 connection epoch 时观察到 client message ID，已接受的 steer
+才会计为 adopted。目标 turn 在缺少该证据时结束会标为 `RPC_ACCEPTED_ONLY`；接受后 stale 以及
+身份或观察缺口导致的未知状态也会显式保留。
 
 ### 存储维护
 

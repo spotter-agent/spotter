@@ -169,8 +169,10 @@ failed outcomes, and files before detection. It also follows the candidate into 
 review job and reports queue, inference-start, and decision step delay plus stale, terminal-without-
 decision, and gap-limited coverage. Non-stale intervention decisions now continue through control
 dispatch and RPC acceptance/terminal outcome, with decision-to-dispatch and dispatch-to-resolution
-step coverage. Open windows are `UNJUDGEABLE`, not `NEVER`; observed adoption remains a subsequent
-slice.
+step coverage. Accepted steers now require exact message and target identity to count as observed
+adoption, with acceptance-to-adoption and decision-to-adoption step delay plus explicit
+`RPC_ACCEPTED_ONLY`, stale-after-accept, and unknown coverage. Open windows are `UNJUDGEABLE`, not
+`NEVER`; representative labeling and cross-mode comparison remain.
 
 ---
 
