@@ -64,6 +64,7 @@ from spotter.integration import IntegrationError, IntegrationManager, Integratio
 from spotter.integration_inventory import (
     IntegrationInventory,
     IntegrationInventoryError,
+    IntegrationPurger,
     IntegrationResourceInspection,
 )
 from spotter.labels import LabelError, add_label, valid_session
@@ -200,7 +201,8 @@ def build_parser() -> argparse.ArgumentParser:
             "analyze: summarize journaled sessions; fork: branch a session at a step; "
             "fork-coverage: classify each session proposal for replay eligibility; "
             "prune: drop unreferenced refs/spotter snapshots (dry-run without --apply); "
-            "purge: preview resources or remove exact owned snapshots, data, and log contents; "
+            "purge: preview resources or remove exact owned snapshots, data, integration, and "
+            "log contents; "
             "pins: add, remove, or list durable manual snapshot roots; "
             "review: run the shadow reviewer on a session (records only, injects nothing); "
             "experiment: guidance or identical-neutral fork pairs (needs --run to execute); "
@@ -306,7 +308,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--integration",
         dest="purge_integration",
         action="store_true",
-        help="purge: preview exact integration-owned resources",
+        help="purge: remove exact integration-owned resources",
     )
     parser.add_argument(
         "--logs",
@@ -527,8 +529,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         if args.purge_all and not args.dry_run:
             parser.error("destructive --all is not implemented; use --dry-run")
-        if args.purge_integration and not args.dry_run:
-            parser.error("destructive --integration is not implemented; use --dry-run")
         if args.target is not None or args.portable:
             parser.error("purge accepts only a scope, optional --dry-run, and optional --json")
         if args.apply:
@@ -536,7 +536,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.purge_data:
             return _purge_data_main(json_output=args.json_output, apply=not args.dry_run)
         if args.purge_integration:
-            return _purge_integration_preview_main(json_output=args.json_output)
+            return _purge_integration_main(json_output=args.json_output, apply=not args.dry_run)
         if args.purge_logs:
             return _purge_logs_main(json_output=args.json_output, apply=not args.dry_run)
         return _purge_main(
@@ -1984,10 +1984,18 @@ def _data_purge_outcome(item: DataResourceInspection) -> str:
     return "planned"
 
 
-def _purge_integration_preview_main(*, json_output: bool) -> int:
-    """Preview exact integration-owned resources without mutation."""
+def _purge_integration_main(*, json_output: bool, apply: bool) -> int:
+    """Preview or remove exact integration-owned resources under the lifecycle lock."""
     try:
-        inspections = IntegrationInventory().inspect()
+        if apply:
+            result = IntegrationPurger().purge()
+            inspections = result.resources
+            outcomes = result.outcomes
+            failures = result.failures
+        else:
+            inspections = IntegrationInventory().inspect()
+            outcomes = {}
+            failures = {}
     except (OSError, IntegrationInventoryError) as error:
         print(f"purge failed: {error}", file=sys.stderr)
         return 1
@@ -2003,6 +2011,10 @@ def _purge_integration_preview_main(*, json_output: bool) -> int:
 
     groups = ("SAFE_OWNED", "INACCESSIBLE", "AMBIGUOUS")
     summary = {name: sum(item.confidence.value == name for item in inspections) for name in groups}
+
+    def resource_key(item: IntegrationResourceInspection) -> tuple[str, str]:
+        return item.resource_type, item.resource_id
+
     resources = [
         {
             "resource_type": item.resource_type,
@@ -2011,8 +2023,8 @@ def _purge_integration_preview_main(*, json_output: bool) -> int:
             "confidence": item.confidence.value,
             "presence": item.presence.value,
             "reason": item.reason,
-            "outcome": outcome(item),
-            "failure": None,
+            "outcome": outcomes.get(resource_key(item), outcome(item)),
+            "failure": failures.get(resource_key(item)),
         }
         for item in inspections
     ]
@@ -2021,8 +2033,8 @@ def _purge_integration_preview_main(*, json_output: bool) -> int:
             json.dumps(
                 {
                     "scope": "integration",
-                    "dry_run": True,
-                    "deletion_supported": False,
+                    "dry_run": not apply,
+                    "deletion_supported": True,
                     "summary": summary,
                     "resources": resources,
                 },
@@ -2030,17 +2042,19 @@ def _purge_integration_preview_main(*, json_output: bool) -> int:
             )
         )
     else:
-        print("purge preview (dry-run); scope=integration")
+        action = "purge results" if apply else "purge preview (dry-run)"
+        print(f"{action}; scope=integration")
         for name in groups:
             matching = [item for item in inspections if item.confidence.value == name]
             print(f"{name} ({len(matching)})")
             for item in matching:
                 print(
                     f"  {item.resource_type} {item.resource_id} [{item.presence.value.lower()}] "
-                    f"- {outcome(item)} - {item.reason}"
+                    f"- {outcomes.get(resource_key(item), outcome(item))} - {item.reason}"
                 )
     return int(
-        any(
+        bool(failures)
+        or any(
             item.confidence in {OwnershipConfidence.INACCESSIBLE, OwnershipConfidence.AMBIGUOUS}
             for item in inspections
         )

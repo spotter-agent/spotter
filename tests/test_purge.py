@@ -1,5 +1,6 @@
 """Conservative repository-aware purge preview (#89)."""
 
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -8,8 +9,10 @@ import pytest
 
 import spotter.cli as cli
 from spotter.cli import main
+from spotter.daemon import DaemonStatus, RuntimeHealth
 from spotter.hook import journal_path
 from spotter.integration import MANIFEST_SCHEMA, IntegrationManifest
+from spotter.integration_inventory import IntegrationInventory
 from spotter.log_registry import LogRegistry, LogRegistryError, OwnedLog
 from spotter.replay import FORK_MANIFEST_SCHEMA, FORK_MANIFEST_SCHEMA_VERSION
 from spotter.repository_registry import RepositoryRegistry
@@ -506,10 +509,185 @@ def test_integration_purge_preview_is_non_mutating(
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["scope"] == "integration"
-    assert payload["deletion_supported"] is False
+    assert payload["deletion_supported"] is True
     assert {resource["group"] for resource in payload["resources"]} == {"SAFE_OWNED"}
     assert manifest_path.exists()
     assert hooks_path.read_bytes() == before
+
+
+def test_integration_purge_removes_exact_resources_and_keeps_lock_tombstone(
+    spotter_home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    codex_home = tmp_path / "codex"
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    hooks_path = codex_home / "hooks.json"
+    hooks_path.parent.mkdir()
+    owned_hook = {"type": "command", "command": "/bin/spotter hook"}
+    user_hook = {"type": "command", "command": "/bin/user-hook"}
+    owned = {"event": "PreToolUse", "matcher": ".*", "hook": owned_hook}
+    hooks_path.write_text(
+        json.dumps({"hooks": {"PreToolUse": [{"matcher": ".*", "hooks": [owned_hook, user_hook]}]}})
+    )
+    backup_content = b"owned backup"
+    digest = hashlib.sha256(backup_content).hexdigest()[:12]
+    backup = spotter_home / "backups" / f"codex-hooks-{digest}.bak"
+    backup.parent.mkdir(parents=True)
+    backup.write_bytes(backup_content)
+    manifest_path = spotter_home / "integrations/codex.json"
+    IntegrationManifest(
+        schema=MANIFEST_SCHEMA,
+        state="ready",
+        agent="codex",
+        setup_by="test",
+        agent_path="/bin/codex",
+        agent_version="codex 1.0",
+        codex_home=str(codex_home),
+        app_server_strategy="pending-external",
+        app_server_endpoint=None,
+        runtime_mode="portable",
+        service_registration=None,
+        service_owned=False,
+        hooks_file=str(hooks_path),
+        hooks_file_created=False,
+        owned_hooks=[owned],
+        backup_paths=[str(backup)],
+    ).save(manifest_path)
+    lock_path = manifest_path.parent / "codex.lock"
+    lock_path.touch()
+
+    assert main(["purge", "--integration", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    outcomes = {item["resource_type"]: item["outcome"] for item in payload["resources"]}
+    assert payload["dry_run"] is False
+    assert outcomes["host_hook"] == "removed"
+    assert outcomes["backup"] == "removed"
+    assert outcomes["manifest"] == "preserved_synchronization"
+    assert outcomes["lock"] == "preserved_synchronization"
+    assert json.loads(hooks_path.read_text())["hooks"]["PreToolUse"][0]["hooks"] == [user_hook]
+    assert not backup.exists()
+    assert lock_path.is_file()
+    tombstone = IntegrationManifest.load(manifest_path)
+    assert tombstone is not None
+    assert tombstone.state == "purged"
+    assert tombstone.owned_hooks == []
+    assert tombstone.backup_paths == []
+
+    assert main(["purge", "--integration", "--json"]) == 0
+    capsys.readouterr()
+    assert lock_path.is_file()
+    assert IntegrationManifest.load(manifest_path) is not None
+
+
+def test_integration_purge_refuses_ambiguous_hook_without_partial_cleanup(
+    spotter_home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    codex_home = tmp_path / "codex"
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    hooks_path = codex_home / "hooks.json"
+    hooks_path.parent.mkdir()
+    expected = {"type": "command", "command": "/bin/spotter hook"}
+    modified = {"type": "command", "command": "/bin/spotter hook --changed"}
+    owned = {"event": "PreToolUse", "matcher": ".*", "hook": expected}
+    hooks_path.write_text(
+        json.dumps({"hooks": {"PreToolUse": [{"matcher": ".*", "hooks": [modified]}]}})
+    )
+    manifest_path = spotter_home / "integrations/codex.json"
+    IntegrationManifest(
+        schema=MANIFEST_SCHEMA,
+        state="ready",
+        agent="codex",
+        setup_by="test",
+        agent_path="/bin/codex",
+        agent_version="codex 1.0",
+        codex_home=str(codex_home),
+        app_server_strategy="pending-external",
+        app_server_endpoint=None,
+        runtime_mode="portable",
+        service_registration=None,
+        service_owned=False,
+        hooks_file=str(hooks_path),
+        hooks_file_created=False,
+        owned_hooks=[owned],
+    ).save(manifest_path)
+    (manifest_path.parent / "codex.lock").touch()
+    before_hooks = hooks_path.read_bytes()
+    before_manifest = manifest_path.read_bytes()
+
+    assert main(["purge", "--integration", "--json"]) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    assert any(item["group"] == "AMBIGUOUS" for item in payload["resources"])
+    assert hooks_path.read_bytes() == before_hooks
+    assert manifest_path.read_bytes() == before_manifest
+
+
+def test_integration_purge_restores_hooks_when_service_removal_fails(
+    spotter_home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    codex_home = tmp_path / "codex"
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    hooks_path = codex_home / "hooks.json"
+    hooks_path.parent.mkdir()
+    hook = {"type": "command", "command": "/bin/spotter hook"}
+    owned = {"event": "PreToolUse", "matcher": ".*", "hook": hook}
+    hooks_path.write_text(
+        json.dumps({"hooks": {"PreToolUse": [{"matcher": ".*", "hooks": [hook]}]}})
+    )
+    service_path = tmp_path / "spotterd.service"
+    service_path.write_bytes(b"expected service")
+    manifest_path = spotter_home / "integrations/codex.json"
+    IntegrationManifest(
+        schema=MANIFEST_SCHEMA,
+        state="ready",
+        agent="codex",
+        setup_by="test",
+        agent_path="/bin/codex",
+        agent_version="codex 1.0",
+        codex_home=str(codex_home),
+        app_server_strategy="pending-external",
+        app_server_endpoint=None,
+        runtime_mode="managed",
+        service_registration=str(service_path),
+        service_owned=True,
+        hooks_file=str(hooks_path),
+        hooks_file_created=True,
+        owned_hooks=[owned],
+    ).save(manifest_path)
+    (manifest_path.parent / "codex.lock").touch()
+    before = hooks_path.read_bytes()
+
+    class FailingService:
+        def expected_definition(self) -> bytes:
+            return b"expected service"
+
+        async def uninstall(self) -> DaemonStatus:
+            return DaemonStatus(RuntimeHealth.DEGRADED, detail="still running")
+
+    monkeypatch.setattr(
+        IntegrationInventory,
+        "_service_manager",
+        lambda self, manifest, path: FailingService(),
+    )
+
+    assert main(["purge", "--integration", "--json"]) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    service = next(item for item in payload["resources"] if item["resource_type"] == "service")
+    assert service["outcome"] == "failed_retryable"
+    assert service["failure"] == "managed service removal failed: still running"
+    assert hooks_path.read_bytes() == before
+    assert service_path.exists()
+    assert IntegrationManifest.load(manifest_path) is not None
 
 
 def test_missing_repository_is_inaccessible(
@@ -570,8 +748,6 @@ def test_purge_refuses_non_preview_invocation() -> None:
         main(["purge", "--snapshots", "--apply"])
     with pytest.raises(SystemExit):
         main(["purge", "--logs", "--apply"])
-    with pytest.raises(SystemExit):
-        main(["purge", "--integration"])
     with pytest.raises(SystemExit):
         main(["purge", "codex", "--all", "--dry-run"])
 

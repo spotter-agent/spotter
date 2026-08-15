@@ -597,6 +597,7 @@ class IntegrationManager:
 
             previous_hooks = existing.legacy_hooks_removed if existing else []
             previous_plugins = existing.legacy_plugins_removed if existing else []
+            retained = existing if existing is not None and existing.state != "purged" else None
             manifest = IntegrationManifest(
                 schema=MANIFEST_SCHEMA,
                 state="ready",
@@ -613,13 +614,13 @@ class IntegrationManager:
                 runtime_mode=plan.runtime_mode,
                 service_registration=plan.service_registration,
                 service_owned=(
-                    existing.service_owned
-                    if existing
+                    retained.service_owned
+                    if retained
                     else (not service_was_running or not self.portable)
                 ),
                 hooks_file=str(self.hooks_path),
                 hooks_file_created=(
-                    hooks_before is None if existing is None else existing.hooks_file_created
+                    hooks_before is None if retained is None else retained.hooks_file_created
                 ),
                 owned_hooks=self._owned_hooks(),
                 config_path=str(self.config_path) if self.config_path is not None else None,
@@ -628,28 +629,28 @@ class IntegrationManager:
                     dict.fromkeys([*previous_plugins, *plan.legacy_plugins])
                 ),
                 config_fingerprint_before=(
-                    existing.config_fingerprint_before
-                    if existing
+                    retained.config_fingerprint_before
+                    if retained
                     else (_fingerprint(config_before) if config_before is not None else None)
                 ),
                 config_fingerprint_after=(
                     _fingerprint(config_after) if config_after is not None else None
                 ),
                 hooks_fingerprint_before=(
-                    existing.hooks_fingerprint_before
-                    if existing
+                    retained.hooks_fingerprint_before
+                    if retained
                     else (_fingerprint(hooks_before) if hooks_before is not None else None)
                 ),
                 hooks_fingerprint_after=_fingerprint(hooks_after),
                 backup_paths=list(
                     dict.fromkeys(
                         [
-                            *(existing.backup_paths if existing else []),
+                            *(retained.backup_paths if retained else []),
                             *(str(path) for path in backups),
                         ]
                     )
                 ),
-                created_at=existing.created_at if existing else _now(),
+                created_at=retained.created_at if retained else _now(),
                 updated_at=_now(),
             )
             try:

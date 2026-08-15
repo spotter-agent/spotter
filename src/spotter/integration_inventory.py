@@ -1,25 +1,30 @@
-"""Ownership-aware preview of Spotter integration resources."""
+"""Ownership-aware inspection and cleanup of Spotter integration resources."""
 
+import asyncio
+import copy
 import hashlib
 import json
 import os
 import stat
 import sys
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
+from datetime import UTC, datetime
+from fcntl import LOCK_EX, LOCK_UN, flock
 from pathlib import Path
 from typing import Any
 
-from spotter.daemon import DaemonError, ManagedServiceManager
+from spotter.daemon import DaemonError, ManagedServiceManager, RuntimeHealth
 from spotter.integration import (
     MANIFEST_SCHEMA,
     MANIFEST_SCHEMA_NAME,
     MANIFEST_SCHEMA_VERSION,
     IntegrationError,
     IntegrationManifest,
+    _atomic_write,
     is_spotter_hook,
 )
-from spotter.paths import RuntimeLayout
+from spotter.paths import RuntimeLayout, secure_dir
 from spotter.repository_registry import OwnershipConfidence, ResourcePresence
 
 
@@ -36,6 +41,19 @@ class IntegrationInventoryError(RuntimeError):
     """Integration ownership cannot be inspected safely."""
 
 
+@dataclass(frozen=True)
+class IntegrationInventorySnapshot:
+    manifest: IntegrationManifest | None
+    resources: tuple[IntegrationResourceInspection, ...]
+
+
+@dataclass(frozen=True)
+class IntegrationPurgeResult:
+    resources: tuple[IntegrationResourceInspection, ...]
+    outcomes: dict[tuple[str, str], str]
+    failures: dict[tuple[str, str], str]
+
+
 class IntegrationInventory:
     def __init__(self, layout: RuntimeLayout | None = None, codex_home: Path | None = None) -> None:
         self.layout = layout or RuntimeLayout.discover()
@@ -44,6 +62,10 @@ class IntegrationInventory:
         self.lock_path = self.layout.integration_dir / "codex.lock"
 
     def inspect(self) -> tuple[IntegrationResourceInspection, ...]:
+        return self.snapshot().resources
+
+    def snapshot(self) -> IntegrationInventorySnapshot:
+        """Read one exact manifest image and inspect every resource it owns."""
         inspections: list[IntegrationResourceInspection] = []
         manifest = self._manifest(inspections)
         inspections.extend(self._integration_directory(manifest))
@@ -53,7 +75,10 @@ class IntegrationInventory:
             inspections.extend(self._hooks(manifest))
             inspections.extend(self._service(manifest))
             inspections.extend(self._backups(manifest))
-        return tuple(sorted(inspections, key=lambda item: (item.resource_type, item.resource_id)))
+        resources = tuple(
+            sorted(inspections, key=lambda item: (item.resource_type, item.resource_id))
+        )
+        return IntegrationInventorySnapshot(manifest, resources)
 
     def _manifest(
         self, inspections: list[IntegrationResourceInspection]
@@ -79,10 +104,19 @@ class IntegrationInventory:
             ):
                 raise IntegrationError("manifest does not match the current exact schema")
             manifest = IntegrationManifest(**raw)
+            if manifest.state not in {"ready", "purged"}:
+                raise IntegrationError(
+                    f"manifest has unsupported lifecycle state {manifest.state!r}"
+                )
         except (OSError, ValueError, TypeError, IntegrationError) as error:
             inspections.append(self._ambiguous("manifest", self.manifest_path, str(error)))
             return None
-        inspections.append(self._safe("manifest", self.manifest_path, "current manifest schema"))
+        reason = (
+            "purged ownership tombstone"
+            if manifest.state == "purged"
+            else "current manifest schema"
+        )
+        inspections.append(self._safe("manifest", self.manifest_path, reason))
         return manifest
 
     def _integration_directory(
@@ -262,6 +296,9 @@ class IntegrationInventory:
         return f"{key[0]}:{key[1] or '-'}:{digest}:{index}"
 
     def _service_definition(self, manifest: IntegrationManifest, path: Path) -> bytes:
+        return self._service_manager(manifest, path).expected_definition()
+
+    def _service_manager(self, manifest: IntegrationManifest, path: Path) -> ManagedServiceManager:
         record = manifest.runtime_layout
         required = ("user_config_dir", "user_data_dir", "integration_dir", "runtime_dir", "log_dir")
         if any(not isinstance(record.get(key), str) for key in required):
@@ -287,9 +324,7 @@ class IntegrationInventory:
             if path.suffix == ".plist"
             else ("linux" if path.suffix == ".service" else sys.platform)
         )
-        return ManagedServiceManager(
-            platform=platform, registration_path=path, layout=layout
-        ).expected_definition()
+        return ManagedServiceManager(platform=platform, registration_path=path, layout=layout)
 
     @staticmethod
     def _safe(
@@ -322,3 +357,224 @@ class IntegrationInventory:
             ResourcePresence.UNKNOWN,
             reason,
         )
+
+
+class IntegrationPurger:
+    """Remove only a fully verified integration while retaining its lock inode."""
+
+    def __init__(self, inventory: IntegrationInventory | None = None) -> None:
+        self.inventory = inventory or IntegrationInventory()
+
+    def purge(self) -> IntegrationPurgeResult:
+        preflight = self.inventory.snapshot()
+        if preflight.manifest is None or self._has_uncertain(preflight.resources):
+            return self._blocked(preflight.resources)
+
+        secure_dir(self.inventory.lock_path.parent)
+        try:
+            lock_fd = os.open(
+                self.inventory.lock_path,
+                os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
+                0o600,
+            )
+        except OSError as error:
+            raise IntegrationInventoryError(f"lifecycle lock is unsafe: {error}") from error
+        lock = os.fdopen(lock_fd, "r+")
+        try:
+            metadata = os.fstat(lock.fileno())
+            if not stat.S_ISREG(metadata.st_mode):
+                raise IntegrationInventoryError("lifecycle lock is not a regular file")
+            flock(lock, LOCK_EX)
+            snapshot = self.inventory.snapshot()
+            if snapshot.manifest is None or self._has_uncertain(snapshot.resources):
+                return self._blocked(snapshot.resources)
+            return self._apply(snapshot.manifest, snapshot.resources)
+        finally:
+            flock(lock, LOCK_UN)
+            lock.close()
+
+    @staticmethod
+    def _has_uncertain(resources: tuple[IntegrationResourceInspection, ...]) -> bool:
+        return any(item.confidence != OwnershipConfidence.SAFE_OWNED for item in resources)
+
+    @staticmethod
+    def _key(item: IntegrationResourceInspection) -> tuple[str, str]:
+        return item.resource_type, item.resource_id
+
+    def _blocked(
+        self, resources: tuple[IntegrationResourceInspection, ...]
+    ) -> IntegrationPurgeResult:
+        outcomes = {
+            self._key(item): (
+                "already_absent"
+                if item.presence == ResourcePresence.ABSENT
+                else "skipped_ambiguous"
+            )
+            for item in resources
+        }
+        return IntegrationPurgeResult(resources, outcomes, {})
+
+    def _apply(
+        self,
+        manifest: IntegrationManifest,
+        resources: tuple[IntegrationResourceInspection, ...],
+    ) -> IntegrationPurgeResult:
+        outcomes = {
+            self._key(item): (
+                "already_absent"
+                if item.presence == ResourcePresence.ABSENT
+                else (
+                    "preserved_synchronization"
+                    if item.resource_type in {"lock", "manifest"}
+                    else "planned"
+                )
+            )
+            for item in resources
+        }
+        failures: dict[tuple[str, str], str] = {}
+        if manifest.state == "purged":
+            return IntegrationPurgeResult(resources, outcomes, failures)
+
+        hooks_before: bytes | None = None
+        hooks_changed = False
+        hook_path = Path(manifest.hooks_file)
+        try:
+            hooks_before, hooks_changed = self._remove_hooks(manifest, hook_path)
+        except (OSError, ValueError, IntegrationError) as error:
+            self._fail_type(resources, outcomes, failures, "host_hook", str(error))
+            return IntegrationPurgeResult(resources, outcomes, failures)
+
+        service_item = next((item for item in resources if item.resource_type == "service"), None)
+        if service_item is not None and service_item.presence == ResourcePresence.PRESENT:
+            try:
+                manager = self.inventory._service_manager(
+                    manifest, Path(manifest.service_registration or "")
+                )
+                status = asyncio.run(manager.uninstall())
+                if status.health != RuntimeHealth.UNAVAILABLE:
+                    raise IntegrationInventoryError(
+                        f"managed service removal failed: {status.detail or status.health}"
+                    )
+                outcomes[self._key(service_item)] = "removed"
+            except Exception as error:
+                if hooks_changed:
+                    self._restore_hooks(hook_path, hooks_before)
+                key = self._key(service_item)
+                outcomes[key] = "failed_retryable"
+                failures[key] = str(error)
+                return IntegrationPurgeResult(resources, outcomes, failures)
+
+        for item in resources:
+            if item.resource_type != "backup" or item.presence == ResourcePresence.ABSENT:
+                continue
+            key = self._key(item)
+            try:
+                self._unlink_verified_backup(Path(item.resource_id))
+            except (OSError, IntegrationInventoryError) as error:
+                outcomes[key] = "failed_retryable"
+                failures[key] = str(error)
+            else:
+                outcomes[key] = "removed"
+
+        for item in resources:
+            if item.resource_type == "host_hook" and item.presence == ResourcePresence.PRESENT:
+                outcomes[self._key(item)] = "removed"
+
+        if failures:
+            return IntegrationPurgeResult(resources, outcomes, failures)
+
+        tombstone = replace(
+            manifest,
+            state="purged",
+            service_registration=None,
+            service_owned=False,
+            owned_hooks=[],
+            hooks_file_created=False,
+            config_path=None,
+            legacy_hooks_removed=[],
+            legacy_plugins_removed=[],
+            config_fingerprint_before=None,
+            config_fingerprint_after=None,
+            hooks_fingerprint_before=None,
+            hooks_fingerprint_after=None,
+            backup_paths=[],
+            updated_at=datetime.now(UTC).isoformat(),
+        )
+        try:
+            _atomic_write(
+                self.inventory.manifest_path,
+                (json.dumps(asdict(tombstone), indent=2, sort_keys=True) + "\n").encode(),
+            )
+        except OSError as error:
+            key = ("manifest", str(self.inventory.manifest_path))
+            outcomes[key] = "failed_retryable"
+            failures[key] = str(error)
+        return IntegrationPurgeResult(resources, outcomes, failures)
+
+    def _remove_hooks(self, manifest: IntegrationManifest, path: Path) -> tuple[bytes | None, bool]:
+        try:
+            before = path.read_bytes()
+        except FileNotFoundError:
+            return None, False
+        raw = json.loads(before)
+        if not isinstance(raw, dict) or not isinstance(raw.get("hooks"), dict):
+            raise IntegrationError("Codex hooks file has an unsupported shape")
+        updated = copy.deepcopy(raw)
+        remaining = Counter(self.inventory._hook_key(entry) for entry in manifest.owned_hooks)
+        events = updated["hooks"]
+        for event, groups in list(events.items()):
+            kept_groups = []
+            for group in groups:
+                kept_hooks = []
+                matcher = group.get("matcher")
+                for hook in group["hooks"]:
+                    key = self.inventory._hook_key(
+                        {"event": event, "matcher": matcher, "hook": hook}
+                    )
+                    if remaining[key]:
+                        remaining[key] -= 1
+                    else:
+                        kept_hooks.append(hook)
+                if kept_hooks:
+                    group["hooks"] = kept_hooks
+                    kept_groups.append(group)
+            if kept_groups:
+                events[event] = kept_groups
+            else:
+                events.pop(event, None)
+        if manifest.hooks_file_created and updated == {"hooks": {}}:
+            path.unlink(missing_ok=True)
+        else:
+            _atomic_write(path, (json.dumps(updated, indent=2, sort_keys=True) + "\n").encode())
+        return before, True
+
+    @staticmethod
+    def _restore_hooks(path: Path, before: bytes | None) -> None:
+        if before is None:
+            path.unlink(missing_ok=True)
+        else:
+            _atomic_write(path, before)
+
+    @staticmethod
+    def _unlink_verified_backup(path: Path) -> None:
+        metadata = path.stat(follow_symlinks=False)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise IntegrationInventoryError("backup is not a regular file")
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+        if not path.stem.endswith(f"-{digest}"):
+            raise IntegrationInventoryError("backup fingerprint changed")
+        path.unlink()
+
+    def _fail_type(
+        self,
+        resources: tuple[IntegrationResourceInspection, ...],
+        outcomes: dict[tuple[str, str], str],
+        failures: dict[tuple[str, str], str],
+        resource_type: str,
+        failure: str,
+    ) -> None:
+        for item in resources:
+            if item.resource_type == resource_type:
+                key = self._key(item)
+                outcomes[key] = "failed_retryable"
+                failures[key] = failure

@@ -373,11 +373,13 @@ writer 的路径有效，绝不触碰已替换或未登记的路径；活跃 wri
 的文件及其精确的普通 lock companion 才会被认定为安全所有。旧版、损坏、空、未来版本、
 symlink、不可访问和未知路径会被跳过并报告。可用 `spotter purge --data` 仅删除这些已证实的
 文件。Spotter 会在删除前锁定并重新验证每个文件，保留普通 lock 文件以避免并发 writer 分裂到
-不同的 lock inode；活跃 writer 可能在命令结束后创建新数据。integration/full 破坏性范围仍在
+不同的 lock inode；活跃 writer 可能在命令结束后创建新数据。full 破坏性范围仍在
 [#89](https://github.com/spotter-agent/spotter/issues/89) 中跟踪。可用
 `spotter purge --integration --dry-run` 在不修改状态的情况下预览 integration 所有权。它会验证
 当前 manifest 中精确记录的 Hook、托管 service 定义和带 fingerprint 的 backup；已修改或未记录的
-Spotter 类似状态会报告为不明确。
+Spotter 类似状态会报告为不明确。运行 `spotter purge --integration` 只删除这些精确资源。该命令
+会在生命周期锁内重新检查；若有任何模糊状态则拒绝整个集成事务，同时保留无关 Hook/配置及用于
+安全幂等重试的最小锁/墓碑对。
 
 如果在 teardown 前就卸载了软件包，生成的 Hook 会按设计采用 fail-open 行为。使用相同方式
 重新安装软件包，运行 `spotter teardown codex`，然后再次卸载，即可安全清理已记录的所有

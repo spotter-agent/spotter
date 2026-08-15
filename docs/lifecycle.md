@@ -1340,7 +1340,7 @@ If package-manager uninstall cannot run lifecycle cleanup reliably, `spotter tea
 # 16. Purge
 
 Purge is the target destructive data-cleanup operation. Repository, durable-data, and integration
-previews plus three explicit destructive scopes are implemented:
+previews plus four explicit destructive scopes are implemented:
 
 ```bash
 spotter purge --all --dry-run
@@ -1350,6 +1350,7 @@ spotter purge --data --dry-run --json
 spotter purge --data
 spotter purge --integration --dry-run
 spotter purge --integration --dry-run --json
+spotter purge --integration
 spotter purge --snapshots --dry-run
 spotter purge --snapshots
 spotter purge --logs --dry-run
@@ -1377,7 +1378,7 @@ spotter pins remove --pin-id <uuid>
 Only an exact registered Spotter-owned snapshot can be pinned. A pin protects the snapshot from
 both ordinary prune and explicit age expiry until it is removed. An unreadable, future-version, or
 stale pin store makes purge eligibility unknown rather than silently dropping the claim.
-Destructive scopes other than `--snapshots`, `--data`, and `--logs` remain tracked by
+Destructive scopes other than `--snapshots`, `--data`, `--integration`, and `--logs` remain tracked by
 [#89](https://github.com/spotter-agent/spotter/issues/89) and refuse mutation.
 
 `purge --data --dry-run` inventories durable data independently of repository snapshots and logs;
@@ -1398,8 +1399,14 @@ checks every recorded Hook entry, reconstructs and compares the managed service 
 manifest runtime layout, validates backup content against its fingerprinted filename, and reports
 the manifest and companion lock. Recorded resources already absent remain safely idempotent;
 unrecorded or modified Spotter-like Hooks, changed services/backups, future or legacy manifests,
-orphan locks, non-regular paths, and unknown integration-directory entries remain ambiguous. The preview is
-non-mutating and destructive `--integration` remains disabled.
+orphan locks, non-regular paths, and unknown integration-directory entries remain ambiguous. The
+preview is non-mutating. Destructive `purge --integration` repeats the complete inspection while
+holding the no-follow lifecycle lock and refuses the whole integration transaction when any resource
+is ambiguous or inaccessible. It removes only exact recorded Hook occurrences, uses the managed
+service boundary for an exact service registration, and deletes fingerprint-matching backups.
+Unrelated Hook entries and configuration survive. The lock inode and a minimized `purged` ownership
+tombstone remain as synchronization evidence, making retries idempotent without splitting concurrent
+lifecycle writers across different lock inodes.
 
 `purge --snapshots` removes only exact `SAFE_OWNED`, unreferenced registered worktrees and snapshot
 refs. It holds the global snapshot lock, removes worktrees through Git first, recomputes reachability,
@@ -1416,13 +1423,14 @@ owned anchors instead of unlinking live files, so current writers keep a valid d
 reports every unregistered log-directory entry as `AMBIGUOUS`, never touches a replaced public
 path, preserves ownership evidence for idempotent reruns, and returns non-zero for skipped or failed
 resources. This is a point-in-time clear: an active writer may append new bytes immediately after
-the command. Destructive integration and `--all` scopes remain pending.
+the command. Destructive `--all` remains pending.
 
 Examples:
 
 ```bash
 spotter purge --data --dry-run
 spotter purge --data
+spotter purge --integration
 spotter purge --snapshots
 spotter purge --logs
 spotter purge --all
