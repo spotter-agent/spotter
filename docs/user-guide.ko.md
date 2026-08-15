@@ -380,7 +380,11 @@ spotter daemon stop
 기계 판독 출력은 `--json`을 추가하세요. journal snapshot과 복구 checkpoint, fork manifest,
 살아 있는 worktree와 실험 결과가 참조하는 snapshot은 삭제 후보 대신 `REFERENCED`로 표시됩니다.
 접근할 수 없거나 상태가 불명확하면 미리보기는
-0이 아닌 코드로 종료됩니다. 파괴적 purge는 아직 구현되지 않았으므로 지원되는 Git 인식
+0이 아닌 코드로 종료됩니다.
+snapshot을 명시적으로 보존하려면 `spotter pins add --repo <경로> --snapshot <sha>`를 사용하고,
+`spotter pins list`로 확인하거나 `spotter pins remove --pin-id <uuid>`로 해제하세요. 수동 pin은
+해제할 때까지 `prune --max-age-days`에서도 보존됩니다.
+파괴적 purge는 아직 구현되지 않았으므로 지원되는 Git 인식
 정리에는 `spotter prune`을 사용하고 [#89](https://github.com/spotter-agent/spotter/issues/89)를 확인하세요.
 
 통합 해제 전에 패키지를 제거했더라도 생성된 Hook은 fail-open으로 동작하도록 설계되어 있습니다.

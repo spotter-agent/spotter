@@ -455,6 +455,9 @@ repository resources without deleting anything with `spotter purge --all --dry-r
 for machine-readable output. Journal snapshots and recovery checkpoints, fork manifests,
 experiment results, and live worktrees appear as `REFERENCED`
 instead of deletion candidates. The preview returns non-zero for inaccessible or ambiguous state.
+Protect an exact registered snapshot explicitly with `spotter pins add --repo <path> --snapshot
+<sha>`; inspect roots with `spotter pins list` and release one with `spotter pins remove --pin-id
+<uuid>`. Manual pins also survive `prune --max-age-days` until removed.
 Destructive purge is not implemented yet, so continue to use `spotter prune` for supported Git-aware
 cleanup and follow [#89](https://github.com/spotter-agent/spotter/issues/89).
 

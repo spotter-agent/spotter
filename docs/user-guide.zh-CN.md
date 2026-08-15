@@ -360,8 +360,11 @@ spotter daemon stop
 `spotter purge --all --dry-run` 在不删除任何内容的情况下预览已登记的仓库资源；添加 `--json`
 可获得机器可读输出。journal snapshot 和恢复 checkpoint、fork manifest、实验结果或仍存活的
 worktree 所引用的 snapshot 会标为 `REFERENCED`，而不是成为删除候选。如果存在无法访问或
-状态不明的资源，预览会以非零状态退出。破坏性 purge
-尚未实现，请继续使用 `spotter prune` 执行受支持的 Git 感知清理，并通过
+状态不明的资源，预览会以非零状态退出。
+可用 `spotter pins add --repo <路径> --snapshot <sha>` 显式保留 snapshot，通过 `spotter pins list`
+查看，并用 `spotter pins remove --pin-id <uuid>` 解除。手动 pin 在解除前也不会被
+`prune --max-age-days` 删除。
+破坏性 purge 尚未实现，请继续使用 `spotter prune` 执行受支持的 Git 感知清理，并通过
 [#89](https://github.com/spotter-agent/spotter/issues/89) 跟踪后续支持。
 
 如果在 teardown 前就卸载了软件包，生成的 Hook 会按设计采用 fail-open 行为。使用相同方式

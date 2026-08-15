@@ -238,6 +238,19 @@ class RepositoryRegistry:
             raise RepositoryRegistryError("repository registry contains duplicate entry ids")
         return entries
 
+    def find_repository(self, repo: Path) -> RepositoryEntry | None:
+        """Return the entry matching the repository's stable Git identity."""
+        identity = _repository_identity(repo)
+        matches = tuple(
+            entry
+            for entry in self.load()
+            if (entry.repository_device, entry.repository_inode)
+            == (identity.device, identity.inode)
+        )
+        if len(matches) > 1:
+            raise RepositoryRegistryError("repository registry contains duplicate Git identities")
+        return matches[0] if matches else None
+
     def inspect(
         self, entries: tuple[RepositoryEntry, ...] | None = None
     ) -> tuple[RepositoryResourceInspection, ...]:

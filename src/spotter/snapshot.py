@@ -632,6 +632,7 @@ def prune_snapshots(
     repo: Path,
     referenced: set[str],
     *,
+    protected: set[str] | None = None,
     apply: bool = False,
     max_age_days: int | None = None,
     now: int | None = None,
@@ -639,6 +640,8 @@ def prune_snapshots(
     """List (and with apply=True, delete) prunable refs/spotter/steps/*.
 
     Retention policy (issue #7):
+    - explicitly protected snapshots are never prunable, including under an
+      age policy;
     - unreferenced snapshots are always prunable — nothing can fork from them;
     - referenced snapshots are kept indefinitely by default, because deleting
       one destroys the ability to fork that step;
@@ -666,11 +669,14 @@ def prune_snapshots(
         stamp = now if now is not None else int(time.time())
         cutoff = stamp - max_age_days * 86400
     doomed: list[tuple[str, PrunedRef]] = []
+    protected = protected or set()
     for line in output.splitlines():
         refname, _, rest = line.partition("\x00")
         sha, _, committed = rest.partition("\x00")
         if not refname.startswith("refs/spotter/steps/") or not sha:
             continue  # paranoia: never consider anything else deletable
+        if sha in protected:
+            continue
         if sha not in referenced:
             doomed.append((refname, PrunedRef(sha, "unreferenced")))
         elif cutoff is not None and committed.isdigit() and int(committed) < cutoff:

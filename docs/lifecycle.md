@@ -1351,15 +1351,25 @@ It revalidates the registry's repository inode, exact ref target, and worktree G
 identity. Snapshot refs still named by a journal record or its recovery checkpoint, schema-valid
 fork manifest, durable experiment result, or live registered worktree are grouped as `REFERENCED`;
 unreferenced exact ownership is `SAFE_OWNED`. Experiment results may retain manifests outside the
-current manifest directory;
-missing or invalid result backreferences make deletion eligibility unknown. Missing paths,
+current manifest directory; missing or invalid result backreferences make deletion eligibility
+unknown. Missing paths,
 changed ownership, and unreadable reachability sources remain `INACCESSIBLE` or `AMBIGUOUS` rather
 than becoming deletion candidates. Journal roots match by snapshot identity rather than stale path,
 so moving a repository cannot orphan its lineage. The preview never mutates Git or the registry and
 returns non-zero when ownership/reachability is unknown or referenced data is already missing.
-Destructive scopes and manual pins remain
-tracked by [#89](https://github.com/spotter-agent/spotter/issues/89); invoking `purge` without
-`--dry-run` is refused.
+Manual roots are explicit and durable:
+
+```bash
+spotter pins add --repo /path/to/repo --snapshot <sha>
+spotter pins list
+spotter pins remove --pin-id <uuid>
+```
+
+Only an exact registered Spotter-owned snapshot can be pinned. A pin protects the snapshot from
+both ordinary prune and explicit age expiry until it is removed. An unreadable, future-version, or
+stale pin store makes purge eligibility unknown rather than silently dropping the claim.
+Destructive scopes remain tracked by [#89](https://github.com/spotter-agent/spotter/issues/89);
+invoking `purge` without `--dry-run` is refused.
 
 Examples:
 
@@ -1578,6 +1588,8 @@ the same resource lock; future, foreign, or corrupt lineage is never overwritten
 | Frozen task-set manifest | `spotter.task_set` v1 | Read schema-name-less v1 | Refuse validation/execution |
 | Frozen task-batch results | `spotter.task_batch` v1 | Read schema-name-less v1; atomically repair only a validated torn tail | Refuse preflight, repair, and append |
 | Fork lineage | `spotter.fork_manifest` v6 | Read v1-v6 with explicit historical coverage defaults | Refuse replacement |
+| Repository ownership | `spotter.repository_registry` v1 | No legacy ownership is inferred from names | Refuse inspection or mutation |
+| Manual snapshot roots | `spotter.snapshot_pins` v1 | No legacy pin format | Refuse mutation; prune aborts and purge eligibility becomes unknown |
 | Integration ownership | `spotter.integration_manifest` v4 | Migrate v1-v3 in memory and persist current ownership evidence atomically | Refuse setup, teardown, or destructive reconciliation |
 | User/repository config | `spotter.config` v1 | Read schema-less legacy config without inventing activation state | Refuse activation |
 | Reviewer spend | `spotter.review_spend` v1 | Read legacy state and upgrade on the next successful mutation | Refuse mutation |

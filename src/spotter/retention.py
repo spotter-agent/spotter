@@ -13,6 +13,7 @@ from spotter.repository_registry import (
     ResourcePresence,
 )
 from spotter.snapshot import SnapshotError, snapshot_references
+from spotter.snapshot_pins import SnapshotPinError, SnapshotPinStore
 
 
 class RetentionState(StrEnum):
@@ -55,6 +56,28 @@ def inspect_snapshot_retention(
     by_target: dict[str, set[ArtifactKey]] = {}
     for key in keys:
         by_target.setdefault(key[1], set()).add(key)
+
+    try:
+        pins = SnapshotPinStore(data_dir / "snapshot-pins.json").load()
+    except SnapshotPinError as error:
+        if not keys:
+            raise
+        _record_unknown(diagnostics, f"manual pin reachability unavailable: {error}")
+    else:
+        for pin in pins:
+            key = (pin.registry_entry_id, pin.snapshot_sha)
+            if key not in references:
+                if not keys:
+                    raise SnapshotPinError(
+                        f"manual pin {pin.pin_id} has no repository ownership record"
+                    )
+                _record_unknown(
+                    diagnostics,
+                    f"manual pin {pin.pin_id} does not match a registered snapshot",
+                )
+                continue
+            references[key].add(f"manual_pin:{pin.pin_id}")
+
     try:
         # Journals retain the path observed at the time, while the registry
         # follows a moved repository by Git identity. Matching without a path

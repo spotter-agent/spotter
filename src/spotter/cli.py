@@ -131,6 +131,7 @@ from spotter.snapshot import (
     snapshot_references,
     stale_journals,
 )
+from spotter.snapshot_pins import SnapshotPinError, SnapshotPinStore
 from spotter.task_corpus import (
     PreflightClassification,
     TaskCorpusError,
@@ -157,6 +158,7 @@ def build_parser() -> argparse.ArgumentParser:
             "fork-coverage",
             "prune",
             "purge",
+            "pins",
             "review",
             "experiment",
             "label",
@@ -182,6 +184,7 @@ def build_parser() -> argparse.ArgumentParser:
             "fork-coverage: classify each session proposal for replay eligibility; "
             "prune: drop unreferenced refs/spotter snapshots (dry-run without --apply); "
             "purge: preview registered Spotter-owned resources without deleting them; "
+            "pins: add, remove, or list durable manual snapshot roots; "
             "review: run the shadow reviewer on a session (records only, injects nothing); "
             "experiment: guidance or identical-neutral fork pairs (needs --run to execute); "
             "label: record a human verdict on a gate flag, signal, reviewer decision, or session; "
@@ -214,8 +217,10 @@ def build_parser() -> argparse.ArgumentParser:
             "run",
             "list",
             "resolve",
+            "add",
+            "remove",
         ],
-        help="daemon lifecycle action, integration target, or task action",
+        help="daemon lifecycle action, integration target, pin action, or task action",
     )
     parser.add_argument("subject", nargs="?", help="task-set manifest path")
     parser.add_argument("--resume", type=Path, help="tasks run: resume this task-batch JSONL")
@@ -252,8 +257,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--step", type=int, help="journal step to branch at (fork)")
     parser.add_argument(
-        "--repo", type=Path, help="repo path (prune; fork override when the journal lacks cwd)"
+        "--repo",
+        type=Path,
+        help="repo path (prune/pins; fork override when the journal lacks cwd)",
     )
+    parser.add_argument("--snapshot", help="pins add: exact Spotter-owned snapshot SHA")
+    parser.add_argument("--pin-id", help="pins remove: durable manual pin id")
     parser.add_argument("--guidance", help="course-correction text for fork/experiment")
     parser.add_argument(
         "--apply", action="store_true", help="prune: actually delete (default is dry-run)"
@@ -458,6 +467,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.apply:
             parser.error("purge deletion is not implemented")
         return _purge_main(json_output=args.json_output)
+    if args.command == "pins":
+        if args.target not in {"add", "remove", "list"}:
+            parser.error("pins requires add, remove, or list")
+        if args.target == "add" and not args.snapshot:
+            parser.error("pins add requires --snapshot")
+        if args.target == "remove" and not args.pin_id:
+            parser.error("pins remove requires --pin-id")
+        return _pins_main(
+            args.target,
+            repo=args.repo or Path.cwd(),
+            snapshot=args.snapshot,
+            pin_id=args.pin_id,
+        )
     if args.command == "tasks":
         if args.target not in {"validate", "preflight", "run"} or not args.subject:
             parser.error("tasks requires: spotter tasks validate|preflight|run <set.toml>")
@@ -506,7 +528,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 1
         return 0
     if args.target is not None and args.command != "effects":
-        parser.error("the second positional argument requires daemon, setup, teardown, or tasks")
+        parser.error(
+            "the second positional argument requires daemon, setup, teardown, pins, or tasks"
+        )
     if args.resume:
         parser.error("--resume requires tasks run")
     if args.dry_run or args.portable:
@@ -1753,6 +1777,14 @@ def _prune_main(
         # hook append to a journal being deleted, or pin a ref this pass has
         # already decided is unreferenced (PR #58 review, P0).
         with global_lock():
+            pins = SnapshotPinStore().load()
+            registry_entry = RepositoryRegistry().find_repository(repo) if pins else None
+            manual_roots = {
+                pin.snapshot_sha
+                for pin in pins
+                if registry_entry is not None
+                and pin.registry_entry_id == registry_entry.registry_entry_id
+            }
             cutoff = time.time() - (max_age_days or 0) * 86400
             doomed = (
                 stale_journals(sessions_dir, max_age_days)
@@ -1783,8 +1815,16 @@ def _prune_main(
             references = snapshot_references(
                 sessions_dir, repo, exclude=removed if apply else doomed
             )
-            pruned = prune_snapshots(repo, set(references), apply=apply, max_age_days=max_age_days)
-    except SnapshotError as error:
+            for snapshot in manual_roots:
+                references.setdefault(snapshot, [])
+            pruned = prune_snapshots(
+                repo,
+                set(references),
+                protected=manual_roots,
+                apply=apply,
+                max_age_days=max_age_days,
+            )
+    except (RepositoryRegistryError, SnapshotError, SnapshotPinError) as error:
         print(f"prune aborted: {error}", file=sys.stderr)
         return 1
     if forks:
@@ -1792,7 +1832,7 @@ def _prune_main(
             print(f"fork worktree {verb}: {worktree.name}")
             if apply:
                 _remove_worktree(worktree)
-    print(f"{len(references)} snapshots referenced by journals; {verb} {len(pruned)} refs")
+    print(f"{len(references)} retained snapshots; {verb} {len(pruned)} refs")
     for pruned_ref in pruned:
         print(f"  {pruned_ref.sha} ({pruned_ref.reason})")
         # An expired snapshot is still referenced: name the steps that lose
@@ -1800,6 +1840,56 @@ def _prune_main(
         for session, step in references.get(pruned_ref.sha, []):
             print(f"    fork lost: session {session} step {step}")
     return 0
+
+
+def _pins_main(
+    action: str,
+    *,
+    repo: Path,
+    snapshot: str | None,
+    pin_id: str | None,
+) -> int:
+    store = SnapshotPinStore()
+    try:
+        if action == "list":
+            entries = {entry.registry_entry_id: entry for entry in RepositoryRegistry().load()}
+            for pin in store.load():
+                entry = entries.get(pin.registry_entry_id)
+                repository = entry.last_known_path if entry is not None else "<unknown repository>"
+                print(f"{pin.pin_id} {pin.snapshot_sha} {repository}")
+            return 0
+        if action == "remove":
+            if pin_id is None:
+                raise SnapshotPinError("remove requires a pin id")
+            with global_lock():
+                removed = store.remove(pin_id)
+            print(f"removed pin {removed.pin_id} for {removed.snapshot_sha}")
+            return 0
+
+        if snapshot is None:
+            raise SnapshotPinError("add requires a snapshot SHA")
+        registry = RepositoryRegistry()
+        entry = registry.find_repository(repo)
+        if entry is None:
+            raise SnapshotPinError(f"{repo} has no Spotter repository ownership record")
+        resource = next(
+            (
+                item
+                for item in entry.resources
+                if item.resource_type == "git_ref" and item.expected_target == snapshot
+            ),
+            None,
+        )
+        if resource is None:
+            raise SnapshotPinError(f"{snapshot} is not an exact Spotter-owned snapshot in {repo}")
+        with global_lock():
+            entry = registry.record_ref(repo, resource.resource_id, snapshot)
+            pin = store.add(entry.registry_entry_id, snapshot)
+        print(f"pinned {snapshot} as {pin.pin_id}")
+        return 0
+    except (OSError, RepositoryRegistryError, SnapshotPinError) as error:
+        print(f"pins {action} failed: {error}", file=sys.stderr)
+        return 1
 
 
 def _purge_main(*, json_output: bool) -> int:
@@ -1811,7 +1901,7 @@ def _purge_main(*, json_output: bool) -> int:
         reachability = inspect_snapshot_retention(
             entries, inspections, RuntimeLayout.discover().user_data_dir
         )
-    except RepositoryRegistryError as error:
+    except (RepositoryRegistryError, SnapshotPinError) as error:
         print(f"purge preview failed: {error}", file=sys.stderr)
         return 1
 

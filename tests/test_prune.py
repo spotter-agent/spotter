@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from spotter.cli import main
 from spotter.hook import journal_path
 from spotter.snapshot import (
     SnapshotError,
@@ -78,6 +79,25 @@ def test_prune_keeps_recovery_checkpoint(repo: Path) -> None:
 
     assert references[kept] == [("recovery", 0)]
     assert [item.sha for item in prune_snapshots(repo, set(references))] == [orphan]
+
+
+def test_manual_pin_survives_prune_and_expiry(repo: Path) -> None:
+    sha = snapshot_worktree(repo)
+    assert main(["pins", "add", "--repo", str(repo), "--snapshot", sha]) == 0
+
+    assert main(["prune", "--repo", str(repo), "--apply", "--max-age-days", "1"]) == 0
+
+    assert _refs(repo) == {f"refs/spotter/steps/{sha}"}
+    assert (
+        prune_snapshots(
+            repo,
+            set(),
+            protected={sha},
+            max_age_days=1,
+            now=2**31,
+        )
+        == []
+    )
 
 
 def test_invalid_recovery_checkpoint_aborts_prune(repo: Path) -> None:
