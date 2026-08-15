@@ -1348,13 +1348,15 @@ spotter purge --all --dry-run --json
 ```
 
 It revalidates the registry's repository inode, exact ref target, and worktree Git administrative
-identity. Snapshot refs still named by a journal, schema-valid fork manifest, or live registered
-worktree are grouped as `REFERENCED`; unreferenced exact ownership is `SAFE_OWNED`. Missing paths,
+identity. Snapshot refs still named by a journal, schema-valid fork manifest, durable experiment
+result, or live registered worktree are grouped as `REFERENCED`; unreferenced exact ownership is
+`SAFE_OWNED`. Experiment results may retain manifests outside the current manifest directory;
+missing or invalid result backreferences make deletion eligibility unknown. Missing paths,
 changed ownership, and unreadable reachability sources remain `INACCESSIBLE` or `AMBIGUOUS` rather
 than becoming deletion candidates. Journal roots match by snapshot identity rather than stale path,
 so moving a repository cannot orphan its lineage. The preview never mutates Git or the registry and
 returns non-zero when ownership/reachability is unknown or referenced data is already missing.
-Destructive scopes, evaluation-result backreferences, manual pins, and pending-recovery roots remain
+Destructive scopes, manual pins, and pending-recovery roots remain
 tracked by [#89](https://github.com/spotter-agent/spotter/issues/89); invoking `purge` without
 `--dry-run` is refused.
 

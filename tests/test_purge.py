@@ -37,6 +37,46 @@ def repo(tmp_path: Path) -> Path:
     return repository
 
 
+def _fork_manifest(repo: Path, spotter_home: Path, sha: str, fork_id: str) -> dict[str, object]:
+    return {
+        "schema": FORK_MANIFEST_SCHEMA,
+        "schema_version": FORK_MANIFEST_SCHEMA_VERSION,
+        "fork_id": fork_id,
+        "status": "READY",
+        "prefix": {
+            "prefix_id": f"prefix-{fork_id}",
+            "source_session_id": "source",
+            "branch_step": 0,
+            "source_event_id": None,
+            "source_turn_id": None,
+            "connection_epoch": None,
+            "journal_schema_version": 1,
+            "tool_use_id": "call-1",
+            "repository_path": str(repo),
+            "repository_id": "repository-1",
+            "snapshot_sha": sha,
+            "snapshot_tree_sha": "tree-1",
+            "rollout_prefix_sha256": "rollout-1",
+            "agent": "codex",
+            "model": None,
+            "runtime_version": None,
+            "agent_config": "not_captured",
+            "context_source": "test",
+            "context_limitations": [],
+            "external_effects": [],
+            "observation_gaps": 0,
+            "created_at": "2026-08-15T00:00:00+00:00",
+        },
+        "worktree": str(spotter_home / f"forks/{fork_id}"),
+        "rollout": None,
+        "environment": None,
+        "created_at": "2026-08-15T00:00:00+00:00",
+        "updated_at": "2026-08-15T00:00:00+00:00",
+        "failure": None,
+        "source_environment_preflight": "MATCHED",
+    }
+
+
 def test_purge_preview_reports_exact_ref_and_worktree_without_deleting(
     repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -198,45 +238,7 @@ def test_fork_manifest_reference_retains_snapshot(
     directory = spotter_home / "fork-manifests"
     directory.mkdir(parents=True)
     (directory / "fork-1.json").write_text(
-        json.dumps(
-            {
-                "schema": FORK_MANIFEST_SCHEMA,
-                "schema_version": FORK_MANIFEST_SCHEMA_VERSION,
-                "fork_id": "fork-1",
-                "status": "READY",
-                "prefix": {
-                    "prefix_id": "prefix-1",
-                    "source_session_id": "source",
-                    "branch_step": 0,
-                    "source_event_id": None,
-                    "source_turn_id": None,
-                    "connection_epoch": None,
-                    "journal_schema_version": 1,
-                    "tool_use_id": "call-1",
-                    "repository_path": str(repo),
-                    "repository_id": "repository-1",
-                    "snapshot_sha": sha,
-                    "snapshot_tree_sha": "tree-1",
-                    "rollout_prefix_sha256": "rollout-1",
-                    "agent": "codex",
-                    "model": None,
-                    "runtime_version": None,
-                    "agent_config": "not_captured",
-                    "context_source": "test",
-                    "context_limitations": [],
-                    "external_effects": [],
-                    "observation_gaps": 0,
-                    "created_at": "2026-08-15T00:00:00+00:00",
-                },
-                "worktree": str(spotter_home / "forks/fork-1"),
-                "rollout": None,
-                "environment": None,
-                "created_at": "2026-08-15T00:00:00+00:00",
-                "updated_at": "2026-08-15T00:00:00+00:00",
-                "failure": None,
-                "source_environment_preflight": "MATCHED",
-            }
-        )
+        json.dumps(_fork_manifest(repo, spotter_home, sha, "fork-1"))
     )
 
     assert main(["purge", "--all", "--dry-run", "--json"]) == 0
@@ -262,3 +264,44 @@ def test_corrupt_fork_manifest_makes_unreferenced_snapshot_ambiguous(
     assert resource["group"] == "AMBIGUOUS"
     assert resource["retention"] == "UNKNOWN"
     assert "fork manifest reachability unavailable" in resource["retention_diagnostics"][0]
+
+
+def test_experiment_result_reference_retains_external_fork_manifest(
+    repo: Path, spotter_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sha = snapshot_worktree(repo)
+    archived = spotter_home / "archived"
+    archived.mkdir(parents=True)
+    manifest_path = archived / "fork-result.json"
+    manifest_path.write_text(json.dumps(_fork_manifest(repo, spotter_home, sha, "result")))
+    experiments = spotter_home / "experiments"
+    experiments.mkdir()
+    (experiments / "result.jsonl").write_text(
+        json.dumps({"fork_manifest": str(manifest_path)}) + "\n"
+    )
+
+    assert main(["purge", "--all", "--dry-run", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    [resource] = payload["resources"]
+    assert resource["group"] == "REFERENCED"
+    assert resource["references"] == [
+        "experiment_result:experiments/result.jsonl:line:1:fork:result"
+    ]
+
+
+def test_missing_experiment_result_manifest_makes_snapshot_ambiguous(
+    repo: Path, spotter_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    snapshot_worktree(repo)
+    experiments = spotter_home / "experiments"
+    experiments.mkdir(parents=True)
+    (experiments / "result.jsonl").write_text(json.dumps({"fork_manifest": "missing.json"}) + "\n")
+
+    assert main(["purge", "--all", "--dry-run", "--json"]) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    [resource] = payload["resources"]
+    assert resource["group"] == "AMBIGUOUS"
+    assert resource["retention"] == "UNKNOWN"
+    assert "experiment result reachability unavailable" in resource["retention_diagnostics"][0]

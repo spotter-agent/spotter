@@ -1,5 +1,6 @@
 """Reachability roots that keep durable repository artifacts live."""
 
+import json
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -83,6 +84,56 @@ def inspect_snapshot_retention(
         for key in by_target.get(manifest.prefix.snapshot_sha, ()):
             references[key].add(f"fork_manifest:{manifest.fork_id}:{manifest.status.value}")
 
+    experiment_dir = data_dir / "experiments"
+    for path in sorted(experiment_dir.rglob("*.jsonl")) if experiment_dir.exists() else ():
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeError) as error:
+            _record_unknown(
+                diagnostics,
+                f"experiment result reachability unavailable: {path}: {error}",
+            )
+            continue
+        for number, line in enumerate(lines, 1):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+                if not isinstance(row, dict):
+                    raise TypeError("record is not an object")
+            except (json.JSONDecodeError, TypeError, UnicodeError) as error:
+                _record_unknown(
+                    diagnostics,
+                    f"experiment result reachability unavailable: {path} line {number}: {error}",
+                )
+                continue
+            manifest_value = row.get("fork_manifest")
+            if manifest_value is None:
+                continue
+            if not isinstance(manifest_value, str) or not manifest_value:
+                _record_unknown(
+                    diagnostics,
+                    f"experiment result reachability unavailable: {path} line {number} "
+                    "has an invalid fork manifest path",
+                )
+                continue
+            referenced_path = Path(manifest_value)
+            if not referenced_path.is_absolute():
+                referenced_path = path.parent / referenced_path
+            try:
+                manifest = load_fork_manifest(referenced_path)
+            except ReplayError as error:
+                _record_unknown(
+                    diagnostics,
+                    f"experiment result reachability unavailable: {path} line {number}: {error}",
+                )
+                continue
+            for key in by_target.get(manifest.prefix.snapshot_sha, ()):
+                references[key].add(
+                    f"experiment_result:{path.relative_to(data_dir)}:line:{number}:"
+                    f"fork:{manifest.fork_id}"
+                )
+
     for inspection in inspections:
         if (
             inspection.resource_type != "worktree"
@@ -106,6 +157,11 @@ def inspect_snapshot_retention(
             state = RetentionState.UNREFERENCED
         result[key] = ArtifactRetention(state, roots, errors)
     return result
+
+
+def _record_unknown(diagnostics: dict[ArtifactKey, set[str]], message: str) -> None:
+    for errors in diagnostics.values():
+        errors.add(message)
 
 
 def retention_for(

@@ -359,7 +359,7 @@ spotter daemon stop
 普通卸载不会删除 `~/.spotter` 或 `SPOTTER_HOME` 中的用户数据。可用
 `spotter purge --all --dry-run` 在不删除任何内容的情况下预览已登记的仓库资源；添加 `--json`
 可获得机器可读输出。journal、fork manifest 或仍存活的 worktree 所引用的 snapshot 会标为
-`REFERENCED`，而不是删除候选。如果存在无法访问或状态不明的资源，预览会以非零状态退出。破坏性 purge
+`REFERENCED`，实验结果引用的快照也会保留，而不是成为删除候选。如果存在无法访问或状态不明的资源，预览会以非零状态退出。破坏性 purge
 尚未实现，请继续使用 `spotter prune` 执行受支持的 Git 感知清理，并通过
 [#89](https://github.com/spotter-agent/spotter/issues/89) 跟踪后续支持。
 
