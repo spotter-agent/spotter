@@ -169,6 +169,16 @@ def test_stale_opportunity_is_unjudgeable_instead_of_counted_as_never() -> None:
 
 def test_open_window_without_a_signal_is_not_yet_a_never() -> None:
     records = _records()[:8]
+    records.append(
+        _record(
+            8,
+            "tool_proposal",
+            {},
+            event_id="later-live-action",
+            operation_id="op-later",
+            occurred_at=9.0,
+        )
+    )
     add_opportunity(
         "s1",
         "still-open",
@@ -178,7 +188,7 @@ def test_open_window_without_a_signal_is_not_yet_a_never() -> None:
         observable_earliest=7,
         observable_latest=7,
         required_evidence=(7,),
-        note="the session can still continue",
+        note="later activity does not prove the turn is terminal",
     )
 
     report = measure_opportunity_timing("s1", records)

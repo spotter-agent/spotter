@@ -742,6 +742,8 @@ post-window actions, failed outcomes, and files. Unrelated candidates never stop
 clock, stale annotations remain outside the distribution, and an open journal cannot become a
 fabricated `NEVER`. An observation gap crossing the measured interval also makes delay and
 post-window work `UNJUDGEABLE` rather than pretending the missing surface was quiet.
+`NEVER` requires a terminal turn/thread/session event at or after the annotated window; unrelated
+later activity in a still-live trajectory keeps the opportunity `UNJUDGEABLE` and re-derivable.
 
 ## 8.3 Snapshot state
 

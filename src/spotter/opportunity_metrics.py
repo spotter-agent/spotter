@@ -188,13 +188,14 @@ def _linked_signal(
 
 
 def _window_closed(latest: int, records: list[StepRecord]) -> bool:
-    if latest + 1 < len(records):
-        return True
-    return bool(
-        records
-        and records[latest].event.kind
-        in {"session_end", "thread_archived", "thread_closed", "thread_deleted", "turn_completed"}
-    )
+    terminal_kinds = {
+        "session_end",
+        "thread_archived",
+        "thread_closed",
+        "thread_deleted",
+        "turn_completed",
+    }
+    return any(record.event.kind in terminal_kinds for record in records[latest:])
 
 
 def _has_observation_gap(records: list[StepRecord]) -> bool:
