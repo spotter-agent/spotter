@@ -24,6 +24,8 @@ if TYPE_CHECKING:
     from spotter.thread_state import StateItem, ThreadState
 
 SOURCE_AUDIT_RELATIVE_PATH = Path("source-audit") / "samples.jsonl"
+SOURCE_AUDIT_SCHEMA = "spotter.source_audit"
+SOURCE_AUDIT_SCHEMA_VERSION = 1
 _FIELD_SEGMENT = re.compile(r"[._-]|(?<=[a-z0-9])(?=[A-Z])")
 
 
@@ -254,7 +256,7 @@ class SourceAuditStore:
         self.path = path
         self.max_records = max_records
         try:
-            self._count = path.read_bytes().count(b"\n") if path.exists() else 0
+            self._count = self._sample_count(path.read_bytes()) if path.exists() else 0
         except OSError:
             # The primary observation path must still start. The first attempted
             # audit write and the reporting command surface the filesystem error.
@@ -279,11 +281,10 @@ class SourceAuditStore:
         with lock_path.open("a") as lock:
             flock(lock, LOCK_EX)
             try:
+                self._refuse_unknown_container()
                 self._repair_tail()
-                if not self.path.exists():
-                    self.path.touch(mode=0o600)
-                else:
-                    self.path.chmod(0o600)
+                self._ensure_current_container()
+                self.path.chmod(0o600)
                 with self.path.open("a", encoding="utf-8") as sink:
                     sink.write(json.dumps(asdict(sample), separators=(",", ":")) + "\n")
                     sink.flush()
@@ -308,8 +309,17 @@ class SourceAuditStore:
                 lines = content.splitlines()
             finally:
                 flock(lock, LOCK_UN)
+        start_line = 1
+        if lines and self._is_metadata(lines[0], line_number=1):
+            lines = lines[1:]
+            start_line = 2
+        return self._parse_samples(lines, start_line=start_line)
+
+    def _parse_samples(
+        self, lines: Iterable[str], *, start_line: int
+    ) -> tuple[SourceAuditSample, ...]:
         samples = []
-        for line_number, line in enumerate(lines, start=1):
+        for line_number, line in enumerate(lines, start=start_line):
             if not line.strip():
                 continue
             try:
@@ -367,21 +377,123 @@ class SourceAuditStore:
             return
         content = self.path.read_bytes()
         if not content or content.endswith(b"\n"):
-            self._count = content.count(b"\n")
+            self._count = self._sample_count(content)
             return
         boundary = content.rfind(b"\n") + 1
         with self.path.open("r+b") as sink:
             sink.truncate(boundary)
             sink.flush()
             os.fsync(sink.fileno())
-        self._count = content[:boundary].count(b"\n")
+        self._count = self._sample_count(content[:boundary])
 
-    def _compact(self) -> None:
-        lines = self.path.read_text().splitlines()[-self.max_records :]
+    def _refuse_unknown_container(self) -> None:
+        """Reject foreign metadata before recovery can mutate its container."""
+
+        if not self.path.exists() or self.path.stat().st_size == 0:
+            return
+        first = self.path.read_bytes().splitlines()[0]
+        try:
+            raw = json.loads(first)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(raw, Mapping) or raw.get("record_type") != "metadata":
+            return
+        try:
+            self._validate_metadata(raw)
+        except (TypeError, ValueError) as error:
+            raise ObservabilityError(
+                f"{self.path} line 1 is not valid source audit metadata: {error}"
+            ) from error
+
+    def _ensure_current_container(self) -> None:
+        metadata = self._metadata_line()
+        if not self.path.exists() or self.path.stat().st_size == 0:
+            self._replace(metadata)
+            self._count = 0
+            return
+        content = self.path.read_bytes()
+        first = content.splitlines()[0]
+        try:
+            raw = json.loads(first)
+        except json.JSONDecodeError as error:
+            raise ObservabilityError(
+                f"{self.path} line 1 is not a valid source audit container: {error}"
+            ) from error
+        if isinstance(raw, Mapping) and raw.get("record_type") == "metadata":
+            try:
+                self._validate_metadata(raw)
+            except (TypeError, ValueError) as error:
+                raise ObservabilityError(
+                    f"{self.path} line 1 is not valid source audit metadata: {error}"
+                ) from error
+            return
+        try:
+            legacy_lines = content.decode("utf-8").splitlines()
+        except UnicodeDecodeError as error:
+            raise ObservabilityError(f"{self.path} is not valid UTF-8 source audit data") from error
+        self._parse_samples(legacy_lines, start_line=1)
+        self._replace(metadata + content)
+
+    def _is_metadata(self, line: str, *, line_number: int) -> bool:
+        try:
+            raw = json.loads(line)
+        except json.JSONDecodeError:
+            return False
+        if not isinstance(raw, Mapping) or raw.get("record_type") != "metadata":
+            return False
+        try:
+            self._validate_metadata(raw)
+        except (TypeError, ValueError) as error:
+            raise ObservabilityError(
+                f"{self.path} line {line_number} is not valid source audit metadata: {error}"
+            ) from error
+        return True
+
+    @staticmethod
+    def _validate_metadata(raw: Mapping[str, object]) -> None:
+        if raw.get("schema") != SOURCE_AUDIT_SCHEMA:
+            raise ValueError(f"unsupported schema {raw.get('schema')!r}")
+        version = raw.get("schema_version")
+        if not isinstance(version, int) or isinstance(version, bool):
+            raise TypeError("schema_version is not an integer")
+        if version != SOURCE_AUDIT_SCHEMA_VERSION:
+            direction = "newer" if version > SOURCE_AUDIT_SCHEMA_VERSION else "unsupported"
+            raise ValueError(
+                f"{direction} schema v{version}; "
+                f"this build understands v{SOURCE_AUDIT_SCHEMA_VERSION}"
+            )
+
+    @staticmethod
+    def _metadata_line() -> bytes:
+        return (
+            json.dumps(
+                {
+                    "record_type": "metadata",
+                    "schema": SOURCE_AUDIT_SCHEMA,
+                    "schema_version": SOURCE_AUDIT_SCHEMA_VERSION,
+                },
+                separators=(",", ":"),
+            ).encode()
+            + b"\n"
+        )
+
+    @staticmethod
+    def _sample_count(content: bytes) -> int:
+        lines = content.splitlines()
+        if not lines:
+            return 0
+        try:
+            first = json.loads(lines[0])
+        except json.JSONDecodeError:
+            first = None
+        metadata = isinstance(first, Mapping) and first.get("record_type") == "metadata"
+        return max(0, len(lines) - int(metadata))
+
+    def _replace(self, content: bytes) -> None:
         temporary = self.path.with_suffix(self.path.suffix + ".tmp")
         descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as sink:
-            sink.write("\n".join(lines) + "\n")
+        with os.fdopen(descriptor, "wb") as sink:
+            sink.write(content)
             sink.flush()
             os.fsync(sink.fileno())
         os.replace(temporary, self.path)
@@ -390,7 +502,11 @@ class SourceAuditStore:
             os.fsync(directory)
         finally:
             os.close(directory)
-        self._count = len(lines)
+
+    def _compact(self) -> None:
+        samples = self.path.read_bytes().splitlines()[1:][-self.max_records :]
+        self._replace(self._metadata_line() + b"\n".join(samples) + b"\n")
+        self._count = len(samples)
 
 
 @dataclass(frozen=True)

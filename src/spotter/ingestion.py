@@ -22,6 +22,7 @@ from spotter.observability import (
     APP_SERVER_METHOD_FIELDS,
     SOURCE_AUDIT_RELATIVE_PATH,
     CoverageStatus,
+    ObservabilityError,
     SourceAuditStore,
 )
 from spotter.snapshot import SnapshotError, StepJournal, StepRecord, global_lock, snapshot_worktree
@@ -297,7 +298,7 @@ class AppServerTraceIngestor:
                 state_status=state_status,
             )
             self.last_source_audit_error = None
-        except (OSError, UnicodeError) as error:
+        except (OSError, UnicodeError, ObservabilityError) as error:
             # The primary journal already contains the event. Losing the optional
             # shape audit must not disconnect observation or skip live-state reduction.
             self.last_source_audit_error = str(error)

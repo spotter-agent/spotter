@@ -11,6 +11,8 @@ from spotter.identity import IdentityProvenance, RuntimeIdentity, ThreadId
 from spotter.ingestion import AppServerTraceIngestor, CodexTraceNormalizer
 from spotter.observability import (
     APP_SERVER_ITEM_FIELDS,
+    SOURCE_AUDIT_SCHEMA,
+    SOURCE_AUDIT_SCHEMA_VERSION,
     CoverageStatus,
     EvidenceFamily,
     EvidenceTiming,
@@ -202,6 +204,12 @@ def test_shape_audit_is_bounded_private_and_rejects_corruption(tmp_path: Path) -
     for _ in range(5):
         store.record(raw, event, disposition="ingested")
 
+    metadata = json.loads(store.path.read_text().splitlines()[0])
+    assert metadata == {
+        "record_type": "metadata",
+        "schema": SOURCE_AUDIT_SCHEMA,
+        "schema_version": SOURCE_AUDIT_SCHEMA_VERSION,
+    }
     assert len(store.load()) == 2
     assert "SECRET_VALUE" not in store.path.read_text()
     assert store.path.stat().st_mode & 0o777 == 0o600
@@ -213,6 +221,74 @@ def test_shape_audit_is_bounded_private_and_rejects_corruption(tmp_path: Path) -
     store.path.write_text("not-json\n")
     with pytest.raises(ObservabilityError, match="line 1"):
         store.load()
+
+
+def test_legacy_source_audit_is_upgraded_without_losing_samples(tmp_path: Path) -> None:
+    path = tmp_path / "audit.jsonl"
+    raw = _raw(
+        "turn/started",
+        {"threadId": "thread-1", "turn": {"id": "turn-1", "status": "inProgress"}},
+    )
+    event = CodexTraceNormalizer().normalize(raw)
+    legacy = source_audit_sample(raw, event)
+    path.write_text(json.dumps(legacy.__dict__) + "\n")
+    store = SourceAuditStore(path)
+
+    store.record(raw, event, disposition="ingested")
+
+    lines = path.read_text().splitlines()
+    assert json.loads(lines[0])["schema"] == SOURCE_AUDIT_SCHEMA
+    assert len(store.load()) == 2
+
+
+def test_corrupt_legacy_source_audit_is_not_modified(tmp_path: Path) -> None:
+    path = tmp_path / "audit.jsonl"
+    raw = _raw(
+        "turn/started",
+        {"threadId": "thread-1", "turn": {"id": "turn-1", "status": "inProgress"}},
+    )
+    event = CodexTraceNormalizer().normalize(raw)
+    legacy = source_audit_sample(raw, event)
+    path.write_text(json.dumps(legacy.__dict__) + "\nnot-json\n")
+    before = path.read_bytes()
+    store = SourceAuditStore(path)
+
+    with pytest.raises(ObservabilityError, match="line 2"):
+        store.record(raw, event, disposition="ingested")
+
+    assert path.read_bytes() == before
+
+
+def test_future_source_audit_schema_does_not_break_primary_ingestion(tmp_path: Path) -> None:
+    ingestor = AppServerTraceIngestor(tmp_path / "sessions")
+    audit = ingestor.source_audit.path
+    audit.parent.mkdir(parents=True)
+    audit.write_text(
+        json.dumps(
+            {
+                "record_type": "metadata",
+                "schema": SOURCE_AUDIT_SCHEMA,
+                "schema_version": SOURCE_AUDIT_SCHEMA_VERSION + 1,
+            }
+        )
+        + "\n"
+    )
+    with audit.open("ab") as sink:
+        sink.write(b'{"future":')
+    before = audit.read_bytes()
+    raw = _raw(
+        "turn/started",
+        {"threadId": "thread-1", "turn": {"id": "turn-1", "status": "inProgress"}},
+    )
+
+    with pytest.warns(RuntimeWarning, match="source audit unavailable"):
+        record = ingestor.ingest(raw)
+
+    assert record is not None
+    assert ingestor.last_source_audit_error is not None
+    assert audit.read_bytes() == before
+    with pytest.raises(ObservabilityError, match="newer schema"):
+        ingestor.source_audit.load()
 
 
 def test_measurement_separates_hook_app_server_source_and_state() -> None:
