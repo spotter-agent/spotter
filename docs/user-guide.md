@@ -450,9 +450,12 @@ spotter daemon stop
 After confirming those exact paths are dedicated to Spotter, you may remove the virtual environment
 and source checkout with your normal file-management tools.
 
-Normal uninstall does not delete `~/.spotter` (or `SPOTTER_HOME`) user data. Preview all registered
-repository resources without deleting anything with `spotter purge --all --dry-run`; add `--json`
-for machine-readable output. Journal snapshots and recovery checkpoints, fork manifests,
+Normal uninstall does not delete `~/.spotter` (or `SPOTTER_HOME`) user data. Preview every purge
+scope without deleting anything with `spotter purge --all --dry-run`; add `--json` for a complete
+per-scope machine-readable plan. Run `spotter purge --all` to retire exact integration state, remove
+schema-proven durable data, clean now-unreferenced Git resources, and clear exact owned logs in
+lifecycle order. Independent failures are reported per scope; ambiguous resources, configuration,
+manual pins, and synchronization evidence survive. Journal snapshots and recovery checkpoints, fork manifests,
 experiment results, and live worktrees appear as `REFERENCED`
 instead of deletion candidates. The preview returns non-zero for inaccessible or ambiguous state.
 Protect an exact registered snapshot explicitly with `spotter pins add --repo <path> --snapshot
@@ -469,8 +472,7 @@ and exact regular lock companions are safely owned. Legacy, corrupt, empty, futu
 symlinked, unreadable, and unknown paths are skipped and reported. Remove those proven files with
 `spotter purge --data`. Spotter locks and revalidates each file immediately before deletion, retains
 regular lock files to avoid splitting concurrent writers across lock inodes, and may receive newly
-created data from an active writer after the command. Full destructive cleanup remains pending in
-[#89](https://github.com/spotter-agent/spotter/issues/89). Preview integration ownership
+created data from an active writer after the command. Preview integration ownership
 without mutation with `spotter purge --integration --dry-run`. It verifies the current manifest's
 exact Hook entries, managed service definition, and fingerprinted backups; missing recorded
 resources are already absent, while modified or unrecorded Spotter-like state is ambiguous. Run

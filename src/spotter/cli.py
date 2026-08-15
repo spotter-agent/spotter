@@ -3,14 +3,17 @@
 import argparse
 import asyncio
 import json
+import os
+import stat
 import subprocess
 import sys
 import time
 import tomllib
-from collections.abc import Sequence
-from contextlib import nullcontext, suppress
+from collections.abc import Callable, Sequence
+from contextlib import nullcontext, redirect_stderr, redirect_stdout, suppress
 from dataclasses import replace
 from fcntl import LOCK_EX, LOCK_NB, LOCK_UN, flock
+from io import StringIO
 from pathlib import Path
 from typing import cast
 
@@ -527,8 +530,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error(
                 "purge requires exactly one of --all, --snapshots, --data, --integration, or --logs"
             )
-        if args.purge_all and not args.dry_run:
-            parser.error("destructive --all is not implemented; use --dry-run")
         if args.target is not None or args.portable:
             parser.error("purge accepts only a scope, optional --dry-run, and optional --json")
         if args.apply:
@@ -539,10 +540,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _purge_integration_main(json_output=args.json_output, apply=not args.dry_run)
         if args.purge_logs:
             return _purge_logs_main(json_output=args.json_output, apply=not args.dry_run)
+        if args.purge_all:
+            return _purge_all_main(json_output=args.json_output, apply=not args.dry_run)
         return _purge_main(
             json_output=args.json_output,
             snapshot_scope=args.purge_snapshots,
             apply=not args.dry_run,
+            remove_registry=False,
         )
     if args.command == "pins":
         if args.target not in {"add", "remove", "list"}:
@@ -2309,12 +2313,15 @@ def _remove_owned_ref(item: RepositoryResourceInspection) -> str | None:
     return None if result.returncode == 0 else result.stderr.strip() or "git update-ref failed"
 
 
-def _purge_main(*, json_output: bool, snapshot_scope: bool, apply: bool) -> int:
+def _purge_main(
+    *, json_output: bool, snapshot_scope: bool, apply: bool, remove_registry: bool = False
+) -> int:
     """Plan or remove exact unreferenced repository snapshot resources."""
     registry = RepositoryRegistry()
     data_dir = RuntimeLayout.discover().user_data_dir
     outcomes: dict[PurgeResourceKey, str] = {}
     failures: dict[PurgeResourceKey, str] = {}
+    registry_outcome = "planned" if remove_registry else "preserved_ownership_evidence"
 
     try:
         lock = global_lock() if apply else nullcontext()
@@ -2369,6 +2376,15 @@ def _purge_main(*, json_output: bool, snapshot_scope: bool, apply: bool) -> int:
 
                 inspections = registry.inspect(entries)
                 reachability = inspect_snapshot_retention(entries, inspections, data_dir)
+                if remove_registry:
+                    if not failures and all(
+                        item.confidence == OwnershipConfidence.SAFE_OWNED
+                        and item.presence == ResourcePresence.ABSENT
+                        for item in inspections
+                    ):
+                        registry_outcome = _remove_repository_registry(registry)
+                    else:
+                        registry_outcome = "preserved_ownership_evidence"
     except (OSError, RepositoryRegistryError, SnapshotPinError) as error:
         print(f"purge failed: {error}", file=sys.stderr)
         return 1
@@ -2404,6 +2420,7 @@ def _purge_main(*, json_output: bool, snapshot_scope: bool, apply: bool) -> int:
                     "deletion_supported": snapshot_scope,
                     "summary": summary,
                     "resources": resources,
+                    "registry_outcome": registry_outcome,
                 },
                 sort_keys=True,
             )
@@ -2437,6 +2454,146 @@ def _purge_main(*, json_output: bool, snapshot_scope: bool, apply: bool) -> int:
             for item in inspections
         )
     )
+
+
+def _remove_repository_registry(registry: RepositoryRegistry) -> str:
+    """Remove exhausted ownership evidence under its writer lock."""
+    if not registry.path.exists():
+        return "already_absent"
+    lock_path = registry.path.with_suffix(registry.path.suffix + ".lock")
+    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "r+") as lock:
+        if not stat.S_ISREG(os.fstat(lock.fileno()).st_mode):
+            raise RepositoryRegistryError("repository registry lock is not a regular file")
+        flock(lock, LOCK_EX)
+        try:
+            entries = registry.load()
+            inspections = registry.inspect(entries)
+            if any(
+                item.confidence != OwnershipConfidence.SAFE_OWNED
+                or item.presence != ResourcePresence.ABSENT
+                for item in inspections
+            ):
+                return "preserved_ownership_evidence"
+            registry.path.unlink(missing_ok=True)
+            directory = os.open(registry.path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+            return "removed"
+        finally:
+            flock(lock, LOCK_UN)
+
+
+def _capture_purge_scope(scope: str, operation: Callable[[], int]) -> tuple[int, dict[str, object]]:
+    """Run one existing purge scope and capture its stable JSON contract."""
+    stdout = StringIO()
+    stderr = StringIO()
+    with redirect_stdout(stdout), redirect_stderr(stderr):
+        exit_code = operation()
+    try:
+        payload = json.loads(stdout.getvalue())
+    except (TypeError, json.JSONDecodeError):
+        payload = {
+            "scope": scope,
+            "summary": {},
+            "resources": [],
+            "failure": stderr.getvalue().strip() or "scope produced no result",
+        }
+    if not isinstance(payload, dict):
+        payload = {
+            "scope": scope,
+            "summary": {},
+            "resources": [],
+            "failure": "scope produced an invalid result",
+        }
+        exit_code = 1
+    payload["scope"] = scope
+    payload["deletion_supported"] = True
+    payload["exit_code"] = exit_code
+    if stderr.getvalue().strip():
+        payload.setdefault("failure", stderr.getvalue().strip())
+    return exit_code, payload
+
+
+def _purge_all_main(*, json_output: bool, apply: bool) -> int:
+    """Compose every independently safe purge scope in lifecycle order."""
+    operations = (
+        (
+            "integration",
+            lambda: _purge_integration_main(json_output=True, apply=apply),
+        ),
+        ("data", lambda: _purge_data_main(json_output=True, apply=apply)),
+        (
+            "snapshots",
+            lambda: _purge_main(
+                json_output=True,
+                snapshot_scope=apply,
+                apply=apply,
+                remove_registry=apply,
+            ),
+        ),
+        ("logs", lambda: _purge_logs_main(json_output=True, apply=apply)),
+    )
+    results = [_capture_purge_scope(scope, operation) for scope, operation in operations]
+    exit_code = int(any(code != 0 for code, _ in results))
+    scope_payloads = [payload for _, payload in results]
+    snapshot_payload = next(
+        payload for payload in scope_payloads if payload.get("scope") == "snapshots"
+    )
+    output = dict(snapshot_payload)
+    output.update(
+        {
+            "scope": "all",
+            "dry_run": not apply,
+            "deletion_supported": True,
+            "exit_code": exit_code,
+            "scope_status": {str(payload.get("scope")): code for code, payload in results},
+            "scopes": scope_payloads,
+        }
+    )
+    if json_output:
+        print(json.dumps(output, sort_keys=True))
+    else:
+        action = "purge results" if apply else "purge preview (dry-run)"
+        print(f"{action}; scope=all")
+        for code, payload in results:
+            scope = str(payload.get("scope", "unknown"))
+            print(f"{scope.upper()} ({'ok' if code == 0 else 'attention required'})")
+            resources = payload.get("resources", [])
+            if isinstance(resources, list):
+                for group in ("SAFE_OWNED", "REFERENCED", "INACCESSIBLE", "AMBIGUOUS"):
+                    matching = [
+                        resource
+                        for resource in resources
+                        if isinstance(resource, dict) and resource.get("group") == group
+                    ]
+                    if matching or scope == "snapshots":
+                        print(f"{group} ({len(matching)})")
+                    for resource in matching:
+                        print(
+                            f"  {resource.get('resource_type', 'resource')} "
+                            f"{resource.get('resource_id', '')} - "
+                            f"{resource.get('outcome', 'unknown')} - "
+                            f"{resource.get('reason', '')}"
+                        )
+                        references = resource.get("references", [])
+                        if isinstance(references, list):
+                            for reference in references:
+                                print(f"    retained by: {reference}")
+                        diagnostics = resource.get("retention_diagnostics", [])
+                        if isinstance(diagnostics, list):
+                            for diagnostic in diagnostics:
+                                print(f"    retention unknown: {diagnostic}")
+                        if resource.get("failure"):
+                            print(f"    failure: {resource['failure']}")
+            failure = payload.get("failure")
+            if failure:
+                print(f"{scope} purge failed: {failure}", file=sys.stderr)
+            if not resources and not failure:
+                print("  no resources")
+    return exit_code
 
 
 def _hook_main(

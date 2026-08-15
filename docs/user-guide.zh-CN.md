@@ -357,8 +357,10 @@ spotter daemon stop
 确认这些准确路径专用于 Spotter 后，可以用常用文件管理工具删除虚拟环境和源码检出。
 
 普通卸载不会删除 `~/.spotter` 或 `SPOTTER_HOME` 中的用户数据。可用
-`spotter purge --all --dry-run` 在不删除任何内容的情况下预览已登记的仓库资源；添加 `--json`
-可获得机器可读输出。journal snapshot 和恢复 checkpoint、fork manifest、实验结果或仍存活的
+`spotter purge --all --dry-run` 在不删除任何内容的情况下预览全部 purge 范围；添加 `--json`
+可获得按范围组织的机器可读计划。`spotter purge --all` 会按生命周期顺序停用精确集成状态、删除
+schema 已证实的数据和不再被引用的 Git 资源，最后清空精确所有的日志。独立失败会按范围报告；
+状态不明的资源、配置、手动 pin 和同步证据会保留。journal snapshot 和恢复 checkpoint、fork manifest、实验结果或仍存活的
 worktree 所引用的 snapshot 会标为 `REFERENCED`，而不是成为删除候选。如果存在无法访问或
 状态不明的资源，预览会以非零状态退出。
 可用 `spotter pins add --repo <路径> --snapshot <sha>` 显式保留 snapshot，通过 `spotter pins list`
@@ -373,8 +375,7 @@ writer 的路径有效，绝不触碰已替换或未登记的路径；活跃 wri
 的文件及其精确的普通 lock companion 才会被认定为安全所有。旧版、损坏、空、未来版本、
 symlink、不可访问和未知路径会被跳过并报告。可用 `spotter purge --data` 仅删除这些已证实的
 文件。Spotter 会在删除前锁定并重新验证每个文件，保留普通 lock 文件以避免并发 writer 分裂到
-不同的 lock inode；活跃 writer 可能在命令结束后创建新数据。full 破坏性范围仍在
-[#89](https://github.com/spotter-agent/spotter/issues/89) 中跟踪。可用
+不同的 lock inode；活跃 writer 可能在命令结束后创建新数据。可用
 `spotter purge --integration --dry-run` 在不修改状态的情况下预览 integration 所有权。它会验证
 当前 manifest 中精确记录的 Hook、托管 service 定义和带 fingerprint 的 backup；已修改或未记录的
 Spotter 类似状态会报告为不明确。运行 `spotter purge --integration` 只删除这些精确资源。该命令

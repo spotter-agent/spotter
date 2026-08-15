@@ -69,6 +69,7 @@ _OTHER_SCOPE_ROOTS = {
     "repos.json",
     "repos.json.lock",
     "snapshot-pins.json",
+    "snapshot-pins.json.lock",
     "snapshot-pins.lock",
     "spotter.toml",
 }

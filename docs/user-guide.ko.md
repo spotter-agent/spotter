@@ -376,8 +376,11 @@ spotter daemon stop
 수 있습니다.
 
 일반적인 제거는 `~/.spotter` 또는 `SPOTTER_HOME`의 사용자 데이터를 삭제하지 않습니다.
-`spotter purge --all --dry-run`으로 등록된 저장소 리소스를 삭제 없이 미리 확인할 수 있고,
-기계 판독 출력은 `--json`을 추가하세요. journal snapshot과 복구 checkpoint, fork manifest,
+`spotter purge --all --dry-run`으로 모든 purge 범위를 삭제 없이 미리 확인할 수 있고, `--json`을
+추가하면 범위별 기계 판독 계획을 볼 수 있습니다. `spotter purge --all`은 lifecycle 순서대로 정확한
+통합 상태를 해제하고, schema가 입증된 데이터와 미참조 Git 리소스를 제거한 뒤 정확히 소유한 로그를
+비웁니다. 독립적인 실패는 범위별로 보고되며, 불명확한 리소스, 설정, 수동 pin, 동기화 증거는
+보존합니다. journal snapshot과 복구 checkpoint, fork manifest,
 살아 있는 worktree와 실험 결과가 참조하는 snapshot은 삭제 후보 대신 `REFERENCED`로 표시됩니다.
 접근할 수 없거나 상태가 불명확하면 미리보기는
 0이 아닌 코드로 종료됩니다.
@@ -395,8 +398,7 @@ snapshot을 명시적으로 보존하려면 `spotter pins add --repo <경로> --
 분류합니다. legacy, 손상, 빈 파일, 미래 버전, symlink, 접근 불가, 알 수 없는 경로는 건너뛰고
 보고합니다. `spotter purge --data`로 입증된 파일만 제거할 수 있습니다. Spotter는 삭제 직전에 각
 파일을 lock하고 다시 검증하며, 동시 writer가 서로 다른 lock inode로 갈라지지 않도록 일반 lock
-파일은 보존합니다. 활성 writer는 명령 후 새 데이터를 만들 수 있습니다. full 파괴 범위는
-[#89](https://github.com/spotter-agent/spotter/issues/89)에 남아 있습니다. 삭제 없이 integration 소유권을
+파일은 보존합니다. 활성 writer는 명령 후 새 데이터를 만들 수 있습니다. 삭제 없이 integration 소유권을
 확인하려면 `spotter purge --integration --dry-run`을 사용하세요. 현재 manifest의 정확한 Hook 항목,
 관리형 service 정의, fingerprint backup을 검증하며, 수정되었거나 기록되지 않은 Spotter 유사 상태는
 불명확하게 보고합니다. 검증된 리소스만 삭제하려면 `spotter purge --integration`을 실행하세요. 이

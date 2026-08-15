@@ -1339,12 +1339,13 @@ If package-manager uninstall cannot run lifecycle cleanup reliably, `spotter tea
 
 # 16. Purge
 
-Purge is the target destructive data-cleanup operation. Repository, durable-data, and integration
-previews plus four explicit destructive scopes are implemented:
+Purge is the destructive data-cleanup operation. Four focused scopes plus their complete `--all`
+composition are implemented:
 
 ```bash
 spotter purge --all --dry-run
 spotter purge --all --dry-run --json
+spotter purge --all
 spotter purge --data --dry-run
 spotter purge --data --dry-run --json
 spotter purge --data
@@ -1378,8 +1379,11 @@ spotter pins remove --pin-id <uuid>
 Only an exact registered Spotter-owned snapshot can be pinned. A pin protects the snapshot from
 both ordinary prune and explicit age expiry until it is removed. An unreadable, future-version, or
 stale pin store makes purge eligibility unknown rather than silently dropping the claim.
-Destructive scopes other than `--snapshots`, `--data`, `--integration`, and `--logs` remain tracked by
-[#89](https://github.com/spotter-agent/spotter/issues/89) and refuse mutation.
+`purge --all` runs the same independently safe scopes in lifecycle order: retire exact integration
+state first, remove schema-proven durable data, remove now-unreferenced Git worktrees/refs, then clear
+exact owned logs. It continues across independent scope failures and returns non-zero with each
+scope's status. JSON retains the historical top-level repository resource view and adds complete
+per-scope payloads under `scopes`. Manual pins still retain snapshots until explicitly removed.
 
 `purge --data --dry-run` inventories durable data independently of repository snapshots and logs;
 `purge --data` removes only the proven files.
@@ -1414,7 +1418,8 @@ then deletes refs with an exact expected-target compare. A failed worktree remov
 referenced. Dry-run simulates that ordering without mutation. Human and JSON output record each
 resource as `planned`, `skipped_referenced`, `skipped_ambiguous`, `already_absent`, `removed`,
 `failed_retryable`, or `failed_manual_recovery`; one repository failure does not undo successful
-cleanup in another. Ownership records remain as idempotent audit evidence until a future full purge.
+cleanup in another. Focused snapshot cleanup retains ownership records as idempotent audit evidence;
+successful `purge --all` removes an exhausted repository registry last while retaining its lock inode.
 New daemon and reviewer logs receive a separate exact, schema-versioned ownership record when
 Spotter creates the file. A private hard-link identity anchor keeps the original inode allocated,
 so inode recycling cannot make a replacement look owned; pre-existing, replaced, or anchorless
@@ -1423,7 +1428,7 @@ owned anchors instead of unlinking live files, so current writers keep a valid d
 reports every unregistered log-directory entry as `AMBIGUOUS`, never touches a replaced public
 path, preserves ownership evidence for idempotent reruns, and returns non-zero for skipped or failed
 resources. This is a point-in-time clear: an active writer may append new bytes immediately after
-the command. Destructive `--all` remains pending.
+the command.
 
 Examples:
 
@@ -1436,17 +1441,18 @@ spotter purge --logs
 spotter purge --all
 ```
 
-`--all` may need to clean resources in repositories, not only `~/.spotter`/state directories.
+`--all` cleans resources in registered repositories as well as proven state under
+`~/.spotter`/`SPOTTER_HOME`; configuration, ambiguous resources, retained lock inodes, manual pins,
+and integration/log synchronization evidence remain untouched.
 
 Safe order:
 
 ```text
-1. identify registered repositories/resources
-2. clean Spotter-created detached worktrees through Git
-3. clean Spotter-owned refs according to explicit policy
-4. remove journals/labels/opportunity annotations/experiments/logs
-5. remove integration/runtime metadata if requested
-6. remove repository registry last
+1. retire exact integration/service state under the lifecycle lock
+2. remove schema-proven journals/labels/opportunities/experiments
+3. clean Spotter-created detached worktrees, then refs, through Git
+4. remove an exhausted repository registry while retaining its writer lock
+5. clear exact owned log contents without invalidating active file descriptors
 ```
 
 Purge supports dry-run for repository and durable-data inspection:

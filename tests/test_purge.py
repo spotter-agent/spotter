@@ -24,6 +24,7 @@ from spotter.trace import TraceEvent
 def spotter_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home = tmp_path / "spotter"
     monkeypatch.setenv("SPOTTER_HOME", str(home))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
     return home
 
 
@@ -130,7 +131,13 @@ def test_purge_preview_json_is_machine_readable(
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["dry_run"] is True
-    assert payload["deletion_supported"] is False
+    assert payload["deletion_supported"] is True
+    assert [scope["scope"] for scope in payload["scopes"]] == [
+        "integration",
+        "data",
+        "snapshots",
+        "logs",
+    ]
     assert payload["summary"] == {
         "AMBIGUOUS": 0,
         "INACCESSIBLE": 0,
@@ -139,6 +146,77 @@ def test_purge_preview_json_is_machine_readable(
     }
     assert payload["resources"][0]["resource_id"] == f"refs/spotter/steps/{sha}"
     assert payload["resources"][0]["retention"] == "UNREFERENCED"
+
+
+def test_purge_all_applies_every_scope_in_lifecycle_order(
+    repo: Path,
+    spotter_home: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    sha = snapshot_worktree(repo)
+    journal = journal_path({"session_id": "purge-all"})
+    StepJournal(journal).record(TraceEvent("tool_proposal", {"cwd": str(repo)}), snapshot=sha)
+
+    log_path = spotter_home / "logs" / "spotterd.log"
+    log_registry = LogRegistry()
+    assert log_registry.claim(log_path, "spotterd")
+    log_path.write_text("owned log bytes")
+
+    codex_home = tmp_path / "codex"
+    hooks_path = codex_home / "hooks.json"
+    hooks_path.parent.mkdir(exist_ok=True)
+    hook = {"type": "command", "command": "/bin/spotter hook"}
+    owned = {"event": "PreToolUse", "matcher": ".*", "hook": hook}
+    hooks_path.write_text(
+        json.dumps({"hooks": {"PreToolUse": [{"matcher": ".*", "hooks": [hook]}]}})
+    )
+    manifest_path = spotter_home / "integrations/codex.json"
+    IntegrationManifest(
+        schema=MANIFEST_SCHEMA,
+        state="ready",
+        agent="codex",
+        setup_by="test",
+        agent_path="/bin/codex",
+        agent_version="codex 1.0",
+        codex_home=str(codex_home),
+        app_server_strategy="pending-external",
+        app_server_endpoint=None,
+        runtime_mode="portable",
+        service_registration=None,
+        service_owned=False,
+        hooks_file=str(hooks_path),
+        hooks_file_created=True,
+        owned_hooks=[owned],
+    ).save(manifest_path)
+    (manifest_path.parent / "codex.lock").touch()
+
+    assert main(["purge", "--all", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["scope_status"] == {
+        "data": 0,
+        "integration": 0,
+        "logs": 0,
+        "snapshots": 0,
+    }
+    assert [scope["scope"] for scope in payload["scopes"]] == [
+        "integration",
+        "data",
+        "snapshots",
+        "logs",
+    ]
+    assert not hooks_path.exists()
+    tombstone = IntegrationManifest.load(manifest_path)
+    assert tombstone is not None and tombstone.state == "purged"
+    assert not journal.exists()
+    assert not _ref_exists(repo, sha)
+    assert not RepositoryRegistry().path.exists()
+    assert RepositoryRegistry().path.with_suffix(".json.lock").is_file()
+    assert log_path.read_bytes() == b""
+
+    assert main(["purge", "--all", "--json"]) == 0
+    capsys.readouterr()
 
 
 def test_snapshot_purge_dry_run_plans_worktree_then_ref(
@@ -735,8 +813,6 @@ def test_changed_ref_target_is_ambiguous(repo: Path, capsys: pytest.CaptureFixtu
 
 def test_purge_refuses_non_preview_invocation() -> None:
     with pytest.raises(SystemExit):
-        main(["purge", "--all"])
-    with pytest.raises(SystemExit):
         main(["purge", "--all", "--snapshots", "--dry-run"])
     with pytest.raises(SystemExit):
         main(["purge", "--logs", "--snapshots", "--dry-run"])
@@ -967,7 +1043,7 @@ def test_experiment_result_reference_retains_external_fork_manifest(
         json.dumps({"fork_manifest": str(manifest_path)}) + "\n"
     )
 
-    assert main(["purge", "--all", "--dry-run", "--json"]) == 0
+    assert main(["purge", "--snapshots", "--dry-run", "--json"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
     [resource] = payload["resources"]
