@@ -24,6 +24,12 @@ from getpass import getuser
 from pathlib import Path
 
 from spotter.paths import sanitize_session, spotter_home
+from spotter.sampling import (
+    load_signal_sampling,
+    sample_fingerprint,
+    sample_matches,
+    signal_source_is_silent,
+)
 from spotter.snapshot import StepRecord
 
 STEP_VERDICTS = ("tp", "fp", "unclear")
@@ -48,7 +54,7 @@ class LabelError(ValueError):
     """Raised when a label cannot be applied to the thing it names."""
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 LEGACY_VERSION = 0
 
 
@@ -61,6 +67,7 @@ class Label:
     note: str
     labeled_at: str
     rater: str = ""
+    scope: str = ""
     # The verdict vocabularies have already changed once. Without a version a
     # future change reinterprets old labels silently, and every published rate
     # rests on them (issue #47).
@@ -99,20 +106,43 @@ def add_label(
     records: list[StepRecord],
     *,
     rater: str | None = None,
+    signal_type: str | None = None,
 ) -> Label:
     allowed: tuple[str, ...]
+    scope = ""
     if step is None:
+        if signal_type is not None:
+            raise LabelError("a signal-silence label requires a sampled journal step")
         allowed = SESSION_VERDICTS
         mark = session_fingerprint(records)
     else:
         if not 0 <= step < len(records):
             raise LabelError(f"step {step} out of range (journal has {len(records)} steps)")
         target = records[step]
-        if target.event.kind not in LABELABLE_KINDS:
+        if signal_type is not None:
+            scope = f"signal:{signal_type}"
+            _, samples = load_signal_sampling(session)
+            sample = next(
+                (
+                    sample
+                    for sample in samples
+                    if sample.step == step and sample.signal_type == signal_type
+                ),
+                None,
+            )
+            if sample is None:
+                raise LabelError(
+                    f"step {step} is not in a persisted silence sample for {signal_type}"
+                )
+            if not sample_matches(sample, records):
+                raise LabelError(f"step {step} signal sample is stale")
+            allowed = UNFLAGGED_VERDICTS
+            mark = sample.fingerprint
+        elif target.event.kind not in LABELABLE_KINDS:
             raise LabelError(
                 f"step {step} is {target.event.kind}; only {LABELABLE_KINDS} are scored"
             )
-        if target.event.kind == "tool_proposal":
+        elif target.event.kind == "tool_proposal":
             eligibility = unflagged_proposal_eligibility(target, records)
             if eligibility is None:
                 raise LabelError(
@@ -144,21 +174,25 @@ def add_label(
             allowed = UNFLAGGED_VERDICTS
         else:
             allowed = STEP_VERDICTS
-        mark = fingerprint(target)
+        if signal_type is None:
+            mark = fingerprint(target)
     if verdict not in allowed:
         raise LabelError(f"verdict must be one of {allowed} for this target")
+    if scope and not note.strip():
+        raise LabelError("a sampled signal verdict requires written criteria in --note")
     rater_id = getuser() if rater is None else rater.strip()
     if not rater_id or len(rater_id) > 200:
         raise LabelError("rater must be a non-empty identity of at most 200 characters")
     label = Label(
-        session,
-        step,
-        verdict,
-        mark,
-        note,
-        datetime.now(UTC).isoformat(),
-        rater_id,
-        SCHEMA_VERSION,
+        session=session,
+        step=step,
+        verdict=verdict,
+        fingerprint=mark,
+        note=note,
+        labeled_at=datetime.now(UTC).isoformat(),
+        rater=rater_id,
+        scope=scope,
+        version=SCHEMA_VERSION,
     )
     with labels_path(session).open("a", encoding="utf-8") as sink:
         sink.write(json.dumps(asdict(label), ensure_ascii=False) + "\n")
@@ -180,7 +214,7 @@ def unflagged_proposal_eligibility(record: StepRecord, records: list[StepRecord]
     )
 
 
-def load_labels(session: str) -> dict[int | None, Label]:
+def load_labels(session: str, *, scope: str = "") -> dict[int | None, Label]:
     """Latest label wins per target.
 
     A corrupt line raises. Skipping it would resurrect the verdict it was
@@ -189,7 +223,17 @@ def load_labels(session: str) -> dict[int | None, Label]:
     """
     labels: dict[int | None, Label] = {}
     for label in load_label_history(session):
-        labels[label.step] = label
+        if label.scope == scope:
+            labels[label.step] = label
+    return labels
+
+
+def load_all_labels(session: str) -> dict[tuple[int | None, str], Label]:
+    """Latest label wins independently for each target and measurement scope."""
+
+    labels: dict[tuple[int | None, str], Label] = {}
+    for label in load_label_history(session):
+        labels[(label.step, label.scope)] = label
     return labels
 
 
@@ -221,6 +265,7 @@ def load_label_history(session: str) -> tuple[Label, ...]:
                 note=str(raw.get("note") or ""),
                 labeled_at=str(raw.get("labeled_at") or ""),
                 rater=str(raw.get("rater") or ""),
+                scope=str(raw.get("scope") or "") if version >= 6 else "",
                 version=version,
             )
         except (json.JSONDecodeError, KeyError, TypeError) as error:
@@ -245,6 +290,12 @@ def matches(label: Label, records: list[StepRecord]) -> bool:
         return session_fingerprint(records) == label.fingerprint
     if not 0 <= label.step < len(records):
         return False
+    if label.scope.startswith("signal:"):
+        record = records[label.step]
+        signal_type = label.scope.removeprefix("signal:")
+        return sample_fingerprint(record) == label.fingerprint and signal_source_is_silent(
+            record.event.event_id, signal_type, records
+        )
     return fingerprint(records[label.step]) == label.fingerprint
 
 

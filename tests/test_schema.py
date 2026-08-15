@@ -188,9 +188,11 @@ def test_older_label_schema_without_rater_remains_readable() -> None:
     raw = json.loads(labels_path("s").read_text().splitlines()[0])
     raw["version"] = 1
     raw.pop("rater")
+    raw.pop("scope")
     labels_path("s").write_text(json.dumps(raw) + "\n")
 
     assert load_labels("s")[0].rater == ""
+    assert load_labels("s")[0].scope == ""
 
 
 def test_a_newer_label_schema_is_refused() -> None:

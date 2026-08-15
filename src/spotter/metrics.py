@@ -15,6 +15,7 @@ from spotter.labels import (
     matches,
     unflagged_proposal_eligibility,
 )
+from spotter.sampling import SignalSamplingBatch, load_signal_sampling, sample_matches
 from spotter.snapshot import StepRecord
 
 MIN_SAMPLES = 5
@@ -49,6 +50,8 @@ class Tally:
         points the reader's decision the wrong way."""
         decided = self.positive + self.negative
         coverage = f"{self.labeled}/{self.total} labeled"
+        if self.unclear:
+            coverage += f", {self.unclear} unclear"
         if self.not_applicable:
             coverage += f", {self.not_applicable} n/a"
         if self.stale:
@@ -127,18 +130,18 @@ def tally_session(session: str, records: list[StepRecord]) -> tuple[dict[str, Ta
 def agreement_session(session: str, records: list[StepRecord]) -> AgreementTally:
     """Measure independent latest-per-rater judgments over current targets."""
 
-    latest: dict[tuple[int | None, str], Label] = {}
+    latest: dict[tuple[int | None, str, str], Label] = {}
     for label in load_label_history(session):
-        latest[(label.step, label.rater)] = label
+        latest[(label.step, label.scope, label.rater)] = label
 
-    by_target: dict[int | None, list[Label]] = {}
+    by_target: dict[tuple[int | None, str], list[Label]] = {}
     stale = 0
     unattributed = 0
     for label in latest.values():
         if not matches(label, records):
             stale += 1
             continue
-        by_target.setdefault(label.step, []).append(label)
+        by_target.setdefault((label.step, label.scope), []).append(label)
         unattributed += not label.rater
 
     doubled = agreed = 0
@@ -222,6 +225,31 @@ def tally_reviewer_continues(session: str, records: list[StepRecord]) -> Tally:
             verdict, stale = _verdict(labels, records, record.step)
             tally = tally.plus(verdict, stale=stale)
     return tally
+
+
+def tally_signal_silence(
+    session: str, records: list[StepRecord]
+) -> tuple[dict[str, Tally], tuple[SignalSamplingBatch, ...]]:
+    """Return miss coverage for persisted non-emitted signal samples."""
+
+    batches, stored_samples = load_signal_sampling(session)
+    batches_by_id = {batch.batch_id: batch for batch in batches}
+    samples = {(sample.step, sample.signal_type): sample for sample in stored_samples}
+    labels = {
+        signal_type: load_labels(session, scope=f"signal:{signal_type}")
+        for _, signal_type in samples
+    }
+    tallies: dict[str, Tally] = {}
+    for sample in samples.values():
+        batch = batches_by_id[sample.batch_id]
+        key = f"{sample.signal_type}/{sample.event_kind}@p={batch.inclusion_probability:g}"
+        label = labels[sample.signal_type].get(sample.step)
+        stale = not sample_matches(sample, records) or bool(
+            label is not None and not matches(label, records)
+        )
+        verdict = label.verdict if label is not None else None
+        tallies[key] = tallies.get(key, Tally()).plus(verdict, stale=stale)
+    return tallies, batches
 
 
 def merge(left: Tally, right: Tally) -> Tally:

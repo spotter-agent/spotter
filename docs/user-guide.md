@@ -278,6 +278,23 @@ includes session and call coverage and says `partial` or `unavailable` when tota
 Treat journals and diagnostics as potentially sensitive: they can contain repository paths,
 prompts, tool payloads, and other work context.
 
+To measure detector misses without treating every unflagged event as an equivalent negative, first
+declare an event-kind stratum and deterministic inclusion probability, then label only the printed
+sampled steps:
+
+```bash
+spotter sample-signals --session <id> --signal-type failure_streak \
+  --event-kind command_result --sample-rate 0.1
+spotter label --session <id> --step <sampled-step> \
+  --signal-type failure_streak --verdict miss --note "written criterion"
+spotter metrics --session <id>
+```
+
+Repeated sampling with the same detector, event kinds, and rate consumes only the new journal
+suffix. Metrics preserve the frame probability and exclusions, report coverage separately per
+detector/event-kind/rate stratum, and explicitly avoid generalizing the result to unsampled event
+kinds.
+
 ### Storage maintenance
 
 Snapshot pruning is dry-run by default. Run it from, or point it at, the relevant repository:

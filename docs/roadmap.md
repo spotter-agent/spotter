@@ -164,7 +164,7 @@ A signal is a hypothesis, not a verdict.
 ## Work
 
 - event-driven candidate signals ([#28](https://github.com/spotter-agent/spotter/issues/28)); all eight initial families now journal active/suppressed/resolved/stale candidates, and opted-in active candidates deduplicate into restart-safe bounded-input jobs that run asynchronously under existing spend caps; comparative precision, miss-rate, and delay evidence against periodic review remains in #38/#24 using #33 cost telemetry;
-- precision and miss-rate measurement ([#38](https://github.com/spotter-agent/spotter/issues/38)); labels retain rater identity and report exact agreement for the double-labeled subset, active signal candidates report precision by type, and correlation-proven unflagged tool proposals plus explicit reviewer `CONTINUE` decisions support coverage-aware miss-rate estimates; candidate-silence sampling remains;
+- precision and miss-rate measurement ([#38](https://github.com/spotter-agent/spotter/issues/38)); labels retain rater identity and report exact agreement for the double-labeled subset, active signal candidates report precision by type, and correlation-proven unflagged tool proposals plus explicit reviewer `CONTINUE` decisions support coverage-aware miss-rate estimates; deterministic event-kind-stratified candidate-silence frames persist inclusion probability, exclusions, and selection bias, while mechanically scored seeding and evidence collection remain;
 - detection delay and wasted-action measurement ([#24](https://github.com/spotter-agent/spotter/issues/24));
 - keep reviewer cost visible alongside detection benefit ([#33](https://github.com/spotter-agent/spotter/issues/33), implemented).
 

@@ -238,6 +238,7 @@ Logical data categories:
 ```text
 session journals
 labels
+signal-sampling frames
 experiments
 reviewer spend ledger
 logs

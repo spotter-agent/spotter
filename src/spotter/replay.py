@@ -38,7 +38,7 @@ from pathlib import Path
 
 from spotter.effects import external_effects
 from spotter.hook import journal_path
-from spotter.labels import load_labels, matches
+from spotter.labels import load_all_labels, matches
 from spotter.paths import secure_dir, spotter_home
 from spotter.redact import redact_text
 from spotter.snapshot import StepJournal, StepRecord, restore_snapshot
@@ -100,6 +100,7 @@ class SignalBranchCoverage:
 class LabeledBranchCoverage:
     label_step: int
     verdict: str
+    scope: str
     target_kind: str
     proposal_step: int | None
     status: BranchCoverageStatus | None
@@ -394,7 +395,9 @@ def _labeled_branch_coverage(
 
     point_by_step = {point.step: point for point in points}
     opportunities: list[LabeledBranchCoverage] = []
-    labels = (label for step, label in load_labels(session_id).items() if step is not None)
+    labels = (
+        label for (step, _scope), label in load_all_labels(session_id).items() if step is not None
+    )
     for label in sorted(labels, key=lambda label: label.step or 0):
         assert label.step is not None
         target = records[label.step] if 0 <= label.step < len(records) else None
@@ -402,7 +405,16 @@ def _labeled_branch_coverage(
         stale = not matches(label, records)
         proposal: BranchPointCoverage | None = None
         if not stale and target is not None:
-            if target_kind in {"gate_shadow_block", "gate_block"}:
+            if label.scope.startswith("signal:"):
+                proposal = next(
+                    (
+                        point_by_step[record.step]
+                        for record in records[label.step + 1 :]
+                        if record.event.kind == "tool_proposal"
+                    ),
+                    None,
+                )
+            elif target_kind in {"gate_shadow_block", "gate_block"}:
                 tool_use_id = target.event.payload.get("tool_use_id")
                 if isinstance(tool_use_id, str) and tool_use_id:
                     proposal = next(
@@ -433,6 +445,7 @@ def _labeled_branch_coverage(
             LabeledBranchCoverage(
                 label.step,
                 label.verdict,
+                label.scope,
                 target_kind,
                 proposal.step if proposal else None,
                 proposal.status if proposal else None,

@@ -50,6 +50,7 @@ from spotter.metrics import (
     tally_reviewer_continues,
     tally_session,
     tally_signal_candidates,
+    tally_signal_silence,
     tally_unflagged_proposals,
 )
 from spotter.observability import (
@@ -76,6 +77,12 @@ from spotter.runtime_metrics import (
     render_objective_outcomes,
     render_runtime_cost_summary,
     render_runtime_costs,
+)
+from spotter.sampling import (
+    SignalSampleError,
+    SignalSamplingBatch,
+    load_signal_sampling,
+    sample_signal_silence,
 )
 from spotter.snapshot import (
     SnapshotError,
@@ -114,6 +121,7 @@ def build_parser() -> argparse.ArgumentParser:
             "review",
             "experiment",
             "label",
+            "sample-signals",
             "metrics",
             "observability",
             "status",
@@ -132,6 +140,7 @@ def build_parser() -> argparse.ArgumentParser:
             "review: run the shadow reviewer on a session (records only, injects nothing); "
             "experiment: guidance or identical-neutral fork pairs (needs --run to execute); "
             "label: record a human verdict on a gate flag, signal, reviewer decision, or session; "
+            "sample-signals: persist a stratified random frame for detector misses; "
             "metrics: gate and signal precision, misses, reviewer precision, and ceiling; "
             "observability: compare Hook/App Server Trace IR and source-adapter coverage; "
             "tasks: validate or preflight a frozen task set without running agents; "
@@ -244,9 +253,28 @@ def build_parser() -> argparse.ArgumentParser:
             "visible|invisible|unclear for a session"
         ),
     )
-    parser.add_argument("--note", default="", help="label: why (free text, stored verbatim)")
+    parser.add_argument(
+        "--note",
+        default="",
+        help="label: written criteria (required for sampled signal verdicts)",
+    )
     parser.add_argument(
         "--rater", help="label: stable human rater identity (defaults to the OS account)"
+    )
+    parser.add_argument(
+        "--signal-type",
+        help="sample-signals: detector family; label: sampled detector-negative scope",
+    )
+    parser.add_argument(
+        "--event-kind",
+        action="append",
+        default=[],
+        help="sample-signals: eligible source-event stratum (repeatable)",
+    )
+    parser.add_argument(
+        "--sample-rate",
+        type=float,
+        help="sample-signals: deterministic inclusion probability in (0, 1]",
     )
     parser.add_argument(
         "--keep-artifacts",
@@ -416,7 +444,30 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "label":
         if not args.session or not args.verdict:
             parser.error("label requires --session and --verdict")
-        return _label_main(args.session, args.step, args.verdict, args.note, args.rater)
+        return _label_main(
+            args.session,
+            args.step,
+            args.verdict,
+            args.note,
+            args.rater,
+            args.signal_type,
+        )
+    if args.command == "sample-signals":
+        if (
+            not args.session
+            or not args.signal_type
+            or not args.event_kind
+            or args.sample_rate is None
+        ):
+            parser.error(
+                "sample-signals requires --session, --signal-type, --event-kind, and --sample-rate"
+            )
+        return _sample_signals_main(
+            args.session,
+            args.signal_type,
+            tuple(args.event_kind),
+            args.sample_rate,
+        )
     if args.command == "metrics":
         return _metrics_main(args.session)
     if args.command == "observability":
@@ -953,7 +1004,14 @@ def _status_main() -> int:
     return 0
 
 
-def _label_main(session: str, step: int | None, verdict: str, note: str, rater: str | None) -> int:
+def _label_main(
+    session: str,
+    step: int | None,
+    verdict: str,
+    note: str,
+    rater: str | None,
+    signal_type: str | None,
+) -> int:
     """Record a human verdict. Labels live outside the journal so the reviewer
     never reads its own report card."""
     try:
@@ -962,12 +1020,52 @@ def _label_main(session: str, step: int | None, verdict: str, note: str, rater: 
         print(f"label failed: {error}", file=sys.stderr)
         return 1
     try:
-        label = add_label(session, step, verdict, note, records, rater=rater)
-    except LabelError as error:
+        label = add_label(
+            session,
+            step,
+            verdict,
+            note,
+            records,
+            rater=rater,
+            signal_type=signal_type,
+        )
+    except (LabelError, SignalSampleError) as error:
         print(f"label failed: {error}", file=sys.stderr)
         return 1
     target = "session" if step is None else f"step {step}"
-    print(f"labeled {session} {target}: {label.verdict} by {label.rater}")
+    scope = f" [{label.scope}]" if label.scope else ""
+    print(f"labeled {session} {target}{scope}: {label.verdict} by {label.rater}")
+    return 0
+
+
+def _sample_signals_main(
+    session: str,
+    signal_type: str,
+    event_kinds: tuple[str, ...],
+    sample_rate: float,
+) -> int:
+    try:
+        records = StepJournal.load(journal_path({"session_id": session}))
+        batch = sample_signal_silence(
+            session,
+            records,
+            signal_type,
+            event_kinds,
+            sample_rate,
+        )
+    except (OSError, SnapshotError, SignalSampleError) as error:
+        print(f"signal sampling failed: {error}", file=sys.stderr)
+        return 1
+    print(
+        f"sampled {batch.selected}/{batch.eligible} eligible {batch.signal_type} sources "
+        f"at p={batch.inclusion_probability:g}; "
+        f"excluded emitted={batch.excluded_emitted}, suppressed={batch.excluded_suppressed}, "
+        f"unobservable={batch.excluded_unobservable}"
+    )
+    _, samples = load_signal_sampling(session)
+    for sample in samples:
+        if sample.batch_id == batch.batch_id:
+            print(f"  step {sample.step}: {sample.event_kind} {sample.event_id}")
     return 0
 
 
@@ -986,6 +1084,8 @@ def _metrics_main(session: str | None) -> int:
     reviewer = ceiling = Tally()
     gate_misses = Tally()
     reviewer_misses = Tally()
+    signal_misses: dict[str, Tally] = {}
+    signal_sampling_batches: list[SignalSamplingBatch] = []
     uncorrelatable_proposals = 0
     signals: dict[str, Tally] = {}
     unattributed_signals = 0
@@ -1006,8 +1106,11 @@ def _metrics_main(session: str | None) -> int:
                 journal.stem, records
             )
             session_reviewer_misses = tally_reviewer_continues(journal.stem, records)
+            session_signal_misses, session_sampling_batches = tally_signal_silence(
+                journal.stem, records
+            )
             session_agreement = agreement_session(journal.stem, records)
-        except LabelError as error:
+        except (LabelError, SignalSampleError) as error:
             print(f"metrics aborted: {error}", file=sys.stderr)
             return 1
         for rule, tally in session_gates.items():
@@ -1020,6 +1123,9 @@ def _metrics_main(session: str | None) -> int:
         ceiling = merge(ceiling, session_ceiling)
         gate_misses = merge(gate_misses, session_misses)
         reviewer_misses = merge(reviewer_misses, session_reviewer_misses)
+        for stratum, tally in session_signal_misses.items():
+            signal_misses[stratum] = merge(signal_misses.get(stratum, Tally()), tally)
+        signal_sampling_batches.extend(session_sampling_batches)
         uncorrelatable_proposals += session_uncorrelatable
         for signal_type, tally in session_signals.items():
             signals[signal_type] = merge(signals.get(signal_type, Tally()), tally)
@@ -1064,6 +1170,29 @@ def _metrics_main(session: str | None) -> int:
             "  blind spots (not part of the rate): "
             f"{unattributed_signals} active candidates lack a stable type or identity"
         )
+    print("Signal candidate misses (label sampled non-emitted sources miss|tn):")
+    if not signal_misses:
+        print("  no persisted signal-silence samples")
+    for stratum, tally in sorted(signal_misses.items()):
+        print("  " + tally.rate_line(stratum, "miss-rate"))
+    for batch in signal_sampling_batches:
+        kinds = ",".join(batch.event_kinds)
+        frame_total = (
+            batch.eligible
+            + batch.excluded_emitted
+            + batch.excluded_suppressed
+            + batch.excluded_unobservable
+        )
+        blind_spot = batch.excluded_unobservable / frame_total if frame_total else 0
+        print(
+            f"  frame {batch.signal_type}[{kinds}]: p={batch.inclusion_probability:g}, "
+            f"selected={batch.selected}/{batch.eligible}, "
+            f"excluded emitted={batch.excluded_emitted}, "
+            f"suppressed={batch.excluded_suppressed}, "
+            f"unobservable={batch.excluded_unobservable}/{frame_total} ({blind_spot:.0%})"
+        )
+    if signal_sampling_batches:
+        print("  bias: rates represent only the declared event-kind strata, not all trajectories")
     print("P4 reviewer precision (label each verify/nudge tp|fp):")
     print("  " + reviewer.rate_line("interventions", "correct"))
     print("Reviewer negative decisions (label each CONTINUE miss|tn):")

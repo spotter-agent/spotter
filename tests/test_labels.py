@@ -394,6 +394,7 @@ def test_unclear_labels_count_as_coverage_but_not_as_a_verdict() -> None:
     tally = Tally().plus("unclear").plus("tp").plus(None)
     assert tally.total == 3 and tally.labeled == 2 and tally.unclear == 1
     assert tally.positive + tally.negative == 1
+    assert "1 unclear" in tally.rate_line("sample", "correct")
 
 
 def test_cli_label_and_metrics_roundtrip(capsys: pytest.CaptureFixture[str]) -> None:

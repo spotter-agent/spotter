@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from spotter.hook import journal_path
+from spotter.identity import IdentityProvenance, RuntimeIdentity, ThreadId, TurnId
 from spotter.labels import add_label, labels_path
 from spotter.replay import (
     BranchCoverageStatus,
@@ -21,6 +22,7 @@ from spotter.replay import (
     fork_rollout,
     load_fork_manifest,
 )
+from spotter.sampling import sample_signal_silence
 from spotter.snapshot import SnapshotError, StepJournal, snapshot_worktree
 from spotter.trace import TraceEvent
 
@@ -320,6 +322,13 @@ def test_branch_coverage_reports_labeled_intervention_opportunities(
                         "cwd": str(repo),
                         "reversibility_class": "A",
                     },
+                    event_id="source-A",
+                    identity=RuntimeIdentity(
+                        ThreadId("thread-1"),
+                        TurnId("turn-1"),
+                        None,
+                        IdentityProvenance("codex", "thread-1", "turn-1"),
+                    ),
                 ),
                 sha,
             ),
@@ -340,6 +349,15 @@ def test_branch_coverage_reports_labeled_intervention_opportunities(
         ],
     )
     records = StepJournal.load(journal_path({"session_id": OLD_ID}))
+    sample_signal_silence(OLD_ID, records, "failure_streak", ("tool_proposal",), 1)
+    add_label(
+        OLD_ID,
+        0,
+        "miss",
+        "signal opportunity",
+        records,
+        signal_type="failure_streak",
+    )
     add_label(OLD_ID, 1, "tp", "gate opportunity", records)
     add_label(OLD_ID, 2, "tp", "reviewer opportunity", records)
     add_label(OLD_ID, 3, "miss", "missed proposal opportunity", records)
@@ -349,11 +367,18 @@ def test_branch_coverage_reports_labeled_intervention_opportunities(
 
     report = branch_coverage(OLD_ID, codex_home)
 
-    assert (report.labeled_opportunities, report.labeled_opportunities_current) == (4, 3)
-    assert report.labeled_opportunity_branch_points == 3
-    assert report.labeled_opportunity_branch_points_forkable == 3
-    assert [point.proposal_step for point in report.labeled_opportunity_points] == [0, 3, 3, None]
-    assert report.labeled_opportunity_points[3].stale is True
+    assert (report.labeled_opportunities, report.labeled_opportunities_current) == (5, 4)
+    assert report.labeled_opportunity_branch_points == 4
+    assert report.labeled_opportunity_branch_points_forkable == 4
+    assert [point.proposal_step for point in report.labeled_opportunity_points] == [
+        3,
+        0,
+        3,
+        3,
+        None,
+    ]
+    assert report.labeled_opportunity_points[4].stale is True
+    assert report.labeled_opportunity_points[0].scope == "signal:failure_streak"
     rendered = json.loads(branch_coverage_to_json(report))
     assert rendered["labeled_opportunity_points"][1]["status"] == "FORKABLE_EXACT"
 
