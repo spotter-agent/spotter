@@ -37,6 +37,7 @@ from spotter.daemon import (
 from spotter.doctor import FAIL, INFO, OK, WARN, check_runtime, worst
 from spotter.doctor import run as run_doctor
 from spotter.experiment import list_forks, results_path, run_experiment, summarize
+from spotter.feedback import FeedbackError, add_feedback, load_feedback
 from spotter.gates import Gate
 from spotter.hook import journal_path, run_hook
 from spotter.integration import IntegrationError, IntegrationManager, IntegrationManifest
@@ -138,6 +139,7 @@ def build_parser() -> argparse.ArgumentParser:
             "doctor",
             "interventions",
             "explain",
+            "feedback",
             "daemon",
             "setup",
             "teardown",
@@ -161,6 +163,7 @@ def build_parser() -> argparse.ArgumentParser:
             "doctor: verify supervision end to end (non-zero exit when broken); "
             "interventions: list recent live supervision lifecycle records; "
             "explain: inspect one intervention with --intervention-id; "
+            "feedback: append structured human feedback to an intervention; "
             "daemon: manually start, stop, restart, or inspect spotterd; "
             "setup/teardown: manage the owned Codex integration"
         ),
@@ -182,7 +185,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--session", help="session id (fork; analyze/metrics/observability filter to it)"
     )
-    parser.add_argument("--intervention-id", help="explain: stable Spotter intervention id")
+    parser.add_argument(
+        "--intervention-id", help="explain/feedback: stable Spotter intervention id"
+    )
+    parser.add_argument("--category", help="feedback: structured feedback category")
     parser.add_argument("--step", type=int, help="journal step to branch at (fork)")
     parser.add_argument(
         "--repo", type=Path, help="repo path (prune; fork override when the journal lacks cwd)"
@@ -436,6 +442,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not args.intervention_id:
             parser.error("explain requires --intervention-id")
         return _explain_main(args.intervention_id)
+    if args.command == "feedback":
+        if not args.intervention_id or not args.category:
+            parser.error("feedback requires --intervention-id and --category")
+        return _feedback_main(args.intervention_id, args.category, args.note, args.rater)
     if args.command == "fork-coverage":
         if not args.session:
             parser.error("fork-coverage requires --session")
@@ -737,6 +747,43 @@ def _explain_main(intervention_id: str) -> int:
     print("Delivery")
     suffix = f" ({intervention.status_reason})" if intervention.status_reason else ""
     print(f"  {intervention.status}{suffix}")
+    try:
+        feedback = load_feedback(intervention_id)
+    except FeedbackError as error:
+        print(f"human feedback unavailable: {error}", file=sys.stderr)
+        return 1
+    print("Human feedback (evaluation evidence, not ground truth)")
+    if not feedback:
+        print("  none")
+    for item in feedback:
+        note = f" — {_bounded(item.note)}" if item.note else ""
+        print(f"  {item.category} by {item.rater} at {item.created_at}{note}")
+    return 0
+
+
+def _feedback_main(intervention_id: str, category: str, note: str, rater: str | None) -> int:
+    try:
+        known = any(item.intervention_id == intervention_id for item in _intervention_history())
+    except (OSError, SnapshotError) as error:
+        print(f"feedback refused: intervention history unavailable ({error})", file=sys.stderr)
+        return 1
+    if not known:
+        print(f"feedback refused: intervention {intervention_id!r} was not found", file=sys.stderr)
+        return 1
+    try:
+        feedback = add_feedback(
+            intervention_id,
+            category,
+            note=note,
+            rater=rater,
+        )
+    except (FeedbackError, OSError) as error:
+        print(f"feedback refused: {error}", file=sys.stderr)
+        return 1
+    print(
+        f"recorded {feedback.category} feedback {feedback.feedback_id} "
+        f"for {feedback.supervision_event_id}"
+    )
     return 0
 
 

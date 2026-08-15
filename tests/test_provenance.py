@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from spotter.cli import main
+from spotter.feedback import FeedbackError, add_feedback, load_feedback
 from spotter.hook import journal_path
 from spotter.identity import (
     AttachmentId,
@@ -107,3 +108,75 @@ def test_cli_lists_and_explains_intervention(
     assert "signals=signal-1" in explained
     assert "events=evidence-1" in explained
     assert "target_completed_without_observed_input" in explained
+    assert "Human feedback (evaluation evidence, not ground truth)\n  none" in explained
+
+
+def test_feedback_is_structured_redacted_and_append_only(
+    intervention_journal: StepJournal,
+) -> None:
+    first = add_feedback(
+        "spt-0123456789ab",
+        "useful",
+        note="confirmed; token=ghp_1234567890123456",
+        rater="developer-1",
+    )
+    second = add_feedback(
+        "spt-0123456789ab",
+        "too_late",
+        note="correct, but the turn had ended",
+        rater="developer-1",
+    )
+
+    history = load_feedback("spt-0123456789ab")
+    assert [item.feedback_id for item in history] == [first.feedback_id, second.feedback_id]
+    assert [item.category for item in history] == ["USEFUL", "TOO_LATE"]
+    assert history[0].note == "confirmed; token=[REDACTED]"
+
+    with pytest.raises(FeedbackError, match="category must be one of"):
+        add_feedback("spt-0123456789ab", "false_positive")
+
+
+def test_cli_records_feedback_and_explain_keeps_it_separate_from_ground_truth(
+    intervention_journal: StepJournal, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert (
+        main(
+            [
+                "feedback",
+                "--intervention-id",
+                "spt-0123456789ab",
+                "--category",
+                "wrong",
+                "--note",
+                "The assumption was already verified",
+                "--rater",
+                "developer-1",
+            ]
+        )
+        == 0
+    )
+    assert "recorded WRONG feedback" in capsys.readouterr().out
+
+    assert main(["explain", "--intervention-id", "spt-0123456789ab"]) == 0
+    explained = capsys.readouterr().out
+    assert "Human feedback (evaluation evidence, not ground truth)" in explained
+    assert "WRONG by developer-1" in explained
+    assert "The assumption was already verified" in explained
+
+
+def test_cli_refuses_feedback_for_unknown_intervention(
+    intervention_journal: StepJournal, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert (
+        main(
+            [
+                "feedback",
+                "--intervention-id",
+                "spt-unknown",
+                "--category",
+                "OTHER",
+            ]
+        )
+        == 1
+    )
+    assert "was not found" in capsys.readouterr().err
