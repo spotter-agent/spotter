@@ -130,9 +130,15 @@ def _action_line(record: StepRecord, untrusted: _Untrusted) -> str | None:
         resource = untrusted.clean(payload.get("resource"), _COMMAND_CHARS)
         outcome = payload.get("outcome", payload.get("result"))
         return (
-            f"step {record.step} EXTERNAL EFFECT remains after restart: "
+            f"step {record.step} EXTERNAL EFFECT observed: "
             f"{payload.get('kind')} resource={resource} "
             f"outcome={outcome} reversible={payload.get('reversible')}"
+        )
+    if kind == "effect_resolution":
+        return (
+            f"step {record.step} EXTERNAL EFFECT resolution: "
+            f"effect={payload.get('effect_id')} resolution={payload.get('resolution')} "
+            f"related={payload.get('related_effect_id')}"
         )
     if kind in ("gate_shadow_block", "gate_fail_open", "gate_block"):
         return f"step {record.step} GATE {kind}: {payload.get('rule')}"

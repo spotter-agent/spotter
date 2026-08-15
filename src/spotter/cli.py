@@ -12,6 +12,7 @@ from contextlib import suppress
 from dataclasses import replace
 from fcntl import LOCK_EX, LOCK_NB, LOCK_UN, flock
 from pathlib import Path
+from typing import cast
 
 from spotter.budget import (
     LedgerCorrupt,
@@ -36,6 +37,12 @@ from spotter.daemon import (
 )
 from spotter.doctor import FAIL, INFO, OK, WARN, check_runtime, worst
 from spotter.doctor import run as run_doctor
+from spotter.effects import (
+    EffectResolution,
+    EffectResolutionError,
+    effect_resolution_event,
+    external_effects,
+)
 from spotter.experiment import list_forks, results_path, run_experiment, summarize
 from spotter.feedback import FeedbackError, add_feedback, load_feedback
 from spotter.gates import Gate
@@ -145,6 +152,7 @@ def build_parser() -> argparse.ArgumentParser:
             "interventions",
             "explain",
             "feedback",
+            "effects",
             "daemon",
             "setup",
             "teardown",
@@ -169,6 +177,7 @@ def build_parser() -> argparse.ArgumentParser:
             "interventions: list recent BLOCK/VERIFY/NUDGE lifecycle records; "
             "explain: inspect one intervention with --intervention-id; "
             "feedback: append structured human feedback to an intervention; "
+            "effects: list or explicitly resolve external effects for a session; "
             "daemon: manually start, stop, restart, or inspect spotterd; "
             "setup/teardown: manage the owned Codex integration"
         ),
@@ -176,7 +185,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "target",
         nargs="?",
-        choices=["start", "stop", "restart", "status", "codex", "validate", "preflight", "run"],
+        choices=[
+            "start",
+            "stop",
+            "restart",
+            "status",
+            "codex",
+            "validate",
+            "preflight",
+            "run",
+            "list",
+            "resolve",
+        ],
         help="daemon lifecycle action, integration target, or task action",
     )
     parser.add_argument("subject", nargs="?", help="task-set manifest path")
@@ -188,7 +208,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--config", type=Path, help="path to Spotter TOML config")
     parser.add_argument(
-        "--session", help="session id (fork; analyze/metrics/observability filter to it)"
+        "--session", help="session id (fork/effects; analyze/metrics/observability filter to it)"
     )
     parser.add_argument(
         "--intervention-id",
@@ -197,6 +217,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="explain/feedback: stable Spotter supervision id",
     )
     parser.add_argument("--category", help="feedback: structured feedback category")
+    parser.add_argument("--effect-id", help="effects resolve: stable target effect id")
+    parser.add_argument(
+        "--related-effect-id", help="effects resolve: stable compensating effect id"
+    )
+    parser.add_argument(
+        "--resolution",
+        choices=[
+            "reversed",
+            "compensated",
+            "reconciled_present",
+            "reconciled_absent",
+            "still_unresolved",
+        ],
+        help="effects resolve: explicit resolution state",
+    )
     parser.add_argument("--step", type=int, help="journal step to branch at (fork)")
     parser.add_argument(
         "--repo", type=Path, help="repo path (prune; fork override when the journal lacks cwd)"
@@ -286,7 +321,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--note",
         default="",
-        help="label/label-opportunity: written criteria or warranted-window rationale",
+        help="label/label-opportunity: rationale; effects resolve: explicit evidence",
     )
     parser.add_argument(
         "--rater",
@@ -430,7 +465,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ):
             return 1
         return 0
-    if args.target is not None:
+    if args.target is not None and args.command != "effects":
         parser.error("the second positional argument requires daemon, setup, teardown, or tasks")
     if args.resume:
         parser.error("--resume requires tasks run")
@@ -442,6 +477,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     # instead of rejecting maps distinct ids onto one file ("a/b" -> "a_b").
     if args.session is not None and not valid_session(args.session):
         parser.error(f"--session {args.session!r} is not a valid session id")
+    if args.command == "effects":
+        if args.target not in {"list", "resolve"} or not args.session:
+            parser.error("effects requires: spotter effects list|resolve --session SESSION")
+        if args.target == "resolve" and (not args.effect_id or not args.resolution):
+            parser.error("effects resolve requires --effect-id and --resolution")
+        return _effects_main(
+            args.session,
+            args.target,
+            effect_id=args.effect_id,
+            resolution=args.resolution,
+            related_effect_id=args.related_effect_id,
+            evidence=args.note,
+        )
     if args.command == "analyze":
         return _analyze_main(args.session)
     if args.command == "interventions":
@@ -693,6 +741,72 @@ def _analyze_main(session: str | None) -> int:
                 f"  step {record.step:4d} {record.event.kind:17s} "
                 f"{record.event.payload.get('rule')}: {summary}"
             )
+    return 0
+
+
+def _effects_main(
+    session: str,
+    action: str,
+    *,
+    effect_id: str | None,
+    resolution: str | None,
+    related_effect_id: str | None,
+    evidence: str,
+) -> int:
+    journal_file = journal_path({"session_id": session})
+    try:
+        records = StepJournal.load(journal_file)
+    except (OSError, SnapshotError) as error:
+        print(f"effects unavailable: {error}", file=sys.stderr)
+        return 1
+    effects = external_effects(records)
+    if action == "list":
+        if not effects:
+            print(f"no external effects for {session}")
+            return 0
+        for effect in effects:
+            state = effect.get("resolution") or effect.get("outcome") or "unknown"
+            resolved = "resolved" if effect.get("resolved") is True else "unresolved"
+            print(
+                f"{effect.get('effect_id', 'legacy')} {resolved} {state} "
+                f"{effect.get('semantic_operation') or effect.get('kind')} "
+                f"resource={effect.get('resource')}"
+            )
+        return 0
+
+    targets = {
+        value
+        for effect in effects
+        if effect.get("correlation_quality") == "exact"
+        and (value := effect.get("effect_id"))
+        and isinstance(value, str)
+    }
+    if effect_id not in targets:
+        print(
+            f"effect resolution refused: exact effect {effect_id!r} was not found", file=sys.stderr
+        )
+        return 1
+    if related_effect_id is not None and related_effect_id not in targets:
+        print(
+            f"effect resolution refused: related exact effect {related_effect_id!r} was not found",
+            file=sys.stderr,
+        )
+        return 1
+    if resolution is None:
+        print("effect resolution refused: resolution is required", file=sys.stderr)
+        return 1
+    try:
+        event = effect_resolution_event(
+            effect_id or "",
+            cast(EffectResolution, resolution),
+            evidence,
+            related_effect_id=related_effect_id,
+        )
+        StepJournal(journal_file).record(event)
+    except (OSError, EffectResolutionError) as error:
+        print(f"effect resolution refused: {error}", file=sys.stderr)
+        return 1
+    print(f"recorded {resolution} resolution for {effect_id}")
     return 0
 
 

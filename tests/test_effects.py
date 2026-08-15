@@ -1,6 +1,16 @@
+from pathlib import Path
+
+import pytest
+
 from spotter.config import McpToolSemantics
-from spotter.effects import classify, effect_event, external_effects
-from spotter.snapshot import StepRecord
+from spotter.effects import (
+    EffectResolutionError,
+    classify,
+    effect_event,
+    effect_resolution_event,
+    external_effects,
+)
+from spotter.snapshot import StepJournal, StepRecord
 from spotter.trace import TraceEvent
 
 
@@ -440,20 +450,236 @@ def test_exact_effect_observations_correlate_without_hiding_conflicts() -> None:
     assert first is not None and second is not None
     assert first.payload["effect_id"] == second.payload["effect_id"]
 
-    effects = external_effects([StepRecord(1, first, None), StepRecord(2, second, None)])
+    third = effect_event(
+        TraceEvent(
+            "tool_result",
+            {
+                "reversibility_class": "C",
+                "effect_kind": "external_tool_write",
+                "resource": "remote",
+                "tool_response": {"status": "succeeded"},
+                "tool_use_id": "call-8",
+            },
+            event_id="reconciliation-result",
+            operation_id="call-8",
+        )
+    )
+    assert third is not None
+    effects = external_effects(
+        [StepRecord(1, first, None), StepRecord(2, second, None), StepRecord(3, third, None)]
+    )
 
     assert len(effects) == 1
-    assert effects[0]["observation_count"] == 2
+    assert effects[0]["observation_count"] == 3
     assert effects[0]["source_event_ids"] == [
         "event:hook-result",
         "operation:call-8",
         "tool:call-8",
         "event:app-server-result",
         "item:call-8",
+        "event:reconciliation-result",
     ]
     assert effects[0]["outcome"] == "unknown"
     assert effects[0]["outcome_evidence"] == "conflicting_observations"
     assert effects[0]["observed_outcomes"] == ["failed", "succeeded"]
+
+
+def test_explicit_effect_resolution_is_append_only_and_keeps_effect_history() -> None:
+    effect = effect_event(
+        TraceEvent(
+            "tool_result",
+            {
+                "reversibility_class": "C",
+                "effect_kind": "external_tool_write",
+                "resource": "issue:42",
+                "tool_response": {"ok": True},
+            },
+            operation_id="create-issue-42",
+        )
+    )
+    assert effect is not None
+    effect_id = str(effect.payload["effect_id"])
+    present = effect_resolution_event(effect_id, "reconciled_present", "issue 42 still exists")
+    compensating_effect = TraceEvent(
+        "external_effect",
+        {
+            "effect_id": "effect-close-issue-42",
+            "correlation_quality": "exact",
+            "outcome": "succeeded",
+        },
+    )
+    compensated = effect_resolution_event(
+        effect_id,
+        "compensated",
+        "issue 42 was closed explicitly",
+        related_effect_id="effect-close-issue-42",
+    )
+
+    projected = external_effects(
+        [
+            StepRecord(1, effect, None),
+            StepRecord(2, present, None),
+            StepRecord(3, compensating_effect, None),
+            StepRecord(4, compensated, None),
+        ]
+    )
+
+    assert len(projected) == 2
+    assert projected[0]["effect_id"] == effect_id
+    assert projected[0]["resolution"] == "compensated"
+    assert projected[0]["resolved"] is True
+    assert projected[0]["resolution_relation_verified"] is True
+    assert [item["resolution"] for item in projected[0]["resolution_history"]] == [
+        "reconciled_present",
+        "compensated",
+    ]
+    assert projected[0]["resolution_history"][-1]["related_effect_id"] == ("effect-close-issue-42")
+
+
+def test_missing_compensating_effect_does_not_resolve_target() -> None:
+    effect = TraceEvent(
+        "external_effect",
+        {
+            "effect_id": "effect-create",
+            "correlation_quality": "exact",
+            "outcome": "succeeded",
+        },
+    )
+    compensation = effect_resolution_event(
+        "effect-create", "compensated", "claimed close", related_effect_id="effect-missing"
+    )
+
+    projected = external_effects([StepRecord(1, effect, None), StepRecord(2, compensation, None)])
+
+    assert projected[0]["resolution"] == "compensated"
+    assert projected[0]["resolved"] is False
+    assert projected[0]["resolution_relation_verified"] is False
+
+
+def test_reconciliation_distinguishes_present_from_absent_effects() -> None:
+    effect = TraceEvent(
+        "external_effect",
+        {
+            "effect_id": "effect-exact",
+            "correlation_quality": "exact",
+            "outcome": "unknown",
+        },
+    )
+    present = effect_resolution_event("effect-exact", "reconciled_present", "probe found it")
+    absent = effect_resolution_event("effect-exact", "reconciled_absent", "probe did not find it")
+
+    present_projection = external_effects(
+        [StepRecord(1, effect, None), StepRecord(2, present, None)]
+    )
+    absent_projection = external_effects([StepRecord(1, effect, None), StepRecord(2, absent, None)])
+
+    assert (present_projection[0]["resolution"], present_projection[0]["resolved"]) == (
+        "reconciled_present",
+        False,
+    )
+    assert (absent_projection[0]["resolution"], absent_projection[0]["resolved"]) == (
+        "reconciled_absent",
+        True,
+    )
+
+
+def test_effect_resolution_rejects_ambiguous_or_unbounded_records() -> None:
+    with pytest.raises(EffectResolutionError, match="related_effect_id"):
+        effect_resolution_event("effect-create", "compensated", "closed")
+    with pytest.raises(EffectResolutionError, match="cannot resolve itself"):
+        effect_resolution_event(
+            "effect-create", "compensated", "closed", related_effect_id="effect-create"
+        )
+    with pytest.raises(EffectResolutionError, match="1-500"):
+        effect_resolution_event("effect-create", "still_unresolved", "")
+
+
+def test_effects_cli_lists_and_records_explicit_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from spotter.cli import main
+    from spotter.hook import journal_path
+
+    monkeypatch.setenv("SPOTTER_HOME", str(tmp_path))
+    effect = effect_event(
+        TraceEvent(
+            "tool_result",
+            {
+                "reversibility_class": "C",
+                "effect_kind": "external_tool_write",
+                "resource": "issue:42",
+                "tool_response": {"ok": True},
+            },
+            operation_id="create-issue-42",
+        )
+    )
+    assert effect is not None
+    effect_id = str(effect.payload["effect_id"])
+    journal = StepJournal(journal_path({"session_id": "session-1"}))
+    journal.record(effect)
+
+    assert main(["effects", "list", "--session", "session-1"]) == 0
+    assert effect_id in capsys.readouterr().out
+    assert (
+        main(
+            [
+                "effects",
+                "resolve",
+                "--session",
+                "session-1",
+                "--effect-id",
+                effect_id,
+                "--resolution",
+                "reconciled_absent",
+                "--note",
+                "probe did not find issue 42",
+            ]
+        )
+        == 0
+    )
+
+    records = StepJournal.load(journal.path)
+    assert records[-1].event.kind == "effect_resolution"
+    assert external_effects(records)[0]["resolved"] is True
+
+
+def test_effects_cli_refuses_missing_compensation_relation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from spotter.cli import main
+    from spotter.hook import journal_path
+
+    monkeypatch.setenv("SPOTTER_HOME", str(tmp_path))
+    effect = TraceEvent(
+        "external_effect",
+        {
+            "effect_id": "effect-create",
+            "correlation_quality": "exact",
+            "outcome": "succeeded",
+        },
+    )
+    StepJournal(journal_path({"session_id": "session-1"})).record(effect)
+
+    assert (
+        main(
+            [
+                "effects",
+                "resolve",
+                "--session",
+                "session-1",
+                "--effect-id",
+                "effect-create",
+                "--resolution",
+                "compensated",
+                "--related-effect-id",
+                "effect-missing",
+                "--note",
+                "claimed close",
+            ]
+        )
+        == 1
+    )
+    assert "related exact effect" in capsys.readouterr().err
 
 
 def test_inferred_effect_fingerprints_do_not_suppress_repeated_actions() -> None:

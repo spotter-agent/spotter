@@ -250,6 +250,26 @@ recorded only.
 
 ## 7. Operate and inspect Spotter
 
+### External effects and recovery evidence
+
+List the external effects projected for a session:
+
+```bash
+spotter effects list --session SESSION
+```
+
+After an explicit probe or compensating action, append the observed resolution without rewriting
+the original effect:
+
+```bash
+spotter effects resolve --session SESSION --effect-id EFFECT_ID \
+  --resolution reconciled_absent --note "explicit probe did not find the resource"
+```
+
+Supported states are `reversed`, `compensated`, `reconciled_present`, `reconciled_absent`, and
+`still_unresolved`. Compensation also requires `--related-effect-id` naming the separately
+journaled compensating effect; Spotter refuses to call a missing relation resolved.
+
 ### Health and runtime
 
 ```bash

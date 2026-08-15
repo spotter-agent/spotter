@@ -60,8 +60,27 @@ def test_external_effects_remain_visible_to_analysis() -> None:
             ),
         ]
     )
-    assert "EXTERNAL EFFECT remains after restart" in digest.body
+    assert "EXTERNAL EFFECT observed" in digest.body
     assert "resource=origin" in digest.body
+
+
+def test_effect_resolutions_remain_visible_to_analysis() -> None:
+    digest = build(
+        [
+            _rec(
+                1,
+                "effect_resolution",
+                {
+                    "effect_id": "effect-create",
+                    "resolution": "compensated",
+                    "related_effect_id": "effect-close",
+                },
+            )
+        ]
+    )
+
+    assert "EXTERNAL EFFECT resolution" in digest.body
+    assert "resolution=compensated" in digest.body
 
 
 def test_spec_drift_is_discarded_when_no_goal_was_visible() -> None:

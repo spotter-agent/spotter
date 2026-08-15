@@ -10,7 +10,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Literal, cast
 from urllib.parse import urlsplit, urlunsplit
-from uuid import UUID, uuid5
+from uuid import UUID, uuid4, uuid5
 
 from spotter.config import McpToolSemantics
 from spotter.outcomes import outcome_failure
@@ -18,6 +18,9 @@ from spotter.trace import TraceEvent
 
 ReversibilityClass = Literal["A", "B", "C"]
 ParseConfidence = Literal["exact", "bounded", "unknown"]
+EffectResolution = Literal[
+    "reversed", "compensated", "reconciled_present", "reconciled_absent", "still_unresolved"
+]
 
 _MAX_TOKENS = 64
 _MAX_COMMAND_CHARS = 4096
@@ -37,6 +40,10 @@ class Classification:
     reason_code: str = "unclassified"
     parse_confidence: ParseConfidence = "unknown"
     semantic_operation: str | None = None
+
+
+class EffectResolutionError(ValueError):
+    """An explicit effect-resolution record is malformed or ambiguous."""
 
 
 _READ_COMMANDS = frozenset(
@@ -375,10 +382,14 @@ def external_effects(records: list[Any], through_step: int | None = None) -> lis
 
     effects: list[dict[str, Any]] = []
     exact: dict[str, int] = {}
+    resolutions: list[dict[str, Any]] = []
     for record in records:
-        if record.event.kind != "external_effect" or (
-            through_step is not None and record.step > through_step
-        ):
+        if through_step is not None and record.step > through_step:
+            continue
+        if record.event.kind == "effect_resolution":
+            resolutions.append(dict(record.event.payload))
+            continue
+        if record.event.kind != "external_effect":
             continue
         payload = dict(record.event.payload)
         effect_id = _optional_identifier(payload.get("effect_id"))
@@ -391,7 +402,88 @@ def external_effects(records: list[Any], through_step: int | None = None) -> lis
             effects.append(payload)
         else:
             effects[previous] = _merge_effect_observations(effects[previous], payload)
+    for resolution in resolutions:
+        target = _optional_identifier(resolution.get("effect_id"))
+        if target is not None and target in exact:
+            effects[exact[target]] = _apply_effect_resolution(
+                effects[exact[target]], resolution, set(exact)
+            )
     return effects
+
+
+def effect_resolution_event(
+    effect_id: str,
+    resolution: EffectResolution,
+    evidence: str,
+    *,
+    related_effect_id: str | None = None,
+) -> TraceEvent:
+    """Create an append-only explicit reversal, compensation, or reconciliation record."""
+
+    if not effect_id.startswith("effect-") or len(effect_id) > 80:
+        raise EffectResolutionError("effect_id must be a bounded stable effect id")
+    if resolution not in {
+        "reversed",
+        "compensated",
+        "reconciled_present",
+        "reconciled_absent",
+        "still_unresolved",
+    }:
+        raise EffectResolutionError("unsupported effect resolution")
+    evidence = evidence.strip()
+    if not evidence or len(evidence) > 500:
+        raise EffectResolutionError("resolution evidence must contain 1-500 characters")
+    if resolution == "compensated" and related_effect_id is None:
+        raise EffectResolutionError("compensated effects require related_effect_id")
+    if related_effect_id is not None:
+        if not related_effect_id.startswith("effect-") or len(related_effect_id) > 80:
+            raise EffectResolutionError("related_effect_id must be a bounded stable effect id")
+        if related_effect_id == effect_id:
+            raise EffectResolutionError("an effect cannot resolve itself")
+    resolution_event_id = f"effect-resolution-{uuid4().hex}"
+    return TraceEvent(
+        "effect_resolution",
+        {
+            "resolution_event_id": resolution_event_id,
+            "effect_id": effect_id,
+            "resolution": resolution,
+            "evidence": evidence,
+            "related_effect_id": related_effect_id,
+        },
+        event_id=resolution_event_id,
+    )
+
+
+def _apply_effect_resolution(
+    effect: dict[str, Any], resolution: dict[str, Any], known_effect_ids: set[str]
+) -> dict[str, Any]:
+    value = resolution.get("resolution")
+    if value not in {
+        "reversed",
+        "compensated",
+        "reconciled_present",
+        "reconciled_absent",
+        "still_unresolved",
+    }:
+        return effect
+    related = _optional_identifier(resolution.get("related_effect_id"))
+    relation_verified = value != "compensated" or related in known_effect_ids
+    entry = {
+        key: resolution.get(key)
+        for key in ("resolution_event_id", "resolution", "evidence", "related_effect_id")
+    }
+    entry["relation_verified"] = relation_verified
+    history = effect.get("resolution_history", [])
+    if not isinstance(history, list):
+        history = []
+    merged = {
+        **effect,
+        "resolution": value,
+        "resolved": relation_verified and value in {"reversed", "compensated", "reconciled_absent"},
+        "resolution_relation_verified": relation_verified,
+        "resolution_history": [*history, entry][-16:],
+    }
+    return merged
 
 
 def _merge_effect_observations(previous: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
@@ -405,11 +497,11 @@ def _merge_effect_observations(previous: dict[str, Any], current: dict[str, Any]
         )
     )[:16]
     merged["observation_count"] = _observation_count(previous) + _observation_count(current)
+    observed = _identifier_list(previous.get("observed_outcomes"))
     outcomes = {
         value
         for value in (
-            *_identifier_list(previous.get("observed_outcomes")),
-            previous.get("outcome"),
+            *(observed or (previous.get("outcome"),)),
             current.get("outcome"),
         )
         if isinstance(value, str)
