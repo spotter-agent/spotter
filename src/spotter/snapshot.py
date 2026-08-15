@@ -582,12 +582,19 @@ def snapshot_references(
         if journal.resolve() in skip:
             continue  # about to be deleted: its claims must not preserve refs
         for record in StepJournal.load(journal, strict=True):
-            if not record.snapshot:
+            checkpoint = record.event.payload.get("checkpoint")
+            if checkpoint is not None and (not isinstance(checkpoint, str) or not checkpoint):
+                raise SnapshotError(
+                    f"invalid recovery checkpoint in {journal.name} step {record.step}"
+                )
+            roots = {value for value in (record.snapshot, checkpoint) if value}
+            if not roots:
                 continue
             cwd = record.event.payload.get("cwd")
             unknown_provenance = target is None or not isinstance(cwd, str) or not cwd
             if unknown_provenance or Path(str(cwd)).resolve() == target:
-                references.setdefault(record.snapshot, []).append((journal.stem, record.step))
+                for root in roots:
+                    references.setdefault(root, []).append((journal.stem, record.step))
     return references
 
 

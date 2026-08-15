@@ -66,6 +66,30 @@ def test_prune_keeps_referenced_and_drops_orphans(repo: Path) -> None:
     assert _refs(repo) == {f"refs/spotter/steps/{kept}"}
 
 
+def test_prune_keeps_recovery_checkpoint(repo: Path) -> None:
+    kept = snapshot_worktree(repo)
+    (repo / "a.txt").write_text("v2")
+    orphan = snapshot_worktree(repo)
+    StepJournal(journal_path({"session_id": "recovery"})).record(
+        TraceEvent("tool_result", {"cwd": str(repo), "checkpoint": kept})
+    )
+
+    references = snapshot_references(journal_path({"session_id": "recovery"}).parent, repo)
+
+    assert references[kept] == [("recovery", 0)]
+    assert [item.sha for item in prune_snapshots(repo, set(references))] == [orphan]
+
+
+def test_invalid_recovery_checkpoint_aborts_prune(repo: Path) -> None:
+    snapshot_worktree(repo)
+    StepJournal(journal_path({"session_id": "recovery"})).record(
+        TraceEvent("tool_result", {"cwd": str(repo), "checkpoint": 42})
+    )
+
+    with pytest.raises(SnapshotError, match="invalid recovery checkpoint"):
+        referenced_snapshots(journal_path({"session_id": "recovery"}).parent, repo)
+
+
 def test_unreadable_journal_aborts_prune(repo: Path, spotter_home: Path) -> None:
     snapshot_worktree(repo)
     sessions = spotter_home / "sessions"

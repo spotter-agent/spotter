@@ -212,6 +212,22 @@ def test_journal_reference_retains_snapshot(repo: Path, capsys: pytest.CaptureFi
     assert resource["references"] == ["journal:live:step:0"]
 
 
+def test_recovery_checkpoint_retains_snapshot(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sha = snapshot_worktree(repo)
+    StepJournal(journal_path({"session_id": "recovery"})).record(
+        TraceEvent("tool_result", {"cwd": str(repo), "checkpoint": sha})
+    )
+
+    assert main(["purge", "--all", "--dry-run", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    [resource] = payload["resources"]
+    assert resource["group"] == "REFERENCED"
+    assert resource["references"] == ["journal:recovery:step:0"]
+
+
 def test_journal_reference_survives_repository_move(
     repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

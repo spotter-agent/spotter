@@ -377,8 +377,9 @@ spotter daemon stop
 
 일반적인 제거는 `~/.spotter` 또는 `SPOTTER_HOME`의 사용자 데이터를 삭제하지 않습니다.
 `spotter purge --all --dry-run`으로 등록된 저장소 리소스를 삭제 없이 미리 확인할 수 있고,
-기계 판독 출력은 `--json`을 추가하세요. journal, fork manifest, 살아 있는 worktree가 참조하는
-snapshot과 실험 결과가 참조하는 snapshot은 삭제 후보 대신 `REFERENCED`로 표시됩니다. 접근할 수 없거나 상태가 불명확하면 미리보기는
+기계 판독 출력은 `--json`을 추가하세요. journal snapshot과 복구 checkpoint, fork manifest,
+살아 있는 worktree와 실험 결과가 참조하는 snapshot은 삭제 후보 대신 `REFERENCED`로 표시됩니다.
+접근할 수 없거나 상태가 불명확하면 미리보기는
 0이 아닌 코드로 종료됩니다. 파괴적 purge는 아직 구현되지 않았으므로 지원되는 Git 인식
 정리에는 `spotter prune`을 사용하고 [#89](https://github.com/spotter-agent/spotter/issues/89)를 확인하세요.
 
