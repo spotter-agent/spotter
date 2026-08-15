@@ -21,7 +21,7 @@ from spotter.trace import TraceEvent
 
 if TYPE_CHECKING:
     from spotter.app_server import AppServerEvent
-    from spotter.thread_state import ThreadState
+    from spotter.thread_state import StateItem, ThreadState
 
 SOURCE_AUDIT_RELATIVE_PATH = Path("source-audit") / "samples.jsonl"
 _FIELD_SEGMENT = re.compile(r"[._-]|(?<=[a-z0-9])(?=[A-Z])")
@@ -219,6 +219,8 @@ def source_audit_sample(
     source_fields = tuple(sorted(_field_paths(raw_event.raw)))
     item_type = _item_type(raw_event.raw)
     families = _families_for(raw_event.method, item_type)
+    if event.kind == "user_prompt" and event.payload.get("input_origin") == "spotter_supervision":
+        families = (EvidenceFamily.INTERVENTION_DELIVERY,)
     status = _source_status(raw_event, item_type, source_fields, event)
     if status == CoverageStatus.OBSERVED_ENCRYPTED:
         # State cannot turn opaque source content into a known fact. Preserve the
@@ -587,6 +589,8 @@ _TRACE_FAMILY: dict[str, tuple[EvidenceFamily, ...]] = {
 
 
 def _trace_families(event: TraceEvent) -> tuple[EvidenceFamily, ...]:
+    if event.kind == "user_prompt" and event.payload.get("input_origin") == "spotter_supervision":
+        return (EvidenceFamily.INTERVENTION_DELIVERY,)
     if (
         event.kind == "tool_result"
         and event.provenance is not None
@@ -647,6 +651,8 @@ def state_coverage_status(event: TraceEvent, state: ThreadState) -> CoverageStat
             else CoverageStatus.ADAPTER_DROPPED
         )
     if event.kind == "user_prompt":
+        if event.payload.get("input_origin") == "spotter_supervision":
+            return _state_collection_status(event, state.supervision.interventions)
         item = state.task.goal
         return _state_item_status(event, item.provenance.event_id if item else None)
     if event.kind == "plan":
@@ -716,10 +722,14 @@ def _state_item_status(event: TraceEvent, state_event_id: str | None) -> Coverag
 
 
 def _state_evidence_status(event: TraceEvent, state: ThreadState) -> CoverageStatus:
+    return _state_collection_status(event, state.evidence.items)
+
+
+def _state_collection_status(event: TraceEvent, items: tuple[StateItem, ...]) -> CoverageStatus:
     if event.event_id is None:
         return CoverageStatus.OBSERVED_PARTIAL
     return (
         CoverageStatus.OBSERVED_EXACT
-        if any(item.provenance.event_id == event.event_id for item in state.evidence.items)
+        if any(item.provenance.event_id == event.event_id for item in items)
         else CoverageStatus.ADAPTER_DROPPED
     )

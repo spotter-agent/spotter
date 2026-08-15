@@ -314,6 +314,43 @@ def test_live_ingestion_records_thread_state_preservation(tmp_path: Path) -> Non
     assert sample.state_status == CoverageStatus.OBSERVED_EXACT
 
 
+def test_spotter_input_is_intervention_coverage_not_a_dropped_user_goal() -> None:
+    raw = _raw(
+        "item/completed",
+        {
+            "threadId": "thread-1",
+            "turnId": "turn-1",
+            "item": {
+                "id": "spotter-input-1",
+                "type": "userMessage",
+                "content": [{"type": "text", "text": "Verify the retry assumption"}],
+                "clientId": "spt-0123456789ab",
+            },
+        },
+    )
+    normalized = CodexTraceNormalizer().normalize(raw)
+    event = replace(
+        normalized,
+        payload={
+            **normalized.payload,
+            "input_origin": "spotter_supervision",
+            "intervention_id": "spt-0123456789ab",
+            "intervention_relation": "target_turn",
+        },
+    )
+    state = ThreadStateStore().observe(event)
+    sample = source_audit_sample(
+        raw,
+        event,
+        state_status=state_coverage_status(event, state),
+    )
+
+    assert state.task.goal is None
+    assert state.supervision.interventions[-1].provenance.event_id == event.event_id
+    assert sample.families == (EvidenceFamily.INTERVENTION_DELIVERY.value,)
+    assert sample.state_status == CoverageStatus.OBSERVED_EXACT
+
+
 def test_observability_cli_does_not_claim_an_unmeasured_ceiling(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
