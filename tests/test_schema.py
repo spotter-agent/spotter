@@ -8,9 +8,13 @@ import pytest
 
 from spotter.hook import journal_path
 from spotter.labels import (
-    SCHEMA_VERSION as LABEL_SCHEMA_VERSION,
+    LABEL_SCHEMA,
+    LABEL_SCHEMA_VERSION,
+    LabelError,
+    add_label,
+    labels_path,
+    load_labels,
 )
-from spotter.labels import LabelError, add_label, labels_path, load_labels
 from spotter.snapshot import LEGACY_VERSION, SCHEMA_VERSION, SnapshotError, StepJournal
 from spotter.trace import TraceEvent
 
@@ -179,6 +183,12 @@ def test_labels_are_versioned_too() -> None:
     ]
     add_label("s", 1, "fp", "", StepJournal.load(_journal()))
     assert load_labels("s")[1].version == LABEL_SCHEMA_VERSION
+    raw = json.loads(labels_path("s").read_text().splitlines()[0])
+    assert (raw["schema"], raw["schema_version"], raw["version"]) == (
+        LABEL_SCHEMA,
+        LABEL_SCHEMA_VERSION,
+        LABEL_SCHEMA_VERSION,
+    )
     assert records  # the journal really was the labelled thing
 
 
@@ -187,6 +197,8 @@ def test_older_label_schema_without_rater_remains_readable() -> None:
     add_label("s", 0, "fp", "", StepJournal.load(_journal()), rater="alice")
     raw = json.loads(labels_path("s").read_text().splitlines()[0])
     raw["version"] = 1
+    raw.pop("schema")
+    raw.pop("schema_version")
     raw.pop("rater")
     raw.pop("scope")
     labels_path("s").write_text(json.dumps(raw) + "\n")
@@ -194,12 +206,56 @@ def test_older_label_schema_without_rater_remains_readable() -> None:
     assert load_labels("s")[0].rater == ""
     assert load_labels("s")[0].scope == ""
 
+    add_label("s", 0, "tp", "corrected", StepJournal.load(_journal()), rater="bob")
+    rows = [json.loads(line) for line in labels_path("s").read_text().splitlines()]
+    assert "schema" not in rows[0]
+    assert rows[1]["schema"] == LABEL_SCHEMA
+
 
 def test_a_newer_label_schema_is_refused() -> None:
     StepJournal(_journal()).record(TraceEvent("gate_shadow_block", {"rule": "r"}))
     add_label("s", 0, "fp", "", StepJournal.load(_journal()))
     raw = json.loads(labels_path("s").read_text().splitlines()[0])
     raw["version"] = LABEL_SCHEMA_VERSION + 5
+    raw["schema_version"] = LABEL_SCHEMA_VERSION + 5
     labels_path("s").write_text(json.dumps(raw) + "\n")
     with pytest.raises(LabelError, match="understands up to"):
         load_labels("s")
+
+
+@pytest.mark.parametrize(
+    ("schema", "version", "message"),
+    [
+        (LABEL_SCHEMA, LABEL_SCHEMA_VERSION + 1, "understands up to"),
+        ("future.label", LABEL_SCHEMA_VERSION, "unsupported schema"),
+    ],
+)
+def test_label_append_refuses_unknown_history_without_modifying_it(
+    schema: str, version: int, message: str
+) -> None:
+    StepJournal(_journal()).record(TraceEvent("gate_shadow_block", {"rule": "r"}))
+    add_label("s", 0, "fp", "", StepJournal.load(_journal()))
+    path = labels_path("s")
+    raw = json.loads(path.read_text().splitlines()[0])
+    raw["schema"] = schema
+    raw["schema_version"] = version
+    raw["version"] = version
+    path.write_text(json.dumps(raw) + "\n")
+    before = path.read_bytes()
+
+    with pytest.raises(LabelError, match=message):
+        add_label("s", 0, "tp", "corrected", StepJournal.load(_journal()))
+
+    assert path.read_bytes() == before
+
+
+def test_label_append_refuses_corrupt_history_without_modifying_it() -> None:
+    StepJournal(_journal()).record(TraceEvent("gate_shadow_block", {"rule": "r"}))
+    path = labels_path("s")
+    path.write_text("not-json\n")
+    before = path.read_bytes()
+
+    with pytest.raises(LabelError, match="line 1 is unreadable"):
+        add_label("s", 0, "fp", "", StepJournal.load(_journal()))
+
+    assert path.read_bytes() == before

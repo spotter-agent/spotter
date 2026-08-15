@@ -1493,6 +1493,10 @@ Human intervention feedback uses per-record `spotter.intervention_feedback` sche
 Released schema-name-less v1 records remain readable and immutable; new records use the current
 schema, while unsupported, future, or corrupt history refuses append without changing the file.
 
+Evaluation labels use per-record `spotter.label` schema metadata. Schema-name-less historical
+records remain readable, mixed history writes only the current schema, and every append validates
+the existing file under its resource lock so future, foreign, or corrupt evidence is not extended.
+
 ---
 
 # 20. Release lifecycle

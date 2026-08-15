@@ -17,9 +17,11 @@ later differs, the label is reported as stale rather than silently counted
 
 import hashlib
 import json
+import os
 import re
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from fcntl import LOCK_EX, flock
 from getpass import getuser
 from pathlib import Path
 
@@ -54,7 +56,9 @@ class LabelError(ValueError):
     """Raised when a label cannot be applied to the thing it names."""
 
 
-SCHEMA_VERSION = 6
+LABEL_SCHEMA = "spotter.label"
+LABEL_SCHEMA_VERSION = 6
+SCHEMA_VERSION = LABEL_SCHEMA_VERSION
 LEGACY_VERSION = 0
 
 
@@ -194,8 +198,26 @@ def add_label(
         scope=scope,
         version=SCHEMA_VERSION,
     )
-    with labels_path(session).open("a", encoding="utf-8") as sink:
-        sink.write(json.dumps(asdict(label), ensure_ascii=False) + "\n")
+    path = labels_path(session)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    with lock_path.open("a") as lock:
+        flock(lock, LOCK_EX)
+        if path.exists():
+            _load_label_history_path(path)
+        with path.open("a", encoding="utf-8") as sink:
+            sink.write(
+                json.dumps(
+                    {
+                        "schema": LABEL_SCHEMA,
+                        "schema_version": SCHEMA_VERSION,
+                        **asdict(label),
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+            sink.flush()
+            os.fsync(sink.fileno())
     return label
 
 
@@ -241,6 +263,10 @@ def load_label_history(session: str) -> tuple[Label, ...]:
     """Read append-only label history so independent raters remain measurable."""
 
     path = labels_path(session)
+    return _load_label_history_path(path)
+
+
+def _load_label_history_path(path: Path) -> tuple[Label, ...]:
     if not path.exists():
         return ()
     labels: list[Label] = []
@@ -249,9 +275,21 @@ def load_label_history(session: str) -> tuple[Label, ...]:
             continue
         try:
             raw = json.loads(line)
+            if not isinstance(raw, dict):
+                raise TypeError("record is not an object")
             version = raw.get("version", LEGACY_VERSION)
             if not isinstance(version, int) or isinstance(version, bool):
                 raise LabelError(f"{path.name} line {number} has a non-integer version")
+            schema = raw.get("schema")
+            schema_version = raw.get("schema_version")
+            if schema is None and schema_version is None:
+                pass
+            elif schema != LABEL_SCHEMA:
+                raise LabelError(f"{path.name} line {number} uses unsupported schema {schema!r}")
+            elif not isinstance(schema_version, int) or isinstance(schema_version, bool):
+                raise LabelError(f"{path.name} line {number} has a non-integer schema version")
+            elif schema_version != version:
+                raise LabelError(f"{path.name} line {number} has mismatched schema versions")
             if version > SCHEMA_VERSION:
                 raise LabelError(
                     f"{path.name} line {number} was written by schema v{version}; "
