@@ -8,7 +8,18 @@ from spotter.config import (
     LEGACY_CONFIG_SCHEMA_VERSION,
     ConfigurationError,
     SpotterConfig,
+    resolve_config,
 )
+from spotter.paths import RuntimeLayout
+
+
+def _layout(tmp_path: Path) -> RuntimeLayout:
+    return RuntimeLayout.discover(
+        spotter_root=tmp_path / "global",
+        user_home=tmp_path / "home",
+        argv0="__main__.py",
+        environ={},
+    )
 
 
 def test_loads_example_configuration() -> None:
@@ -27,6 +38,86 @@ def test_uses_default_reviewer_model_when_reviewer_is_omitted() -> None:
 
     assert config.reviewer.model == "default"
     assert config.config_schema_version == LEGACY_CONFIG_SCHEMA_VERSION
+
+
+def test_resolves_canonical_config_precedence_and_provenance(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    layout.user_config_dir.mkdir(parents=True)
+    (layout.user_config_dir / "spotter.toml").write_text(
+        "[main_agent]\nadapter = 'global'\n[reviewer]\nmax_per_day = 70\n"
+    )
+    repository = tmp_path / "repo"
+    (repository / ".git").mkdir(parents=True)
+    (repository / "nested").mkdir()
+    (repository / "spotter.toml").write_text(
+        "[main_agent]\nadapter = 'repository'\n[reviewer]\nmax_per_session = 7\n"
+    )
+    explicit = tmp_path / "invocation.toml"
+    explicit.write_text("[reviewer]\nmax_per_session = 3\n")
+
+    resolved = resolve_config(
+        layout=layout,
+        repository=repository / "nested",
+        explicit_path=explicit,
+        overrides={"reviewer": {"max_per_day": 9}},
+    )
+
+    assert resolved.config.main_agent.adapter == "repository"
+    assert resolved.config.reviewer.max_per_session == 3
+    assert resolved.config.reviewer.max_per_day == 9
+    assert resolved.config.snapshot_on_patch is True
+    assert [layer.name for layer in resolved.source_layers] == [
+        "built_in",
+        "global",
+        "repository",
+        "explicit",
+        "runtime_override",
+    ]
+    assert all(
+        layer.content_sha256 and "global" not in layer.content_sha256
+        for layer in resolved.source_layers
+    )
+    assert resolved.resolved_config_generation.startswith("cfg-")
+    assert len(resolved.resolved_config_hash) == 64
+
+
+def test_resolved_identity_is_stable_for_unchanged_sources(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+
+    first = resolve_config(layout=layout, repository=tmp_path)
+    second = resolve_config(layout=layout, repository=tmp_path)
+
+    assert first.config == second.config
+    assert first.resolved_config_hash == second.resolved_config_hash
+    assert first.resolved_config_generation == second.resolved_config_generation
+    assert first.loaded_at <= second.loaded_at
+
+
+def test_explicit_config_is_required_and_not_loaded_twice(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    layout.user_config_dir.mkdir(parents=True)
+    global_path = layout.user_config_dir / "spotter.toml"
+    global_path.write_text("[main_agent]\nadapter = 'codex'\n")
+
+    resolved = resolve_config(layout=layout, explicit_path=global_path)
+
+    assert [layer.name for layer in resolved.source_layers] == ["built_in", "global"]
+    with pytest.raises(FileNotFoundError):
+        resolve_config(layout=layout, explicit_path=tmp_path / "missing.toml")
+
+
+def test_invalid_higher_precedence_layer_refuses_the_entire_snapshot(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    layout.user_config_dir.mkdir(parents=True)
+    (layout.user_config_dir / "spotter.toml").write_text(
+        "[main_agent]\nadapter = 'codex'\n[reviewer]\nmax_per_day = 10\n"
+    )
+    repository = tmp_path / "repo"
+    (repository / ".git").mkdir(parents=True)
+    (repository / "spotter.toml").write_text("[reviewer]\nmax_per_day = -1\n")
+
+    with pytest.raises(ConfigurationError, match="non-negative integer"):
+        resolve_config(layout=layout, repository=repository)
 
 
 @pytest.mark.parametrize(

@@ -29,7 +29,7 @@ from spotter.budget import (
 )
 from spotter.build_identity import current_build_identity, version_line
 from spotter.codex import CodexAdapter
-from spotter.config import ConfigurationError, MainAgentConfig, ReviewerConfig, SpotterConfig
+from spotter.config import ConfigurationError, SpotterConfig, resolve_config
 from spotter.core import SpotterRuntime
 from spotter.daemon import (
     DaemonStatus,
@@ -467,11 +467,9 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _load_config(parser: argparse.ArgumentParser, path: Path | None) -> SpotterConfig | None:
-    if path is None:
-        return None
+def _load_config(parser: argparse.ArgumentParser, path: Path | None) -> SpotterConfig:
     try:
-        return SpotterConfig.from_toml(path)
+        return resolve_config(repository=Path.cwd(), explicit_path=path).config
     except (OSError, tomllib.TOMLDecodeError, ConfigurationError) as error:
         parser.error(str(error))
 
@@ -779,8 +777,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "review":
         if not args.session:
             parser.error("review requires --session")
-        if config is None:
-            config = SpotterConfig(MainAgentConfig("codex"), ReviewerConfig())
         if args.model:
             config = replace(config, reviewer=replace(config.reviewer, model=args.model))
         return _review_main(
@@ -809,8 +805,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(plan_to_json(plan))
         return 0
 
-    if config is None:
-        parser.error("observe requires --config")
     adapter = CodexAdapter()
     gate = Gate(
         forbidden_paths=config.gates.forbidden_paths,
@@ -2630,20 +2624,27 @@ def _hook_main(
                 file=sys.stderr,
             )
             return 0
-    if config is None and config_path is not None:
-        try:
-            config = SpotterConfig.from_toml(config_path)
-        except Exception as error:  # noqa: BLE001 — config is inside the fail-open boundary
-            # Unsupervised beats blocked: fall back to defaults and say so.
-            print(
-                f"spotter: unusable config {config_path} ({error}); using defaults", file=sys.stderr
-            )
-    if config is None:
-        config = SpotterConfig(MainAgentConfig("codex"), ReviewerConfig())
     try:
         payload = json.load(sys.stdin)
         if not isinstance(payload, dict):
             raise ValueError("hook payload must be a JSON object")
+        configured_cwd = payload.get("cwd")
+        repository = (
+            Path(configured_cwd)
+            if isinstance(configured_cwd, str) and configured_cwd.strip()
+            else Path.cwd()
+        )
+        if config is None:
+            try:
+                config = resolve_config(repository=repository, explicit_path=config_path).config
+            except Exception as error:  # noqa: BLE001 — config is inside fail-open boundary
+                # Unsupervised beats blocked: fall back to defaults and say so.
+                location = f" {config_path}" if config_path is not None else ""
+                print(
+                    f"spotter: unusable config{location} ({error}); using defaults",
+                    file=sys.stderr,
+                )
+                config = SpotterConfig.from_mapping({"main_agent": {"adapter": "codex"}})
         output = run_hook(payload, config, config_path)
     except Exception as error:  # noqa: BLE001 — deliberate fail-open boundary
         print(f"spotter hook error (failing open): {error}", file=sys.stderr)

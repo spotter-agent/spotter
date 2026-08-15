@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from spotter.build_identity import current_build_identity
-from spotter.config import ConfigurationError, SpotterConfig
+from spotter.config import ConfigurationError, resolve_config
 from spotter.daemon import (
     ManagedServiceManager,
     ManualServiceManager,
@@ -477,11 +477,14 @@ class IntegrationManager:
         codex = self._codex_install()
         if not codex.supports_remote or not codex.supports_app_server:
             raise IntegrationError("Codex lacks the required app-server/--remote capability")
-        if self.config_path is not None:
-            try:
-                SpotterConfig.from_toml(self.config_path)
-            except (OSError, tomllib.TOMLDecodeError, ConfigurationError) as error:
-                raise IntegrationError(f"Spotter config is unusable: {error}") from error
+        try:
+            resolve_config(
+                layout=self.layout,
+                repository=Path.cwd(),
+                explicit_path=self.config_path,
+            )
+        except (OSError, tomllib.TOMLDecodeError, ConfigurationError) as error:
+            raise IntegrationError(f"Spotter config is unusable: {error}") from error
         hooks, before = self._read_hooks()
         migrated, removed = self._migrate_hooks(hooks, existing)
         after = (json.dumps(migrated, indent=2, sort_keys=True) + "\n").encode()

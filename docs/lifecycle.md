@@ -1234,10 +1234,16 @@ runtime CLI override
 Conceptual locations:
 
 ```text
-~/.config/spotter/config.toml
+~/.spotter/spotter.toml (or $SPOTTER_HOME/spotter.toml)
 <repo>/spotter.toml
 CLI/runtime overrides
 ```
+
+The implemented canonical resolver returns an immutable validated snapshot with a stable effective
+config hash, a source-aware generation, load time, and non-secret source provenance. CLI, daemon,
+doctor's Hook round trip, integration validation, and the Hook fail-open boundary all use this
+resolver; an explicitly named missing or invalid layer refuses activation, while the Hook preserves
+its existing fail-open contract.
 
 Each configuration field should declare reload semantics.
 

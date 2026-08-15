@@ -1,9 +1,15 @@
-"""Configuration loading and validation."""
+"""Configuration loading, precedence, provenance, and validation."""
 
+import hashlib
+import json
 import tomllib
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from spotter.paths import RuntimeLayout
 
 
 class ConfigurationError(ValueError):
@@ -18,6 +24,45 @@ DEFAULT_REVIEWER_MODEL = "default"
 CONFIG_SCHEMA = "spotter.config"
 CONFIG_SCHEMA_VERSION = 1
 LEGACY_CONFIG_SCHEMA_VERSION = 0
+
+DEFAULT_CONFIG: dict[str, Any] = {
+    "config_schema": CONFIG_SCHEMA,
+    "config_schema_version": CONFIG_SCHEMA_VERSION,
+    "observation_only": True,
+    "snapshot_on_patch": True,
+    "main_agent": {"adapter": "codex"},
+    "reviewer": {
+        "model": DEFAULT_REVIEWER_MODEL,
+        "on_signals": False,
+        "deliver_on_signals": False,
+        "every_steps": 0,
+        "max_per_session": 20,
+        "max_per_day": 100,
+    },
+    "gates": {"forbidden_paths": [], "block_dependency_changes": False},
+    "mcp_semantics": {},
+}
+
+
+@dataclass(frozen=True)
+class ConfigSourceLayer:
+    """Non-secret identity of one layer used to build an effective config."""
+
+    name: str
+    path: str | None
+    modified_ns: int | None
+    content_sha256: str
+
+
+@dataclass(frozen=True)
+class ResolvedConfig:
+    """One validated, immutable effective configuration snapshot."""
+
+    config: "SpotterConfig"
+    resolved_config_generation: str
+    resolved_config_hash: str
+    source_layers: tuple[ConfigSourceLayer, ...]
+    loaded_at: str
 
 
 @dataclass(frozen=True)
@@ -112,6 +157,184 @@ class SpotterConfig:
             snapshot_on_patch=_bool(raw, "snapshot_on_patch", True),
             config_schema_version=config_schema_version,
         )
+
+
+def resolve_config(
+    *,
+    layout: RuntimeLayout | None = None,
+    repository: Path | None = None,
+    explicit_path: Path | None = None,
+    overrides: Mapping[str, Any] | None = None,
+) -> ResolvedConfig:
+    """Resolve the canonical defaults < global < repository < invocation order.
+
+    Missing optional file layers are skipped. An explicitly selected file is
+    required to exist, because silently ignoring a misspelled ``--config`` is
+    less safe than refusing activation.
+    """
+
+    runtime_layout = layout or RuntimeLayout.discover()
+    effective = _copy_mapping(DEFAULT_CONFIG)
+    sources = [
+        ConfigSourceLayer(
+            name="built_in",
+            path=None,
+            modified_ns=None,
+            content_sha256=_mapping_hash(DEFAULT_CONFIG),
+        )
+    ]
+    loaded_paths: set[Path] = set()
+
+    global_path = runtime_layout.user_config_dir / "spotter.toml"
+    _merge_file_layer(effective, sources, loaded_paths, "global", global_path, required=False)
+
+    if repository is not None:
+        repository_path = _repository_root(repository) / "spotter.toml"
+        _merge_file_layer(
+            effective,
+            sources,
+            loaded_paths,
+            "repository",
+            repository_path,
+            required=False,
+        )
+
+    if explicit_path is not None:
+        _merge_file_layer(
+            effective,
+            sources,
+            loaded_paths,
+            "explicit",
+            explicit_path,
+            required=True,
+        )
+
+    if overrides:
+        override_mapping = _copy_mapping(overrides)
+        _validate_layer_schema(override_mapping)
+        _deep_merge(effective, override_mapping)
+        sources.append(
+            ConfigSourceLayer(
+                name="runtime_override",
+                path=None,
+                modified_ns=None,
+                content_sha256=_mapping_hash(override_mapping),
+            )
+        )
+
+    config = SpotterConfig.from_mapping(effective)
+    config_hash = _effective_config_hash(config)
+    generation_material = json.dumps(
+        {
+            "config_hash": config_hash,
+            "sources": [asdict(source) for source in sources],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    generation = "cfg-" + hashlib.sha256(generation_material).hexdigest()[:20]
+    return ResolvedConfig(
+        config=config,
+        resolved_config_generation=generation,
+        resolved_config_hash=config_hash,
+        source_layers=tuple(sources),
+        loaded_at=datetime.now(UTC).isoformat(),
+    )
+
+
+def _merge_file_layer(
+    effective: dict[str, Any],
+    sources: list[ConfigSourceLayer],
+    loaded_paths: set[Path],
+    name: str,
+    path: Path,
+    *,
+    required: bool,
+) -> None:
+    normalized = path.expanduser().resolve()
+    if normalized in loaded_paths:
+        return
+    try:
+        contents = normalized.read_bytes()
+    except FileNotFoundError:
+        if required:
+            raise
+        return
+    try:
+        raw = tomllib.loads(contents.decode())
+    except UnicodeDecodeError as error:
+        raise ConfigurationError(f"{normalized} must be UTF-8 TOML") from error
+    if not isinstance(raw, dict):  # pragma: no cover - tomllib currently always returns a dict
+        raise ConfigurationError(f"{normalized} must contain a TOML table")
+    _validate_layer_schema(raw)
+    _deep_merge(effective, raw)
+    stat = normalized.stat()
+    sources.append(
+        ConfigSourceLayer(
+            name=name,
+            path=str(normalized),
+            modified_ns=stat.st_mtime_ns,
+            content_sha256=hashlib.sha256(contents).hexdigest(),
+        )
+    )
+    loaded_paths.add(normalized)
+
+
+def _repository_root(start: Path) -> Path:
+    candidate = start.expanduser().resolve()
+    if candidate.is_file():
+        candidate = candidate.parent
+    for directory in (candidate, *candidate.parents):
+        if (directory / ".git").exists():
+            return directory
+    return candidate
+
+
+def _validate_layer_schema(raw: Mapping[str, Any]) -> None:
+    if "config_schema" in raw or "config_schema_version" in raw:
+        _config_schema_version(dict(raw))
+
+
+def _deep_merge(base: dict[str, Any], overlay: Mapping[str, Any]) -> None:
+    for key, value in overlay.items():
+        current = base.get(key)
+        if isinstance(current, dict) and isinstance(value, Mapping):
+            _deep_merge(current, value)
+        else:
+            base[key] = _copy_value(value)
+
+
+def _copy_mapping(raw: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: _copy_value(value) for key, value in raw.items()}
+
+
+def _copy_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return _copy_mapping(value)
+    if isinstance(value, list):
+        return [_copy_value(item) for item in value]
+    return value
+
+
+def _mapping_hash(raw: Mapping[str, Any]) -> str:
+    normalized = json.dumps(raw, sort_keys=True, separators=(",", ":"), default=str).encode()
+    return hashlib.sha256(normalized).hexdigest()
+
+
+def _effective_config_hash(config: SpotterConfig) -> str:
+    normalized = _redact_sensitive(asdict(config))
+    return _mapping_hash(normalized)
+
+
+def _redact_sensitive(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: "<redacted>" if _sensitive_field(key) else _redact_sensitive(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_redact_sensitive(item) for item in value]
+    return value
 
 
 def _config_schema_version(raw: dict[str, Any]) -> int:

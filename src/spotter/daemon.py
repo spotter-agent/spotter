@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from spotter.build_identity import RuntimeComponent, current_build_identity, version_line
-from spotter.config import GatesConfig, McpToolSemantics, ReviewerConfig, SpotterConfig
+from spotter.config import GatesConfig, McpToolSemantics, ReviewerConfig, resolve_config
 from spotter.gates import Gate, GateDecision
 from spotter.identity import ThreadId
 from spotter.log_registry import LogRegistry, LogRegistryError
@@ -952,15 +952,12 @@ def _configured_reviewer(layout: RuntimeLayout | None = None) -> ReviewerConfig:
         raw = {}
     configured = raw.get("config_path") if isinstance(raw, dict) else None
     config_path = Path(configured) if isinstance(configured, str) and configured else None
-    default_path = runtime_layout.user_config_dir / "spotter.toml"
-    config_path = config_path or (default_path if default_path.exists() else None)
-    if config_path is None:
-        return ReviewerConfig()
     try:
-        return SpotterConfig.from_toml(config_path).reviewer
+        return resolve_config(layout=runtime_layout, explicit_path=config_path).config.reviewer
     except (OSError, ValueError) as error:
         print(
-            f"spotterd: unusable reviewer config {config_path} ({error}); signal reviews disabled",
+            f"spotterd: unusable reviewer config {config_path or 'default layers'} ({error}); "
+            "signal reviews disabled",
             file=sys.stderr,
         )
         return ReviewerConfig()
@@ -977,15 +974,11 @@ def _configured_mcp_semantics(
         raw = {}
     configured = raw.get("config_path") if isinstance(raw, dict) else None
     config_path = Path(configured) if isinstance(configured, str) and configured else None
-    default_path = runtime_layout.user_config_dir / "spotter.toml"
-    config_path = config_path or (default_path if default_path.exists() else None)
-    if config_path is None:
-        return ()
     try:
-        return SpotterConfig.from_toml(config_path).mcp_semantics
+        return resolve_config(layout=runtime_layout, explicit_path=config_path).config.mcp_semantics
     except (OSError, ValueError) as error:
         print(
-            f"spotterd: unusable MCP semantics config {config_path} ({error}); "
+            f"spotterd: unusable MCP semantics config {config_path or 'default layers'} ({error}); "
             "unknown MCP tools remain conservative",
             file=sys.stderr,
         )
@@ -1001,15 +994,13 @@ def _configured_snapshot_on_patch(layout: RuntimeLayout | None = None) -> bool:
         raw = {}
     configured = raw.get("config_path") if isinstance(raw, dict) else None
     config_path = Path(configured) if isinstance(configured, str) and configured else None
-    default_path = runtime_layout.user_config_dir / "spotter.toml"
-    config_path = config_path or (default_path if default_path.exists() else None)
-    if config_path is None:
-        return True
     try:
-        return SpotterConfig.from_toml(config_path).snapshot_on_patch
+        return resolve_config(
+            layout=runtime_layout, explicit_path=config_path
+        ).config.snapshot_on_patch
     except (OSError, ValueError) as error:
         print(
-            f"spotterd: unusable snapshot config {config_path} ({error}); "
+            f"spotterd: unusable snapshot config {config_path or 'default layers'} ({error}); "
             "App Server snapshots remain enabled",
             file=sys.stderr,
         )

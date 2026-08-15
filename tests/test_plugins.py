@@ -250,6 +250,36 @@ def test_wrapper_reads_the_documented_home_config(tmp_path: Path) -> None:
     assert "forbidden_path" in result.stdout, "the configured gate never reached the hook"
 
 
+def test_hook_resolves_repository_config_from_payload_cwd(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    repository = tmp_path / "repo"
+    (repository / ".git").mkdir(parents=True)
+    (repository / "nested").mkdir()
+    (repository / "spotter.toml").write_text(
+        'observation_only = false\n[gates]\nforbidden_paths = ["private/*"]\n'
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-m", "spotter", "hook"],
+        input=json.dumps(
+            {
+                "hook_event_name": "PreToolUse",
+                "session_id": "repository-config",
+                "cwd": str(repository / "nested"),
+                "tool_name": "apply_patch",
+                "tool_input": {"path": "private/key.pem"},
+            }
+        ),
+        text=True,
+        capture_output=True,
+        env={**os.environ, "SPOTTER_HOME": str(home), "PYTHONPATH": "src"},
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "forbidden_path" in result.stdout
+
+
 def test_hook_command_uses_the_runtime_plugin_root_variable() -> None:
     """Codex and Claude Code expand CLAUDE_PLUGIN_ROOT; PLUGIN_ROOT is the
     Copilot spelling, and an unexpanded variable makes the command an absolute
