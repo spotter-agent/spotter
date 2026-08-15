@@ -356,10 +356,11 @@ spotter daemon stop
 
 确认这些准确路径专用于 Spotter 后，可以用常用文件管理工具删除虚拟环境和源码检出。
 
-普通卸载不会删除 `~/.spotter` 或 `SPOTTER_HOME` 中的用户数据。仓库感知的 `spotter purge`
-命令**尚未实现**。Spotter 所有的 Git ref 和分离 worktree 也可能存在于各仓库中，因此只删除
-主目录下的数据并不等于完整 purge。请用 `spotter prune` 执行受支持的 Git 感知清理，保留
-不确定的数据，并通过 [#89](https://github.com/spotter-agent/spotter/issues/89) 跟踪 purge 支持。
+普通卸载不会删除 `~/.spotter` 或 `SPOTTER_HOME` 中的用户数据。可用
+`spotter purge --all --dry-run` 在不删除任何内容的情况下预览已登记的仓库资源；添加 `--json`
+可获得机器可读输出。如果存在无法访问或所有权不明的资源，预览会以非零状态退出。破坏性 purge
+尚未实现，请继续使用 `spotter prune` 执行受支持的 Git 感知清理，并通过
+[#89](https://github.com/spotter-agent/spotter/issues/89) 跟踪后续支持。
 
 如果在 teardown 前就卸载了软件包，生成的 Hook 会按设计采用 fail-open 行为。使用相同方式
 重新安装软件包，运行 `spotter teardown codex`，然后再次卸载，即可安全清理已记录的所有

@@ -99,6 +99,11 @@ from spotter.replay import (
     fork,
     plan_to_json,
 )
+from spotter.repository_registry import (
+    OwnershipConfidence,
+    RepositoryRegistry,
+    RepositoryRegistryError,
+)
 from spotter.reviewer import last_usage, review
 from spotter.runtime_metrics import (
     ObjectiveOutcomeError,
@@ -148,6 +153,7 @@ def build_parser() -> argparse.ArgumentParser:
             "fork",
             "fork-coverage",
             "prune",
+            "purge",
             "review",
             "experiment",
             "label",
@@ -172,6 +178,7 @@ def build_parser() -> argparse.ArgumentParser:
             "analyze: summarize journaled sessions; fork: branch a session at a step; "
             "fork-coverage: classify each session proposal for replay eligibility; "
             "prune: drop unreferenced refs/spotter snapshots (dry-run without --apply); "
+            "purge: preview registered Spotter-owned resources without deleting them; "
             "review: run the shadow reviewer on a session (records only, injects nothing); "
             "experiment: guidance or identical-neutral fork pairs (needs --run to execute); "
             "label: record a human verdict on a gate flag, signal, reviewer decision, or session; "
@@ -247,6 +254,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--guidance", help="course-correction text for fork/experiment")
     parser.add_argument(
         "--apply", action="store_true", help="prune: actually delete (default is dry-run)"
+    )
+    parser.add_argument(
+        "--all",
+        dest="purge_all",
+        action="store_true",
+        help="purge: include every registered repository resource",
+    )
+    parser.add_argument(
+        "--json",
+        dest="json_output",
+        action="store_true",
+        help="purge preview: emit machine-readable JSON",
     )
     parser.add_argument(
         "--forks", action="store_true", help="prune: also remove orphaned fork worktrees"
@@ -380,7 +399,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="experiment: keep forked worktrees (rollouts are always retained)",
     )
     parser.add_argument(
-        "--dry-run", action="store_true", help="setup: inspect and print the mutation plan"
+        "--dry-run", action="store_true", help="setup/purge: inspect and print without mutation"
     )
     parser.add_argument(
         "--portable",
@@ -418,6 +437,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command in {"setup", "teardown"}:
         if args.target != "codex":
             parser.error(f"{args.command} requires the codex target")
+        if args.purge_all or args.json_output:
+            parser.error("--all and --json require purge")
         if args.command == "teardown" and (args.dry_run or args.portable):
             parser.error("--dry-run and --portable are only supported by setup")
         return _integration_main(
@@ -426,6 +447,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             portable=args.portable,
             dry_run=args.dry_run,
         )
+    if args.command == "purge":
+        if not args.purge_all or not args.dry_run:
+            parser.error("purge currently requires --all --dry-run; deletion is not implemented")
+        if args.target is not None or args.portable:
+            parser.error("purge preview accepts only --all, --dry-run, and optional --json")
+        if args.apply:
+            parser.error("purge deletion is not implemented")
+        return _purge_main(json_output=args.json_output)
     if args.command == "tasks":
         if args.target not in {"validate", "preflight", "run"} or not args.subject:
             parser.error("tasks requires: spotter tasks validate|preflight|run <set.toml>")
@@ -479,6 +508,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--resume requires tasks run")
     if args.dry_run or args.portable:
         parser.error("--dry-run and --portable require setup")
+    if args.purge_all or args.json_output:
+        parser.error("--all and --json require purge")
 
     config = _load_config(parser, args.config)
     # One boundary check for every command that names a session: sanitizing
@@ -1766,6 +1797,57 @@ def _prune_main(
         for session, step in references.get(pruned_ref.sha, []):
             print(f"    fork lost: session {session} step {step}")
     return 0
+
+
+def _purge_main(*, json_output: bool) -> int:
+    """Preview exact repository ownership; destructive purge remains disabled."""
+    try:
+        inspections = RepositoryRegistry().inspect()
+    except RepositoryRegistryError as error:
+        print(f"purge preview failed: {error}", file=sys.stderr)
+        return 1
+
+    summary = {
+        confidence.value: sum(item.confidence == confidence for item in inspections)
+        for confidence in OwnershipConfidence
+    }
+    if json_output:
+        print(
+            json.dumps(
+                {
+                    "dry_run": True,
+                    "deletion_supported": False,
+                    "summary": summary,
+                    "resources": [
+                        {
+                            "registry_entry_id": item.registry_entry_id,
+                            "repository_path": item.repository_path,
+                            "resource_type": item.resource_type,
+                            "resource_id": item.resource_id,
+                            "expected_target": item.expected_target,
+                            "confidence": item.confidence.value,
+                            "presence": item.presence.value,
+                            "reason": item.reason,
+                        }
+                        for item in inspections
+                    ],
+                },
+                sort_keys=True,
+            )
+        )
+    else:
+        print("purge preview (dry-run; deletion is not implemented)")
+        for confidence in OwnershipConfidence:
+            matching = [item for item in inspections if item.confidence == confidence]
+            print(f"{confidence.value} ({len(matching)})")
+            for item in matching:
+                print(
+                    f"  {item.resource_type} {item.resource_id} "
+                    f"[{item.presence.value.lower()}] - {item.reason}"
+                )
+        if not inspections:
+            print("no registered repository resources")
+    return int(any(item.confidence != OwnershipConfidence.SAFE_OWNED for item in inspections))
 
 
 def _hook_main(

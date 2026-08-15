@@ -6,6 +6,7 @@ import subprocess
 import uuid
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
+from enum import StrEnum
 from fcntl import LOCK_EX, flock
 from pathlib import Path
 
@@ -18,6 +19,18 @@ REPOSITORY_REGISTRY_SCHEMA_VERSION = 1
 
 class RepositoryRegistryError(RuntimeError):
     """The repository registry is incompatible, corrupt, or cannot be updated."""
+
+
+class OwnershipConfidence(StrEnum):
+    SAFE_OWNED = "SAFE_OWNED"
+    INACCESSIBLE = "INACCESSIBLE"
+    AMBIGUOUS = "AMBIGUOUS"
+
+
+class ResourcePresence(StrEnum):
+    PRESENT = "PRESENT"
+    ABSENT = "ABSENT"
+    UNKNOWN = "UNKNOWN"
 
 
 @dataclass(frozen=True)
@@ -45,6 +58,18 @@ class RepositoryEntry:
     @property
     def repository_identity(self) -> str:
         return f"git-common-dir:{self.repository_device}:{self.repository_inode}"
+
+
+@dataclass(frozen=True)
+class RepositoryResourceInspection:
+    registry_entry_id: str
+    repository_path: str
+    resource_type: str
+    resource_id: str
+    expected_target: str
+    confidence: OwnershipConfidence
+    presence: ResourcePresence
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -212,6 +237,191 @@ class RepositoryRegistry:
         if len(entry_ids) != len(set(entry_ids)):
             raise RepositoryRegistryError("repository registry contains duplicate entry ids")
         return entries
+
+    def inspect(self) -> tuple[RepositoryResourceInspection, ...]:
+        """Re-check recorded resources without mutating Git or registry state."""
+        inspections: list[RepositoryResourceInspection] = []
+        for entry in self.load():
+            repository = Path(entry.last_known_path)
+            if not repository.exists():
+                inspections.extend(
+                    self._entry_inspections(
+                        entry,
+                        OwnershipConfidence.INACCESSIBLE,
+                        ResourcePresence.UNKNOWN,
+                        "last known repository path is unavailable",
+                    )
+                )
+                continue
+            try:
+                identity = _repository_identity(repository)
+            except RepositoryRegistryError as error:
+                inspections.extend(
+                    self._entry_inspections(
+                        entry,
+                        OwnershipConfidence.AMBIGUOUS,
+                        ResourcePresence.UNKNOWN,
+                        f"last known path is not the recorded Git repository: {error}",
+                    )
+                )
+                continue
+            if (identity.device, identity.inode) != (
+                entry.repository_device,
+                entry.repository_inode,
+            ):
+                inspections.extend(
+                    self._entry_inspections(
+                        entry,
+                        OwnershipConfidence.AMBIGUOUS,
+                        ResourcePresence.UNKNOWN,
+                        "last known path now identifies a different Git repository",
+                    )
+                )
+                continue
+            inspections.extend(self._inspect_resources(repository, entry))
+        return tuple(inspections)
+
+    @staticmethod
+    def _entry_inspections(
+        entry: RepositoryEntry,
+        confidence: OwnershipConfidence,
+        presence: ResourcePresence,
+        reason: str,
+    ) -> tuple[RepositoryResourceInspection, ...]:
+        return tuple(
+            RepositoryResourceInspection(
+                registry_entry_id=entry.registry_entry_id,
+                repository_path=entry.last_known_path,
+                resource_type=resource.resource_type,
+                resource_id=resource.resource_id,
+                expected_target=resource.expected_target,
+                confidence=confidence,
+                presence=presence,
+                reason=reason,
+            )
+            for resource in entry.resources
+        )
+
+    def _inspect_resources(
+        self, repository: Path, entry: RepositoryEntry
+    ) -> tuple[RepositoryResourceInspection, ...]:
+        inspections: list[RepositoryResourceInspection] = []
+        for resource in entry.resources:
+            if resource.resource_type == "git_ref":
+                confidence, presence, reason = self._inspect_ref(repository, resource)
+            else:
+                confidence, presence, reason = self._inspect_worktree(repository, resource)
+            inspections.append(
+                RepositoryResourceInspection(
+                    registry_entry_id=entry.registry_entry_id,
+                    repository_path=entry.last_known_path,
+                    resource_type=resource.resource_type,
+                    resource_id=resource.resource_id,
+                    expected_target=resource.expected_target,
+                    confidence=confidence,
+                    presence=presence,
+                    reason=reason,
+                )
+            )
+        return tuple(inspections)
+
+    @staticmethod
+    def _inspect_ref(
+        repository: Path, resource: OwnedRepositoryResource
+    ) -> tuple[OwnershipConfidence, ResourcePresence, str]:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", "-q", resource.resource_id],
+            cwd=repository,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 1:
+            return (
+                OwnershipConfidence.SAFE_OWNED,
+                ResourcePresence.ABSENT,
+                "recorded ref is already absent",
+            )
+        if result.returncode != 0:
+            return (
+                OwnershipConfidence.AMBIGUOUS,
+                ResourcePresence.UNKNOWN,
+                f"could not inspect ref: {result.stderr.strip()}",
+            )
+        actual = result.stdout.strip()
+        if actual != resource.expected_target:
+            return (
+                OwnershipConfidence.AMBIGUOUS,
+                ResourcePresence.PRESENT,
+                f"ref target changed to {actual}",
+            )
+        return OwnershipConfidence.SAFE_OWNED, ResourcePresence.PRESENT, "exact ref target matches"
+
+    @staticmethod
+    def _inspect_worktree(
+        repository: Path, resource: OwnedRepositoryResource
+    ) -> tuple[OwnershipConfidence, ResourcePresence, str]:
+        worktree = Path(resource.resource_id)
+        expected_git_dir = (
+            Path(resource.expected_git_dir) if resource.expected_git_dir is not None else None
+        )
+        if not worktree.exists():
+            listed = subprocess.run(
+                ["git", "worktree", "list", "--porcelain", "-z"],
+                cwd=repository,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if listed.returncode != 0:
+                return (
+                    OwnershipConfidence.AMBIGUOUS,
+                    ResourcePresence.UNKNOWN,
+                    f"could not inspect Git worktree metadata: {listed.stderr.strip()}",
+                )
+            registered = f"worktree {resource.resource_id}" in listed.stdout.split("\0")
+            metadata_exists = expected_git_dir is not None and expected_git_dir.exists()
+            if registered and metadata_exists:
+                return (
+                    OwnershipConfidence.SAFE_OWNED,
+                    ResourcePresence.PRESENT,
+                    "Git worktree metadata remains but the worktree path is absent",
+                )
+            if registered or metadata_exists:
+                return (
+                    OwnershipConfidence.AMBIGUOUS,
+                    ResourcePresence.UNKNOWN,
+                    "worktree path and Git administrative metadata disagree",
+                )
+            return (
+                OwnershipConfidence.SAFE_OWNED,
+                ResourcePresence.ABSENT,
+                "recorded worktree and Git metadata are already absent",
+            )
+        try:
+            repository_identity = _repository_identity(repository)
+            worktree_identity = _repository_identity(worktree)
+            actual_git_dir = Path(_git(worktree, "rev-parse", "--absolute-git-dir")).resolve()
+        except RepositoryRegistryError as error:
+            return (
+                OwnershipConfidence.AMBIGUOUS,
+                ResourcePresence.PRESENT,
+                f"worktree path no longer has the recorded Git identity: {error}",
+            )
+        if (repository_identity.device, repository_identity.inode) != (
+            worktree_identity.device,
+            worktree_identity.inode,
+        ) or expected_git_dir != actual_git_dir:
+            return (
+                OwnershipConfidence.AMBIGUOUS,
+                ResourcePresence.PRESENT,
+                "worktree repository or Git administrative path changed",
+            )
+        return (
+            OwnershipConfidence.SAFE_OWNED,
+            ResourcePresence.PRESENT,
+            "exact worktree Git identity matches",
+        )
 
     def record_ref(self, repo: Path, ref: str, target: str) -> RepositoryEntry:
         if not ref.startswith("refs/spotter/"):

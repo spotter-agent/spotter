@@ -376,10 +376,10 @@ spotter daemon stop
 수 있습니다.
 
 일반적인 제거는 `~/.spotter` 또는 `SPOTTER_HOME`의 사용자 데이터를 삭제하지 않습니다.
-저장소를 인식하는 `spotter purge` 명령은 **아직 구현되지 않았습니다**. Spotter 소유 Git ref와
-분리된 worktree가 저장소 안에 존재할 수도 있으므로 홈 디렉터리만 지워서는 완전히 purge되지
-않습니다. 지원되는 Git 인식 정리에는 `spotter prune`을 사용하고, 확실하지 않은 데이터는
-보존하며, purge 지원은 [#89](https://github.com/spotter-agent/spotter/issues/89)를 확인하세요.
+`spotter purge --all --dry-run`으로 등록된 저장소 리소스를 삭제 없이 미리 확인할 수 있고,
+기계 판독 출력은 `--json`을 추가하세요. 접근할 수 없거나 소유권이 불명확한 리소스가 있으면
+미리보기는 0이 아닌 코드로 종료됩니다. 파괴적 purge는 아직 구현되지 않았으므로 지원되는 Git 인식
+정리에는 `spotter prune`을 사용하고 [#89](https://github.com/spotter-agent/spotter/issues/89)를 확인하세요.
 
 통합 해제 전에 패키지를 제거했더라도 생성된 Hook은 fail-open으로 동작하도록 설계되어 있습니다.
 같은 방법으로 패키지를 다시 설치하고 `spotter teardown codex`를 실행한 뒤 다시 제거하면 기록된

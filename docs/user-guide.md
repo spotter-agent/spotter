@@ -450,11 +450,11 @@ spotter daemon stop
 After confirming those exact paths are dedicated to Spotter, you may remove the virtual environment
 and source checkout with your normal file-management tools.
 
-Normal uninstall does not delete `~/.spotter` (or `SPOTTER_HOME`) user data. A repository-aware
-`spotter purge` command is **not implemented yet**. Spotter-owned Git refs and detached worktrees can
-also exist in repositories, so deleting only the home directory is not a complete purge. Use
-`spotter prune` for supported Git-aware cleanup, retain data you are unsure about, and follow
-[#89](https://github.com/spotter-agent/spotter/issues/89) for purge support.
+Normal uninstall does not delete `~/.spotter` (or `SPOTTER_HOME`) user data. Preview all registered
+repository resources without deleting anything with `spotter purge --all --dry-run`; add `--json`
+for machine-readable output. The preview returns non-zero for inaccessible or ambiguous ownership.
+Destructive purge is not implemented yet, so continue to use `spotter prune` for supported Git-aware
+cleanup and follow [#89](https://github.com/spotter-agent/spotter/issues/89).
 
 If the package was removed before teardown, generated Hooks are designed to fail open. Reinstall the
 same package method, run `spotter teardown codex`, and uninstall again to remove the recorded owned

@@ -1339,9 +1339,20 @@ If package-manager uninstall cannot run lifecycle cleanup reliably, `spotter tea
 
 # 16. Purge
 
-Purge is the target destructive data-cleanup operation. No `spotter purge` command exists today;
-repository-aware implementation and retention behavior are tracked by
-[#89](https://github.com/spotter-agent/spotter/issues/89).
+Purge is the target destructive data-cleanup operation. A read-only repository preview is now
+implemented:
+
+```bash
+spotter purge --all --dry-run
+spotter purge --all --dry-run --json
+```
+
+It revalidates the registry's repository inode, exact ref target, and worktree Git administrative
+identity, grouping results as `SAFE_OWNED`, `INACCESSIBLE`, or `AMBIGUOUS`. A missing recorded
+resource is reported as already absent. The preview never mutates Git or the registry and returns
+non-zero when any resource is inaccessible or ambiguous. Destructive scopes and reachability-aware
+retention remain tracked by [#89](https://github.com/spotter-agent/spotter/issues/89); invoking
+`purge` without `--dry-run` is refused.
 
 Examples:
 
@@ -1365,7 +1376,7 @@ Safe order:
 6. remove repository registry last
 ```
 
-Purge must support dry-run for repository-affecting cleanup:
+Purge supports dry-run for repository-affecting inspection:
 
 ```bash
 spotter purge --all --dry-run
