@@ -6,6 +6,8 @@ import pytest
 from spotter.cli import main
 from spotter.hook import journal_path
 from spotter.opportunities import (
+    OPPORTUNITY_SCHEMA,
+    OPPORTUNITY_SCHEMA_VERSION,
     SCHEMA_VERSION,
     OpportunityError,
     add_opportunity,
@@ -78,6 +80,12 @@ def test_opportunity_window_pins_event_identity_and_keeps_independent_raters() -
     )
 
     assert first.version == SCHEMA_VERSION
+    raw = json.loads(opportunities_path("s1").read_text().splitlines()[0])
+    assert (raw["schema"], raw["schema_version"], raw["version"]) == (
+        OPPORTUNITY_SCHEMA,
+        OPPORTUNITY_SCHEMA_VERSION,
+        OPPORTUNITY_SCHEMA_VERSION,
+    )
     assert first.required_evidence[0].event_id == "event-1"
     assert len(first.required_evidence) == 2
     assert matches(first, records)
@@ -167,9 +175,117 @@ def test_opportunity_loader_refuses_future_schema() -> None:
     path = opportunities_path("s1")
     raw = json.loads(path.read_text(encoding="utf-8"))
     raw["version"] = SCHEMA_VERSION + 1
+    raw["schema_version"] = SCHEMA_VERSION + 1
     path.write_text(json.dumps(raw) + "\n", encoding="utf-8")
     with pytest.raises(OpportunityError, match="understands up to"):
         load_opportunity_history("s1")
+
+
+def test_opportunity_history_reads_legacy_and_writes_current_schema() -> None:
+    records = _records()
+    add_opportunity(
+        "s1",
+        "legacy",
+        records,
+        semantic_earliest=0,
+        semantic_latest=1,
+        observable_earliest=1,
+        observable_latest=2,
+        required_evidence=(1,),
+        note="legacy fixture",
+        rater="alice",
+    )
+    path = opportunities_path("s1")
+    legacy = json.loads(path.read_text())
+    legacy.pop("schema")
+    legacy.pop("schema_version")
+    path.write_text(json.dumps(legacy) + "\n")
+
+    assert load_opportunity_history("s1")[0].opportunity_id == "legacy"
+    add_opportunity(
+        "s1",
+        "current",
+        records,
+        semantic_earliest=0,
+        semantic_latest=1,
+        observable_earliest=1,
+        observable_latest=2,
+        required_evidence=(1,),
+        note="current fixture",
+        rater="bob",
+    )
+
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    assert "schema" not in rows[0]
+    assert rows[1]["schema"] == OPPORTUNITY_SCHEMA
+
+
+@pytest.mark.parametrize(
+    ("schema", "version", "message"),
+    [
+        (OPPORTUNITY_SCHEMA, OPPORTUNITY_SCHEMA_VERSION + 1, "understands up to"),
+        ("future.intervention_opportunity", OPPORTUNITY_SCHEMA_VERSION, "unsupported schema"),
+    ],
+)
+def test_opportunity_append_refuses_unknown_history_without_modifying_it(
+    schema: str, version: int, message: str
+) -> None:
+    records = _records()
+    add_opportunity(
+        "s1",
+        "future",
+        records,
+        semantic_earliest=0,
+        semantic_latest=1,
+        observable_earliest=1,
+        observable_latest=2,
+        required_evidence=(1,),
+        note="future fixture",
+    )
+    path = opportunities_path("s1")
+    raw = json.loads(path.read_text())
+    raw["schema"] = schema
+    raw["schema_version"] = version
+    raw["version"] = version
+    path.write_text(json.dumps(raw) + "\n")
+    before = path.read_bytes()
+
+    with pytest.raises(OpportunityError, match=message):
+        add_opportunity(
+            "s1",
+            "blocked",
+            records,
+            semantic_earliest=0,
+            semantic_latest=1,
+            observable_earliest=1,
+            observable_latest=2,
+            required_evidence=(1,),
+            note="must not append",
+        )
+
+    assert path.read_bytes() == before
+
+
+def test_opportunity_append_refuses_corrupt_history_without_modifying_it() -> None:
+    records = _records()
+    path = opportunities_path("s1")
+    path.write_text("not-json\n")
+    before = path.read_bytes()
+
+    with pytest.raises(OpportunityError, match="line 1 is unreadable"):
+        add_opportunity(
+            "s1",
+            "blocked",
+            records,
+            semantic_earliest=0,
+            semantic_latest=1,
+            observable_earliest=1,
+            observable_latest=2,
+            required_evidence=(1,),
+            note="must not append",
+        )
+
+    assert path.read_bytes() == before
 
 
 def test_cli_records_opportunity_window(capsys: pytest.CaptureFixture[str]) -> None:

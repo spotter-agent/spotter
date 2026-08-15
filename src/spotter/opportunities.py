@@ -1,8 +1,10 @@
 """Durable human annotations for intervention timing windows."""
 
 import json
+import os
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from fcntl import LOCK_EX, flock
 from getpass import getuser
 from pathlib import Path
 
@@ -10,7 +12,9 @@ from spotter.labels import fingerprint
 from spotter.paths import sanitize_session, spotter_home
 from spotter.snapshot import StepRecord
 
-SCHEMA_VERSION = 1
+OPPORTUNITY_SCHEMA = "spotter.intervention_opportunity"
+OPPORTUNITY_SCHEMA_VERSION = 1
+SCHEMA_VERSION = OPPORTUNITY_SCHEMA_VERSION
 
 
 class OpportunityError(ValueError):
@@ -90,13 +94,35 @@ def add_opportunity(
             _anchor(records, step) for step in dict.fromkeys(required_evidence)
         ),
     )
-    with opportunities_path(session).open("a", encoding="utf-8") as sink:
-        sink.write(json.dumps(asdict(window), ensure_ascii=False) + "\n")
+    path = opportunities_path(session)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    with lock_path.open("a") as lock:
+        flock(lock, LOCK_EX)
+        if path.exists():
+            _load_opportunity_history_path(session, path)
+        with path.open("a", encoding="utf-8") as sink:
+            sink.write(
+                json.dumps(
+                    {
+                        "schema": OPPORTUNITY_SCHEMA,
+                        "schema_version": OPPORTUNITY_SCHEMA_VERSION,
+                        **asdict(window),
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+            sink.flush()
+            os.fsync(sink.fileno())
     return window
 
 
 def load_opportunity_history(session: str) -> tuple[OpportunityWindow, ...]:
     path = opportunities_path(session)
+    return _load_opportunity_history_path(session, path)
+
+
+def _load_opportunity_history_path(session: str, path: Path) -> tuple[OpportunityWindow, ...]:
     if not path.exists():
         return ()
     windows: list[OpportunityWindow] = []
@@ -110,6 +136,20 @@ def load_opportunity_history(session: str) -> tuple[OpportunityWindow, ...]:
             version = raw.get("version", 0)
             if not isinstance(version, int) or isinstance(version, bool):
                 raise OpportunityError(f"{path.name} line {number} has a non-integer version")
+            schema = raw.get("schema")
+            schema_version = raw.get("schema_version")
+            if schema is None and schema_version is None:
+                pass
+            elif schema != OPPORTUNITY_SCHEMA:
+                raise OpportunityError(
+                    f"{path.name} line {number} uses unsupported schema {schema!r}"
+                )
+            elif not isinstance(schema_version, int) or isinstance(schema_version, bool):
+                raise OpportunityError(
+                    f"{path.name} line {number} has a non-integer schema version"
+                )
+            elif schema_version != version:
+                raise OpportunityError(f"{path.name} line {number} has mismatched schema versions")
             if version > SCHEMA_VERSION:
                 raise OpportunityError(
                     f"{path.name} line {number} was written by schema v{version}; "

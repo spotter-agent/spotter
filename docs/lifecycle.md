@@ -1497,6 +1497,10 @@ Evaluation labels use per-record `spotter.label` schema metadata. Schema-name-le
 records remain readable, mixed history writes only the current schema, and every append validates
 the existing file under its resource lock so future, foreign, or corrupt evidence is not extended.
 
+Intervention opportunity annotations use per-record `spotter.intervention_opportunity` schema
+metadata. Released schema-name-less records remain readable, while locked appends validate all
+existing timing evidence and refuse unsupported or corrupt history without modifying it.
+
 ---
 
 # 20. Release lifecycle
