@@ -459,6 +459,11 @@ schema-name-less v1 artifacts remain readable, while resume validates identity b
 performs locked, crash-durable append or validated torn-tail repair without mutating incompatible
 history.
 
+Fork lineage uses the independent `spotter.fork_manifest` schema. Readers retain bounded v1-v6
+compatibility, with schema-name-less manifests preserving their historical coverage limits. Every
+current state transition validates an existing manifest under its resource lock before fsynced
+atomic replacement, so an older writer cannot overwrite future, foreign, or corrupt lineage.
+
 ## 4.5 Turn completion
 
 ```text

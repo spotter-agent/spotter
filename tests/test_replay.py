@@ -6,10 +6,13 @@ from pathlib import Path
 
 import pytest
 
+import spotter.replay as replay
 from spotter.hook import journal_path
 from spotter.identity import IdentityProvenance, RuntimeIdentity, ThreadId, TurnId
 from spotter.labels import add_label, labels_path
 from spotter.replay import (
+    FORK_MANIFEST_SCHEMA,
+    FORK_MANIFEST_SCHEMA_VERSION,
     BranchCoverageStatus,
     EnvironmentDrift,
     ForkStatus,
@@ -434,6 +437,10 @@ def test_fork_end_to_end(repo: Path, codex_home: Path) -> None:
     assert Path(plan.rollout).exists()
     assert plan.manifest and plan.prefix_id and plan.environment_fingerprint
     manifest = load_fork_manifest(Path(plan.manifest))
+    assert (manifest.schema, manifest.schema_version) == (
+        FORK_MANIFEST_SCHEMA,
+        FORK_MANIFEST_SCHEMA_VERSION,
+    )
     assert manifest.status == ForkStatus.READY
     assert manifest.prefix.prefix_id == plan.prefix_id
     assert manifest.prefix.snapshot_sha == sha
@@ -1018,6 +1025,7 @@ def test_fork_manifest_v1_through_v5_remain_readable(
     )
 
     raw = json.loads(manifest_path.read_text())
+    raw.pop("schema")
 
     raw["schema_version"] = 5
     for resource in raw["environment"]["declared_resources"]:
@@ -1076,6 +1084,44 @@ def test_fork_manifest_v1_through_v5_remain_readable(
     assert manifest.source_environment_preflight == "MATCHED"
     assert manifest.environment is not None
     assert manifest.environment.declared_resources == ()
+
+
+def test_fork_manifest_refuses_incompatible_replacement_without_mutation(
+    repo: Path, codex_home: Path
+) -> None:
+    sha = snapshot_worktree(repo)
+    _journal(
+        OLD_ID,
+        [
+            (
+                TraceEvent(
+                    "tool_proposal",
+                    {
+                        "tool_use_id": "call_A",
+                        "cwd": str(repo),
+                        "reversibility_class": "A",
+                    },
+                ),
+                sha,
+            )
+        ],
+    )
+    plan = fork(OLD_ID, 0, codex_home=codex_home)
+    path = Path(plan.manifest or "")
+    current = load_fork_manifest(path)
+    original = json.loads(path.read_text())
+
+    for schema, version, message in (
+        (FORK_MANIFEST_SCHEMA, FORK_MANIFEST_SCHEMA_VERSION + 1, "unsupported"),
+        ("someone.else", FORK_MANIFEST_SCHEMA_VERSION, "unsupported"),
+    ):
+        incompatible = {**original, "schema": schema, "schema_version": version}
+        path.write_text(json.dumps(incompatible))
+        before = path.read_bytes()
+
+        with pytest.raises(ReplayError, match=message):
+            replay._write_fork_manifest(path, replace(current, updated_at="later"))
+        assert path.read_bytes() == before
 
 
 def test_prefix_manifest_carries_gap_and_external_effect_limits(

@@ -34,6 +34,7 @@ from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
+from fcntl import LOCK_EX, flock
 from pathlib import Path
 
 from spotter.effects import external_effects
@@ -48,6 +49,7 @@ class ReplayError(RuntimeError):
     """Raised when a fork cannot be assembled from the recorded ingredients."""
 
 
+FORK_MANIFEST_SCHEMA = "spotter.fork_manifest"
 FORK_MANIFEST_SCHEMA_VERSION = 6
 
 
@@ -199,6 +201,7 @@ class PrefixManifest:
 
 @dataclass(frozen=True)
 class ForkManifest:
+    schema: str | None
     schema_version: int
     fork_id: str
     status: ForkStatus
@@ -868,6 +871,7 @@ def fork(
     manifest_file = fork_manifest_path(new_id)
     created_at = datetime.now(UTC).isoformat()
     manifest = ForkManifest(
+        schema=FORK_MANIFEST_SCHEMA,
         schema_version=FORK_MANIFEST_SCHEMA_VERSION,
         fork_id=new_id,
         status=ForkStatus.CREATING,
@@ -915,6 +919,7 @@ def fork(
             forked_rollout.unlink(missing_ok=True)
         cleaned, _ = redact_text(str(error))
         failed = ForkManifest(
+            schema=FORK_MANIFEST_SCHEMA,
             schema_version=FORK_MANIFEST_SCHEMA_VERSION,
             fork_id=new_id,
             status=ForkStatus.FAILED,
@@ -932,6 +937,7 @@ def fork(
         raise
 
     ready = ForkManifest(
+        schema=FORK_MANIFEST_SCHEMA,
         schema_version=FORK_MANIFEST_SCHEMA_VERSION,
         fork_id=new_id,
         status=ForkStatus.READY,
@@ -975,8 +981,15 @@ def fork_manifest_path(fork_id: str) -> Path:
 
 def load_fork_manifest(path: Path) -> ForkManifest:
     try:
-        raw = json.loads(path.read_text())
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise TypeError("manifest is not an object")
+        schema = raw.get("schema")
+        if "schema" in raw and schema != FORK_MANIFEST_SCHEMA:
+            raise ReplayError(f"unsupported fork manifest schema {schema!r} in {path}")
         schema_version = raw.get("schema_version")
+        if not isinstance(schema_version, int) or isinstance(schema_version, bool):
+            raise ReplayError(f"fork manifest schema version is not an integer in {path}")
         if schema_version not in {1, 2, 3, 4, 5, FORK_MANIFEST_SCHEMA_VERSION}:
             raise ReplayError(f"unsupported fork manifest schema in {path}")
         prefix_raw = raw["prefix"]
@@ -1006,6 +1019,7 @@ def load_fork_manifest(path: Path) -> ForkManifest:
                 }
             )
         return ForkManifest(
+            schema=schema,
             schema_version=schema_version,
             fork_id=raw["fork_id"],
             status=ForkStatus(raw["status"]),
@@ -1018,7 +1032,7 @@ def load_fork_manifest(path: Path) -> ForkManifest:
             failure=raw.get("failure"),
             source_environment_preflight=str(raw.get("source_environment_preflight") or "MATCHED"),
         )
-    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
         raise ReplayError(f"invalid fork manifest {path}: {error}") from error
 
 
@@ -1124,22 +1138,32 @@ def _rollout_provenance(rollout: Path, call_id: str) -> tuple[str | None, str | 
 
 
 def _write_fork_manifest(path: Path, manifest: ForkManifest) -> None:
-    temporary = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
-    try:
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as sink:
-            json.dump(asdict(manifest), sink, indent=2)
-            sink.write("\n")
-            sink.flush()
-            os.fsync(sink.fileno())
-        os.replace(temporary, path)
-        directory = os.open(path.parent, os.O_RDONLY)
+    if (
+        manifest.schema != FORK_MANIFEST_SCHEMA
+        or manifest.schema_version != FORK_MANIFEST_SCHEMA_VERSION
+    ):
+        raise ReplayError("only the current fork manifest schema may be written")
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    with lock_path.open("a") as lock:
+        flock(lock, LOCK_EX)
+        if path.exists():
+            load_fork_manifest(path)
+        temporary = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
         try:
-            os.fsync(directory)
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as sink:
+                json.dump(asdict(manifest), sink, indent=2)
+                sink.write("\n")
+                sink.flush()
+                os.fsync(sink.fileno())
+            os.replace(temporary, path)
+            directory = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
         finally:
-            os.close(directory)
-    finally:
-        temporary.unlink(missing_ok=True)
+            temporary.unlink(missing_ok=True)
 
 
 def _git_output(repo: Path, *args: str, allow_failure: bool = False) -> str:

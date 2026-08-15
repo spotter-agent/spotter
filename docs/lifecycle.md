@@ -1456,6 +1456,7 @@ experiment_schema_version
 task_schema_version
 task_set_schema_version
 task_batch_schema_version
+fork_manifest_schema_version
 integration_manifest_version
 review_spend_schema_version
 source_audit_schema_version
@@ -1529,6 +1530,11 @@ new bundled manifests declare their identity explicitly. Batch resume validates 
 history under its resource lock before preflight or mutation, writes only current records, and
 repairs a validated torn tail through fsync plus atomic replacement. Future, foreign, or corrupt
 history is never truncated or extended.
+
+Fork lineage metadata uses the independent `spotter.fork_manifest` schema while retaining bounded
+v1-v6 reads. New CREATING, READY, and FAILED states write v6 identity through a locked, fsynced
+atomic replacement. Before replacing an existing manifest, the writer validates its schema under
+the same resource lock; future, foreign, or corrupt lineage is never overwritten.
 
 ---
 
