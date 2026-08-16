@@ -777,7 +777,7 @@ def test_control_rpc_does_not_wait_for_bounded_telemetry_io(
     asyncio.run(scenario())
 
 
-def test_intervention_input_is_correlated_without_replacing_user_goal(tmp_path: Path) -> None:
+def test_intervention_input_is_scoped_without_replacing_later_user_goals(tmp_path: Path) -> None:
     async def scenario() -> None:
         async def handler(connection: ServerConnection) -> None:
             await _initialize(connection)
@@ -878,12 +878,37 @@ def test_intervention_input_is_correlated_without_replacing_user_goal(tmp_path: 
                     connection_epoch=state.connection_epoch,
                 )
             )
+            attachment_id = state.identity.provenance.agent_attachment_id
+            assert attachment_id is not None
+            later_identity = recovery._runtime_identity(
+                "thread-1",
+                "turn-2",
+                attachment_id,
+            )
+            recovery._record(
+                TraceEvent(
+                    "turn_started",
+                    {},
+                    event_id="turn-2-started",
+                    identity=later_identity,
+                    connection_epoch=state.connection_epoch,
+                )
+            )
+            recovery._record(
+                TraceEvent(
+                    "user_prompt",
+                    {"prompt": "Document the completed fix"},
+                    event_id="later-user-goal",
+                    identity=later_identity,
+                    connection_epoch=state.connection_epoch,
+                )
+            )
             leaked = recovery._annotate_intervention_input(
                 TraceEvent(
                     "user_prompt",
                     {"client_user_message_id": "spotter:intervention:job-1", "prompt": "old"},
                     event_id="leaked-advisory",
-                    identity=state.identity,
+                    identity=later_identity,
                     connection_epoch=state.connection_epoch,
                 )
             )
@@ -896,7 +921,9 @@ def test_intervention_input_is_correlated_without_replacing_user_goal(tmp_path: 
             assert leaked.payload["intervention_relation"] == "outside_target"
             assert leaked_observation.payload["outcome"] == "observed_outside_target"
             assert leaked_observation.payload["reason_code"] == "expired_advisory_visible"
-            assert recovery.thread_states.snapshots()[0].task.goal.text == "Fix the original bug"  # type: ignore[union-attr]
+            later_goal = recovery.thread_states.snapshots()[0].task.goal
+            assert later_goal is not None
+            assert later_goal.text == "Document the completed fix"
             await recovery.close()
 
     asyncio.run(scenario())
