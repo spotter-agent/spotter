@@ -1,6 +1,7 @@
 config_schema = "spotter.config"
 config_schema_version = 1
 observation_only = true
+snapshot_on_patch = true
 
 [main_agent]
 adapter = "codex"
@@ -15,6 +16,10 @@ model = "default"
 # Each decision records signal/periodic/manual trigger provenance for cohort comparison.
 # max_per_session = 20   # ceilings on review spend; a cadence without one
 # max_per_day = 100      # offers an unbounded background bill (issue #52)
+
+[gates]
+forbidden_paths = []
+block_dependency_changes = false
 
 # Exact server/tool metadata takes precedence over MCP name heuristics. Unknown
 # MCP operations remain conservative Class C. Never list secret-bearing fields.
