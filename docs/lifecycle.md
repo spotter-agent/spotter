@@ -354,10 +354,6 @@ Codex:        detected or not detected
 Integration:  not configured
 ```
 
-### Remaining implementation
-
-- package provenance detection (`homebrew`, source, standalone, etc.);
-
 Release artifacts, the dedicated tap and Formula, shared `spotter`/`spotterd` build identity, stable
 runtime path discovery, and the package-vs-running-daemon build comparison are implemented. The
 [Homebrew lifecycle smoke](homebrew-lifecycle-smoke.md) covers real macOS install, live upgrade,
@@ -377,10 +373,12 @@ It must be **idempotent** and **transactional**.
 
 The implemented command supports `--dry-run` and `--portable`. Managed mode registers `spotterd`
 as a login-scoped user service; portable mode starts it without persistent registration. Setup
-mutates only Codex Hook/plugin configuration, keeps fingerprinted backups, verifies daemon health
-and a synthetic packaged-bridge round-trip, then atomically commits
-`~/.spotter/integrations/codex.json`. Generated Hooks invoke the stable packaged CLI, not a copied
-module tree or a persisted Python interpreter path.
+mutates only Codex Hook/plugin configuration, keeps fingerprinted backups, stages a `configuring`
+manifest before runtime reconciliation, verifies daemon health and a synthetic packaged-bridge
+round-trip, then atomically commits that manifest as `ready`. This ordering lets a restarted daemon
+load the candidate config path and integration inputs rather than the retired manifest. Generated
+Hooks invoke the stable packaged CLI, not a copied module tree or a persisted Python interpreter
+path.
 
 ## 4.1 Transaction stages
 
@@ -393,11 +391,13 @@ BACKUP
    ↓
 APPLY
    ↓
+STAGE CONFIGURING MANIFEST
+   ↓
 START / CONNECT
    ↓
 VERIFY
    ↓
-COMMIT MANIFEST
+COMMIT READY MANIFEST
 ```
 
 ## 4.2 INSPECT
@@ -1219,7 +1219,9 @@ Schema-4 integration Hooks also carry an integration-generation fence. Re-runnin
 package-build or stable-prefix change rotates the fence and reconciles the exact owned Hook entries.
 A Codex process holding an older generated command invokes the current stable binary, but that binary
 rejects the retired generation or package build and fails open rather than silently adopting the
-replacement build.
+replacement build. Setup restarts an owned runtime when this construction generation changes. If
+startup or verification fails, it restores the prior manifest and host mutations and restarts the
+prior runtime inputs; durable observation state remains outside this transaction and is retained.
 
 The running daemon also watches the stable daemon entry point. A transient unlink/relink during an
 upgrade is tolerated, so G1 remains visible until setup explicitly reconciles it. If the entry point

@@ -62,6 +62,22 @@ class FailingUninstallService(FakeService):
         raise OSError("service busy")
 
 
+class ManifestReadingService(FakeService):
+    def __init__(self, registration_path: Path, manifest_path: Path) -> None:
+        super().__init__(registration_path)
+        self.manifest_path = manifest_path
+        self.config_paths_seen: list[str | None] = []
+        self.states_seen: list[str | None] = []
+
+    async def start(self) -> DaemonStatus:
+        raw = json.loads(self.manifest_path.read_text())
+        configured = raw.get("config_path")
+        self.config_paths_seen.append(configured if isinstance(configured, str) else None)
+        state = raw.get("state")
+        self.states_seen.append(state if isinstance(state, str) else None)
+        return await super().start()
+
+
 @pytest.fixture()
 def homes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
     spotter_home = tmp_path / "spotter"
@@ -825,6 +841,99 @@ def test_setup_records_custom_config_for_daemon_review_execution(
     manifest = manager.setup()
 
     assert manifest.config_path == str(config)
+
+
+def test_setup_commits_runtime_inputs_before_restarting_a_changed_generation(
+    homes: tuple[Path, Path],
+) -> None:
+    spotter_home, codex_home = homes
+    spotter_home.mkdir()
+    first_config = spotter_home / "first.toml"
+    second_config = spotter_home / "second.toml"
+    first_config.write_text('[main_agent]\nadapter = "codex"\n')
+    second_config.write_text('[main_agent]\nadapter = "codex"\n[reviewer]\non_signals = true\n')
+    manifest_path = spotter_home / "integrations/codex.json"
+    service = ManifestReadingService(spotter_home / "service", manifest_path)
+
+    first = IntegrationManager(
+        codex_home=codex_home,
+        codex=CodexInstall("/bin/codex", "codex 1.0", True, True),
+        service=service,
+        spotter_executable="/bin/spotter",
+        config_path=first_config,
+        verifier=lambda _: True,
+    )
+    old = first.setup()
+    second = IntegrationManager(
+        codex_home=codex_home,
+        codex=CodexInstall("/bin/codex", "codex 1.0", True, True),
+        service=service,
+        spotter_executable="/bin/spotter",
+        config_path=second_config,
+        verifier=lambda _: True,
+    )
+    new = second.setup()
+
+    assert old.integration_generation != new.integration_generation
+    assert service.config_paths_seen == [str(first_config), str(second_config)]
+    assert service.states_seen == ["configuring", "configuring"]
+    assert service.stops == 1
+
+
+def test_failed_runtime_reconciliation_restores_manifest_and_previous_runtime(
+    homes: tuple[Path, Path],
+) -> None:
+    spotter_home, codex_home = homes
+    spotter_home.mkdir()
+    first_config = spotter_home / "first.toml"
+    second_config = spotter_home / "second.toml"
+    first_config.write_text('[main_agent]\nadapter = "codex"\n')
+    second_config.write_text('[main_agent]\nadapter = "codex"\n[reviewer]\non_signals = true\n')
+    manifest_path = spotter_home / "integrations/codex.json"
+    service = ManifestReadingService(spotter_home / "service", manifest_path)
+    first = IntegrationManager(
+        codex_home=codex_home,
+        codex=CodexInstall("/bin/codex", "codex 1.0", True, True),
+        service=service,
+        spotter_executable="/bin/spotter",
+        config_path=first_config,
+        verifier=lambda _: True,
+    )
+    first.setup()
+    original_manifest = manifest_path.read_bytes()
+    second = IntegrationManager(
+        codex_home=codex_home,
+        codex=CodexInstall("/bin/codex", "codex 1.0", True, True),
+        service=service,
+        spotter_executable="/bin/spotter",
+        config_path=second_config,
+        verifier=lambda _: False,
+    )
+
+    with pytest.raises(IntegrationError, match="setup rolled back"):
+        second.setup()
+
+    assert manifest_path.read_bytes() == original_manifest
+    assert service.config_paths_seen == [
+        str(first_config),
+        str(second_config),
+        str(first_config),
+    ]
+
+
+def test_setup_restarts_after_an_interrupted_configuring_manifest(
+    homes: tuple[Path, Path],
+) -> None:
+    manager, service = _manager(homes)
+    manager.setup()
+    raw = json.loads(manager.manifest_path.read_text())
+    raw["state"] = "configuring"
+    manager.manifest_path.write_text(json.dumps(raw))
+
+    reconciled = manager.setup()
+
+    assert reconciled.state == "ready"
+    assert service.stops == 1
 
 
 @pytest.mark.parametrize("platform,suffix", [("darwin", ".plist"), ("linux", ".service")])

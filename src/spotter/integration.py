@@ -11,7 +11,7 @@ import subprocess
 import tomllib
 from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from fcntl import LOCK_EX, LOCK_UN, flock
 from pathlib import Path
@@ -49,7 +49,9 @@ def _package_version() -> str:
     return current_build_identity().version
 
 
-def _integration_generation(layout: RuntimeLayout, config_path: Path | None) -> str:
+def _integration_generation(
+    layout: RuntimeLayout, config_path: Path | None, runtime_mode: str
+) -> str:
     """Fence generated host state to one package build and stable layout."""
     payload = {
         "schema": MANIFEST_SCHEMA,
@@ -58,6 +60,7 @@ def _integration_generation(layout: RuntimeLayout, config_path: Path | None) -> 
         "daemon_command": layout.daemon_command,
         "package_assets_dir": str(layout.package_assets_dir),
         "config_path": str(config_path) if config_path is not None else None,
+        "runtime_mode": runtime_mode,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
@@ -334,7 +337,9 @@ class IntegrationManager:
         )
         default_config = self.layout.user_config_dir / "spotter.toml"
         self.config_path = config_path or (default_config if default_config.exists() else None)
-        self.integration_generation = _integration_generation(self.layout, self.config_path)
+        self.integration_generation = _integration_generation(
+            self.layout, self.config_path, "portable" if portable else "managed"
+        )
         self.verifier = verifier or (
             lambda path: check_roundtrip(path, command=self.layout.bridge_command).status == OK
         )
@@ -546,6 +551,9 @@ class IntegrationManager:
         lock = self.lock_path.open("a+")
         flock(lock, LOCK_EX)
         try:
+            manifest_before = (
+                self.manifest_path.read_bytes() if self.manifest_path.exists() else None
+            )
             existing = IntegrationManifest.load(self.manifest_path)
             plan, hooks, hooks_before, removed_hooks = self.inspect(existing)
             codex = self._codex_install()
@@ -565,6 +573,10 @@ class IntegrationManager:
             service_was_running = asyncio.run(self.service.status()).available
             config_after = config_before
             removed_plugins: list[str] = []
+            service_attempted = False
+            previous_hooks = existing.legacy_hooks_removed if existing else []
+            previous_plugins = existing.legacy_plugins_removed if existing else []
+            retained = existing if existing is not None and existing.state != "purged" else None
 
             def rollback() -> None:
                 if hooks_before is None:
@@ -576,7 +588,17 @@ class IntegrationManager:
                         codex.add_plugin(selector, self.codex_home)
                 if config_before is not None:
                     _atomic_write(self.codex_config_path, config_before)
-                if not service_preexisting and not service_was_running:
+                if manifest_before is None:
+                    self.manifest_path.unlink(missing_ok=True)
+                else:
+                    _atomic_write(self.manifest_path, manifest_before)
+                if service_was_running and service_attempted:
+                    with suppress(Exception):
+                        asyncio.run(self.service.restart())
+                elif service_preexisting and service_attempted:
+                    with suppress(Exception):
+                        asyncio.run(self.service.stop())
+                elif not service_preexisting and not service_was_running:
                     with suppress(Exception):
                         asyncio.run(self.service.uninstall())
 
@@ -589,76 +611,77 @@ class IntegrationManager:
                 config_after = (
                     self.codex_config_path.read_bytes() if self.codex_config_path.exists() else None
                 )
-                started = asyncio.run(self.service.start())
+                manifest = IntegrationManifest(
+                    schema=MANIFEST_SCHEMA,
+                    state="configuring",
+                    agent="codex",
+                    setup_by=_package_version(),
+                    setup_build_id=current_build_identity().build_id,
+                    integration_generation=self.integration_generation,
+                    runtime_layout=self.layout.integration_record(),
+                    agent_path=codex.path,
+                    agent_version=codex.version,
+                    codex_home=str(self.codex_home),
+                    app_server_strategy="pending-external",
+                    app_server_endpoint=plan.app_server_endpoint,
+                    runtime_mode=plan.runtime_mode,
+                    service_registration=plan.service_registration,
+                    service_owned=(
+                        retained.service_owned
+                        if retained
+                        else (not service_was_running or not self.portable)
+                    ),
+                    hooks_file=str(self.hooks_path),
+                    hooks_file_created=(
+                        hooks_before is None if retained is None else retained.hooks_file_created
+                    ),
+                    owned_hooks=self._owned_hooks(),
+                    config_path=str(self.config_path) if self.config_path is not None else None,
+                    legacy_hooks_removed=previous_hooks + removed_hooks,
+                    legacy_plugins_removed=list(
+                        dict.fromkeys([*previous_plugins, *plan.legacy_plugins])
+                    ),
+                    config_fingerprint_before=(
+                        retained.config_fingerprint_before
+                        if retained
+                        else (_fingerprint(config_before) if config_before is not None else None)
+                    ),
+                    config_fingerprint_after=(
+                        _fingerprint(config_after) if config_after is not None else None
+                    ),
+                    hooks_fingerprint_before=(
+                        retained.hooks_fingerprint_before
+                        if retained
+                        else (_fingerprint(hooks_before) if hooks_before is not None else None)
+                    ),
+                    hooks_fingerprint_after=_fingerprint(hooks_after),
+                    backup_paths=list(
+                        dict.fromkeys(
+                            [
+                                *(retained.backup_paths if retained else []),
+                                *(str(path) for path in backups),
+                            ]
+                        )
+                    ),
+                    created_at=retained.created_at if retained else _now(),
+                    updated_at=_now(),
+                )
+                manifest.save(self.manifest_path)
+                restart_required = retained is not None and (
+                    retained.state != "ready"
+                    or retained.integration_generation != manifest.integration_generation
+                )
+                service_attempted = True
+                started = asyncio.run(
+                    self.service.restart() if restart_required else self.service.start()
+                )
                 if started.health != RuntimeHealth.HEALTHY:
                     raise IntegrationError(
                         f"spotterd failed to start: {started.detail or started.health}"
                     )
                 owned = self._owned_hooks()
                 self._verify(owned)
-            except Exception as error:
-                rollback()
-                raise IntegrationError(f"setup rolled back: {error}") from error
-
-            previous_hooks = existing.legacy_hooks_removed if existing else []
-            previous_plugins = existing.legacy_plugins_removed if existing else []
-            retained = existing if existing is not None and existing.state != "purged" else None
-            manifest = IntegrationManifest(
-                schema=MANIFEST_SCHEMA,
-                state="ready",
-                agent="codex",
-                setup_by=_package_version(),
-                setup_build_id=current_build_identity().build_id,
-                integration_generation=self.integration_generation,
-                runtime_layout=self.layout.integration_record(),
-                agent_path=codex.path,
-                agent_version=codex.version,
-                codex_home=str(self.codex_home),
-                app_server_strategy="pending-external",
-                app_server_endpoint=plan.app_server_endpoint,
-                runtime_mode=plan.runtime_mode,
-                service_registration=plan.service_registration,
-                service_owned=(
-                    retained.service_owned
-                    if retained
-                    else (not service_was_running or not self.portable)
-                ),
-                hooks_file=str(self.hooks_path),
-                hooks_file_created=(
-                    hooks_before is None if retained is None else retained.hooks_file_created
-                ),
-                owned_hooks=self._owned_hooks(),
-                config_path=str(self.config_path) if self.config_path is not None else None,
-                legacy_hooks_removed=previous_hooks + removed_hooks,
-                legacy_plugins_removed=list(
-                    dict.fromkeys([*previous_plugins, *plan.legacy_plugins])
-                ),
-                config_fingerprint_before=(
-                    retained.config_fingerprint_before
-                    if retained
-                    else (_fingerprint(config_before) if config_before is not None else None)
-                ),
-                config_fingerprint_after=(
-                    _fingerprint(config_after) if config_after is not None else None
-                ),
-                hooks_fingerprint_before=(
-                    retained.hooks_fingerprint_before
-                    if retained
-                    else (_fingerprint(hooks_before) if hooks_before is not None else None)
-                ),
-                hooks_fingerprint_after=_fingerprint(hooks_after),
-                backup_paths=list(
-                    dict.fromkeys(
-                        [
-                            *(retained.backup_paths if retained else []),
-                            *(str(path) for path in backups),
-                        ]
-                    )
-                ),
-                created_at=retained.created_at if retained else _now(),
-                updated_at=_now(),
-            )
-            try:
+                manifest = replace(manifest, state="ready", updated_at=_now())
                 manifest.save(self.manifest_path)
             except Exception as error:
                 rollback()
