@@ -83,7 +83,8 @@ undocumented Codex internals. Mixed generations must be detectable and non-block
 reload only the reconciled G2 Hook remains.
 
 The fixture starts and later cleans up its own shared App Server sentinel, but Spotter is never
-configured as that process's owner. Setup currently records the endpoint strategy as pending, so
-claiming ownership in this smoke would violate the runtime boundary. Full configuration-generation,
+configured as that process's owner. Supported setup can attach a user-supplied endpoint, but this
+packaging smoke deliberately leaves its sentinel outside the integration transaction; claiming
+process ownership here would violate the runtime boundary. Full configuration-generation,
 protocol-range, schema-migration, retention, and repository-aware purge behavior remains owned by
 #90, #47, and #89 rather than being inferred from a green packaging gate.

@@ -79,6 +79,54 @@ class ManifestReadingService(FakeService):
         return await super().start()
 
 
+class AppServerService(FakeService):
+    def __init__(self, registration_path: Path, manifest_path: Path) -> None:
+        super().__init__(registration_path)
+        self.manifest_path = manifest_path
+        self.broken_endpoints: set[str] = set()
+        self.app_server_version = "0.147.0"
+
+    async def status(self) -> DaemonStatus:
+        endpoint = None
+        if self.manifest_path.exists():
+            raw = json.loads(self.manifest_path.read_text())
+            endpoint = raw.get("app_server_endpoint")
+        ready = self.health == RuntimeHealth.HEALTHY and endpoint not in self.broken_endpoints
+        return DaemonStatus(
+            self.health,
+            build_id=current_build_identity().build_id,
+            app_server_state="ready" if ready and endpoint is not None else None,
+            app_server_version=self.app_server_version if ready and endpoint is not None else None,
+            app_server_connection_epoch=1 if ready and endpoint is not None else None,
+            app_server_capabilities=(
+                (
+                    ("observation", "available"),
+                    ("thread_query", "available"),
+                    ("steer", "unknown"),
+                    ("interrupt", "unknown"),
+                )
+                if ready and endpoint is not None
+                else None
+            ),
+        )
+
+
+class RecoveringAppServerService(AppServerService):
+    async def start(self) -> DaemonStatus:
+        self.starts += 1
+        self.health = RuntimeHealth.RECOVERING
+        return DaemonStatus(
+            self.health,
+            build_id=current_build_identity().build_id,
+            app_server_state="connecting",
+        )
+
+    async def status(self) -> DaemonStatus:
+        if self.health == RuntimeHealth.RECOVERING:
+            self.health = RuntimeHealth.HEALTHY
+        return await super().status()
+
+
 @pytest.fixture()
 def homes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
     spotter_home = tmp_path / "spotter"
@@ -245,6 +293,278 @@ def test_setup_records_app_server_endpoint_as_pending(
 
     assert manifest.app_server_strategy == "pending-external"
     assert manifest.app_server_endpoint is None
+
+
+def test_setup_verifies_and_records_an_explicit_app_server_endpoint(
+    homes: tuple[Path, Path],
+) -> None:
+    spotter_home, codex_home = homes
+    endpoint = "ws://127.0.0.1:4500"
+    verified: list[str] = []
+    service = AppServerService(
+        spotter_home / "service/spotterd", spotter_home / "integrations/codex.json"
+    )
+    manager = IntegrationManager(
+        codex_home=codex_home,
+        codex=CodexInstall("/bin/codex", "codex-cli 0.147.0", True, True),
+        service=service,
+        spotter_executable="/bin/spotter",
+        verifier=lambda _: True,
+        app_server_endpoint=endpoint,
+        app_server_verifier=verified.append,
+    )
+
+    manifest = manager.setup()
+
+    assert verified == [endpoint]
+    assert manifest.state == "ready"
+    assert manifest.app_server_strategy == "external-explicit"
+    assert manifest.app_server_endpoint == endpoint
+
+
+def test_setup_waits_for_a_recovering_daemon_app_server_connection(
+    homes: tuple[Path, Path],
+) -> None:
+    spotter_home, codex_home = homes
+    endpoint = "ws://127.0.0.1:4500"
+    service = RecoveringAppServerService(
+        spotter_home / "service/spotterd", spotter_home / "integrations/codex.json"
+    )
+    manager = IntegrationManager(
+        codex_home=codex_home,
+        codex=CodexInstall("/bin/codex", "codex-cli 0.147.0", True, True),
+        service=service,
+        spotter_executable="/bin/spotter",
+        verifier=lambda _: True,
+        app_server_endpoint=endpoint,
+        app_server_verifier=lambda _: None,
+    )
+
+    manifest = manager.setup()
+
+    assert manifest.state == "ready"
+    assert service.starts == 1
+
+
+def test_setup_retains_and_reverifies_the_recorded_endpoint_on_rerun(
+    homes: tuple[Path, Path],
+) -> None:
+    spotter_home, codex_home = homes
+    endpoint = "ws://127.0.0.1:4500"
+    service = AppServerService(
+        spotter_home / "service/spotterd", spotter_home / "integrations/codex.json"
+    )
+    first = IntegrationManager(
+        codex_home=codex_home,
+        codex=CodexInstall("/bin/codex", "codex-cli 0.147.0", True, True),
+        service=service,
+        spotter_executable="/bin/spotter",
+        verifier=lambda _: True,
+        app_server_endpoint=endpoint,
+        app_server_verifier=lambda _: None,
+    )
+    first.setup()
+    verified: list[str] = []
+    rerun = IntegrationManager(
+        codex_home=codex_home,
+        codex=CodexInstall("/bin/codex", "codex-cli 0.147.0", True, True),
+        service=service,
+        spotter_executable="/bin/spotter",
+        verifier=lambda _: True,
+        app_server_verifier=verified.append,
+    )
+
+    manifest = rerun.setup()
+
+    assert manifest.app_server_endpoint == endpoint
+    assert verified == [endpoint]
+    assert service.stops == 0
+
+
+def test_setup_replaces_an_endpoint_only_after_the_new_daemon_connection_is_ready(
+    homes: tuple[Path, Path],
+) -> None:
+    spotter_home, codex_home = homes
+    manifest_path = spotter_home / "integrations/codex.json"
+    service = AppServerService(spotter_home / "service/spotterd", manifest_path)
+
+    def manager(endpoint: str, verified: list[str]) -> IntegrationManager:
+        return IntegrationManager(
+            codex_home=codex_home,
+            codex=CodexInstall("/bin/codex", "codex-cli 0.147.0", True, True),
+            service=service,
+            spotter_executable="/bin/spotter",
+            verifier=lambda _: True,
+            app_server_endpoint=endpoint,
+            app_server_verifier=verified.append,
+        )
+
+    first_verified: list[str] = []
+    manager("ws://127.0.0.1:4500", first_verified).setup()
+    second_verified: list[str] = []
+
+    changed = manager("ws://127.0.0.1:4600", second_verified).setup()
+
+    assert first_verified == ["ws://127.0.0.1:4500"]
+    assert second_verified == ["ws://127.0.0.1:4600"]
+    assert changed.app_server_endpoint == "ws://127.0.0.1:4600"
+    assert service.stops == 1
+
+
+def test_codex_upgrade_retains_and_reverifies_the_configured_endpoint(
+    homes: tuple[Path, Path],
+) -> None:
+    spotter_home, codex_home = homes
+    endpoint = "ws://127.0.0.1:4500"
+    manifest_path = spotter_home / "integrations/codex.json"
+    service = AppServerService(spotter_home / "service/spotterd", manifest_path)
+    first = IntegrationManager(
+        codex_home=codex_home,
+        codex=CodexInstall("/bin/codex", "codex-cli 0.147.0", True, True),
+        service=service,
+        spotter_executable="/bin/spotter",
+        verifier=lambda _: True,
+        app_server_endpoint=endpoint,
+        app_server_verifier=lambda _: None,
+    )
+    first.setup()
+    verified: list[str] = []
+    upgraded = IntegrationManager(
+        codex_home=codex_home,
+        codex=CodexInstall("/bin/codex", "codex-cli 0.148.0", True, True),
+        service=service,
+        spotter_executable="/bin/spotter",
+        verifier=lambda _: True,
+        app_server_verifier=verified.append,
+    )
+    manifest = upgraded.setup()
+
+    assert manifest.agent_version == "codex-cli 0.148.0"
+    assert manifest.app_server_endpoint == endpoint
+    assert verified == [endpoint]
+
+
+def test_teardown_of_a_configured_endpoint_only_removes_spotter_owned_service_state(
+    homes: tuple[Path, Path],
+) -> None:
+    spotter_home, codex_home = homes
+    endpoint = "ws://127.0.0.1:4500"
+    verified: list[str] = []
+    service = AppServerService(
+        spotter_home / "service/spotterd", spotter_home / "integrations/codex.json"
+    )
+    manager = IntegrationManager(
+        codex_home=codex_home,
+        codex=CodexInstall("/bin/codex", "codex-cli 0.147.0", True, True),
+        service=service,
+        spotter_executable="/bin/spotter",
+        verifier=lambda _: True,
+        app_server_endpoint=endpoint,
+        app_server_verifier=verified.append,
+    )
+    manager.setup()
+
+    assert manager.teardown()
+
+    assert verified == [endpoint]
+    assert service.uninstalls == 1
+    assert not manager.manifest_path.exists()
+
+
+def test_unreachable_endpoint_fails_before_setup_mutates_owned_state(
+    homes: tuple[Path, Path],
+) -> None:
+    spotter_home, codex_home = homes
+    endpoint = "ws://127.0.0.1:1?token=setup-secret"
+    service = AppServerService(
+        spotter_home / "service/spotterd", spotter_home / "integrations/codex.json"
+    )
+
+    def unreachable(candidate: str) -> None:
+        raise OSError(f"could not connect to {candidate}")
+
+    manager = IntegrationManager(
+        codex_home=codex_home,
+        codex=CodexInstall("/bin/codex", "codex-cli 0.147.0", True, True),
+        service=service,
+        spotter_executable="/bin/spotter",
+        verifier=lambda _: True,
+        app_server_endpoint=endpoint,
+        app_server_verifier=unreachable,
+    )
+
+    with pytest.raises(IntegrationError, match="endpoint verification failed") as captured:
+        manager.setup()
+
+    assert "setup-secret" not in str(captured.value)
+    assert not manager.hooks_path.exists()
+    assert not manager.manifest_path.exists()
+    assert service.starts == 0
+
+
+def test_setup_rolls_back_an_incompatible_daemon_app_server_identity(
+    homes: tuple[Path, Path],
+) -> None:
+    spotter_home, codex_home = homes
+    service = AppServerService(
+        spotter_home / "service/spotterd", spotter_home / "integrations/codex.json"
+    )
+    service.app_server_version = "0.146.9"
+    manager = IntegrationManager(
+        codex_home=codex_home,
+        codex=CodexInstall("/bin/codex", "codex-cli 0.147.0", True, True),
+        service=service,
+        spotter_executable="/bin/spotter",
+        verifier=lambda _: True,
+        app_server_endpoint="ws://127.0.0.1:4500",
+        app_server_verifier=lambda _: None,
+    )
+
+    with pytest.raises(IntegrationError, match="incompatible Codex App Server identity"):
+        manager.setup()
+
+    assert not manager.manifest_path.exists()
+    assert not manager.hooks_path.exists()
+    assert service.uninstalls == 1
+
+
+def test_endpoint_change_restarts_daemon_and_rolls_back_if_it_cannot_reconnect(
+    homes: tuple[Path, Path],
+) -> None:
+    spotter_home, codex_home = homes
+    old_endpoint = "ws://127.0.0.1:4500"
+    new_endpoint = "ws://127.0.0.1:4600"
+    manifest_path = spotter_home / "integrations/codex.json"
+    service = AppServerService(spotter_home / "service/spotterd", manifest_path)
+
+    def endpoint_manager(endpoint: str, *, ready_timeout: float = 10.0) -> IntegrationManager:
+        return IntegrationManager(
+            codex_home=codex_home,
+            codex=CodexInstall("/bin/codex", "codex-cli 0.147.0", True, True),
+            service=service,
+            spotter_executable="/bin/spotter",
+            verifier=lambda _: True,
+            app_server_endpoint=endpoint,
+            app_server_verifier=lambda _: None,
+            app_server_ready_timeout=ready_timeout,
+        )
+
+    first = endpoint_manager(old_endpoint)
+    first.setup()
+    original_manifest = manifest_path.read_bytes()
+    service.broken_endpoints.add(new_endpoint)
+    changed = endpoint_manager(new_endpoint, ready_timeout=0)
+
+    with pytest.raises(IntegrationError, match="setup rolled back"):
+        changed.setup()
+
+    restored = IntegrationManifest.load(manifest_path)
+    assert restored is not None
+    assert restored.app_server_endpoint == old_endpoint
+    assert manifest_path.read_bytes() == original_manifest
+    assert service.stops == 2  # candidate restart plus rollback restart
+    assert (awaitable_status := asyncio.run(service.status())).app_server_state == "ready"
+    assert awaitable_status.app_server_version == "0.147.0"
 
 
 def test_setup_records_stable_layout_build_and_integration_generation(
@@ -1358,6 +1678,35 @@ def test_setup_cli_does_not_print_an_unverified_remote_command(
     assert "codex --remote" not in output
 
 
+def test_setup_cli_prints_only_a_redacted_verified_remote_endpoint(
+    homes: tuple[Path, Path],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spotter_home, codex_home = homes
+    endpoint = "ws://127.0.0.1:4500?token=setup-secret"
+    service = AppServerService(
+        spotter_home / "service/spotterd", spotter_home / "integrations/codex.json"
+    )
+    manager = IntegrationManager(
+        codex_home=codex_home,
+        codex=CodexInstall("/bin/codex", "codex-cli 0.147.0", True, True),
+        service=service,
+        spotter_executable="/bin/spotter",
+        verifier=lambda _: True,
+        app_server_endpoint=endpoint,
+        app_server_verifier=lambda _: None,
+    )
+    monkeypatch.setattr("spotter.cli.IntegrationManager", lambda **_: manager)
+
+    assert main(["setup", "codex", "--endpoint", endpoint]) == 0
+
+    output = capsys.readouterr().out
+    assert "endpoint: verified" in output
+    assert "codex --remote <configured App Server endpoint>" in output
+    assert "setup-secret" not in output
+
+
 def test_managed_manifest_routes_daemon_stop_through_the_service_manager(
     homes: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1374,3 +1723,8 @@ def test_managed_manifest_routes_daemon_stop_through_the_service_manager(
 def test_portable_is_rejected_for_teardown() -> None:
     with pytest.raises(SystemExit, match="2"):
         main(["teardown", "codex", "--portable"])
+
+
+def test_endpoint_is_rejected_for_teardown() -> None:
+    with pytest.raises(SystemExit, match="2"):
+        main(["teardown", "codex", "--endpoint", "ws://127.0.0.1:4500"])

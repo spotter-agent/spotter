@@ -98,6 +98,24 @@ def test_connect_negotiates_observation_and_preserves_raw_events() -> None:
     asyncio.run(scenario())
 
 
+def test_transport_errors_do_not_expose_endpoint_query_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    endpoint = "ws://127.0.0.1:4500?token=transport-secret"
+
+    async def fail(candidate: str, **_: object) -> None:
+        raise OSError(f"cannot connect to {candidate}")
+
+    monkeypatch.setattr("spotter.app_server.websocket_connect", fail)
+    client = CodexAppServerClient(endpoint)
+
+    with pytest.raises(AppServerTransportError) as captured:
+        asyncio.run(client.connect())
+
+    assert "transport-secret" not in str(captured.value)
+    assert "ws://127.0.0.1:4500?<redacted>" in str(captured.value)
+
+
 @pytest.mark.parametrize(
     ("user_agent", "message"),
     [

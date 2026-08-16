@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from spotter.app_server_endpoint import display_app_server_endpoint, redact_app_server_error
 from spotter.budget import LedgerCorrupt, spend_totals
 from spotter.build_identity import current_build_identity
 from spotter.codex_host import CodexHostVersionError, validate_codex_host_version
@@ -462,8 +463,9 @@ async def _probe_app_server(endpoint: str) -> tuple[Check, Check]:
         )
         return observation, control
     except Exception as error:
+        detail = redact_app_server_error(error, endpoint)
         return (
-            Check("observation", WARN, f"App Server disconnected: {error}"),
+            Check("observation", WARN, f"App Server disconnected: {detail}"),
             Check("live control", WARN, "unavailable while App Server is disconnected"),
         )
     finally:
@@ -598,10 +600,30 @@ def check_runtime(*, deep: bool = False) -> list[Check]:
     elif deep:
         checks.extend(asyncio.run(_probe_app_server(endpoint)))
     else:
+        capabilities = dict(daemon.app_server_capabilities or ())
+        observation = capabilities.get("observation", "unknown")
+        controls = tuple(capabilities.get(name, "unknown") for name in ("steer", "interrupt"))
+        display_endpoint = display_app_server_endpoint(endpoint)
+        observation_ready = daemon.app_server_state == "ready" and observation == "available"
+        if all(control == "available" for control in controls):
+            control_status = OK
+        elif "unavailable" in controls:
+            control_status = WARN
+        else:
+            control_status = INFO
         checks.extend(
             [
-                Check("observation", WARN, f"endpoint configured; run doctor to probe {endpoint}"),
-                Check("live control", WARN, "not probed by status"),
+                Check(
+                    "observation",
+                    OK if observation_ready else WARN,
+                    f"{display_endpoint}; daemon {daemon.app_server_state or 'unknown'}; "
+                    f"observation {observation}",
+                ),
+                Check(
+                    "live control",
+                    control_status,
+                    f"daemon reports steer/interrupt {'/'.join(controls)}",
+                ),
             ]
         )
 
@@ -631,7 +653,7 @@ def check_runtime(*, deep: bool = False) -> list[Check]:
             Check(
                 "runtime state",
                 INFO,
-                "active/dormant thread counts unknown until App Server ingestion (#85)",
+                "active/dormant thread counts depend on live App Server ingestion",
             ),
             Check(
                 "review queue",

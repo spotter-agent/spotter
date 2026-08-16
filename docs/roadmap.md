@@ -65,8 +65,9 @@ attach to one Spotter-managed external App Server, observe the same thread/turn,
 user-visible turn. The Codex-managed daemon path was unavailable to the tested Homebrew Cask install.
 The concurrent identity registry is consumed by normalized App Server ingestion, and the standalone
 daemon owns incremental per-thread state plus reconnect/reconciliation. Managed registration and the
-local control foundation also exist; endpoint selection during setup remains Runtime work rather
-than an assumed property.
+local control foundation also exist. [#301](https://github.com/spotter-agent/spotter/issues/301)
+adds explicit endpoint selection, protocol/capability preflight, daemon-ready verification, and
+transactional endpoint-change rollback without claiming ownership of the shared process.
 
 ## Implementation after the gate
 
@@ -82,6 +83,7 @@ The Runtime milestone is now decomposed into concrete boundaries rather than one
 | [#83](https://github.com/spotter-agent/spotter/issues/83) | transactional `setup|teardown codex`, Integration Manifest, legacy migration (implemented) |
 | [#84](https://github.com/spotter-agent/spotter/issues/84) | runtime-aware `status` / `doctor` and degraded capability reporting (implemented) |
 | [#87](https://github.com/spotter-agent/spotter/issues/87) | daemon/App Server reconnect and thread reconciliation |
+| [#301](https://github.com/spotter-agent/spotter/issues/301) | verified explicit App Server endpoint selection during transactional setup (implemented) |
 
 Native GitHub issue dependencies encode the actual order between these issues. The table describes responsibility, not a second dependency system.
 

@@ -129,23 +129,28 @@ For a source/development checkout, follow [CONTRIBUTING.md](CONTRIBUTING.md#loca
 
 ## Connect Spotter to Codex
 
-Make sure the `codex` CLI is installed and available on `PATH`, then inspect and apply the managed
-integration:
+Make sure the `codex` CLI is installed and available on `PATH`. Start one user-managed App Server
+in a separate terminal:
 
 ```bash
-spotter setup codex --dry-run
-spotter setup codex
+codex app-server --listen ws://127.0.0.1:4500
+```
+
+Then inspect and apply the managed integration, verify it, and start the TUI against that same
+endpoint:
+
+```bash
+spotter setup codex --endpoint ws://127.0.0.1:4500 --dry-run
+spotter setup codex --endpoint ws://127.0.0.1:4500
 spotter doctor
+codex --remote ws://127.0.0.1:4500
 ```
 
 Setup is transactional and idempotent. It records the exact Spotter-owned Hooks and service state so
-later repair or teardown does not guess at user-owned configuration.
-
-After setup, use Codex normally:
-
-```bash
-codex
-```
+later repair or teardown does not guess at user-owned configuration. It verifies the server identity
+and observation capabilities before committing the endpoint. Spotter attaches to the shared server
+but never starts or stops it. Setup without `--endpoint` remains available as an explicit degraded
+Hook-only mode; App Server observation and live control are then unavailable.
 
 ## Everyday commands
 
@@ -187,7 +192,8 @@ directed back to their owning development workflow.
 
 Persistent Hook and service references use stable package entry points rather than versioned
 Homebrew Cellar paths. Spotter detects a still-running older daemon instead of assuming it matches
-the newly installed CLI.
+the newly installed CLI. A rerun without `--endpoint` retains and re-verifies an endpoint already
+recorded by a successful setup.
 
 ## Disconnect or uninstall
 

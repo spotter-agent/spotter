@@ -154,28 +154,33 @@ See [Contributing](../CONTRIBUTING.md#local-setup) before modifying the project.
 
 ## 5. Connect Spotter to Codex
 
-Always inspect the mutation plan first:
+Start one external App Server in a separate terminal. This process is user-managed; Spotter will
+attach to it but will never stop it:
 
 ```bash
-spotter setup codex --dry-run
+codex app-server --listen ws://127.0.0.1:4500
 ```
 
-Then apply the managed integration and verify it end to end:
+Always inspect the endpoint-aware mutation plan first, then apply the managed integration and verify
+it end to end:
 
 ```bash
-spotter setup codex
+spotter setup codex --endpoint ws://127.0.0.1:4500 --dry-run
+spotter setup codex --endpoint ws://127.0.0.1:4500
 spotter doctor
 ```
 
 Managed setup is transactional and idempotent. It updates only Spotter-owned Codex Hook/plugin
-state, keeps fingerprinted backups, registers `spotterd` as a login-scoped user service, verifies a
-synthetic Hook round trip, and commits an ownership manifest under
-`~/.spotter/integrations/codex.json` by default.
+state, keeps fingerprinted backups, registers `spotterd` as a login-scoped user service, verifies the
+App Server identity and observation/thread-query capabilities plus a synthetic Hook round trip, and
+commits an ownership manifest under `~/.spotter/integrations/codex.json` by default. An invalid,
+unreachable, incompatible, or daemon-unusable endpoint leaves the previous working integration in
+place. Endpoint query values are not printed in plans or diagnostics.
 
 If persistent user-service registration is unavailable or unwanted, use portable mode:
 
 ```bash
-spotter setup codex --portable
+spotter setup codex --portable --endpoint ws://127.0.0.1:4500
 spotter doctor
 ```
 
@@ -186,11 +191,15 @@ starting it again after logout, reboot, or process termination:
 spotter daemon start
 ```
 
-After setup, use Codex normally:
+After setup, make the TUI select the same external server explicitly:
 
 ```bash
-codex
+codex --remote ws://127.0.0.1:4500
 ```
+
+Plain `codex` does not currently discover this endpoint. Running setup without `--endpoint` is
+supported as a degraded Hook-only installation: deterministic Hook enforcement remains available,
+while App Server observation and live control are reported unavailable.
 
 ## 6. Configuration
 
@@ -432,7 +441,8 @@ spotter doctor
 ```
 
 Rerunning setup reconciles the installed CLI, the running daemon, generated Hook paths, build
-identity, and integration generation.
+identity, and integration generation. If the ready manifest already contains an endpoint, setup
+retains and re-verifies it; pass a new `--endpoint` to change it transactionally.
 
 For the dedicated source environment:
 
@@ -558,9 +568,18 @@ problem.
 <details>
 <summary><strong>Doctor reports unavailable observation or live control</strong></summary>
 
-An App Server endpoint is not selected automatically today. If Hook enforcement is reported as
-available, deterministic gating still works; App Server observation and live `VERIFY`/`NUDGE` do
-not. Check [Status](status.md) before treating this known product boundary as an installation bug.
+Confirm that the external server is still running and that both setup and the TUI use the same URL:
+
+```bash
+codex app-server --listen ws://127.0.0.1:4500
+spotter setup codex --endpoint ws://127.0.0.1:4500
+codex --remote ws://127.0.0.1:4500
+spotter doctor
+```
+
+Changing the endpoint reruns the full protocol and daemon verification. If Hook enforcement is
+reported as available after an App Server failure, deterministic gating still works, but observation
+and live `VERIFY`/`NUDGE` do not until the shared server is reachable again.
 
 </details>
 
