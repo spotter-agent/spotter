@@ -6,6 +6,8 @@ from typing import Any
 import pytest
 
 import spotter.wrong_nudge_experiment as experiment
+import spotter.wrong_nudge_metrics as metrics
+import spotter.wrong_nudge_persistence as persistence
 from spotter.cli import main
 from spotter.experiment import (
     EXPERIMENT_RESULT_SCHEMA,
@@ -417,6 +419,56 @@ def test_cli_requires_confirmation_before_paid_wrong_nudge_run() -> None:
                 "source-session",
                 "--step",
                 "7",
+                "--endpoint",
+                "ws://app-server",
+            ]
+        )
+
+
+def test_cli_runs_persistence_cohort_with_explicit_paid_confirmation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    source = tuple(_result("e1", condition) for condition in FramingCondition)
+    output = tmp_path / "persistence.jsonl"
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(metrics, "load_wrong_nudge_results", lambda path: source)
+
+    def fake_persist(
+        results: tuple[WrongNudgeMechanicalResult, ...], endpoint: str
+    ) -> tuple[Path, tuple[object, ...]]:
+        captured["results"] = results
+        captured["endpoint"] = endpoint
+        return output, (object(),) * 4
+
+    monkeypatch.setattr(persistence, "run_wrong_nudge_persistence_cohort", fake_persist)
+
+    assert (
+        main(
+            [
+                "wrong-nudge",
+                "persist",
+                "results.jsonl",
+                "--endpoint",
+                "ws://app-server",
+                "--run",
+            ]
+        )
+        == 0
+    )
+
+    assert captured == {"results": source, "endpoint": "ws://app-server"}
+    rendered = capsys.readouterr().out
+    assert "completed 4 persistence follow-up(s)" in rendered
+    assert f"results written to {output}" in rendered
+
+
+def test_cli_requires_confirmation_before_paid_persistence_cohort() -> None:
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "wrong-nudge",
+                "persist",
+                "results.jsonl",
                 "--endpoint",
                 "ws://app-server",
             ]

@@ -990,6 +990,13 @@ task/arm keys only when the task-set hash, environment, guidance, model, and san
 The current Codex backend enforces wall time and records the declared max-turn budget; the Codex CLI
 does not yet expose a hard max-turn limit for the batch runner to enforce.
 
+Wrong-nudge persistence cohorts are a separate `spotter.experiment_result` container with
+`wrong_nudge_persistence_schema_version = 1`. They refuse partial, mismatched, undelivered, or
+uncompleted source arm sets and unavailable worktrees before spending tokens. Each accepted
+follow-up is pinned to the exact mechanical-result fingerprint, fork/thread identity, versioned
+follow-up prompt, client message ID, and observed completion state; rows are fsynced independently
+so a partial cohort remains explicit rather than being inferred as complete.
+
 ---
 
 # 9. Status, doctor, and repair
@@ -1750,7 +1757,7 @@ the same resource lock; future, foreign, or corrupt lineage is never overwritten
 | Signal-sampling evidence | `spotter.signal_sampling` v1 | Read schema-name-less v1 and write current rows | Refuse append |
 | Intervention opportunities | `spotter.intervention_opportunity` v1 | Read schema-name-less v1 and write current rows | Refuse append |
 | Intervention feedback | `spotter.intervention_feedback` v1 | Read schema-name-less v1 and write current rows | Refuse append |
-| Counterfactual results | `spotter.experiment_result` v3 | Read v1-v3, including released version-less completion rows | Refuse append |
+| Counterfactual results | `spotter.experiment_result` v3; wrong-nudge persistence sub-schema v1 | Read v1-v3, including released version-less completion rows | Refuse append; persistence readers refuse foreign/future sub-schemas |
 | Frozen task manifest | `spotter.task` v1 | Read schema-name-less v1 | Refuse validation/execution |
 | Frozen task-set manifest | `spotter.task_set` v1 | Read schema-name-less v1 | Refuse validation/execution |
 | Frozen task-batch results | `spotter.task_batch` v1 | Read schema-name-less v1; atomically repair only a validated torn tail | Refuse preflight, repair, and append |

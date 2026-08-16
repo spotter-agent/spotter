@@ -65,3 +65,11 @@ spotter wrong-nudge run corpus/wrong-nudges-v1.toml \
   --session <source-session> --step <source-step> \
   --endpoint ws://127.0.0.1:<port> --run
 ```
+
+For a representative complete run, start one versioned follow-up turn per arm to test whether
+expired advice is re-promoted at the next model boundary:
+
+```bash
+spotter wrong-nudge persist ~/.spotter/experiments/wrong-nudges/<run>.jsonl \
+  --endpoint ws://127.0.0.1:<port> --run
+```
