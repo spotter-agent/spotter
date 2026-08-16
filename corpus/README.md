@@ -39,3 +39,5 @@ Resume refuses changed task-set hashes, environment, guidance, model, or sandbox
 This corpus is experiment input, not evidence that Main rejects bad supervision. Control, raw-imperative, and Spotter-advisory arms still need equivalent prefixes before drawing safety conclusions.
 
 The arm builder pins neutral control, raw imperative, scoped advisory, and optional VERIFY-first conditions to one source session/step, prefix identity, and environment fingerprint. A neutral arm emits no steer payload. Preparation creates four independent Git-aware replay forks and refuses missing manifests, shared worktrees, source-environment drift, prefix mismatch, or restored-environment mismatch before delivery.
+
+Delivery resumes each fork, starts the same neutral continuation through App Server `turn/start`, and invokes real `turn/steer` only for the three nudge conditions. Continuation and steer inputs use separate correlation IDs. A rejected or stale steer remains `DELIVERY_FAILED_OR_STALE`; RPC acceptance is recorded separately from observed completion and must not be interpreted as compliance.

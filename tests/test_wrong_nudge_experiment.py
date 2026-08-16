@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -5,10 +6,14 @@ from typing import Any
 import pytest
 
 import spotter.wrong_nudge_experiment as experiment
+from spotter.app_server import AppServerControlError, AppServerEvent, ControlFailureReason
 from spotter.replay import ForkPlan
 from spotter.wrong_nudge_corpus import FramingCondition, WrongNudge, validate_wrong_nudge_set
 from spotter.wrong_nudge_experiment import (
+    DeliveryOutcome,
+    PreparedWrongNudgeArm,
     WrongNudgeExperimentError,
+    deliver_wrong_nudge_arms,
     prepare_wrong_nudge_arms,
 )
 
@@ -31,6 +36,79 @@ def _plan(index: int, **overrides: Any) -> ForkPlan:
         source_environment_preflight="MATCHED",
     )
     return replace(plan, **overrides)
+
+
+def _prepared(monkeypatch: pytest.MonkeyPatch) -> tuple[PreparedWrongNudgeArm, ...]:
+    calls = 0
+
+    def fake_fork(*args: object, **kwargs: object) -> ForkPlan:
+        nonlocal calls
+        calls += 1
+        return _plan(calls)
+
+    monkeypatch.setattr(experiment, "fork", fake_fork)
+    return prepare_wrong_nudge_arms(_nudge(), "source-session", 7)
+
+
+class FakeClient:
+    def __init__(self, *, stale: bool = False) -> None:
+        self.stale = stale
+        self.connected = False
+        self.thread_id = ""
+        self.turn_id = ""
+        self.starts: list[tuple[str, str, str | None, str | None]] = []
+        self.steers: list[tuple[str, str, str, str | None]] = []
+
+    async def connect(self) -> None:
+        self.connected = True
+
+    async def disconnect(self) -> None:
+        self.connected = False
+
+    async def resume_thread(self, thread_id: str) -> dict[str, object]:
+        self.thread_id = thread_id
+        return {"thread": {"id": thread_id}}
+
+    async def start_turn(
+        self,
+        thread_id: str,
+        text: str,
+        *,
+        cwd: str | None = None,
+        client_user_message_id: str | None = None,
+    ) -> dict[str, object]:
+        self.turn_id = f"turn-{thread_id}"
+        self.starts.append((thread_id, text, cwd, client_user_message_id))
+        return {"turn": {"id": self.turn_id}}
+
+    async def steer(
+        self,
+        thread_id: str,
+        turn_id: str,
+        text: str,
+        *,
+        client_user_message_id: str | None = None,
+    ) -> dict[str, object]:
+        self.steers.append((thread_id, turn_id, text, client_user_message_id))
+        if self.stale:
+            raise AppServerControlError(
+                "turn/steer",
+                -32000,
+                "no active turn to steer",
+                ControlFailureReason.NO_ACTIVE_TURN,
+            )
+        return {"turnId": turn_id}
+
+    async def next_event(self) -> AppServerEvent:
+        return AppServerEvent(
+            "turn/completed",
+            {
+                "params": {
+                    "threadId": self.thread_id,
+                    "turn": {"id": self.turn_id, "status": "completed"},
+                }
+            },
+        )
 
 
 def test_prepares_four_independent_equivalent_prefix_forks(
@@ -115,3 +193,91 @@ def test_invalid_source_is_rejected_before_forking(
 
     with pytest.raises(WrongNudgeExperimentError):
         prepare_wrong_nudge_arms(_nudge(), session, step)
+
+
+def test_real_delivery_path_starts_each_turn_and_steers_only_nudge_arms(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared = _prepared(monkeypatch)
+    clients: list[FakeClient] = []
+
+    def factory(endpoint: str, timeout: float) -> FakeClient:
+        assert endpoint == "ws://app-server"
+        assert timeout == 10
+        client = FakeClient()
+        clients.append(client)
+        return client
+
+    results = asyncio.run(
+        deliver_wrong_nudge_arms(
+            prepared,
+            "ws://app-server",
+            timeout=30,
+            client_factory=factory,
+        )
+    )
+
+    assert len(results) == len(FramingCondition)
+    assert results[0].delivery_outcome == DeliveryOutcome.CONTROL_NO_STEER
+    assert all(result.delivery_outcome == DeliveryOutcome.RPC_ACCEPTED for result in results[1:])
+    assert all(result.completion_observed for result in results)
+    assert all(result.turn_status == "completed" for result in results)
+    assert clients[0].steers == []
+    assert all(len(client.steers) == 1 for client in clients[1:])
+    assert [client.steers[0][2] for client in clients[1:]] == [
+        row.arm.payload for row in prepared[1:]
+    ]
+    assert all(client.starts[0][1] == "Continue the task." for client in clients)
+    assert [client.starts[0][2] for client in clients] == [row.worktree for row in prepared]
+    assert all(
+        result.continuation_client_user_message_id.startswith("spt-exp-start-")
+        for result in results
+    )
+    assert results[0].steer_client_user_message_id is None
+    assert all(
+        result.steer_client_user_message_id
+        and result.steer_client_user_message_id.startswith("spt-exp-steer-")
+        for result in results[1:]
+    )
+    assert all(not client.connected for client in clients)
+
+
+def test_stale_delivery_is_not_classified_as_main_compliance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared = _prepared(monkeypatch)
+    clients = 0
+
+    def factory(endpoint: str, timeout: float) -> FakeClient:
+        nonlocal clients
+        clients += 1
+        return FakeClient(stale=clients == 2)
+
+    results = asyncio.run(
+        deliver_wrong_nudge_arms(prepared, "ws://app-server", client_factory=factory)
+    )
+
+    raw = next(result for result in results if result.condition == FramingCondition.RAW_IMPERATIVE)
+    assert raw.delivery_outcome == DeliveryOutcome.FAILED_OR_STALE
+    assert raw.diagnostic == "no_active_turn"
+    assert raw.completion_observed is True
+
+
+def test_delivery_revalidates_prepared_provenance_before_connecting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared = list(_prepared(monkeypatch))
+    prepared[-1] = replace(
+        prepared[-1],
+        arm=replace(prepared[-1].arm, prefix_id="different-prefix"),
+    )
+
+    def unexpected_factory(endpoint: str, timeout: float) -> FakeClient:
+        raise AssertionError("invalid prepared arms must not connect")
+
+    with pytest.raises(WrongNudgeExperimentError, match="PREPARED_PROVENANCE_MISMATCH"):
+        asyncio.run(
+            deliver_wrong_nudge_arms(
+                tuple(prepared), "ws://app-server", client_factory=unexpected_factory
+            )
+        )
