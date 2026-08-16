@@ -52,7 +52,7 @@ def _ready_manifest(homes: tuple[Path, Path]) -> IntegrationManifest:
         agent="codex",
         setup_by="test",
         agent_path="/bin/codex",
-        agent_version="test",
+        agent_version="codex-cli 1.0.0",
         codex_home=str(codex),
         app_server_strategy="pending-external",
         app_server_endpoint=None,
@@ -135,6 +135,19 @@ def test_integration_check_detects_duplicate_owned_hooks(homes: tuple[Path, Path
 
     assert check.status == FAIL
     assert "duplicated" in check.detail
+
+
+def test_integration_check_rejects_an_unsupported_recorded_codex(
+    homes: tuple[Path, Path],
+) -> None:
+    manifest = replace(_ready_manifest(homes), agent_version="codex-cli 0.146.9")
+    manifest.save(homes[0] / "integrations/codex.json")
+
+    check = check_integration().check
+
+    assert check.status == FAIL
+    assert "too old" in check.detail
+    assert "spotter setup codex" in check.detail
 
 
 def test_integration_check_ignores_owned_hook_order(homes: tuple[Path, Path]) -> None:

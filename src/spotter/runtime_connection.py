@@ -51,6 +51,7 @@ class ConnectionIdentity:
     connection_epoch: int
     endpoint_fingerprint: str
     server_fingerprint: str
+    server_version: str | None
     connected_at: float
     capabilities: AppServerCapabilities
     server_changed: bool
@@ -612,6 +613,11 @@ class AppServerRecoveryLoop:
                         epoch,
                         _fingerprint(self.endpoint),
                         server_fingerprint,
+                        (
+                            str(client.host_version)
+                            if getattr(client, "host_version", None) is not None
+                            else None
+                        ),
                         connected_at,
                         client.capabilities,
                         previous_server is not None and previous_server != server_fingerprint,

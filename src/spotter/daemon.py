@@ -104,6 +104,7 @@ class DaemonStatus:
     started_at: float | None = None
     construction_fingerprint: str | None = None
     app_server_state: str | None = None
+    app_server_version: str | None = None
     app_server_connection_epoch: int | None = None
     app_server_capabilities: tuple[tuple[str, str], ...] | None = None
     app_server_server_changed: bool | None = None
@@ -295,6 +296,11 @@ class DaemonClient:
                 app_server_state=(
                     response.get("app_server_state")
                     if isinstance(response.get("app_server_state"), str)
+                    else None
+                ),
+                app_server_version=(
+                    response.get("app_server_version")
+                    if isinstance(response.get("app_server_version"), str)
                     else None
                 ),
                 app_server_connection_epoch=_optional_int(
@@ -923,6 +929,7 @@ class DaemonServer:
         metadata.update(
             {
                 "app_server_connection_epoch": connection.connection_epoch,
+                "app_server_version": getattr(connection, "server_version", None),
                 "app_server_server_changed": connection.server_changed,
                 "app_server_capabilities_changed": connection.capabilities_changed,
                 "app_server_capabilities": {

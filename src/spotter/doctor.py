@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from spotter.budget import LedgerCorrupt, spend_totals
 from spotter.build_identity import current_build_identity
+from spotter.codex_host import CodexHostVersionError, validate_codex_host_version
 from spotter.daemon import (
     DaemonClient,
     DaemonStatus,
@@ -285,6 +286,19 @@ def check_integration() -> IntegrationInspection:
             Check("Codex integration", FAIL, f"manifest state is {manifest.state!r}"),
             False,
         )
+    try:
+        validate_codex_host_version(manifest.agent_version)
+    except CodexHostVersionError as error:
+        return IntegrationInspection(
+            manifest,
+            Check(
+                "Codex integration",
+                FAIL,
+                f"recorded Codex host is unsupported: {error}; upgrade Codex and run "
+                "`spotter setup codex`",
+            ),
+            False,
+        )
     owned = manifest.owned_hooks
     if not isinstance(owned, list) or not all(
         isinstance(entry, dict) and isinstance(entry.get("hook"), dict) for entry in owned
@@ -499,6 +513,7 @@ def check_runtime(*, deep: bool = False) -> list[Check]:
             f"{name}={value}" for name, value in (daemon.app_server_capabilities or ())
         )
         epoch = daemon.app_server_connection_epoch
+        version = daemon.app_server_version or "unknown"
         if daemon.app_server_state is None:
             checks.append(
                 Check(
@@ -513,7 +528,7 @@ def check_runtime(*, deep: bool = False) -> list[Check]:
                 Check(
                     "App Server runtime",
                     WARN,
-                    f"{daemon.app_server_state}; epoch={epoch or 'unknown'}",
+                    f"{daemon.app_server_state}; epoch={epoch or 'unknown'}; codex={version}",
                 )
             )
         elif daemon.app_server_capabilities_changed:
@@ -521,7 +536,7 @@ def check_runtime(*, deep: bool = False) -> list[Check]:
                 Check(
                     "App Server runtime",
                     WARN,
-                    f"capabilities changed at epoch {epoch}; {capability_summary}",
+                    f"capabilities changed at epoch {epoch}; codex={version}; {capability_summary}",
                 )
             )
         elif daemon.app_server_server_changed:
@@ -529,7 +544,7 @@ def check_runtime(*, deep: bool = False) -> list[Check]:
                 Check(
                     "App Server runtime",
                     INFO,
-                    f"server identity changed and reconciled at epoch {epoch}; "
+                    f"server identity changed and reconciled at epoch {epoch}; codex={version}; "
                     f"{capability_summary}",
                 )
             )
@@ -538,7 +553,7 @@ def check_runtime(*, deep: bool = False) -> list[Check]:
                 Check(
                     "App Server runtime",
                     OK,
-                    f"ready epoch={epoch}; {capability_summary}",
+                    f"ready epoch={epoch}; codex={version}; {capability_summary}",
                 )
             )
     if endpoint is None:

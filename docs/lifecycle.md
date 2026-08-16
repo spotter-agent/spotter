@@ -1158,6 +1158,13 @@ Codex and Spotter release independently.
 
 After an upgrade, do capability negotiation rather than assuming compatibility from version strings alone.
 
+The version string is used only for bootstrap safety. `spotter setup codex` validates the selected
+binary before changing Hooks, plugins, manifests, or services; the App Server client validates the
+initialized server identity before subscribing. Both paths reject missing/malformed identities,
+prereleases, and stable versions older than 0.147.0. `doctor` applies the same parser to the recorded
+integration version and reports upgrade/setup guidance. Stable versions at or above the floor
+continue to capability negotiation rather than being blocked by an upper allow-list.
+
 Probe at least:
 
 ```text

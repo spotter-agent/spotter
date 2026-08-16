@@ -1476,6 +1476,8 @@ def _daemon_main(action: str, manager: ServiceManager | None = None) -> int:
         app_server = status.app_server_state
         if status.app_server_connection_epoch is not None:
             app_server += f"@{status.app_server_connection_epoch}"
+        if status.app_server_version is not None:
+            app_server += f"/codex-{status.app_server_version}"
         details.append(f"app-server={app_server}")
     if status.app_server_capabilities is not None:
         details.append(

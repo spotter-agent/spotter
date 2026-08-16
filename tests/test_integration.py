@@ -689,6 +689,32 @@ def test_teardown_does_not_require_codex_to_still_be_installed(
     assert not teardown.manifest_path.exists()
 
 
+@pytest.mark.parametrize(
+    ("version", "message"),
+    [
+        ("codex-cli 0.146.9", "too old"),
+        ("codex-cli 0.148.0-beta.1", "prerelease"),
+        ("development", "malformed"),
+    ],
+)
+def test_setup_rejects_an_unsupported_codex_before_mutation(
+    homes: tuple[Path, Path], version: str, message: str
+) -> None:
+    manager = IntegrationManager(
+        codex_home=homes[1],
+        codex=CodexInstall("/bin/codex", version, True, True),
+        service=FakeService(homes[0] / "service"),
+        spotter_executable="/bin/spotter",
+        verifier=lambda _: True,
+    )
+
+    with pytest.raises(IntegrationError, match=message):
+        manager.setup()
+
+    assert not manager.hooks_path.exists()
+    assert not manager.manifest_path.exists()
+
+
 def test_newer_manifest_schema_is_refused(homes: tuple[Path, Path]) -> None:
     manager, _ = _manager(homes)
     manager.manifest_path.parent.mkdir(parents=True)

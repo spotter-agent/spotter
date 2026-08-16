@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from spotter.build_identity import current_build_identity
+from spotter.codex_host import CodexHostVersionError, validate_codex_host_version
 from spotter.config import ConfigurationError, resolve_config
 from spotter.daemon import (
     ManagedServiceManager,
@@ -146,6 +147,10 @@ class CodexInstall:
             return result.stdout
 
         detected_version = output(["--version"]).strip()
+        try:
+            validate_codex_host_version(detected_version)
+        except CodexHostVersionError as error:
+            raise IntegrationError(f"unsupported Codex host: {error}") from error
         root_help = output(["--help"])
         app_server_help = output(["app-server", "--help"])
         return cls(
@@ -480,6 +485,10 @@ class IntegrationManager:
         except RuntimeLayoutError as error:
             raise IntegrationError(str(error)) from error
         codex = self._codex_install()
+        try:
+            validate_codex_host_version(codex.version)
+        except CodexHostVersionError as error:
+            raise IntegrationError(f"unsupported Codex host: {error}") from error
         if not codex.supports_remote or not codex.supports_app_server:
             raise IntegrationError("Codex lacks the required app-server/--remote capability")
         try:

@@ -12,6 +12,12 @@ from websockets.asyncio.client import ClientConnection
 from websockets.asyncio.client import connect as websocket_connect
 from websockets.exceptions import ConnectionClosed, WebSocketException
 
+from spotter.codex_host import (
+    CodexHostVersion,
+    CodexHostVersionError,
+    validate_codex_host_version,
+)
+
 JsonObject = dict[str, Any]
 
 
@@ -133,6 +139,7 @@ class CodexAppServerClient:
         self.headers = headers
         self.state = ConnectionState.DISCONNECTED
         self.server_info: Mapping[str, Any] | None = None
+        self.host_version: CodexHostVersion | None = None
         self.last_error: AppServerError | None = None
         self._socket: ClientConnection | None = None
         self._reader: asyncio.Task[None] | None = None
@@ -189,6 +196,10 @@ class CodexAppServerClient:
             if not isinstance(result, dict):
                 raise AppServerProtocolError("initialize returned a non-object result")
             self.server_info = result
+            try:
+                self.host_version = validate_codex_host_version(result.get("userAgent"))
+            except CodexHostVersionError as error:
+                raise AppServerProtocolError(f"incompatible Codex App Server: {error}") from error
             await self._notify("initialized")
             try:
                 await self.list_threads(limit=1)
@@ -237,6 +248,7 @@ class CodexAppServerClient:
         if not was_closed:
             self._events.put_nowait(disconnect_error)
         self.server_info = None
+        self.host_version = None
         self.last_error = None
         self.state = ConnectionState.DISCONNECTED
         self._closed.set()

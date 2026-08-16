@@ -85,6 +85,7 @@ def test_control_socket_handles_concurrent_clients_and_health_states(socket_path
                     state=SimpleNamespace(value="ready"),
                     connection=SimpleNamespace(
                         connection_epoch=7,
+                        server_version="0.147.0",
                         server_changed=True,
                         capabilities_changed=True,
                         capabilities=AppServerCapabilities(
@@ -100,6 +101,7 @@ def test_control_socket_handles_concurrent_clients_and_health_states(socket_path
             app_status = await DaemonClient(socket_path).status()
             assert app_status.app_server_state == "ready"
             assert app_status.app_server_connection_epoch == 7
+            assert app_status.app_server_version == "0.147.0"
             assert dict(app_status.app_server_capabilities or ()) == {
                 "atomic_pre_tool_veto": "unavailable",
                 "interrupt": "unknown",

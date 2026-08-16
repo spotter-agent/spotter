@@ -36,7 +36,9 @@ async def _reply(connection: ServerConnection, request: dict[str, Any], result: 
     await connection.send(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}))
 
 
-async def _initialize(connection: ServerConnection) -> None:
+async def _initialize(
+    connection: ServerConnection, *, user_agent: str = "codex_cli_rs/0.147.0"
+) -> None:
     request = await _receive(connection, "initialize")
     assert request["params"]["capabilities"] == {"experimentalApi": True}
     await _reply(
@@ -46,7 +48,7 @@ async def _initialize(connection: ServerConnection) -> None:
             "codexHome": "/tmp/codex",
             "platformFamily": "unix",
             "platformOs": "macos",
-            "userAgent": "codex_cli_rs/0.147.0",
+            "userAgent": user_agent,
         },
     )
     await _receive(connection, "initialized")
@@ -92,6 +94,32 @@ def test_connect_negotiates_observation_and_preserves_raw_events() -> None:
             assert event.method == "turn/started"
             assert event.raw["params"] == {"threadId": "thread-1", "turn": {"id": "turn-1"}}
             await client.disconnect()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("user_agent", "message"),
+    [
+        ("codex_cli_rs/0.146.9", "too old"),
+        ("codex_cli_rs/0.148.0-beta.1", "prerelease"),
+        ("development", "malformed"),
+    ],
+)
+def test_connect_rejects_an_unsupported_host_before_subscribing(
+    user_agent: str, message: str
+) -> None:
+    async def scenario() -> None:
+        async def handler(connection: ServerConnection) -> None:
+            request = await _receive(connection, "initialize")
+            await _reply(connection, request, {"userAgent": user_agent})
+            await connection.wait_closed()
+
+        async with _server(handler) as endpoint:
+            client = CodexAppServerClient(endpoint)
+            with pytest.raises(AppServerProtocolError, match=message):
+                await client.connect()
+            assert client.state == ConnectionState.UNAVAILABLE
 
     asyncio.run(scenario())
 

@@ -929,6 +929,12 @@ Codex integration
 
 This allows a Codex upgrade to degrade one feature without forcing a binary “supported/unsupported” result for the whole integration.
 
+Capability negotiation still needs a small bootstrap floor. Setup and App Server initialization
+parse only explicit `codex`, `codex-cli`, or `codex_cli_rs` semantic identities, reject malformed or
+prerelease hosts, and require Codex 0.147.0 or newer—the first version validated for the shared
+App Server path. Newer stable hosts are not rejected by a maximum-version table; after bootstrap,
+their operational support is determined per capability.
+
 `spotter status` now reports this split without probing external services. `spotter doctor` performs
 the deeper App Server connection/initialize probe when the integration manifest has an endpoint.
 When the integration manifest contains an endpoint, `spotterd` keeps the persistent consumer and a
