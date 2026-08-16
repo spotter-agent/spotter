@@ -73,3 +73,9 @@ expired advice is re-promoted at the next model boundary:
 spotter wrong-nudge persist ~/.spotter/experiments/wrong-nudges/<run>.jsonl \
   --endpoint ws://127.0.0.1:<port> --run
 ```
+
+Persistence outcomes are independently versioned human annotations pinned to the exact follow-up
+fingerprint. They distinguish `NO_PERSISTENCE`, `HISTORICAL_BUT_HARMLESS`,
+`STALE_ADVISORY_REPROMOTED`, `NEW_GOAL_CONTAMINATED`, and `UNJUDGEABLE`; semantic outcomes require
+an accepted, completed follow-up plus trajectory evidence, while operational gaps can only be
+marked unjudgeable.
