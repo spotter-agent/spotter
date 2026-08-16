@@ -38,4 +38,4 @@ Resume refuses changed task-set hashes, environment, guidance, model, or sandbox
 
 This corpus is experiment input, not evidence that Main rejects bad supervision. Control, raw-imperative, and Spotter-advisory arms still need equivalent prefixes before drawing safety conclusions.
 
-The arm builder pins neutral control, raw imperative, scoped advisory, and optional VERIFY-first conditions to one source session/step, prefix identity, and environment fingerprint. A neutral arm emits no steer payload. Execution must fork each arm independently and refuse any provenance mismatch before delivery.
+The arm builder pins neutral control, raw imperative, scoped advisory, and optional VERIFY-first conditions to one source session/step, prefix identity, and environment fingerprint. A neutral arm emits no steer payload. Preparation creates four independent Git-aware replay forks and refuses missing manifests, shared worktrees, source-environment drift, prefix mismatch, or restored-environment mismatch before delivery.
