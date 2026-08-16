@@ -46,6 +46,11 @@ from spotter.protocol import (
     MIN_CONTROL_PROTOCOL_VERSION,
 )
 from spotter.review_executor import ReviewExecutor
+from spotter.runtime_fingerprint import (
+    expected_runtime_construction_fingerprint,
+    load_runtime_manifest,
+    runtime_construction_fingerprint,
+)
 from spotter.snapshot import StepRecord
 from spotter.thread_state import ThreadState, ThreadStateStore
 from spotter.trace import TraceEvent
@@ -97,6 +102,7 @@ class DaemonStatus:
     capabilities: tuple[str, ...] | None = None
     runtime_generation: str | None = None
     started_at: float | None = None
+    construction_fingerprint: str | None = None
 
     @property
     def available(self) -> bool:
@@ -274,6 +280,11 @@ class DaemonClient:
                     float(response["started_at"])
                     if isinstance(response.get("started_at"), int | float)
                     and not isinstance(response.get("started_at"), bool)
+                    else None
+                ),
+                construction_fingerprint=(
+                    response.get("construction_fingerprint")
+                    if isinstance(response.get("construction_fingerprint"), str)
                     else None
                 ),
             )
@@ -484,6 +495,7 @@ class DaemonServer:
         config_watch_interval: float = _CONFIG_WATCH_INTERVAL,
         package_watch_interval: float = _PACKAGE_WATCH_INTERVAL,
         package_missing_grace: float = _PACKAGE_MISSING_GRACE,
+        construction_fingerprint: str | None = None,
     ) -> None:
         if (config_store is None) != (config_loader is None):
             raise ValueError("config_store and config_loader must be configured together")
@@ -514,6 +526,12 @@ class DaemonServer:
         self.config_generation = config_generation
         self.config_store = config_store
         self.config_loader = config_loader
+        self.construction_fingerprint = construction_fingerprint or (
+            expected_runtime_construction_fingerprint(
+                self.layout,
+                control_socket=self.socket_path,
+            )
+        )
         self._config_watch_interval = config_watch_interval
         self._config_watch_task: asyncio.Task[None] | None = None
         self._config_watch_paths = {self.layout.user_config_dir / "spotter.toml"}
@@ -794,6 +812,7 @@ class DaemonServer:
                 "pid": os.getpid(),
                 "config_generation": self.config_generation,
                 "runtime_generation": self._runtime_id,
+                "construction_fingerprint": self.construction_fingerprint,
                 "started_at": self._started_at,
                 **current_build_identity().peer_metadata("daemon"),
             }
@@ -1004,7 +1023,15 @@ class ManualServiceManager:
     async def start(self) -> DaemonStatus:
         current = await self.status()
         installed_build = current_build_identity().build_id
-        if current.available and current.build_id == installed_build:
+        expected_construction = expected_runtime_construction_fingerprint(
+            self.layout,
+            control_socket=self.socket_path,
+        )
+        construction_changed = (
+            current.construction_fingerprint is not None
+            and current.construction_fingerprint != expected_construction
+        )
+        if current.available and current.build_id == installed_build and not construction_changed:
             return current
         if current.available:
             stopped = await self.stop()
@@ -1028,7 +1055,11 @@ class ManualServiceManager:
         deadline = asyncio.get_running_loop().time() + START_TIMEOUT
         while asyncio.get_running_loop().time() < deadline:
             status = await self.status()
-            if status.available and status.build_id == installed_build:
+            if (
+                status.available
+                and status.build_id == installed_build
+                and status.construction_fingerprint in {None, expected_construction}
+            ):
                 return status
             if process.poll() is not None:
                 return DaemonStatus(
@@ -1188,14 +1219,25 @@ class ManagedServiceManager:
     async def _wait_ready(self) -> DaemonStatus:
         deadline = asyncio.get_running_loop().time() + START_TIMEOUT
         installed_build = current_build_identity().build_id
+        expected_construction = expected_runtime_construction_fingerprint(
+            self.layout,
+            control_socket=self.socket_path,
+        )
         while asyncio.get_running_loop().time() < deadline:
             status = await self.status()
-            if status.available and status.build_id == installed_build:
+            if (
+                status.available
+                and status.build_id == installed_build
+                and status.construction_fingerprint in {None, expected_construction}
+            ):
                 return status
             await asyncio.sleep(0.05)
         return DaemonStatus(
             RuntimeHealth.UNAVAILABLE,
-            detail=f"managed spotterd did not become ready with build {installed_build}",
+            detail=(
+                "managed spotterd did not become ready with build "
+                f"{installed_build} and construction {expected_construction}"
+            ),
         )
 
     async def status(self) -> DaemonStatus:
@@ -1203,6 +1245,14 @@ class ManagedServiceManager:
 
     async def start(self) -> DaemonStatus:
         current = await self.status()
+        expected_construction = expected_runtime_construction_fingerprint(
+            self.layout,
+            control_socket=self.socket_path,
+        )
+        construction_changed = (
+            current.construction_fingerprint is not None
+            and current.construction_fingerprint != expected_construction
+        )
         if self.platform == "darwin":
             domain = f"gui/{os.getuid()}"
             loaded = self._run(["launchctl", "print", f"{domain}/{self.LABEL}"]).returncode == 0
@@ -1222,7 +1272,7 @@ class ManagedServiceManager:
                 result = self._run(["launchctl", "bootstrap", domain, str(self.registration_path)])
             else:
                 build_changed = current.build_id != current_build_identity().build_id
-                if current.available and not build_changed:
+                if current.available and not build_changed and not construction_changed:
                     return current
                 result = self._run(["launchctl", "kickstart", "-k", f"{domain}/{self.LABEL}"])
         else:
@@ -1242,7 +1292,12 @@ class ManagedServiceManager:
                     return self._service_error(result)
             if active:
                 build_changed = current.build_id != current_build_identity().build_id
-                if current.available and not changed and not build_changed:
+                if (
+                    current.available
+                    and not changed
+                    and not build_changed
+                    and not construction_changed
+                ):
                     return current
                 result = self._run(["systemctl", "--user", "restart", "spotterd.service"])
             else:
@@ -1318,6 +1373,11 @@ def main(argv: list[str] | None = None) -> int:
                 config_generation=config_generation,
                 config_store=config_store,
                 config_loader=config_loader,
+                construction_fingerprint=runtime_construction_fingerprint(
+                    layout,
+                    config,
+                    load_runtime_manifest(layout),
+                ),
                 layout=layout,
             ).serve()
         )

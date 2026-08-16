@@ -70,6 +70,8 @@ def test_control_socket_handles_concurrent_clients_and_health_states(socket_path
             assert {status.config_generation for status in statuses} == {"cfg-test"}
             assert {status.compatibility for status in statuses} == {RuntimeCompatibility.MATCHED}
             assert len({status.runtime_generation for status in statuses}) == 1
+            assert len({status.construction_fingerprint for status in statuses}) == 1
+            assert all(status.construction_fingerprint for status in statuses)
             assert all(status.started_at is not None for status in statuses)
             assert all(status.capabilities is not None for status in statuses)
             assert socket_path.stat().st_mode & 0o777 == 0o600

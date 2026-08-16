@@ -1213,6 +1213,16 @@ daemon rejects control requests and `doctor` fails with `spotter daemon restart`
 same-protocol peers without range metadata remain observable as compatibility `unknown` instead of
 being guessed compatible.
 
+Build identity is not enough to decide whether a long-lived process can be reused. The daemon and
+CLI now independently compute the same `runtime-*` construction fingerprint from the selected
+control socket and protocol range, recorded daemon executable, runtime adapter, integration
+generation and mode, config path, and App Server strategy/endpoint. Only the digest crosses the
+control boundary;
+endpoint or path values are never returned. HOT reviewer thresholds are deliberately excluded.
+`status` and `doctor` distinguish matched, different, and legacy-missing fingerprints. Manual and
+managed service startup restart a same-build daemon only for a known mismatch; missing legacy
+evidence is reported but does not authorize terminating an otherwise unknown process.
+
 Never write versioned Homebrew Cellar paths into agent Hooks/service definitions. Use stable `bin`/`opt` paths.
 
 Schema-4 integration Hooks also carry an integration-generation fence. Re-running setup after a
@@ -1733,7 +1743,8 @@ External-effect observations are Trace IR events rather than a second uncoordina
 `ThreadState` is rebuilt from Trace IR and is not separately persisted. launchd/systemd service
 definitions use their host-native formats, and reviewer output schemas live only in deleted scratch
 directories; none is a Spotter durable evidence family. Package version, IPC/Hook/App Server
-protocol versions, installation generation, and resolved-config generation remain separate
+protocol versions, installation generation, runtime-construction fingerprint, and
+resolved-config generation remain separate
 compatibility axes rather than aliases for any row above.
 
 ---

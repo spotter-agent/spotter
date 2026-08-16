@@ -25,6 +25,7 @@ from spotter.integration import (
 from spotter.integration_inventory import IntegrationInventory
 from spotter.log_registry import LogRegistry
 from spotter.paths import RuntimeLayout
+from spotter.runtime_fingerprint import expected_runtime_construction_fingerprint
 
 
 class FakeService:
@@ -1187,6 +1188,60 @@ def test_managed_service_restarts_an_old_build_behind_the_same_stable_link(
 
     async def status() -> DaemonStatus:
         return next(statuses, DaemonStatus(RuntimeHealth.HEALTHY))
+
+    monkeypatch.setattr(service, "_run", run)
+    monkeypatch.setattr(service, "status", status)
+
+    assert asyncio.run(service.start()).health == RuntimeHealth.HEALTHY
+    assert any(command[: len(restart)] == restart for command in commands)
+
+
+@pytest.mark.parametrize(
+    "platform,restart",
+    [
+        ("darwin", ["launchctl", "kickstart", "-k"]),
+        ("linux", ["systemctl", "--user", "restart"]),
+    ],
+)
+def test_managed_service_restarts_a_known_stale_construction(
+    homes: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    platform: str,
+    restart: list[str],
+) -> None:
+    spotter_home, _ = homes
+    service = ManagedServiceManager(
+        platform=platform,
+        registration_path=spotter_home / "service",
+        executable="/stable/opt/spotter/bin/spotterd",
+    )
+    service._install_definition()  # noqa: SLF001 - keep the service artifact unchanged
+    expected = expected_runtime_construction_fingerprint(
+        service.layout,
+        control_socket=service.socket_path,
+    )
+    commands: list[list[str]] = []
+    statuses = iter(
+        [
+            DaemonStatus(
+                RuntimeHealth.HEALTHY,
+                build_id=current_build_identity().build_id,
+                construction_fingerprint="runtime-retired",
+            ),
+            DaemonStatus(
+                RuntimeHealth.HEALTHY,
+                build_id=current_build_identity().build_id,
+                construction_fingerprint=expected,
+            ),
+        ]
+    )
+
+    def run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    async def status() -> DaemonStatus:
+        return next(statuses)
 
     monkeypatch.setattr(service, "_run", run)
     monkeypatch.setattr(service, "status", status)

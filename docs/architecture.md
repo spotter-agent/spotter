@@ -114,7 +114,12 @@ concurrent clients, reports `healthy` / `degraded` / `recovering`, and makes abs
 `unavailable`. Each handshake publishes the selected protocol, supported peer range, control
 capabilities, build identity, process generation, and start time. A matching protocol range permits
 a stale build to answer read-only diagnostics with an explicit restart warning; an incompatible
-range is rejected with actionable restart guidance. Reload resolution runs off the daemon event
+range is rejected with actionable restart guidance. The handshake also reports a non-secret
+runtime-construction fingerprint over the control socket/protocol, recorded daemon executable,
+adapter, and integration generation/mode/config/App Server inputs. Service startup restarts a
+same-build daemon when a reported fingerprint differs; a legacy peer without one remains untouched
+and is diagnosed as unknown rather than being killed on ambiguous ownership evidence. Reload
+resolution runs off the daemon event
 loop, then atomically applies only `HOT`
 changes or stages the whole candidate for a later turn boundary; status reports active/pending
 generations and the last rejected reload. The daemon polls the global and selected config files for

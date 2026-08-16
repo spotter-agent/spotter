@@ -10,6 +10,8 @@ from spotter.cli import main
 from spotter.daemon import DaemonClient, DaemonStatus, RuntimeCompatibility, RuntimeHealth
 from spotter.doctor import FAIL, INFO, OK, WARN, Check, check_integration, check_runtime, worst
 from spotter.integration import MANIFEST_SCHEMA, IntegrationManifest
+from spotter.paths import RuntimeLayout
+from spotter.runtime_fingerprint import expected_runtime_construction_fingerprint
 from spotter.snapshot import StepJournal
 from spotter.trace import TraceEvent
 
@@ -81,6 +83,11 @@ def _daemon_status(monkeypatch: pytest.MonkeyPatch, health: RuntimeHealth) -> No
                 RuntimeCompatibility.MATCHED
                 if health != RuntimeHealth.UNAVAILABLE
                 else RuntimeCompatibility.UNKNOWN
+            ),
+            construction_fingerprint=(
+                expected_runtime_construction_fingerprint(RuntimeLayout.discover())
+                if health != RuntimeHealth.UNAVAILABLE
+                else None
             ),
         )
 
@@ -206,6 +213,29 @@ def test_runtime_check_distinguishes_a_running_old_daemon_build(
 
     assert check.status == WARN
     assert "retired-build" in check.detail
+    assert "restart required" in check.detail
+
+
+def test_runtime_check_distinguishes_stale_construction(
+    homes: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _ready_manifest(homes)
+
+    async def stale_status(self: DaemonClient) -> DaemonStatus:
+        return DaemonStatus(
+            RuntimeHealth.HEALTHY,
+            pid=123,
+            protocol=1,
+            build_id=current_build_identity().build_id,
+            compatibility=RuntimeCompatibility.MATCHED,
+            construction_fingerprint="runtime-stale",
+        )
+
+    monkeypatch.setattr(DaemonClient, "status", stale_status)
+
+    check = {item.name: item for item in check_runtime()}["runtime construction"]
+
+    assert check.status == WARN
     assert "restart required" in check.detail
 
 

@@ -33,6 +33,7 @@ from spotter.daemon import (
     RuntimeHealth,
 )
 from spotter.paths import RuntimeLayout, spotter_home
+from spotter.runtime_fingerprint import expected_runtime_construction_fingerprint
 
 if TYPE_CHECKING:
     from spotter.integration import IntegrationManifest
@@ -463,6 +464,32 @@ def check_runtime(*, deep: bool = False) -> list[Check]:
     daemon = asyncio.run(DaemonClient().status())
     configured = integration.manifest is not None
     checks = [integration.check, _daemon_check(daemon, configured)]
+    expected_construction = expected_runtime_construction_fingerprint(RuntimeLayout.discover())
+    if daemon.available and daemon.construction_fingerprint is None:
+        checks.append(
+            Check(
+                "runtime construction",
+                WARN,
+                "running daemon does not report a construction fingerprint; restart required",
+            )
+        )
+    elif daemon.available and daemon.construction_fingerprint != expected_construction:
+        checks.append(
+            Check(
+                "runtime construction",
+                WARN,
+                "running daemon construction differs from the current integration; "
+                "restart required",
+            )
+        )
+    elif daemon.available:
+        checks.append(
+            Check(
+                "runtime construction",
+                OK,
+                f"matched {expected_construction}",
+            )
+        )
 
     endpoint = (
         integration.manifest.app_server_endpoint if integration.manifest is not None else None
