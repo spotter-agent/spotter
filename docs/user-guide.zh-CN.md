@@ -21,7 +21,8 @@
 
 > [!IMPORTANT]
 > Spotter 正在积极开发中。确定性 Hook 门控现在已经可用，但语义 `VERIFY` 和 `NUDGE` 决策
-> 仍只会在影子模式下记录，不会传递到实时轮次。App Server 观察和控制需要显式配置。权威的
+> 只有在单独启用默认关闭的选项后，才会将最新的信号驱动审查传递到实时轮次。定期审查仍仅以
+> 影子模式运行，干预的收益和风险也尚未得到证实。App Server 观察和控制需要显式配置。权威的
 > 当前能力边界请参阅 [Status（英文）](status.md)。
 
 <table>
@@ -231,7 +232,8 @@ spotter setup codex --config /absolute/path/to/spotter.toml
 ```
 
 信号驱动和定期语义审查会消耗模型令牌，并且默认关闭。请有意识地启用它们，保留每会话和每日
-上限，并记住当前的审查决策只会被记录。
+上限。定期审查的决策只会被记录；只有另行启用 `deliver_on_signals` 后，最新的信号驱动
+`VERIFY`/`NUDGE` 决策才会被传递。
 
 ## 7. 操作与检查 Spotter
 

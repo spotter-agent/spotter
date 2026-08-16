@@ -270,7 +270,7 @@ Make months of use boring: install, upgrade, recover, clean up, and reinstall wi
 
 - persisted schema/version contracts and migrations ([#47](https://github.com/spotter-agent/spotter/issues/47));
 - repeatable standalone/Homebrew packaging and release artifacts ([#88](https://github.com/spotter-agent/spotter/issues/88));
-- repository-aware purge, retention, uninstall, and reinstall lifecycle ([#89](https://github.com/spotter-agent/spotter/issues/89));
+- repository-aware purge, retention, uninstall, and reinstall lifecycle ([#89](https://github.com/spotter-agent/spotter/issues/89)); conservative purge scopes are implemented, while bounded retention policy remains;
 - runtime configuration, protocol/version handshake, and upgrade compatibility ([#90](https://github.com/spotter-agent/spotter/issues/90));
 - run the real-session configuration comparison once the relevant product states exist ([#36](https://github.com/spotter-agent/spotter/issues/36)).
 

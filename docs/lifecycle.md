@@ -8,7 +8,9 @@
 > migration, runtime-aware diagnostics, tag-derived release artifacts, stable packaged runtime
 > layout, official Homebrew tap, packaged `--version` identity, and a two-generation Homebrew
 > lifecycle gate exist. App Server event ingestion also exists, but broader configuration/protocol
-> migration policy, `spotter purge`, and transparent plain-`codex` launch remain target behavior.
+> migration policy and transparent plain-`codex` launch remain target behavior. Conservative,
+> repository-aware `spotter purge` scopes are implemented; bounded retention policy remains future
+> work.
 
 ---
 
@@ -33,10 +35,11 @@ spotter teardown codex
 brew uninstall spotter
 ```
 
-The target contract reserves persistent-data removal for an explicit purge. This command is not
-implemented yet:
+Persistent-data removal is reserved for an explicit purge. Preview its complete scope before
+applying it:
 
 ```bash
+spotter purge --all --dry-run
 spotter purge --all
 ```
 
@@ -287,14 +290,15 @@ snapshot/fork lineage
 
 That is why a true `purge --all` needs a repository registry and Git-aware cleanup.
 
-The implemented registry foundation records each newly created snapshot ref and detached restore
+The implemented registry records each newly created snapshot ref and detached restore
 worktree in `repos.json` with an independent schema version, repository Git-common-directory
 identity, exact expected target, and immutable resource generation. Registry writes are locked,
 fsynced atomic replacements. A moved repository is recognized by the retained Git-directory inode;
 a different repository appearing at the old path receives a separate entry. Unknown/corrupt
 registry schemas refuse new Git-resource creation rather than overwriting ownership evidence, and a
-resource whose ownership record cannot be committed is rolled back through Git. Enumeration,
-reachability policy, and the destructive `purge` command remain pending in #89.
+resource whose ownership record cannot be committed is rolled back through Git. Purge enumeration,
+reachability protection, dry-run reporting, and Git-aware deletion are implemented. Bounded
+retention/checkpoint policy remains follow-up work under #89.
 
 ---
 
@@ -1853,7 +1857,7 @@ The target lifecycle is not complete until all of these work end-to-end:
 - [x] `teardown codex` removes only Spotter-owned integration changes;
 - [x] uninstall without teardown does not break Codex;
 - [x] user data survives normal uninstall;
-- [ ] purge can enumerate and safely clean repository resources;
+- [x] purge can enumerate and safely clean repository resources;
 - [x] reinstall can reuse compatible retained data (migration-required state remains #47/#90);
 - [x] legacy plugin users migrate without duplicate events.
 

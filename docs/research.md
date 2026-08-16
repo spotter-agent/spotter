@@ -20,7 +20,7 @@ The literature and implementation precedents behind these hypotheses are catalog
 
 | Research idea | Reference precedent | Spotter mechanism | Current status |
 | --- | --- | --- | --- |
-| asynchronous course correction | Wink / Shepherd | shadow reviewer → future live steer | reviewer implemented; live delivery missing |
+| asynchronous course correction | Wink / Shepherd | shadow reviewer → opt-in live steer | reviewer and off-by-default signal-driven delivery implemented; benefit/harm unproven |
 | process-level failure taxonomy | SWE-PRM | structured candidates/verdicts | partially reflected in reviewer taxonomy |
 | prefix-only early auditing | AgentForesight | detection timing / first-deviation metrics | measurement design, not fully executed |
 | evidence-conditioned action gating | ECLoop / interwhen | bounded deterministic/evidence gates | selected deterministic gates implemented; broader evidence gates unproven |

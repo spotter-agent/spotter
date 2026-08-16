@@ -189,7 +189,7 @@ Implementation progress and research evidence remain separate.
 | --- | --- |
 | Can Spotter collect real coding-agent trajectories? | Yes |
 | Can deterministic gates catch concrete policy violations? | Yes, with precision/miss-rate work still ongoing |
-| Can Spotter produce plausible semantic reviewer verdicts? | Yes, in shadow mode |
+| Can Spotter produce plausible semantic reviewer verdicts? | Yes; periodic review is shadow-only, while fresh signal-driven advisories have a separate off-by-default live-delivery opt-in |
 | Can Spotter branch a shared prefix for counterfactual experiments? | Yes |
 | Is the fork instrument's causal noise floor known? | **No — #42** |
 | Is there a reproducible mechanically scored task corpus? | **Yes for the synthetic v2 foundation — six frozen tasks and a reportable 6/6-arm dev run; external/ecosystem breadth remains future work (#21)** |

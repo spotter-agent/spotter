@@ -21,9 +21,10 @@
 
 > [!IMPORTANT]
 > Spotter is under active development. Deterministic Hook gates work today, but semantic `VERIFY`
-> and `NUDGE` decisions are still recorded in shadow mode rather than delivered into live turns.
-> App Server observation and control require explicit configuration. See [Status](status.md) for the
-> authoritative current boundary.
+> and `NUDGE` decisions reach live turns only for fresh signal-driven reviews under a separate,
+> off-by-default opt-in. Periodic reviews remain shadow-only, and intervention benefit/harm is not
+> established. App Server observation and control require explicit configuration. See
+> [Status](status.md) for the authoritative current boundary.
 
 <table>
   <tr>
@@ -256,8 +257,9 @@ spotter setup codex --config /absolute/path/to/spotter.toml
 ```
 
 Signal-driven and periodic semantic reviews spend model tokens and are off by default. Enable them
-deliberately, preserve per-session and per-day caps, and remember that their decisions are currently
-recorded only.
+deliberately and preserve per-session and per-day caps. Periodic decisions are recorded only;
+fresh signal-driven `VERIFY`/`NUDGE` decisions steer only when the separate
+`deliver_on_signals` opt-in is enabled.
 
 ## 7. Operate and inspect Spotter
 
