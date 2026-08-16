@@ -27,6 +27,8 @@ class ReviewerJob:
     signal_ids: tuple[str, ...]
     signal_types: tuple[str, ...]
     candidate_event_ids: tuple[str, ...]
+    config_generation: str | None = None
+    reviewer_model: str | None = None
 
     def queued_event(self, trigger: TraceEvent) -> TraceEvent:
         return TraceEvent(

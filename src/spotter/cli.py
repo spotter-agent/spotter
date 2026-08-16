@@ -1420,6 +1420,8 @@ def _daemon_main(action: str, manager: ServiceManager | None = None) -> int:
         details.append(f"version={status.version}")
     if status.build_id is not None:
         details.append(f"build={status.build_id}")
+    if status.config_generation is not None:
+        details.append(f"config={status.config_generation}")
     if status.detail:
         details.append(status.detail)
     suffix = f" ({', '.join(details)})" if details else ""

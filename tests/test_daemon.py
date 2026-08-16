@@ -24,6 +24,7 @@ from spotter.daemon import (
     _configured_reviewer,
     _configured_snapshot_on_patch,
     _PackageBoundaryMonitor,
+    _resolved_daemon_config,
     runtime_socket,
 )
 from spotter.gates import Gate
@@ -44,7 +45,7 @@ def socket_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Pat
 
 def test_control_socket_handles_concurrent_clients_and_health_states(socket_path: Path) -> None:
     async def scenario() -> None:
-        server = DaemonServer(socket_path)
+        server = DaemonServer(socket_path, config_generation="cfg-test")
         await server.start()
         try:
             statuses = await asyncio.gather(
@@ -54,6 +55,7 @@ def test_control_socket_handles_concurrent_clients_and_health_states(socket_path
             assert len({status.pid for status in statuses}) == 1
             assert {status.version for status in statuses} == {current_build_identity().version}
             assert {status.build_id for status in statuses} == {current_build_identity().build_id}
+            assert {status.config_generation for status in statuses} == {"cfg-test"}
             assert socket_path.stat().st_mode & 0o777 == 0o600
 
             server.set_health(RuntimeHealth.DEGRADED)
@@ -93,6 +95,19 @@ def test_daemon_loads_signal_review_opt_in_from_manifest_config(tmp_path: Path) 
 
     assert reviewer.model == "review-model"
     assert reviewer.on_signals is True
+
+
+def test_daemon_resolves_manifest_config_generation(tmp_path: Path) -> None:
+    layout = RuntimeLayout.discover(spotter_root=tmp_path / "home")
+    config = tmp_path / "custom.toml"
+    config.write_text('[main_agent]\nadapter = "codex"\n[reviewer]\nmodel = "review-model"\n')
+    layout.integration_manifest.parent.mkdir(parents=True)
+    layout.integration_manifest.write_text(json.dumps({"config_path": str(config)}))
+
+    resolved = _resolved_daemon_config(layout)
+
+    assert resolved.config.reviewer.model == "review-model"
+    assert resolved.resolved_config_generation
 
 
 def test_daemon_loads_mcp_semantics_from_manifest_config(tmp_path: Path) -> None:

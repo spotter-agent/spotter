@@ -21,7 +21,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from spotter.build_identity import RuntimeComponent, current_build_identity, version_line
-from spotter.config import GatesConfig, McpToolSemantics, ReviewerConfig, resolve_config
+from spotter.config import (
+    GatesConfig,
+    McpToolSemantics,
+    ResolvedConfig,
+    ReviewerConfig,
+    SpotterConfig,
+    resolve_config,
+)
 from spotter.gates import Gate, GateDecision
 from spotter.identity import ThreadId
 from spotter.log_registry import LogRegistry, LogRegistryError
@@ -62,6 +69,7 @@ class DaemonStatus:
     version: str | None = None
     build_id: str | None = None
     detail: str | None = None
+    config_generation: str | None = None
 
     @property
     def available(self) -> bool:
@@ -196,6 +204,11 @@ class DaemonClient:
                 detail=(
                     response.get("detail") if isinstance(response.get("detail"), str) else None
                 ),
+                config_generation=(
+                    response.get("config_generation")
+                    if isinstance(response.get("config_generation"), str)
+                    else None
+                ),
             )
         except DaemonUnavailable as error:
             return DaemonStatus(RuntimeHealth.UNAVAILABLE, detail=str(error))
@@ -268,6 +281,7 @@ class DaemonServer:
         reviewer_config: ReviewerConfig | None = None,
         mcp_semantics: tuple[McpToolSemantics, ...] = (),
         snapshot_on_patch: bool = True,
+        config_generation: str = "unversioned",
         package_watch_interval: float = _PACKAGE_WATCH_INTERVAL,
         package_missing_grace: float = _PACKAGE_MISSING_GRACE,
     ) -> None:
@@ -287,6 +301,7 @@ class DaemonServer:
         self.reviewer_config = reviewer_config or ReviewerConfig()
         self.mcp_semantics = mcp_semantics
         self.snapshot_on_patch = snapshot_on_patch
+        self.config_generation = config_generation
         self._runtime_id = uuid.uuid4().hex
         self._gate_requests = 0
         self._resource_sample_seq = 0
@@ -354,6 +369,7 @@ class DaemonServer:
                 self.reviewer_config,
                 recovery.record_review_event,
                 recovery.review_job_is_fresh,
+                config_generation=self.config_generation,
                 deliver=recovery.deliver_review_decision,
             )
             recovery.set_review_job_callback(self.review_executor.submit)
@@ -451,6 +467,7 @@ class DaemonServer:
                 "ok": True,
                 "health": self.health.value,
                 "pid": os.getpid(),
+                "config_generation": self.config_generation,
                 **current_build_identity().peer_metadata("daemon"),
             }
             if self.health_detail is not None:
@@ -913,15 +930,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.parse_args(argv)
     try:
         layout = RuntimeLayout.discover()
-        reviewer_config = _configured_reviewer(layout)
-        mcp_semantics = _configured_mcp_semantics(layout)
-        snapshot_on_patch = _configured_snapshot_on_patch(layout)
+        try:
+            resolved = _resolved_daemon_config(layout)
+            config = resolved.config
+            config_generation = resolved.resolved_config_generation
+            for diagnostic in resolved.diagnostics:
+                print(f"spotterd: {diagnostic}", file=sys.stderr)
+        except (OSError, ValueError) as error:
+            print(f"spotterd: unusable config ({error}); using defaults", file=sys.stderr)
+            config = SpotterConfig.from_mapping({"main_agent": {"adapter": "codex"}})
+            config_generation = "fallback-unversioned"
         asyncio.run(
             DaemonServer(
                 app_server_endpoint=_configured_app_server_endpoint(layout),
-                reviewer_config=reviewer_config,
-                mcp_semantics=mcp_semantics,
-                snapshot_on_patch=snapshot_on_patch,
+                reviewer_config=config.reviewer,
+                mcp_semantics=config.mcp_semantics,
+                snapshot_on_patch=config.snapshot_on_patch,
+                config_generation=config_generation,
                 layout=layout,
             ).serve()
         )
@@ -945,19 +970,11 @@ def _configured_app_server_endpoint(layout: RuntimeLayout | None = None) -> str 
 
 def _configured_reviewer(layout: RuntimeLayout | None = None) -> ReviewerConfig:
     runtime_layout = layout or RuntimeLayout.discover()
-    manifest_path = runtime_layout.integration_manifest
     try:
-        raw = json.loads(manifest_path.read_bytes())
-    except (OSError, ValueError):
-        raw = {}
-    configured = raw.get("config_path") if isinstance(raw, dict) else None
-    config_path = Path(configured) if isinstance(configured, str) and configured else None
-    try:
-        return resolve_config(layout=runtime_layout, explicit_path=config_path).config.reviewer
+        return _resolved_daemon_config(runtime_layout).config.reviewer
     except (OSError, ValueError) as error:
         print(
-            f"spotterd: unusable reviewer config {config_path or 'default layers'} ({error}); "
-            "signal reviews disabled",
+            f"spotterd: unusable reviewer config ({error}); signal reviews disabled",
             file=sys.stderr,
         )
         return ReviewerConfig()
@@ -967,18 +984,11 @@ def _configured_mcp_semantics(
     layout: RuntimeLayout | None = None,
 ) -> tuple[McpToolSemantics, ...]:
     runtime_layout = layout or RuntimeLayout.discover()
-    manifest_path = runtime_layout.integration_manifest
     try:
-        raw = json.loads(manifest_path.read_bytes())
-    except (OSError, ValueError):
-        raw = {}
-    configured = raw.get("config_path") if isinstance(raw, dict) else None
-    config_path = Path(configured) if isinstance(configured, str) and configured else None
-    try:
-        return resolve_config(layout=runtime_layout, explicit_path=config_path).config.mcp_semantics
+        return _resolved_daemon_config(runtime_layout).config.mcp_semantics
     except (OSError, ValueError) as error:
         print(
-            f"spotterd: unusable MCP semantics config {config_path or 'default layers'} ({error}); "
+            f"spotterd: unusable MCP semantics config ({error}); "
             "unknown MCP tools remain conservative",
             file=sys.stderr,
         )
@@ -987,24 +997,25 @@ def _configured_mcp_semantics(
 
 def _configured_snapshot_on_patch(layout: RuntimeLayout | None = None) -> bool:
     runtime_layout = layout or RuntimeLayout.discover()
-    manifest_path = runtime_layout.integration_manifest
+    try:
+        return _resolved_daemon_config(runtime_layout).config.snapshot_on_patch
+    except (OSError, ValueError) as error:
+        print(
+            f"spotterd: unusable snapshot config ({error}); App Server snapshots remain enabled",
+            file=sys.stderr,
+        )
+        return True
+
+
+def _resolved_daemon_config(layout: RuntimeLayout) -> ResolvedConfig:
+    manifest_path = layout.integration_manifest
     try:
         raw = json.loads(manifest_path.read_bytes())
     except (OSError, ValueError):
         raw = {}
     configured = raw.get("config_path") if isinstance(raw, dict) else None
     config_path = Path(configured) if isinstance(configured, str) and configured else None
-    try:
-        return resolve_config(
-            layout=runtime_layout, explicit_path=config_path
-        ).config.snapshot_on_patch
-    except (OSError, ValueError) as error:
-        print(
-            f"spotterd: unusable snapshot config {config_path or 'default layers'} ({error}); "
-            "App Server snapshots remain enabled",
-            file=sys.stderr,
-        )
-        return True
+    return resolve_config(layout=layout, explicit_path=config_path)
 
 
 if __name__ == "__main__":

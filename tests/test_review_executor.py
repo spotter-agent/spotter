@@ -93,6 +93,82 @@ def test_signal_review_runs_asynchronously_and_finishes_durably(
     asyncio.run(scenario())
 
 
+def test_running_and_queued_reviews_pin_their_submission_config_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SPOTTER_HOME", str(tmp_path / "home"))
+
+    async def scenario() -> None:
+        runtime = AppServerRecoveryLoop("ws://unused", tmp_path / "sessions", ThreadStateStore())
+        captured: list[ReviewerJob] = []
+        runtime.set_review_job_callback(captured.append)
+        _trigger(runtime)
+        first = captured[0]
+        second = replace(
+            first,
+            job_id="second-job",
+            signal_id="second-signal",
+            candidate_event_id="second-candidate",
+            reviewer_input=replace(first.reviewer_input, signal_id="second-signal"),
+            signal_ids=("second-signal",),
+            candidate_event_ids=("second-candidate",),
+        )
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        models: list[str] = []
+        fresh_jobs: list[ReviewerJob] = []
+        recorded: list[TraceEvent] = []
+
+        async def reviewer(input_: ReviewerInput, model: str) -> tuple[ReviewerDecision, int]:
+            models.append(model)
+            if len(models) == 1:
+                entered.set()
+                await release.wait()
+            return ReviewerDecision("continue", "none", "pinned", 0.8), 1
+
+        def is_fresh(job: ReviewerJob) -> bool:
+            fresh_jobs.append(job)
+            return True
+
+        executor = ReviewExecutor(
+            ReviewerConfig(model="old-model", on_signals=True),
+            recorded.append,
+            is_fresh,
+            config_generation="cfg-old",
+            reviewer=reviewer,
+        )
+        executor.submit(first)
+        await entered.wait()
+        executor.update_config(
+            ReviewerConfig(model="new-model", on_signals=True),
+            "cfg-new",
+        )
+        executor.submit(second)
+        release.set()
+        await executor.drain()
+        await executor.close()
+
+        assert models == ["old-model", "new-model"]
+        pinned = [event for event in recorded if event.kind == "review_job_config_pinned"]
+        assert [event.payload["config_generation"] for event in pinned] == [
+            "cfg-old",
+            "cfg-new",
+        ]
+        decisions = [event for event in recorded if event.kind == "reviewer_decision"]
+        assert [
+            (event.payload["model"], event.payload["config_generation"]) for event in decisions
+        ] == [
+            ("old-model", "cfg-old"),
+            ("new-model", "cfg-new"),
+        ]
+        assert {(job.reviewer_model, job.config_generation) for job in fresh_jobs} == {
+            ("old-model", "cfg-old"),
+            ("new-model", "cfg-new"),
+        }
+
+    asyncio.run(scenario())
+
+
 def test_live_opt_in_delivers_a_fresh_intervention_decision(tmp_path: Path) -> None:
     async def scenario() -> None:
         runtime = AppServerRecoveryLoop("ws://unused", tmp_path / "sessions", ThreadStateStore())

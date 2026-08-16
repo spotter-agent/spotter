@@ -4,6 +4,7 @@ import asyncio
 import math
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 
 from spotter.budget import Spend, charge, reserve, settle
 from spotter.config import ReviewerConfig
@@ -27,29 +28,64 @@ class ReviewExecutor:
         record: RecordEvent,
         is_fresh: FreshnessCheck,
         *,
+        config_generation: str = "unversioned",
         reviewer: ReviewFunction = review_bounded_input,
         deliver: DeliveryFunction | None = None,
     ) -> None:
         self.config = config
+        self.config_generation = config_generation
         self.record = record
         self.is_fresh = is_fresh
         self.reviewer = reviewer
         self.deliver = deliver
-        self._queue: asyncio.PriorityQueue[tuple[float, int, int, ReviewerJob]] = (
-            asyncio.PriorityQueue()
-        )
+        self._queue: asyncio.PriorityQueue[
+            tuple[float, int, int, ReviewerJob, ReviewerConfig, str]
+        ] = asyncio.PriorityQueue()
         self._runner: asyncio.Task[None] | None = None
         self._sequence = 0
         self._submitted: set[str] = set()
 
     def submit(self, job: ReviewerJob) -> None:
-        if not self.config.on_signals or job.job_id in self._submitted:
+        config = self.config
+        config_generation = self.config_generation
+        if not config.on_signals or job.job_id in self._submitted:
             return
+        job = replace(
+            job,
+            config_generation=config_generation,
+            reviewer_model=config.model,
+        )
         self._submitted.add(job.job_id)
         self._sequence += 1
-        self._queue.put_nowait((-_priority(job), self._sequence, time.perf_counter_ns(), job))
+        self.record(
+            self._event(
+                job,
+                "review_job_config_pinned",
+                {
+                    "review_job_id": job.job_id,
+                    "model": config.model,
+                },
+                config_generation,
+            )
+        )
+        self._queue.put_nowait(
+            (
+                -_priority(job),
+                self._sequence,
+                time.perf_counter_ns(),
+                job,
+                config,
+                config_generation,
+            )
+        )
         if self._runner is None or self._runner.done():
             self._runner = asyncio.create_task(self._work(), name="review-queue")
+
+    def update_config(self, config: ReviewerConfig, config_generation: str) -> None:
+        """Use a new immutable config only for jobs submitted after this call."""
+
+        self.config = config
+        self.config_generation = config_generation
 
     async def drain(self) -> None:
         await self._queue.join()
@@ -62,21 +98,27 @@ class ReviewExecutor:
 
     async def _work(self) -> None:
         while True:
-            _, _, queued_ns, job = await self._queue.get()
+            _, _, queued_ns, job, config, config_generation = await self._queue.get()
             try:
-                await self._run(job, queued_ns)
+                await self._run(job, queued_ns, config, config_generation)
             finally:
                 self._queue.task_done()
 
-    async def _run(self, job: ReviewerJob, queued_ns: int) -> None:
+    async def _run(
+        self,
+        job: ReviewerJob,
+        queued_ns: int,
+        config: ReviewerConfig,
+        config_generation: str,
+    ) -> None:
         if not self.is_fresh(job):
             return
         session = job.thread_id.value
         try:
             token, refusal = reserve(
                 session,
-                self.config.max_per_session,
-                self.config.max_per_day,
+                config.max_per_session,
+                config.max_per_day,
             )
         except Exception as error:  # noqa: BLE001 — spending failure must stay visible
             self.record(
@@ -88,6 +130,7 @@ class ReviewExecutor:
                         "error": f"review budget unavailable: {error}"[:300],
                         "priority": _priority(job),
                     },
+                    config_generation,
                 )
             )
             return
@@ -103,6 +146,7 @@ class ReviewExecutor:
                         "review_job_id": job.job_id,
                         "priority": _priority(job),
                     },
+                    config_generation,
                 )
             )
             return
@@ -118,11 +162,12 @@ class ReviewExecutor:
                     "priority": _priority(job),
                 },
                 occurred_at=started_at,
+                config_generation=config_generation,
             )
         )
         inference_started_ns = time.perf_counter_ns()
         try:
-            decision, tokens = await self.reviewer(job.reviewer_input, self.config.model)
+            decision, tokens = await self.reviewer(job.reviewer_input, config.model)
         except asyncio.CancelledError:
             inference_ms = _elapsed_ms(inference_started_ns)
             spend = settle(session, token, 0) or charge(session, 0)
@@ -136,6 +181,7 @@ class ReviewExecutor:
                         "spend": _spend(spend),
                         "timing": {"queue_ms": queue_ms, "inference_ms": inference_ms},
                     },
+                    config_generation,
                 )
             )
             raise
@@ -152,6 +198,7 @@ class ReviewExecutor:
                         "spend": _spend(spend),
                         "timing": {"queue_ms": queue_ms, "inference_ms": inference_ms},
                     },
+                    config_generation,
                 )
             )
             return
@@ -169,12 +216,12 @@ class ReviewExecutor:
                     "reason": decision.reason,
                     "hypothesis": decision.hypothesis,
                     "confidence": decision.confidence,
-                    "model": self.config.model,
+                    "model": config.model,
                     "reviewed_state_version": job.state_version,
                     "target_turn_id": job.target_turn_id.value,
                     "target_connection_epoch": job.target_connection_epoch,
                     "stale": stale,
-                    "shadow": not self.config.deliver_on_signals,
+                    "shadow": not config.deliver_on_signals,
                     "inputs": job.reviewer_input.coverage(),
                     "timing": {
                         "queue_ms": queue_ms,
@@ -182,13 +229,10 @@ class ReviewExecutor:
                     },
                     "spend": _spend(spend),
                 },
+                config_generation,
             )
         )
-        if (
-            stale
-            or not self.config.deliver_on_signals
-            or decision.decision not in {"verify", "nudge"}
-        ):
+        if stale or not config.deliver_on_signals or decision.decision not in {"verify", "nudge"}:
             return
         if self.deliver is None:
             self.record(
@@ -199,6 +243,7 @@ class ReviewExecutor:
                         "review_job_id": job.job_id,
                         "error": "live delivery is enabled but no delivery controller is available",
                     },
+                    config_generation,
                 )
             )
             return
@@ -215,6 +260,7 @@ class ReviewExecutor:
                         "review_job_id": job.job_id,
                         "error": str(error)[:300],
                     },
+                    config_generation,
                 )
             )
 
@@ -223,10 +269,15 @@ class ReviewExecutor:
         job: ReviewerJob,
         kind: str,
         payload: dict[str, object],
+        config_generation: str,
         *,
         occurred_at: float | None = None,
     ) -> TraceEvent:
-        payload = {**payload, "review_trigger": "signal"}
+        payload = {
+            **payload,
+            "review_trigger": "signal",
+            "config_generation": config_generation,
+        }
         return TraceEvent(
             kind,
             payload,

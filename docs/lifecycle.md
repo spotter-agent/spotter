@@ -815,8 +815,13 @@ Every delivery decision is journaled.
 
 With `reviewer.on_signals = true`, `spotterd` executes the bounded immutable job input
 asynchronously, records `review_inference_started` and a `reviewer_decision` (or visible cap/error),
-and marks a result stale when its turn/epoch ended while the model was running. Reviews remain
-shadow-only unless active mode and the separate `reviewer.deliver_on_signals = true` opt-in are set. In that mode,
+and marks a result stale when its turn/epoch ended while the model was running. Each review is
+bound to the immutable reviewer config generation and model captured when the job enters the
+executor. A durable `review_job_config_pinned` event records that choice, and inference,
+decision, cap, and error events repeat the generation. Updating the executor affects only later
+submissions, so running and queued jobs cannot silently switch model, budget, or delivery policy.
+Reviews remain shadow-only unless active mode and the separate
+`reviewer.deliver_on_signals = true` opt-in are set. In that mode,
 fresh signal-driven `VERIFY`/`NUDGE` decisions issue one current-turn advisory through the exact
 App Server attachment/turn/epoch. RPC acceptance, stale/failed/unknown outcomes, and later observed
 input remain distinct durable states; ambiguous acceptance is never blindly retried. Both options
@@ -1283,8 +1288,11 @@ only `HOT` changes publishes atomically. Any `NEXT_TURN` change stages the *whol
 explicit turn boundary, rather than mixing hot fields from one generation with turn-pinned fields
 from another. Restart/reconfigure/migration changes report their required action without activation.
 An invalid reload preserves both the active snapshot and any previously validated pending snapshot,
-and records a value-free error for diagnostics. Daemon file watching/triggering and generation
-pinning in runtime artifacts remain separate follow-up wiring.
+and records a value-free error for diagnostics. The daemon resolves one generation at startup,
+reports it through control status, and pins that generation into each signal-review submission;
+running and queued reviews keep their captured model, budgets, and delivery policy when the executor
+is updated. Daemon file watching/triggering and turn-boundary activation remain separate follow-up
+wiring.
 
 ---
 
