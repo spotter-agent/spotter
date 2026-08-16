@@ -204,6 +204,82 @@ def test_live_opt_in_delivers_a_fresh_intervention_decision(tmp_path: Path) -> N
     asyncio.run(scenario())
 
 
+def test_live_advisories_for_one_turn_are_serial_and_deduplicated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SPOTTER_HOME", str(tmp_path / "home"))
+
+    async def scenario() -> None:
+        runtime = AppServerRecoveryLoop("ws://unused", tmp_path / "sessions", ThreadStateStore())
+        captured: list[ReviewerJob] = []
+        runtime.set_review_job_callback(captured.append)
+        _trigger(runtime)
+        first = captured[0]
+        second = replace(
+            first,
+            job_id="second-job",
+            signal_id="second-signal",
+            candidate_event_id="second-candidate",
+            reviewer_input=replace(first.reviewer_input, signal_id="second-signal"),
+            signal_ids=("second-signal",),
+            candidate_event_ids=("second-candidate",),
+        )
+        first_delivery_started = asyncio.Event()
+        release_first_delivery = asyncio.Event()
+        active_deliveries = 0
+        maximum_active_deliveries = 0
+        controls: list[tuple[str, str | None]] = []
+
+        async def reviewer(input_: object, model: str) -> tuple[ReviewerDecision, int]:
+            return ReviewerDecision("verify", "tool_failure_loop", "check evidence", 0.9), 1
+
+        async def steer(
+            target: object,
+            text: str,
+            *,
+            control_id: str | None = None,
+            review_job_id: str | None = None,
+        ) -> dict[str, object]:
+            nonlocal active_deliveries, maximum_active_deliveries
+            active_deliveries += 1
+            maximum_active_deliveries = max(maximum_active_deliveries, active_deliveries)
+            controls.append((control_id or "", review_job_id))
+            if review_job_id == first.job_id:
+                first_delivery_started.set()
+                await release_first_delivery.wait()
+            active_deliveries -= 1
+            return {}
+
+        monkeypatch.setattr(runtime, "steer", steer)
+        executor = ReviewExecutor(
+            ReviewerConfig(on_signals=True, deliver_on_signals=True),
+            runtime.record_review_event,
+            lambda job: True,
+            reviewer=reviewer,
+            deliver=runtime.deliver_review_decision,
+        )
+
+        executor.submit(first)
+        await first_delivery_started.wait()
+        executor.submit(first)
+        executor.submit(second)
+        release_first_delivery.set()
+        await executor.drain()
+        await executor.close()
+
+        assert [review_job_id for _, review_job_id in controls] == [first.job_id, second.job_id]
+        assert len({control_id for control_id, _ in controls}) == 2
+        assert maximum_active_deliveries == 1
+        pinned = [
+            record.event
+            for record in runtime.ingestor.records()
+            if record.event.kind == "review_job_config_pinned"
+        ]
+        assert len(pinned) == 2
+
+    asyncio.run(scenario())
+
+
 def test_live_advisory_keeps_current_turn_scope(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
