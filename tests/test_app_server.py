@@ -131,11 +131,20 @@ def test_thread_queries_and_controls_hide_codex_method_names() -> None:
             for method, result in [
                 ("thread/read", {"thread": {"id": "thread-1"}}),
                 ("thread/resume", {"thread": {"id": "thread-1"}}),
+                ("turn/start", {"turn": {"id": "turn-1"}}),
                 ("turn/steer", {"turnId": "turn-1"}),
                 ("turn/interrupt", {}),
             ]:
                 request = await _receive(connection, method)
-                if method == "turn/steer":
+                if method == "turn/start":
+                    assert request["params"] == {
+                        "threadId": "thread-1",
+                        "input": [{"type": "text", "text": "continue the task"}],
+                        "cwd": "/tmp/fork",
+                        "runtimeWorkspaceRoots": ["/tmp/fork"],
+                        "clientUserMessageId": "experiment-control-1",
+                    }
+                elif method == "turn/steer":
                     assert request["params"] == {
                         "threadId": "thread-1",
                         "expectedTurnId": "turn-1",
@@ -151,6 +160,14 @@ def test_thread_queries_and_controls_hide_codex_method_names() -> None:
             assert (await client.read_thread("thread-1"))["thread"] == {"id": "thread-1"}
             await client.resume_thread("thread-1")
             assert (
+                await client.start_turn(
+                    "thread-1",
+                    "continue the task",
+                    cwd="/tmp/fork",
+                    client_user_message_id="experiment-control-1",
+                )
+            )["turn"] == {"id": "turn-1"}
+            assert (
                 await client.steer(
                     "thread-1",
                     "turn-1",
@@ -163,6 +180,25 @@ def test_thread_queries_and_controls_hide_codex_method_names() -> None:
             assert client.capabilities.steer == CapabilityStatus.AVAILABLE
             assert client.capabilities.interrupt == CapabilityStatus.AVAILABLE
             await client.disconnect()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    (
+        {"text": ""},
+        {"text": "continue", "cwd": " "},
+        {"text": "continue", "client_user_message_id": ""},
+    ),
+)
+def test_turn_start_rejects_empty_inputs_before_rpc(kwargs: dict[str, str]) -> None:
+    async def scenario() -> None:
+        client = CodexAppServerClient("ws://unused")
+        values = kwargs.copy()
+        text = values.pop("text")
+        with pytest.raises(ValueError):
+            await client.start_turn("thread-1", text, **values)
 
     asyncio.run(scenario())
 

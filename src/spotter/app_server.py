@@ -289,6 +289,33 @@ class CodexAppServerClient:
     async def resume_thread(self, thread_id: str) -> Mapping[str, Any]:
         return await self._object_request("thread/resume", {"threadId": thread_id})
 
+    async def start_turn(
+        self,
+        thread_id: str,
+        text: str,
+        *,
+        cwd: str | None = None,
+        client_user_message_id: str | None = None,
+    ) -> Mapping[str, Any]:
+        """Start a turn without exposing Codex JSON-RPC shapes to callers."""
+
+        if not text.strip():
+            raise ValueError("turn input must be non-empty")
+        params: JsonObject = {
+            "threadId": thread_id,
+            "input": [{"type": "text", "text": text}],
+        }
+        if cwd is not None:
+            if not cwd.strip():
+                raise ValueError("cwd must be non-empty")
+            params["cwd"] = cwd
+            params["runtimeWorkspaceRoots"] = [cwd]
+        if client_user_message_id is not None:
+            if not client_user_message_id.strip():
+                raise ValueError("client_user_message_id must be non-empty")
+            params["clientUserMessageId"] = client_user_message_id
+        return await self._object_request("turn/start", params)
+
     async def steer(
         self,
         thread_id: str,
