@@ -1277,7 +1277,14 @@ No current `SpotterConfig` key is `DAEMON_RESTART`; App Server endpoints, IPC pa
 construction still live in integration/runtime state and will use that boundary when they become
 part of the effective configuration contract.
 
-Config reload must not leave half-old/half-new gate policy during a synchronous request. Parse/validate new config first, then atomically replace the active snapshot.
+The implemented snapshot store serializes competing reloads while parsing and validating outside
+the short-held state lock, so readers continue using the prior immutable generation. A reload with
+only `HOT` changes publishes atomically. Any `NEXT_TURN` change stages the *whole* candidate until an
+explicit turn boundary, rather than mixing hot fields from one generation with turn-pinned fields
+from another. Restart/reconfigure/migration changes report their required action without activation.
+An invalid reload preserves both the active snapshot and any previously validated pending snapshot,
+and records a value-free error for diagnostics. Daemon file watching/triggering and generation
+pinning in runtime artifacts remain separate follow-up wiring.
 
 ---
 

@@ -3,11 +3,12 @@
 import hashlib
 import json
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
+from threading import Lock
 from types import MappingProxyType
 from typing import Any
 
@@ -34,6 +35,15 @@ class ConfigChange:
 
     path: str
     activation_boundary: ActivationBoundary
+
+
+class ReloadDisposition(StrEnum):
+    """Outcome of building and planning one replacement snapshot."""
+
+    APPLIED = "APPLIED"
+    STAGED_NEXT_TURN = "STAGED_NEXT_TURN"
+    ACTION_REQUIRED = "ACTION_REQUIRED"
+    REJECTED_INVALID = "REJECTED_INVALID"
 
 
 # "default" delegates to the codex account's own model. A pinned id is an
@@ -103,6 +113,18 @@ class ResolvedConfig:
     source_layers: tuple[ConfigSourceLayer, ...]
     loaded_at: str
     diagnostics: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ConfigReloadResult:
+    """Value-free result of an atomic config reload attempt."""
+
+    disposition: ReloadDisposition
+    active_generation: str
+    candidate_generation: str | None
+    changes: tuple[ConfigChange, ...] = ()
+    required_boundaries: tuple[ActivationBoundary, ...] = ()
+    error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -220,6 +242,117 @@ def _path_value(raw: Mapping[str, Any], path: str) -> Any:
             raise KeyError(path)
         value = value[part]
     return value
+
+
+class ConfigSnapshotStore:
+    """Thread-safe active/pending snapshots with serialized reload planning.
+
+    Parsing runs outside the state lock so readers keep seeing the prior
+    immutable snapshot. A separate reload lock preserves request order when
+    two reloads race.
+    """
+
+    def __init__(self, initial: ResolvedConfig) -> None:
+        self._state_lock = Lock()
+        self._reload_lock = Lock()
+        self._active = initial
+        self._pending_next_turn: ResolvedConfig | None = None
+        self._last_error: str | None = None
+
+    def snapshot(self) -> ResolvedConfig:
+        with self._state_lock:
+            return self._active
+
+    def pending_generation(self) -> str | None:
+        with self._state_lock:
+            pending = self._pending_next_turn
+            return pending.resolved_config_generation if pending is not None else None
+
+    def last_error(self) -> str | None:
+        with self._state_lock:
+            return self._last_error
+
+    def reload(self, loader: Callable[[], ResolvedConfig]) -> ConfigReloadResult:
+        with self._reload_lock:
+            try:
+                candidate = loader()
+            except (OSError, UnicodeError, tomllib.TOMLDecodeError, ConfigurationError) as error:
+                message = str(error)
+                with self._state_lock:
+                    self._last_error = message
+                    active_generation = self._active.resolved_config_generation
+                return ConfigReloadResult(
+                    disposition=ReloadDisposition.REJECTED_INVALID,
+                    active_generation=active_generation,
+                    candidate_generation=None,
+                    error=message,
+                )
+
+            with self._state_lock:
+                changes = classify_config_changes(self._active.config, candidate.config)
+                required = tuple(
+                    dict.fromkeys(
+                        change.activation_boundary
+                        for change in changes
+                        if change.activation_boundary
+                        in {
+                            ActivationBoundary.DAEMON_RESTART,
+                            ActivationBoundary.INTEGRATION_RECONFIGURE,
+                            ActivationBoundary.SCHEMA_MIGRATION,
+                        }
+                    )
+                )
+                self._last_error = None
+                if required:
+                    self._pending_next_turn = None
+                    return ConfigReloadResult(
+                        disposition=ReloadDisposition.ACTION_REQUIRED,
+                        active_generation=self._active.resolved_config_generation,
+                        candidate_generation=candidate.resolved_config_generation,
+                        changes=changes,
+                        required_boundaries=required,
+                    )
+                if any(
+                    change.activation_boundary == ActivationBoundary.NEXT_TURN for change in changes
+                ):
+                    self._pending_next_turn = candidate
+                    return ConfigReloadResult(
+                        disposition=ReloadDisposition.STAGED_NEXT_TURN,
+                        active_generation=self._active.resolved_config_generation,
+                        candidate_generation=candidate.resolved_config_generation,
+                        changes=changes,
+                    )
+                self._active = candidate
+                self._pending_next_turn = None
+                return ConfigReloadResult(
+                    disposition=ReloadDisposition.APPLIED,
+                    active_generation=candidate.resolved_config_generation,
+                    candidate_generation=candidate.resolved_config_generation,
+                    changes=changes,
+                )
+
+    def activate_next_turn(self) -> ConfigReloadResult:
+        """Publish the latest staged snapshot at an explicit turn boundary."""
+
+        with self._reload_lock, self._state_lock:
+            candidate = self._pending_next_turn
+            if candidate is None:
+                generation = self._active.resolved_config_generation
+                return ConfigReloadResult(
+                    disposition=ReloadDisposition.APPLIED,
+                    active_generation=generation,
+                    candidate_generation=generation,
+                )
+            changes = classify_config_changes(self._active.config, candidate.config)
+            self._active = candidate
+            self._pending_next_turn = None
+            self._last_error = None
+            return ConfigReloadResult(
+                disposition=ReloadDisposition.APPLIED,
+                active_generation=candidate.resolved_config_generation,
+                candidate_generation=candidate.resolved_config_generation,
+                changes=changes,
+            )
 
 
 def resolve_config(
