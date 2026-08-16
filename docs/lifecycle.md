@@ -1230,6 +1230,13 @@ left by teardown-less uninstall is re-bootstrapped after reinstall instead of ha
 
 `spotter update` should not compete with Homebrew for file ownership. It may check for updates or delegate to the package-manager-supported path.
 
+Implemented behavior is advisory-only. `spotter update` classifies Homebrew, pipx, uv tool, pip,
+editable, and source installations from the active executable/environment plus distribution
+metadata. It reports the installed build, a package-owner version-check command, the exact upgrade
+command, and the required setup/doctor reconciliation. It never invokes the package manager or
+writes into its installation boundary; editable/source installs are directed to their owning
+development workflow.
+
 ---
 
 # 13. Configuration lifecycle

@@ -410,6 +410,17 @@ worktrees; do not replace it with raw recursive deletion.
 
 ## 8. Upgrade and reinstall
 
+First ask Spotter which package owner must perform the upgrade:
+
+```bash
+spotter update
+```
+
+This command reports the current build and prints the appropriate Homebrew, pipx, uv tool, or pip
+version-check and upgrade commands. It is advisory only: it does not run the package manager or
+overwrite managed files. Source and editable installations are directed back to their development
+workflow.
+
 For Homebrew:
 
 ```bash

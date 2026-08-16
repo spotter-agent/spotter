@@ -7,6 +7,7 @@ current working directory themselves.
 """
 
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -14,6 +15,8 @@ import sys
 from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
+from enum import StrEnum
+from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 
 _SAFE_UNIX_PATH_BYTES = 100
@@ -21,6 +24,23 @@ _SAFE_UNIX_PATH_BYTES = 100
 
 class RuntimeLayoutError(RuntimeError):
     """A persistent integration cannot safely use the discovered layout."""
+
+
+class InstallationMethod(StrEnum):
+    """Package owner that must remain responsible for replacing Spotter files."""
+
+    HOMEBREW = "homebrew"
+    PIPX = "pipx"
+    UV_TOOL = "uv_tool"
+    PIP = "pip"
+    EDITABLE = "editable"
+    SOURCE = "source"
+
+
+@dataclass(frozen=True)
+class InstallationProvenance:
+    method: InstallationMethod
+    evidence: str
 
 
 def _absolute(path: Path) -> Path:
@@ -213,6 +233,60 @@ class RuntimeLayout:
 def spotter_home() -> Path:
     """Compatibility root for existing state while callers migrate to RuntimeLayout."""
     return RuntimeLayout.discover().user_data_dir
+
+
+def installation_provenance(
+    layout: RuntimeLayout | None = None,
+) -> InstallationProvenance:
+    """Classify the active package boundary without mutating package-managed files."""
+
+    runtime_layout = layout or RuntimeLayout.discover()
+    direct_url: dict[str, object] | None = None
+    distribution_present = True
+    try:
+        raw_direct_url = distribution("spotter-agent").read_text("direct_url.json")
+    except PackageNotFoundError:
+        distribution_present = False
+    else:
+        if raw_direct_url is not None:
+            with suppress(json.JSONDecodeError):
+                parsed = json.loads(raw_direct_url)
+                if isinstance(parsed, dict):
+                    direct_url = parsed
+    return _classify_installation(
+        runtime_layout.cli_executable,
+        Path(sys.prefix),
+        direct_url,
+        distribution_present=distribution_present,
+    )
+
+
+def _classify_installation(
+    cli_executable: Path | None,
+    environment_prefix: Path,
+    direct_url: dict[str, object] | None,
+    *,
+    distribution_present: bool,
+) -> InstallationProvenance:
+    candidates = [environment_prefix]
+    if cli_executable is not None:
+        candidates.append(cli_executable)
+        with suppress(OSError, RuntimeError):
+            candidates.append(cli_executable.resolve(strict=False))
+    normalized = [tuple(part.lower() for part in path.parts) for path in candidates]
+    if any("cellar" in parts for parts in normalized):
+        return InstallationProvenance(InstallationMethod.HOMEBREW, "Homebrew Cellar boundary")
+    if any("pipx" in parts and "venvs" in parts for parts in normalized):
+        return InstallationProvenance(InstallationMethod.PIPX, "pipx managed environment")
+    if any("uv" in parts and "tools" in parts for parts in normalized):
+        return InstallationProvenance(InstallationMethod.UV_TOOL, "uv tool environment")
+    if direct_url is not None:
+        directory = direct_url.get("dir_info")
+        if isinstance(directory, dict) and directory.get("editable") is True:
+            return InstallationProvenance(InstallationMethod.EDITABLE, "editable direct URL")
+    if distribution_present:
+        return InstallationProvenance(InstallationMethod.PIP, "Python distribution metadata")
+    return InstallationProvenance(InstallationMethod.SOURCE, "no installed distribution metadata")
 
 
 def secure_dir(path: Path) -> Path:

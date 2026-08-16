@@ -154,6 +154,7 @@ codex
 | `spotter doctor` | Run synthetic health checks and print actionable diagnostics |
 | `spotter daemon status` | Inspect the packaged `spotterd` process and build identity |
 | `spotter daemon reload` | Atomically apply safe config changes or stage the next generation |
+| `spotter update` | Detect the package owner and print non-mutating update guidance |
 | `spotter metrics` | Summarize collected runtime and evaluation metrics |
 | `spotter sample-signals` | Persist a deterministic detector-silence sampling frame |
 | `spotter label-opportunity` | Record semantic and observable intervention windows |
@@ -173,10 +174,15 @@ Upgrade the Formula, then rerun setup so Spotter can reconcile the installed bui
 and integration generation:
 
 ```bash
+spotter update
 brew upgrade spotter-agent/spotter/spotter
 spotter setup codex
 spotter doctor
 ```
+
+`spotter update` is advisory: it reports the current build and the appropriate Homebrew, pipx, uv
+tool, or pip command. It never overwrites package-managed files, and source/editable installs are
+directed back to their owning development workflow.
 
 Persistent Hook and service references use stable package entry points rather than versioned
 Homebrew Cellar paths. Spotter detects a still-running older daemon instead of assuming it matches

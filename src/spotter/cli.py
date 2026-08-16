@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import os
+import shlex
 import stat
 import subprocess
 import sys
@@ -101,7 +102,14 @@ from spotter.opportunity_metrics import (
     merge_opportunity_timing,
     render_opportunity_timing,
 )
-from spotter.paths import RuntimeLayout, secure_dir, spotter_home
+from spotter.paths import (
+    InstallationMethod,
+    InstallationProvenance,
+    RuntimeLayout,
+    installation_provenance,
+    secure_dir,
+    spotter_home,
+)
 from spotter.provenance import (
     BlockSummary,
     InterventionSummary,
@@ -196,6 +204,7 @@ def build_parser() -> argparse.ArgumentParser:
             "feedback",
             "effects",
             "daemon",
+            "update",
             "setup",
             "teardown",
             "tasks",
@@ -224,6 +233,7 @@ def build_parser() -> argparse.ArgumentParser:
             "feedback: append structured human feedback to an intervention; "
             "effects: list or explicitly resolve external effects for a session; "
             "daemon: manually start, stop, restart, reload, or inspect spotterd; "
+            "update: print package-manager-owned update guidance without modifying files; "
             "setup/teardown: manage the owned Codex integration"
         ),
     )
@@ -496,6 +506,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.target is None or args.target == "codex":
             parser.error("daemon requires start, stop, restart, reload, or status")
         return _daemon_main(args.target)
+    if args.command == "update":
+        if args.target is not None:
+            parser.error("update does not accept a target")
+        return _update_main()
     if args.command in {"setup", "teardown"}:
         if args.target != "codex":
             parser.error(f"{args.command} requires the codex target")
@@ -1465,6 +1479,45 @@ def _daemon_main(action: str, manager: ServiceManager | None = None) -> int:
     if action == "stop":
         return 0 if status.health == RuntimeHealth.UNAVAILABLE else 1
     return 0 if status.health == RuntimeHealth.HEALTHY else 1
+
+
+def _update_main(provenance: InstallationProvenance | None = None) -> int:
+    """Report the package-owner command; never replace installed files directly."""
+
+    identity = current_build_identity()
+    detected = provenance or installation_provenance()
+    python = shlex.quote(sys.executable)
+    commands = {
+        InstallationMethod.HOMEBREW: (
+            "brew info spotter-agent/spotter/spotter",
+            "brew upgrade spotter-agent/spotter/spotter",
+        ),
+        InstallationMethod.PIPX: (
+            "pipx list",
+            "pipx upgrade spotter-agent",
+        ),
+        InstallationMethod.UV_TOOL: (
+            "uv tool list",
+            "uv tool upgrade spotter-agent",
+        ),
+        InstallationMethod.PIP: (
+            f"{python} -m pip index versions spotter-agent",
+            f"{python} -m pip install --upgrade spotter-agent",
+        ),
+    }
+
+    print(f"spotter {identity.version} (build {identity.build_id})")
+    print(f"installation: {detected.method.value} ({detected.evidence})")
+    command = commands.get(detected.method)
+    if command is None:
+        print("self-update: unsupported for source/editable installations")
+        print("update the source checkout or development environment with its owning workflow")
+        return 0
+    check, upgrade = command
+    print(f"check available version: {check}")
+    print(f"upgrade with package owner: {upgrade}")
+    print("then reconcile runtime: spotter setup codex && spotter doctor")
+    return 0
 
 
 def _integration_main(
