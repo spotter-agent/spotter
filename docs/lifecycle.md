@@ -1288,11 +1288,13 @@ only `HOT` changes publishes atomically. Any `NEXT_TURN` change stages the *whol
 explicit turn boundary, rather than mixing hot fields from one generation with turn-pinned fields
 from another. Restart/reconfigure/migration changes report their required action without activation.
 An invalid reload preserves both the active snapshot and any previously validated pending snapshot,
-and records a value-free error for diagnostics. The daemon resolves one generation at startup,
-reports it through control status, and pins that generation into each signal-review submission;
-running and queued reviews keep their captured model, budgets, and delivery policy when the executor
-is updated. Daemon file watching/triggering and turn-boundary activation remain separate follow-up
-wiring.
+and records a value-free error for diagnostics. The daemon resolves one generation at startup and
+`spotter daemon reload` triggers parse/validation outside the event loop. Successful `HOT` reloads
+atomically update future reviewer submissions and patch-snapshot observations; `NEXT_TURN`
+candidates remain staged, and action-required candidates remain inactive. Control status reports
+the active/pending generations and last rejected reload. Signal reviews pin the active generation,
+model, budgets, and delivery policy at submission. Automatic file watching and turn-boundary
+activation remain separate follow-up wiring.
 
 ---
 

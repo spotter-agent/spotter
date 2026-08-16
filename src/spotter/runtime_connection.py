@@ -227,6 +227,11 @@ class AppServerRecoveryLoop:
     def set_review_job_callback(self, callback: ReviewJobCallback) -> None:
         self.on_review_job = callback
 
+    def update_hot_config(self, *, snapshot_on_patch: bool) -> None:
+        """Apply settings whose contract permits immediate use by future observations."""
+
+        self.ingestor.snapshot_on_patch = snapshot_on_patch
+
     def record_review_event(self, event: TraceEvent) -> StepRecord | None:
         return self._record(event)
 

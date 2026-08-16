@@ -306,6 +306,7 @@ Manual daemon controls affect only `spotterd`; they never stop or reset a shared
 
 ```bash
 spotter daemon start
+spotter daemon reload
 spotter daemon restart
 spotter daemon stop
 ```

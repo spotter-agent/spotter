@@ -153,6 +153,7 @@ codex
 | `spotter status` | Show integration, daemon, capability, and storage health |
 | `spotter doctor` | Run synthetic health checks and print actionable diagnostics |
 | `spotter daemon status` | Inspect the packaged `spotterd` process and build identity |
+| `spotter daemon reload` | Atomically apply safe config changes or stage the next generation |
 | `spotter metrics` | Summarize collected runtime and evaluation metrics |
 | `spotter sample-signals` | Persist a deterministic detector-silence sampling frame |
 | `spotter label-opportunity` | Record semantic and observable intervention windows |

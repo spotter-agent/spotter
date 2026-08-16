@@ -12,18 +12,25 @@ import subprocess
 import sys
 import time
 import uuid
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
 from fcntl import LOCK_EX, LOCK_NB, LOCK_UN, flock
+from functools import partial
 from io import TextIOWrapper
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from spotter.build_identity import RuntimeComponent, current_build_identity, version_line
 from spotter.config import (
+    ActivationBoundary,
+    ConfigChange,
+    ConfigReloadResult,
+    ConfigSnapshotStore,
     GatesConfig,
     McpToolSemantics,
+    ReloadDisposition,
     ResolvedConfig,
     ReviewerConfig,
     SpotterConfig,
@@ -70,6 +77,8 @@ class DaemonStatus:
     build_id: str | None = None
     detail: str | None = None
     config_generation: str | None = None
+    pending_config_generation: str | None = None
+    config_reload_error: str | None = None
 
     @property
     def available(self) -> bool:
@@ -209,6 +218,16 @@ class DaemonClient:
                     if isinstance(response.get("config_generation"), str)
                     else None
                 ),
+                pending_config_generation=(
+                    response.get("pending_config_generation")
+                    if isinstance(response.get("pending_config_generation"), str)
+                    else None
+                ),
+                config_reload_error=(
+                    response.get("config_reload_error")
+                    if isinstance(response.get("config_reload_error"), str)
+                    else None
+                ),
             )
         except DaemonUnavailable as error:
             return DaemonStatus(RuntimeHealth.UNAVAILABLE, detail=str(error))
@@ -217,6 +236,50 @@ class DaemonClient:
 
     async def shutdown(self) -> None:
         await self.request("shutdown")
+
+    async def reload_config(self) -> ConfigReloadResult:
+        response = await self.request("reload_config")
+        raw = response.get("config_reload")
+        if not isinstance(raw, dict):
+            raise DaemonProtocolError("daemon returned an invalid config reload result")
+        try:
+            disposition = ReloadDisposition(raw["disposition"])
+            active_generation = raw["active_generation"]
+            candidate_generation = raw.get("candidate_generation")
+            raw_changes = raw.get("changes", [])
+            raw_required = raw.get("required_boundaries", [])
+            error = raw.get("error")
+            if (
+                not isinstance(active_generation, str)
+                or (candidate_generation is not None and not isinstance(candidate_generation, str))
+                or not isinstance(raw_changes, list)
+                or not isinstance(raw_required, list)
+                or (error is not None and not isinstance(error, str))
+            ):
+                raise ValueError
+            changes = tuple(
+                ConfigChange(
+                    path=change["path"],
+                    activation_boundary=ActivationBoundary(change["activation_boundary"]),
+                )
+                for change in raw_changes
+                if isinstance(change, dict) and isinstance(change.get("path"), str)
+            )
+            if len(changes) != len(raw_changes):
+                raise ValueError
+            required = tuple(ActivationBoundary(value) for value in raw_required)
+        except (KeyError, TypeError, ValueError) as parse_error:
+            raise DaemonProtocolError(
+                "daemon returned an invalid config reload result"
+            ) from parse_error
+        return ConfigReloadResult(
+            disposition=disposition,
+            active_generation=active_generation,
+            candidate_generation=candidate_generation,
+            changes=changes,
+            required_boundaries=required,
+            error=error,
+        )
 
     async def gate(
         self, event: TraceEvent, gates: GatesConfig, root: str | None
@@ -282,9 +345,19 @@ class DaemonServer:
         mcp_semantics: tuple[McpToolSemantics, ...] = (),
         snapshot_on_patch: bool = True,
         config_generation: str = "unversioned",
+        config_store: ConfigSnapshotStore | None = None,
+        config_loader: Callable[[], ResolvedConfig] | None = None,
         package_watch_interval: float = _PACKAGE_WATCH_INTERVAL,
         package_missing_grace: float = _PACKAGE_MISSING_GRACE,
     ) -> None:
+        if (config_store is None) != (config_loader is None):
+            raise ValueError("config_store and config_loader must be configured together")
+        if config_store is not None:
+            resolved = config_store.snapshot()
+            reviewer_config = resolved.config.reviewer
+            mcp_semantics = resolved.config.mcp_semantics
+            snapshot_on_patch = resolved.config.snapshot_on_patch
+            config_generation = resolved.resolved_config_generation
         self.layout = layout or RuntimeLayout.discover()
         self.socket_path = socket_path or runtime_socket(self.layout)
         self.health = RuntimeHealth.HEALTHY
@@ -302,6 +375,8 @@ class DaemonServer:
         self.mcp_semantics = mcp_semantics
         self.snapshot_on_patch = snapshot_on_patch
         self.config_generation = config_generation
+        self.config_store = config_store
+        self.config_loader = config_loader
         self._runtime_id = uuid.uuid4().hex
         self._gate_requests = 0
         self._resource_sample_seq = 0
@@ -448,9 +523,33 @@ class DaemonServer:
         self._lock.close()
         self._lock = None
 
+    async def reload_config(self) -> ConfigReloadResult:
+        """Build and atomically publish or stage one replacement config snapshot."""
+
+        if self.config_store is None or self.config_loader is None:
+            raise DaemonProtocolError("config reload is unavailable; restart spotterd")
+        result = await asyncio.to_thread(self.config_store.reload, self.config_loader)
+        if result.disposition == ReloadDisposition.APPLIED:
+            self._apply_active_config()
+        return result
+
+    def _apply_active_config(self) -> None:
+        assert self.config_store is not None
+        resolved = self.config_store.snapshot()
+        config = resolved.config
+        self.reviewer_config = config.reviewer
+        self.snapshot_on_patch = config.snapshot_on_patch
+        self.config_generation = resolved.resolved_config_generation
+        if self.review_executor is not None:
+            self.review_executor.update_config(config.reviewer, self.config_generation)
+        update_runtime = getattr(self.recovery, "update_hot_config", None)
+        if callable(update_runtime):
+            update_runtime(snapshot_on_patch=config.snapshot_on_patch)
+
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         shutdown = False
         gate_observation: tuple[dict[str, object], dict[str, object]] | None = None
+        reload_result: ConfigReloadResult | None = None
         try:
             raw = await asyncio.wait_for(reader.readline(), CONTROL_TIMEOUT)
             request = json.loads(raw)
@@ -459,9 +558,11 @@ class DaemonServer:
             if request.get("protocol") != PROTOCOL_VERSION:
                 raise DaemonProtocolError("incompatible control protocol")
             method = request.get("method")
-            if method not in {"ping", "shutdown", "gate"}:
+            if method not in {"ping", "shutdown", "gate", "reload_config"}:
                 raise DaemonProtocolError(f"unknown control method: {method}")
             shutdown = method == "shutdown"
+            if method == "reload_config":
+                reload_result = await self.reload_config()
             response: dict[str, Any] = {
                 "protocol": PROTOCOL_VERSION,
                 "ok": True,
@@ -472,6 +573,13 @@ class DaemonServer:
             }
             if self.health_detail is not None:
                 response["detail"] = self.health_detail
+            if self.config_store is not None:
+                if pending := self.config_store.pending_generation():
+                    response["pending_config_generation"] = pending
+                if reload_error := self.config_store.last_error():
+                    response["config_reload_error"] = reload_error
+            if reload_result is not None:
+                response["config_reload"] = _config_reload_payload(reload_result)
             if method == "gate":
                 params = request.get("params")
                 evaluation = _evaluate_gate(params)
@@ -609,6 +717,25 @@ def _resource_sample_from(raw: object) -> dict[str, int | float | str] | None:
         "cpu_seconds": float(cpu_seconds),
         "peak_rss_bytes": peak_rss_bytes,
     }
+
+
+def _config_reload_payload(result: ConfigReloadResult) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "disposition": result.disposition.value,
+        "active_generation": result.active_generation,
+        "candidate_generation": result.candidate_generation,
+        "changes": [
+            {
+                "path": change.path,
+                "activation_boundary": change.activation_boundary.value,
+            }
+            for change in result.changes
+        ],
+        "required_boundaries": [boundary.value for boundary in result.required_boundaries],
+    }
+    if result.error is not None:
+        payload["error"] = result.error
+    return payload
 
 
 class ServiceManager(Protocol):
@@ -934,12 +1061,18 @@ def main(argv: list[str] | None = None) -> int:
             resolved = _resolved_daemon_config(layout)
             config = resolved.config
             config_generation = resolved.resolved_config_generation
+            config_store = ConfigSnapshotStore(resolved)
+            config_loader: Callable[[], ResolvedConfig] | None = partial(
+                _resolved_daemon_config, layout
+            )
             for diagnostic in resolved.diagnostics:
                 print(f"spotterd: {diagnostic}", file=sys.stderr)
         except (OSError, ValueError) as error:
             print(f"spotterd: unusable config ({error}); using defaults", file=sys.stderr)
             config = SpotterConfig.from_mapping({"main_agent": {"adapter": "codex"}})
             config_generation = "fallback-unversioned"
+            config_store = None
+            config_loader = None
         asyncio.run(
             DaemonServer(
                 app_server_endpoint=_configured_app_server_endpoint(layout),
@@ -947,6 +1080,8 @@ def main(argv: list[str] | None = None) -> int:
                 mcp_semantics=config.mcp_semantics,
                 snapshot_on_patch=config.snapshot_on_patch,
                 config_generation=config_generation,
+                config_store=config_store,
+                config_loader=config_loader,
                 layout=layout,
             ).serve()
         )

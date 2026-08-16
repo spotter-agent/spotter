@@ -29,9 +29,11 @@ from spotter.budget import (
 )
 from spotter.build_identity import current_build_identity, version_line
 from spotter.codex import CodexAdapter
-from spotter.config import ConfigurationError, SpotterConfig, resolve_config
+from spotter.config import ConfigurationError, ReloadDisposition, SpotterConfig, resolve_config
 from spotter.core import SpotterRuntime
 from spotter.daemon import (
+    DaemonClient,
+    DaemonError,
     DaemonStatus,
     ManagedServiceManager,
     ManualServiceManager,
@@ -221,7 +223,7 @@ def build_parser() -> argparse.ArgumentParser:
             "explain: inspect one intervention with --intervention-id; "
             "feedback: append structured human feedback to an intervention; "
             "effects: list or explicitly resolve external effects for a session; "
-            "daemon: manually start, stop, restart, or inspect spotterd; "
+            "daemon: manually start, stop, restart, reload, or inspect spotterd; "
             "setup/teardown: manage the owned Codex integration"
         ),
     )
@@ -232,6 +234,7 @@ def build_parser() -> argparse.ArgumentParser:
             "start",
             "stop",
             "restart",
+            "reload",
             "status",
             "codex",
             "validate",
@@ -491,7 +494,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "daemon":
         if args.target is None or args.target == "codex":
-            parser.error("daemon requires start, stop, restart, or status")
+            parser.error("daemon requires start, stop, restart, reload, or status")
         return _daemon_main(args.target)
     if args.command in {"setup", "teardown"}:
         if args.target != "codex":
@@ -1387,6 +1390,30 @@ def _doctor_main(config_path: Path | None) -> int:
 
 
 def _daemon_main(action: str, manager: ServiceManager | None = None) -> int:
+    if action == "reload":
+        try:
+            result = asyncio.run(DaemonClient().reload_config())
+        except DaemonError as error:
+            print(f"spotterd: config reload unavailable ({error})", file=sys.stderr)
+            return 1
+        details = [f"active={result.active_generation}"]
+        if result.candidate_generation is not None:
+            details.append(f"candidate={result.candidate_generation}")
+        if result.changes:
+            details.append(f"changes={','.join(change.path for change in result.changes)}")
+        if result.required_boundaries:
+            details.append(
+                "required=" + ",".join(boundary.value for boundary in result.required_boundaries)
+            )
+        if result.error:
+            details.append(result.error)
+        print(f"spotterd: config {result.disposition.value.lower()} ({', '.join(details)})")
+        return (
+            0
+            if result.disposition in {ReloadDisposition.APPLIED, ReloadDisposition.STAGED_NEXT_TURN}
+            else 1
+        )
+
     if manager is not None:
         service = manager
     else:
@@ -1422,6 +1449,10 @@ def _daemon_main(action: str, manager: ServiceManager | None = None) -> int:
         details.append(f"build={status.build_id}")
     if status.config_generation is not None:
         details.append(f"config={status.config_generation}")
+    if status.pending_config_generation is not None:
+        details.append(f"pending-config={status.pending_config_generation}")
+    if status.config_reload_error is not None:
+        details.append(f"config-reload-error={status.config_reload_error}")
     if status.detail:
         details.append(status.detail)
     suffix = f" ({', '.join(details)})" if details else ""

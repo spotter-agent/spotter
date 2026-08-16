@@ -108,10 +108,12 @@ Its limitations are now structural:
 ## 1.2 Implemented runtime foundation
 
 `spotterd` is an installable long-lived process with a versioned newline-delimited JSON control
-protocol over a per-user UNIX socket. `spotter daemon start|stop|restart|status` exercises a real
+protocol over a per-user UNIX socket. `spotter daemon start|stop|restart|reload|status` exercises a real
 handshake rather than treating a PID file as liveness. The server serializes ownership, accepts
 concurrent clients, reports `healthy` / `degraded` / `recovering`, and makes absence explicit as
-`unavailable`.
+`unavailable`. Reload resolution runs off the daemon event loop, then atomically applies only `HOT`
+changes or stages the whole candidate for a later turn boundary; status reports active/pending
+generations and the last rejected reload.
 
 Manual process management implements the `ServiceManager` boundary used by the CLI. For a configured
 endpoint, the daemon owns one App Server connection/reconnect loop, routes epoch-tagged Trace IR into

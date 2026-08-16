@@ -268,6 +268,7 @@ spotter daemon status
 
 ```bash
 spotter daemon start
+spotter daemon reload
 spotter daemon restart
 spotter daemon stop
 ```

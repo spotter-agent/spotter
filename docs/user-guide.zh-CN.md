@@ -259,6 +259,7 @@ PreToolUse Hook 执行不受影响，但完整 App Server 观察和实时控制�
 
 ```bash
 spotter daemon start
+spotter daemon reload
 spotter daemon restart
 spotter daemon stop
 ```

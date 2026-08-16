@@ -10,7 +10,16 @@ import pytest
 
 from spotter.build_identity import current_build_identity
 from spotter.cli import main
-from spotter.config import GatesConfig
+from spotter.config import (
+    ActivationBoundary,
+    ConfigChange,
+    ConfigReloadResult,
+    ConfigSnapshotStore,
+    GatesConfig,
+    ReloadDisposition,
+    ResolvedConfig,
+    resolve_config,
+)
 from spotter.daemon import (
     GATE_TIMEOUT,
     PROTOCOL_VERSION,
@@ -108,6 +117,90 @@ def test_daemon_resolves_manifest_config_generation(tmp_path: Path) -> None:
 
     assert resolved.config.reviewer.model == "review-model"
     assert resolved.resolved_config_generation
+
+
+def test_daemon_reload_applies_hot_config_and_stages_next_turn(
+    socket_path: Path, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "runtime.toml"
+    config_path.write_text(
+        'snapshot_on_patch = true\n[main_agent]\nadapter = "codex"\n'
+        "[reviewer]\non_signals = true\nmax_per_session = 2\n"
+    )
+    layout = RuntimeLayout.discover(spotter_root=tmp_path / "home")
+
+    def load() -> ResolvedConfig:
+        return resolve_config(layout=layout, explicit_path=config_path)
+
+    initial = load()
+
+    async def scenario() -> None:
+        server = DaemonServer(
+            socket_path,
+            config_store=ConfigSnapshotStore(initial),
+            config_loader=load,
+        )
+        await server.start()
+        client = DaemonClient(socket_path)
+        try:
+            config_path.write_text(
+                'snapshot_on_patch = false\n[main_agent]\nadapter = "codex"\n'
+                "[reviewer]\non_signals = true\nmax_per_session = 7\n"
+            )
+            applied = await client.reload_config()
+
+            assert applied.disposition == ReloadDisposition.APPLIED
+            assert server.reviewer_config.max_per_session == 7
+            assert server.snapshot_on_patch is False
+            assert server.config_generation == applied.active_generation
+
+            config_path.write_text(
+                'snapshot_on_patch = false\n[main_agent]\nadapter = "codex"\n'
+                '[reviewer]\nmodel = "next-model"\non_signals = true\n'
+                "max_per_session = 7\n"
+            )
+            staged = await client.reload_config()
+            status = await client.status()
+
+            assert staged.disposition == ReloadDisposition.STAGED_NEXT_TURN
+            assert status.config_generation == applied.active_generation
+            assert status.pending_config_generation == staged.candidate_generation
+            assert server.reviewer_config.model != "next-model"
+
+            config_path.write_text("[broken")
+            rejected = await client.reload_config()
+            status = await client.status()
+
+            assert rejected.disposition == ReloadDisposition.REJECTED_INVALID
+            assert status.config_generation == applied.active_generation
+            assert status.pending_config_generation == staged.candidate_generation
+            assert status.config_reload_error
+        finally:
+            await server.close()
+
+    asyncio.run(scenario())
+
+
+def test_daemon_reload_cli_reports_value_free_plan(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class Client:
+        async def reload_config(self) -> ConfigReloadResult:
+            return ConfigReloadResult(
+                ReloadDisposition.STAGED_NEXT_TURN,
+                "cfg-active",
+                "cfg-candidate",
+                changes=(ConfigChange("reviewer.model", ActivationBoundary.NEXT_TURN),),
+            )
+
+    monkeypatch.setattr("spotter.cli.DaemonClient", Client)
+
+    assert main(["daemon", "reload"]) == 0
+    output = capsys.readouterr().out
+    assert "staged_next_turn" in output
+    assert "active=cfg-active" in output
+    assert "candidate=cfg-candidate" in output
+    assert "changes=reviewer.model" in output
 
 
 def test_daemon_loads_mcp_semantics_from_manifest_config(tmp_path: Path) -> None:
