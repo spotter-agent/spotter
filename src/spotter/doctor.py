@@ -26,7 +26,12 @@ from typing import TYPE_CHECKING, Any, cast
 
 from spotter.budget import LedgerCorrupt, spend_totals
 from spotter.build_identity import current_build_identity
-from spotter.daemon import DaemonClient, DaemonStatus, RuntimeHealth
+from spotter.daemon import (
+    DaemonClient,
+    DaemonStatus,
+    RuntimeCompatibility,
+    RuntimeHealth,
+)
 from spotter.paths import RuntimeLayout, spotter_home
 
 if TYPE_CHECKING:
@@ -374,8 +379,18 @@ def check_integration() -> IntegrationInspection:
 
 
 def _daemon_check(status: DaemonStatus, configured: bool) -> Check:
+    if status.compatibility == RuntimeCompatibility.INCOMPATIBLE_STALE:
+        return Check(
+            "daemon",
+            FAIL,
+            f"incompatible running daemon: {status.detail or 'IPC negotiation failed'}; "
+            "run `spotter daemon restart` after upgrading",
+        )
     if status.health == RuntimeHealth.HEALTHY:
-        detail = f"healthy pid={status.pid} protocol={status.protocol}"
+        detail = (
+            f"healthy pid={status.pid} protocol={status.protocol} "
+            f"runtime={status.runtime_generation or 'unknown'}"
+        )
         installed = current_build_identity().build_id
         if status.build_id is None:
             return Check(
@@ -384,12 +399,22 @@ def _daemon_check(status: DaemonStatus, configured: bool) -> Check:
                 "running daemon does not report a build identity; "
                 f"installed package is {installed}; restart required",
             )
-        if status.build_id != installed:
+        if (
+            status.compatibility == RuntimeCompatibility.COMPATIBLE_STALE
+            or status.build_id != installed
+        ):
             return Check(
                 "daemon",
                 WARN,
                 f"running build {status.build_id}, installed package is {installed}; "
                 "restart required",
+            )
+        if status.compatibility == RuntimeCompatibility.UNKNOWN:
+            return Check(
+                "daemon",
+                WARN,
+                "running daemon compatibility is unknown; restart required before mutable "
+                "control operations",
             )
         return Check("daemon", OK, detail)
     if status.health == RuntimeHealth.UNAVAILABLE:

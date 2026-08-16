@@ -1206,6 +1206,13 @@ Required behavior:
 8. Reconcile live threads.
 9. Return to READY.
 
+The control handshake now separates exact build identity from compatibility. CLI and daemon publish
+the selected IPC protocol, supported peer range, named capabilities, and runtime generation. A
+same-protocol stale daemon remains diagnosable and is reported as restart-required; an incompatible
+daemon rejects control requests and `doctor` fails with `spotter daemon restart` guidance. Legacy
+same-protocol peers without range metadata remain observable as compatibility `unknown` instead of
+being guessed compatible.
+
 Never write versioned Homebrew Cellar paths into agent Hooks/service definitions. Use stable `bin`/`opt` paths.
 
 Schema-4 integration Hooks also carry an integration-generation fence. Re-running setup after a

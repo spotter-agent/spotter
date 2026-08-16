@@ -1453,6 +1453,11 @@ def _daemon_main(action: str, manager: ServiceManager | None = None) -> int:
         details.append(f"pending-config={status.pending_config_generation}")
     if status.config_reload_error is not None:
         details.append(f"config-reload-error={status.config_reload_error}")
+    details.append(f"compatibility={status.compatibility.value}")
+    if status.runtime_generation is not None:
+        details.append(f"runtime={status.runtime_generation}")
+    if status.started_at is not None:
+        details.append(f"started-at={status.started_at:.3f}")
     if status.detail:
         details.append(status.detail)
     suffix = f" ({', '.join(details)})" if details else ""

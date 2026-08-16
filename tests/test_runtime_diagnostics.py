@@ -7,7 +7,7 @@ import pytest
 from spotter.app_server import AppServerTransportError, CodexAppServerClient
 from spotter.build_identity import current_build_identity
 from spotter.cli import main
-from spotter.daemon import DaemonClient, DaemonStatus, RuntimeHealth
+from spotter.daemon import DaemonClient, DaemonStatus, RuntimeCompatibility, RuntimeHealth
 from spotter.doctor import FAIL, INFO, OK, WARN, Check, check_integration, check_runtime, worst
 from spotter.integration import MANIFEST_SCHEMA, IntegrationManifest
 from spotter.snapshot import StepJournal
@@ -77,6 +77,11 @@ def _daemon_status(monkeypatch: pytest.MonkeyPatch, health: RuntimeHealth) -> No
             pid=123 if health != RuntimeHealth.UNAVAILABLE else None,
             protocol=1,
             build_id=current_build_identity().build_id,
+            compatibility=(
+                RuntimeCompatibility.MATCHED
+                if health != RuntimeHealth.UNAVAILABLE
+                else RuntimeCompatibility.UNKNOWN
+            ),
         )
 
     monkeypatch.setattr(DaemonClient, "status", status)
@@ -192,6 +197,7 @@ def test_runtime_check_distinguishes_a_running_old_daemon_build(
             pid=123,
             protocol=1,
             build_id="retired-build",
+            compatibility=RuntimeCompatibility.COMPATIBLE_STALE,
         )
 
     monkeypatch.setattr(DaemonClient, "status", old_status)
@@ -201,6 +207,26 @@ def test_runtime_check_distinguishes_a_running_old_daemon_build(
     assert check.status == WARN
     assert "retired-build" in check.detail
     assert "restart required" in check.detail
+
+
+def test_runtime_check_fails_an_incompatible_running_daemon(
+    homes: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _ready_manifest(homes)
+
+    async def incompatible_status(self: DaemonClient) -> DaemonStatus:
+        return DaemonStatus(
+            RuntimeHealth.DEGRADED,
+            detail="running daemon protocol 2 is incompatible",
+            compatibility=RuntimeCompatibility.INCOMPATIBLE_STALE,
+        )
+
+    monkeypatch.setattr(DaemonClient, "status", incompatible_status)
+
+    check = {item.name: item for item in check_runtime()}["daemon"]
+
+    assert check.status == FAIL
+    assert "spotter daemon restart" in check.detail
 
 
 def test_doctor_probe_reports_an_unreachable_configured_app_server(

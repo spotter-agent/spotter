@@ -111,12 +111,18 @@ Its limitations are now structural:
 protocol over a per-user UNIX socket. `spotter daemon start|stop|restart|reload|status` exercises a real
 handshake rather than treating a PID file as liveness. The server serializes ownership, accepts
 concurrent clients, reports `healthy` / `degraded` / `recovering`, and makes absence explicit as
-`unavailable`. Reload resolution runs off the daemon event loop, then atomically applies only `HOT`
+`unavailable`. Each handshake publishes the selected protocol, supported peer range, control
+capabilities, build identity, process generation, and start time. A matching protocol range permits
+a stale build to answer read-only diagnostics with an explicit restart warning; an incompatible
+range is rejected with actionable restart guidance. Reload resolution runs off the daemon event
+loop, then atomically applies only `HOT`
 changes or stages the whole candidate for a later turn boundary; status reports active/pending
 generations and the last rejected reload. The daemon polls the global and selected config files for
 creation, replacement, edits, and removal, then sends those changes through the same atomic reload
-path. Staged snapshots publish before normalization of the next turn only after every daemon-owned
-thread is quiescent, so concurrent turns cannot mix reviewer or MCP-effect semantics generations.
+path. Unexpected watcher failures degrade daemon health, remain visible on stderr, and do not kill
+the watcher. Staged snapshots publish before normalization of the next turn only after every
+daemon-owned thread is quiescent, so concurrent turns cannot mix reviewer or MCP-effect semantics
+generations.
 Daemon-owned source and derived Trace IR records persist the active config generation, state-item
 provenance retains it, and signal candidates inherit the generation of the exact source event that
 produced them. PreToolUse requests

@@ -26,8 +26,10 @@ from spotter.daemon import (
     DaemonAlreadyRunning,
     DaemonClient,
     DaemonProtocolError,
+    DaemonProtocolMismatch,
     DaemonServer,
     DaemonTimeout,
+    RuntimeCompatibility,
     RuntimeHealth,
     _configured_mcp_semantics,
     _configured_reviewer,
@@ -66,6 +68,10 @@ def test_control_socket_handles_concurrent_clients_and_health_states(socket_path
             assert {status.version for status in statuses} == {current_build_identity().version}
             assert {status.build_id for status in statuses} == {current_build_identity().build_id}
             assert {status.config_generation for status in statuses} == {"cfg-test"}
+            assert {status.compatibility for status in statuses} == {RuntimeCompatibility.MATCHED}
+            assert len({status.runtime_generation for status in statuses}) == 1
+            assert all(status.started_at is not None for status in statuses)
+            assert all(status.capabilities is not None for status in statuses)
             assert socket_path.stat().st_mode & 0o777 == 0o600
 
             server.set_health(RuntimeHealth.DEGRADED)
@@ -264,6 +270,53 @@ def test_daemon_automatically_reloads_config_file_changes(
     asyncio.run(scenario())
 
 
+def test_config_file_monitor_survives_an_unexpected_reload_failure(
+    socket_path: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    layout = RuntimeLayout.discover(spotter_root=tmp_path / "home")
+    config_path = layout.user_config_dir / "spotter.toml"
+    initial = resolve_config(layout=layout)
+    calls = 0
+
+    def load() -> ResolvedConfig:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("loader exploded")
+        return resolve_config(layout=layout)
+
+    async def wait_until(predicate: Callable[[], bool]) -> None:
+        async with asyncio.timeout(2):
+            while not predicate():
+                await asyncio.sleep(0.01)
+
+    async def scenario() -> None:
+        server = DaemonServer(
+            socket_path,
+            config_store=ConfigSnapshotStore(initial),
+            config_loader=load,
+            config_watch_interval=0.01,
+        )
+        await server.start()
+        try:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text("[reviewer]\nmax_per_day = 7\n")
+            await wait_until(lambda: server.health == RuntimeHealth.DEGRADED)
+            assert server._config_watch_task is not None
+            assert not server._config_watch_task.done()
+
+            config_path.write_text("[reviewer]\nmax_per_day = 9\n")
+            await wait_until(lambda: server.reviewer_config.max_per_day == 9)
+        finally:
+            await server.close()
+
+    asyncio.run(scenario())
+
+    assert "automatic config reload failed unexpectedly: loader exploded" in capsys.readouterr().err
+
+
 def test_daemon_reload_cli_reports_value_free_plan(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -407,14 +460,124 @@ def test_bad_protocol_does_not_break_later_clients(socket_path: Path) -> None:
             writer.close()
             await writer.wait_closed()
 
-            assert response == {
-                "protocol": PROTOCOL_VERSION,
-                "ok": False,
-                "error": "incompatible control protocol",
-            }
+            assert response["protocol"] == PROTOCOL_VERSION
+            assert response["ok"] is False
+            assert response["error_code"] == "incompatible_protocol"
+            assert "daemon supports 1..1" in response["error"]
+            assert response["min_peer_protocol"] == 1
             assert (await DaemonClient(socket_path).status()).health == RuntimeHealth.HEALTHY
         finally:
             await server.close()
+
+    asyncio.run(scenario())
+
+
+def test_daemon_rejects_an_incompatible_peer_range_without_breaking_later_clients(
+    socket_path: Path,
+) -> None:
+    async def scenario() -> None:
+        server = DaemonServer(socket_path)
+        await server.start()
+        try:
+            reader, writer = await asyncio.open_unix_connection(socket_path)
+            writer.write(
+                json.dumps(
+                    {
+                        "protocol": PROTOCOL_VERSION,
+                        "method": "ping",
+                        "peer": {
+                            "ipc_protocol_version": PROTOCOL_VERSION,
+                            "min_peer_protocol": 2,
+                            "max_peer_protocol": 3,
+                        },
+                    }
+                ).encode()
+                + b"\n"
+            )
+            await writer.drain()
+            response = json.loads(await reader.readline())
+            writer.close()
+            await writer.wait_closed()
+
+            assert response["ok"] is False
+            assert response["error_code"] == "incompatible_protocol"
+            assert "peer supports control protocol 2..3" in response["error"]
+            assert (await DaemonClient(socket_path).status()).compatibility == (
+                RuntimeCompatibility.MATCHED
+            )
+        finally:
+            await server.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "response,expected",
+    [
+        (
+            {
+                "protocol": PROTOCOL_VERSION,
+                "ok": True,
+                "health": "healthy",
+                "pid": 42,
+                "spotter_version": "0.0",
+                "build_id": "retired-build",
+                "ipc_protocol_version": PROTOCOL_VERSION,
+                "min_peer_protocol": PROTOCOL_VERSION,
+                "max_peer_protocol": PROTOCOL_VERSION,
+                "capabilities": ["status"],
+            },
+            RuntimeCompatibility.COMPATIBLE_STALE,
+        ),
+        (
+            {
+                "protocol": PROTOCOL_VERSION,
+                "ok": True,
+                "health": "healthy",
+                "pid": 42,
+                "spotter_version": "legacy",
+                "build_id": "retired-build",
+                "ipc_protocol_version": PROTOCOL_VERSION,
+            },
+            RuntimeCompatibility.UNKNOWN,
+        ),
+    ],
+)
+def test_client_classifies_compatible_and_unknown_daemon_metadata(
+    socket_path: Path,
+    response: dict[str, object],
+    expected: RuntimeCompatibility,
+) -> None:
+    async def scenario() -> None:
+        async def handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            await reader.readline()
+            writer.write(json.dumps(response).encode() + b"\n")
+            await writer.drain()
+            writer.close()
+
+        server = await asyncio.start_unix_server(handler, path=socket_path)
+        async with server:
+            assert (await DaemonClient(socket_path).status()).compatibility == expected
+
+    asyncio.run(scenario())
+
+
+def test_client_reports_incompatible_daemon_protocol_as_stale(socket_path: Path) -> None:
+    async def scenario() -> None:
+        async def handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            await reader.readline()
+            writer.write(b'{"protocol":999,"ok":false,"error":"old"}\n')
+            await writer.drain()
+            writer.close()
+
+        server = await asyncio.start_unix_server(handler, path=socket_path)
+        async with server:
+            status = await DaemonClient(socket_path).status()
+            assert status.health == RuntimeHealth.DEGRADED
+            assert status.compatibility == RuntimeCompatibility.INCOMPATIBLE_STALE
+            assert "spotter daemon restart" in (status.detail or "")
+            with pytest.raises(DaemonProtocolMismatch):
+                await DaemonClient(socket_path).shutdown()
 
     asyncio.run(scenario())
 

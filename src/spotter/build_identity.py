@@ -9,7 +9,12 @@ from importlib.metadata import PackageNotFoundError, version
 from typing import Literal, cast
 
 from spotter._version import __version__ as source_version
-from spotter.protocol import CONTROL_PROTOCOL_VERSION
+from spotter.protocol import (
+    CONTROL_CAPABILITIES,
+    CONTROL_PROTOCOL_VERSION,
+    MAX_CONTROL_PROTOCOL_VERSION,
+    MIN_CONTROL_PROTOCOL_VERSION,
+)
 
 PACKAGE_NAME = "spotter-agent"
 RuntimeComponent = Literal["cli", "daemon", "hook_bridge"]
@@ -28,12 +33,15 @@ class BuildIdentity:
     def is_release(self) -> bool:
         return self.release_tag is not None and self.commit is not None
 
-    def peer_metadata(self, component: RuntimeComponent) -> dict[str, str | int]:
-        metadata: dict[str, str | int] = {
+    def peer_metadata(self, component: RuntimeComponent) -> dict[str, object]:
+        metadata: dict[str, object] = {
             "component": component,
             "spotter_version": self.version,
             "build_id": self.build_id,
             "ipc_protocol_version": CONTROL_PROTOCOL_VERSION,
+            "min_peer_protocol": MIN_CONTROL_PROTOCOL_VERSION,
+            "max_peer_protocol": MAX_CONTROL_PROTOCOL_VERSION,
+            "capabilities": list(CONTROL_CAPABILITIES),
         }
         if self.release_tag is not None:
             metadata["release_tag"] = self.release_tag

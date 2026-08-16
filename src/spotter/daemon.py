@@ -40,7 +40,11 @@ from spotter.gates import Gate, GateDecision
 from spotter.identity import ThreadId
 from spotter.log_registry import LogRegistry, LogRegistryError
 from spotter.paths import RuntimeLayout, RuntimeLayoutError, secure_dir
-from spotter.protocol import CONTROL_PROTOCOL_VERSION
+from spotter.protocol import (
+    CONTROL_PROTOCOL_VERSION,
+    MAX_CONTROL_PROTOCOL_VERSION,
+    MIN_CONTROL_PROTOCOL_VERSION,
+)
 from spotter.review_executor import ReviewExecutor
 from spotter.snapshot import StepRecord
 from spotter.thread_state import ThreadState, ThreadStateStore
@@ -69,6 +73,13 @@ class RuntimeHealth(StrEnum):
     UNAVAILABLE = "unavailable"
 
 
+class RuntimeCompatibility(StrEnum):
+    MATCHED = "matched"
+    COMPATIBLE_STALE = "compatible_stale"
+    INCOMPATIBLE_STALE = "incompatible_stale"
+    UNKNOWN = "unknown"
+
+
 @dataclass(frozen=True)
 class DaemonStatus:
     health: RuntimeHealth
@@ -80,6 +91,12 @@ class DaemonStatus:
     config_generation: str | None = None
     pending_config_generation: str | None = None
     config_reload_error: str | None = None
+    compatibility: RuntimeCompatibility = RuntimeCompatibility.UNKNOWN
+    min_peer_protocol: int | None = None
+    max_peer_protocol: int | None = None
+    capabilities: tuple[str, ...] | None = None
+    runtime_generation: str | None = None
+    started_at: float | None = None
 
     @property
     def available(self) -> bool:
@@ -109,6 +126,10 @@ class DaemonError(RuntimeError):
 
 class DaemonProtocolError(DaemonError):
     """The daemon returned an invalid or incompatible response."""
+
+
+class DaemonProtocolMismatch(DaemonProtocolError):
+    """The installed client and running daemon have no compatible IPC version."""
 
 
 class DaemonUnavailable(DaemonError):
@@ -175,10 +196,21 @@ class DaemonClient:
                 if not isinstance(response, dict):
                     raise DaemonProtocolError("daemon response must be an object")
                 response = cast(dict[str, Any], response)
-                if response.get("protocol") != PROTOCOL_VERSION:
-                    raise DaemonProtocolError("incompatible daemon protocol")
+                response_protocol = response.get("protocol")
+                if response_protocol != PROTOCOL_VERSION:
+                    raise DaemonProtocolMismatch(
+                        "running daemon protocol "
+                        f"{response_protocol!r} is incompatible with installed protocol "
+                        f"{PROTOCOL_VERSION}; run `spotter daemon restart` after upgrading"
+                    )
+                _validate_response_peer(response)
                 if response.get("ok") is not True:
-                    raise DaemonProtocolError(str(response.get("error") or "daemon request failed"))
+                    message = str(response.get("error") or "daemon request failed")
+                    if response.get("error_code") == "incompatible_protocol":
+                        raise DaemonProtocolMismatch(message)
+                    if message.startswith("unknown control method"):
+                        message += "; restart or upgrade spotterd"
+                    raise DaemonProtocolError(message)
                 return response
         except TimeoutError as error:
             raise DaemonTimeout(f"daemon request timed out after {self.timeout:.3f}s") from error
@@ -229,9 +261,30 @@ class DaemonClient:
                     if isinstance(response.get("config_reload_error"), str)
                     else None
                 ),
+                compatibility=_response_compatibility(response),
+                min_peer_protocol=_optional_int(response.get("min_peer_protocol")),
+                max_peer_protocol=_optional_int(response.get("max_peer_protocol")),
+                capabilities=_string_tuple(response.get("capabilities")),
+                runtime_generation=(
+                    response.get("runtime_generation")
+                    if isinstance(response.get("runtime_generation"), str)
+                    else None
+                ),
+                started_at=(
+                    float(response["started_at"])
+                    if isinstance(response.get("started_at"), int | float)
+                    and not isinstance(response.get("started_at"), bool)
+                    else None
+                ),
             )
         except DaemonUnavailable as error:
             return DaemonStatus(RuntimeHealth.UNAVAILABLE, detail=str(error))
+        except DaemonProtocolMismatch as error:
+            return DaemonStatus(
+                RuntimeHealth.DEGRADED,
+                detail=str(error),
+                compatibility=RuntimeCompatibility.INCOMPATIBLE_STALE,
+            )
         except (DaemonProtocolError, KeyError, ValueError) as error:
             return DaemonStatus(RuntimeHealth.DEGRADED, detail=str(error))
 
@@ -337,6 +390,81 @@ class DaemonClient:
         return GateDecision(allowed, rule, reason), float(evaluation_ms), sample
 
 
+def _optional_int(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _string_tuple(value: object) -> tuple[str, ...] | None:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        return None
+    return tuple(value)
+
+
+def _response_compatibility(response: dict[str, Any]) -> RuntimeCompatibility:
+    protocol = _optional_int(response.get("ipc_protocol_version"))
+    minimum = _optional_int(response.get("min_peer_protocol"))
+    maximum = _optional_int(response.get("max_peer_protocol"))
+    if protocol != PROTOCOL_VERSION:
+        return RuntimeCompatibility.INCOMPATIBLE_STALE
+    if minimum is None or maximum is None:
+        return RuntimeCompatibility.UNKNOWN
+    if minimum > maximum or not minimum <= PROTOCOL_VERSION <= maximum:
+        return RuntimeCompatibility.INCOMPATIBLE_STALE
+    build_id = response.get("build_id")
+    if not isinstance(build_id, str):
+        return RuntimeCompatibility.UNKNOWN
+    if build_id == current_build_identity().build_id:
+        return RuntimeCompatibility.MATCHED
+    return RuntimeCompatibility.COMPATIBLE_STALE
+
+
+def _validate_response_peer(response: dict[str, Any]) -> None:
+    """Reject contradictory current-format metadata while accepting legacy omissions."""
+
+    declared = _optional_int(response.get("ipc_protocol_version"))
+    if declared is not None and declared != PROTOCOL_VERSION:
+        raise DaemonProtocolMismatch(
+            f"running daemon selected control protocol {declared}; installed client requires "
+            f"{PROTOCOL_VERSION}; run `spotter daemon restart` after upgrading"
+        )
+    minimum = _optional_int(response.get("min_peer_protocol"))
+    maximum = _optional_int(response.get("max_peer_protocol"))
+    if minimum is None and maximum is None:
+        return
+    if minimum is None or maximum is None or minimum > maximum:
+        raise DaemonProtocolError("daemon returned an invalid protocol compatibility range")
+    if not minimum <= PROTOCOL_VERSION <= maximum:
+        raise DaemonProtocolMismatch(
+            f"running daemon supports control protocol {minimum}..{maximum}; installed client "
+            f"requires {PROTOCOL_VERSION}; run `spotter daemon restart` after upgrading"
+        )
+
+
+def _validate_peer(raw: object) -> None:
+    """Accept exact-protocol legacy peers and range-negotiate current metadata."""
+
+    if raw is None:
+        return
+    if not isinstance(raw, dict):
+        raise DaemonProtocolError("control peer metadata must be an object")
+    declared = _optional_int(raw.get("ipc_protocol_version"))
+    if declared is None:
+        raise DaemonProtocolError("control peer omitted ipc_protocol_version")
+    minimum = _optional_int(raw.get("min_peer_protocol"))
+    maximum = _optional_int(raw.get("max_peer_protocol"))
+    minimum = declared if minimum is None else minimum
+    maximum = declared if maximum is None else maximum
+    if minimum > maximum or not minimum <= PROTOCOL_VERSION <= maximum:
+        raise DaemonProtocolMismatch(
+            f"peer supports control protocol {minimum}..{maximum}; daemon supports "
+            f"{MIN_CONTROL_PROTOCOL_VERSION}..{MAX_CONTROL_PROTOCOL_VERSION}"
+        )
+    if declared != PROTOCOL_VERSION:
+        raise DaemonProtocolMismatch(
+            f"peer selected control protocol {declared}; daemon requires {PROTOCOL_VERSION}"
+        )
+
+
 class DaemonServer:
     """Own the local runtime socket without owning any agent App Server."""
 
@@ -396,6 +524,7 @@ class DaemonServer:
                 if source.path is not None
             )
         self._runtime_id = uuid.uuid4().hex
+        self._started_at = time.time()
         self._gate_requests = 0
         self._resource_sample_seq = 0
         self._package_watch_interval = package_watch_interval
@@ -558,7 +687,12 @@ class DaemonServer:
             if current == signatures:
                 continue
             signatures = current
-            await self.reload_config()
+            try:
+                await self.reload_config()
+            except Exception as error:  # noqa: BLE001 - keep the monitor alive and visible
+                detail = f"automatic config reload failed unexpectedly: {error}"
+                self.set_health(RuntimeHealth.DEGRADED, detail)
+                print(f"spotterd: {detail}", file=sys.stderr)
 
     def set_health(self, health: RuntimeHealth, detail: str | None = None) -> None:
         if health == RuntimeHealth.UNAVAILABLE:
@@ -642,7 +776,11 @@ class DaemonServer:
             if not isinstance(request, dict):
                 raise DaemonProtocolError("request must be an object")
             if request.get("protocol") != PROTOCOL_VERSION:
-                raise DaemonProtocolError("incompatible control protocol")
+                raise DaemonProtocolMismatch(
+                    f"incompatible control protocol; daemon supports {MIN_CONTROL_PROTOCOL_VERSION}"
+                    f"..{MAX_CONTROL_PROTOCOL_VERSION}"
+                )
+            _validate_peer(request.get("peer"))
             method = request.get("method")
             if method not in {"ping", "shutdown", "gate", "reload_config"}:
                 raise DaemonProtocolError(f"unknown control method: {method}")
@@ -655,6 +793,8 @@ class DaemonServer:
                 "health": self.health.value,
                 "pid": os.getpid(),
                 "config_generation": self.config_generation,
+                "runtime_generation": self._runtime_id,
+                "started_at": self._started_at,
                 **current_build_identity().peer_metadata("daemon"),
             }
             if self.health_detail is not None:
@@ -691,6 +831,12 @@ class DaemonServer:
                 "protocol": PROTOCOL_VERSION,
                 "ok": False,
                 "error": str(error),
+                "error_code": (
+                    "incompatible_protocol"
+                    if isinstance(error, DaemonProtocolMismatch)
+                    else "request_failed"
+                ),
+                **current_build_identity().peer_metadata("daemon"),
             }
         try:
             writer.write(json.dumps(response, separators=(",", ":")).encode() + b"\n")

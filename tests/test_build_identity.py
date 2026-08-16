@@ -3,7 +3,12 @@ import pytest
 from spotter.build_identity import current_build_identity, version_line
 from spotter.cli import main as cli_main
 from spotter.daemon import main as daemon_main
-from spotter.protocol import CONTROL_PROTOCOL_VERSION
+from spotter.protocol import (
+    CONTROL_CAPABILITIES,
+    CONTROL_PROTOCOL_VERSION,
+    MAX_CONTROL_PROTOCOL_VERSION,
+    MIN_CONTROL_PROTOCOL_VERSION,
+)
 
 
 def test_component_identity_separates_build_from_protocol() -> None:
@@ -15,6 +20,9 @@ def test_component_identity_separates_build_from_protocol() -> None:
     assert peer["spotter_version"] == identity.version
     assert peer["build_id"] == identity.build_id
     assert peer["ipc_protocol_version"] == CONTROL_PROTOCOL_VERSION
+    assert peer["min_peer_protocol"] == MIN_CONTROL_PROTOCOL_VERSION
+    assert peer["max_peer_protocol"] == MAX_CONTROL_PROTOCOL_VERSION
+    assert peer["capabilities"] == list(CONTROL_CAPABILITIES)
 
 
 def test_version_line_reports_packaged_identity_and_protocol() -> None:
