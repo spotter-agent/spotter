@@ -286,6 +286,7 @@ class ReviewExecutor:
             identity=job.snapshot.identity,
             provenance=TraceProvenance("spotterd", "review_executor"),
             connection_epoch=job.target_connection_epoch,
+            config_generation=config_generation,
         )
 
 

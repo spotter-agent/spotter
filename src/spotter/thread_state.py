@@ -61,6 +61,7 @@ class StateProvenance:
     turn_id: TurnId | None
     connection_epoch: int | None
     source: str | None
+    config_generation: str | None
 
 
 @dataclass(frozen=True)
@@ -556,6 +557,7 @@ def _provenance(thread_id: ThreadId, event: TraceEvent) -> StateProvenance:
         turn_id,
         event.connection_epoch,
         source,
+        event.config_generation,
     )
 
 

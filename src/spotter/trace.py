@@ -29,6 +29,7 @@ class TraceEvent:
     arrival_seq: int | None = None
     observed_monotonic_ns: int | None = None
     monotonic_clock_id: str | None = None
+    config_generation: str | None = None
 
 
 # Judgment happens on semantic segments, enforcement on tool boundaries (plan Q8).

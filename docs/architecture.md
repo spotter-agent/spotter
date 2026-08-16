@@ -113,11 +113,16 @@ handshake rather than treating a PID file as liveness. The server serializes own
 concurrent clients, reports `healthy` / `degraded` / `recovering`, and makes absence explicit as
 `unavailable`. Reload resolution runs off the daemon event loop, then atomically applies only `HOT`
 changes or stages the whole candidate for a later turn boundary; status reports active/pending
-generations and the last rejected reload. Staged snapshots publish before normalization of the next
-turn only after every daemon-owned thread is quiescent, so concurrent turns cannot mix reviewer or
-MCP-effect semantics generations. PreToolUse requests independently carry the generation resolved
-by their short-lived Hook invocation; the Hook journal and any correlated daemon block keep that
-generation rather than inferring it from the daemon's current snapshot.
+generations and the last rejected reload. The daemon polls the global and selected config files for
+creation, replacement, edits, and removal, then sends those changes through the same atomic reload
+path. Staged snapshots publish before normalization of the next turn only after every daemon-owned
+thread is quiescent, so concurrent turns cannot mix reviewer or MCP-effect semantics generations.
+Daemon-owned source and derived Trace IR records persist the active config generation, state-item
+provenance retains it, and signal candidates inherit the generation of the exact source event that
+produced them. PreToolUse requests
+independently carry the generation resolved by their short-lived Hook invocation; the Hook journal
+and any correlated daemon block keep that generation rather than inferring it from the daemon's
+current snapshot.
 
 Manual process management implements the `ServiceManager` boundary used by the CLI. For a configured
 endpoint, the daemon owns one App Server connection/reconnect loop, routes epoch-tagged Trace IR into

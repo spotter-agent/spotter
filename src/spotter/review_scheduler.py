@@ -53,6 +53,7 @@ class ReviewerJob:
             identity=trigger.identity,
             provenance=TraceProvenance("spotterd", "review_scheduler"),
             connection_epoch=trigger.connection_epoch,
+            config_generation=trigger.config_generation,
         )
 
     def discarded_event(self, trigger: TraceEvent, reason: str) -> TraceEvent:
@@ -72,6 +73,7 @@ class ReviewerJob:
             identity=trigger.identity,
             provenance=TraceProvenance("spotterd", "review_scheduler"),
             connection_epoch=trigger.connection_epoch,
+            config_generation=trigger.config_generation,
         )
 
     def stale_event(self, trigger: TraceEvent, reason: str) -> TraceEvent:
@@ -91,6 +93,7 @@ class ReviewerJob:
             identity=trigger.identity,
             provenance=TraceProvenance("spotterd", "review_scheduler"),
             connection_epoch=trigger.connection_epoch,
+            config_generation=trigger.config_generation,
         )
 
 

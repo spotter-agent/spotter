@@ -60,6 +60,12 @@ def test_time_survives_a_round_trip_through_disk() -> None:
     assert loaded[1].at > loaded[0].at  # ordering is now measurable, not assumed
 
 
+def test_config_generation_survives_a_round_trip_through_disk() -> None:
+    StepJournal(_journal()).record(TraceEvent("a", config_generation="cfg-source"))
+
+    assert StepJournal.load(_journal())[0].event.config_generation == "cfg-source"
+
+
 def test_untimed_records_report_unknown_rather_than_zero() -> None:
     """A default of 0 is indistinguishable from an instantaneous session."""
     legacy = {"step": 0, "kind": "tool_proposal", "payload": {}, "snapshot": None}

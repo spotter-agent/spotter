@@ -34,6 +34,7 @@ def _event(
     turn: str | None = "turn-1",
     operation_id: str | None = None,
     epoch: int | None = 1,
+    config_generation: str | None = "cfg-test",
 ) -> TraceEvent:
     return TraceEvent(
         kind,
@@ -44,6 +45,7 @@ def _event(
         operation_id=operation_id,
         provenance=TraceProvenance("codex_app_server", kind),
         connection_epoch=epoch,
+        config_generation=config_generation,
     )
 
 
@@ -99,6 +101,7 @@ def test_reduces_normal_trace_incrementally_into_typed_state() -> None:
     assert state.execution.active_items == frozenset()
     assert state.execution.recent_failures[-1].provenance.event_id == "cmd-done"
     assert state.execution.recent_failures[-1].provenance.created_at == 100
+    assert state.execution.recent_failures[-1].provenance.config_generation == "cfg-test"
     assert state.supervision.interventions[-1].kind == StateItemKind.INTERVENTION
     assert {item.kind for item in state.evidence.items} == {
         StateItemKind.HYPOTHESIS,

@@ -113,6 +113,7 @@ class AppServerRecoveryLoop:
         control_telemetry_queue_size: int = 256,
         mcp_semantics: tuple[McpToolSemantics, ...] = (),
         snapshot_on_patch: bool = True,
+        config_generation: str = "unversioned",
     ) -> None:
         if not endpoint.strip():
             raise ValueError("App Server endpoint must be non-empty")
@@ -129,6 +130,7 @@ class AppServerRecoveryLoop:
         self.client_factory = client_factory or (lambda value: CodexAppServerClient(value))
         self.signals = signals or SignalEngine()
         self.review_scheduler = review_scheduler or ReviewScheduler()
+        self.config_generation = config_generation
         self.on_review_job = on_review_job
         self.on_turn_boundary = on_turn_boundary
         self.initial_backoff = initial_backoff
@@ -230,21 +232,24 @@ class AppServerRecoveryLoop:
     def set_review_job_callback(self, callback: ReviewJobCallback) -> None:
         self.on_review_job = callback
 
-    def update_hot_config(self, *, snapshot_on_patch: bool) -> None:
+    def update_hot_config(self, *, snapshot_on_patch: bool, config_generation: str) -> None:
         """Apply settings whose contract permits immediate use by future observations."""
 
         self.ingestor.snapshot_on_patch = snapshot_on_patch
+        self.config_generation = config_generation
 
     def update_turn_config(
         self,
         *,
         mcp_semantics: tuple[McpToolSemantics, ...],
         snapshot_on_patch: bool,
+        config_generation: str,
     ) -> None:
         """Publish a full turn-bound config before normalizing the next turn."""
 
         self.ingestor.normalizer.mcp_semantics = mcp_semantics
         self.ingestor.snapshot_on_patch = snapshot_on_patch
+        self.config_generation = config_generation
 
     def record_review_event(self, event: TraceEvent) -> StepRecord | None:
         return self._record(event)
@@ -305,6 +310,11 @@ class AppServerRecoveryLoop:
                 identity=state.identity,
                 provenance=TraceProvenance("spotterd", "gate_bridge"),
                 connection_epoch=state.connection_epoch,
+                config_generation=(
+                    config_generation
+                    if isinstance(config_generation, str) and config_generation
+                    else "unversioned"
+                ),
             )
         )
 
@@ -504,6 +514,11 @@ class AppServerRecoveryLoop:
         )
 
     def _enqueue_control_event(self, queued: _QueuedControlEvent) -> None:
+        if queued.event.config_generation is None:
+            queued = replace(
+                queued,
+                event=replace(queued.event, config_generation=self.config_generation),
+            )
         event_id = queued.event.event_id
         if event_id is not None and event_id in self._control_telemetry_ids:
             return
@@ -781,6 +796,8 @@ class AppServerRecoveryLoop:
         self.metrics = replace(self.metrics, observation_gaps=self.metrics.observation_gaps + 1)
 
     def _record(self, event: TraceEvent) -> StepRecord | None:
+        if event.config_generation is None:
+            event = replace(event, config_generation=self.config_generation)
         record = self.ingestor.record(event)
         if record is None or event.identity is None or event.identity.thread_id is None:
             return record
@@ -971,6 +988,8 @@ class AppServerRecoveryLoop:
     def _append_derived(self, event: TraceEvent) -> StepRecord | None:
         """Recover one already-derived event without running producers out of order."""
 
+        if event.config_generation is None:
+            event = replace(event, config_generation=self.config_generation)
         record = self.ingestor.record(event)
         if (
             record is not None

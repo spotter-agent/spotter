@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 
 from spotter.identity import IdentityProvenance, RuntimeIdentity, ThreadId, TurnId
@@ -104,7 +105,7 @@ def _observe(
 def test_failure_streak_emits_once_then_cools_down_until_success() -> None:
     engine = SignalEngine(failure_threshold=2)
     first = _event("event-1", "failed")
-    second = _event("event-2", "failed")
+    second = replace(_event("event-2", "failed"), config_generation="cfg-detector")
     third = _event("event-3", "failed")
     success = _event("event-4", "completed")
 
@@ -134,6 +135,7 @@ def test_failure_streak_emits_once_then_cools_down_until_success() -> None:
     assert trace.payload["status"] == "active"
     assert trace.payload["state_version"] == 2
     assert trace.payload["features"] == {"consecutive_failures": 2}
+    assert trace.config_generation == "cfg-detector"
 
 
 def test_repeated_equivalent_tool_calls_emit_once_then_cool_down() -> None:

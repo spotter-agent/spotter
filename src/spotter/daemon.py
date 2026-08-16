@@ -59,6 +59,7 @@ _MAX_REQUEST_BYTES = 64 * 1024
 _RESOURCE_SAMPLE_EVERY = 64
 _PACKAGE_WATCH_INTERVAL = 0.25
 _PACKAGE_MISSING_GRACE = 10.0
+_CONFIG_WATCH_INTERVAL = 0.5
 
 
 class RuntimeHealth(StrEnum):
@@ -352,11 +353,14 @@ class DaemonServer:
         config_generation: str = "unversioned",
         config_store: ConfigSnapshotStore | None = None,
         config_loader: Callable[[], ResolvedConfig] | None = None,
+        config_watch_interval: float = _CONFIG_WATCH_INTERVAL,
         package_watch_interval: float = _PACKAGE_WATCH_INTERVAL,
         package_missing_grace: float = _PACKAGE_MISSING_GRACE,
     ) -> None:
         if (config_store is None) != (config_loader is None):
             raise ValueError("config_store and config_loader must be configured together")
+        if config_watch_interval <= 0:
+            raise ValueError("config watch interval must be positive")
         if config_store is not None:
             resolved = config_store.snapshot()
             reviewer_config = resolved.config.reviewer
@@ -382,6 +386,15 @@ class DaemonServer:
         self.config_generation = config_generation
         self.config_store = config_store
         self.config_loader = config_loader
+        self._config_watch_interval = config_watch_interval
+        self._config_watch_task: asyncio.Task[None] | None = None
+        self._config_watch_paths = {self.layout.user_config_dir / "spotter.toml"}
+        if config_store is not None:
+            self._config_watch_paths.update(
+                Path(source.path)
+                for source in config_store.snapshot().source_layers
+                if source.path is not None
+            )
         self._runtime_id = uuid.uuid4().hex
         self._gate_requests = 0
         self._resource_sample_seq = 0
@@ -444,6 +457,7 @@ class DaemonServer:
                 on_turn_boundary=self.activate_pending_config_at_turn_boundary,
                 mcp_semantics=self.mcp_semantics,
                 snapshot_on_patch=self.snapshot_on_patch,
+                config_generation=self.config_generation,
             )
             self.recovery = recovery
             self.review_executor = ReviewExecutor(
@@ -457,6 +471,11 @@ class DaemonServer:
             await recovery.start()
         if self.layout.daemon_executable is not None:
             self._package_watch_task = asyncio.create_task(self._watch_package_boundary())
+        if self.config_store is not None:
+            signatures = self._config_file_signatures()
+            self._config_watch_task = asyncio.create_task(
+                self._watch_config_files(signatures), name="spotter-config-watch"
+            )
 
     async def serve(self) -> None:
         await self.start()
@@ -469,6 +488,11 @@ class DaemonServer:
         await self._shutdown.wait()
 
     async def close(self) -> None:
+        if self._config_watch_task is not None:
+            self._config_watch_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._config_watch_task
+            self._config_watch_task = None
         if self._package_watch_task is not None:
             self._package_watch_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -506,6 +530,35 @@ class DaemonServer:
                 self._shutdown.set()
                 return
             await asyncio.sleep(self._package_watch_interval)
+
+    def _config_file_signatures(self) -> dict[Path, tuple[int, int, int, int] | None]:
+        signatures: dict[Path, tuple[int, int, int, int] | None] = {}
+        for path in self._config_watch_paths:
+            try:
+                metadata = path.stat()
+            except OSError:
+                signatures[path] = None
+            else:
+                signatures[path] = (
+                    metadata.st_dev,
+                    metadata.st_ino,
+                    metadata.st_size,
+                    metadata.st_mtime_ns,
+                )
+        return signatures
+
+    async def _watch_config_files(
+        self, signatures: dict[Path, tuple[int, int, int, int] | None]
+    ) -> None:
+        """Reload after a configured file is created, replaced, changed, or removed."""
+
+        while True:
+            await asyncio.sleep(self._config_watch_interval)
+            current = self._config_file_signatures()
+            if current == signatures:
+                continue
+            signatures = current
+            await self.reload_config()
 
     def set_health(self, health: RuntimeHealth, detail: str | None = None) -> None:
         if health == RuntimeHealth.UNAVAILABLE:
@@ -561,7 +614,10 @@ class DaemonServer:
             self.review_executor.update_config(config.reviewer, self.config_generation)
         update_runtime = getattr(self.recovery, "update_hot_config", None)
         if callable(update_runtime):
-            update_runtime(snapshot_on_patch=config.snapshot_on_patch)
+            update_runtime(
+                snapshot_on_patch=config.snapshot_on_patch,
+                config_generation=self.config_generation,
+            )
 
     def _apply_turn_config(self) -> None:
         assert self.config_store is not None
@@ -573,6 +629,7 @@ class DaemonServer:
             update_runtime(
                 mcp_semantics=config.mcp_semantics,
                 snapshot_on_patch=config.snapshot_on_patch,
+                config_generation=self.config_generation,
             )
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:

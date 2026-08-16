@@ -130,6 +130,7 @@ class SignalCandidate:
             identity=trigger.identity,
             provenance=TraceProvenance("spotterd", "signal_engine"),
             connection_epoch=trigger.connection_epoch,
+            config_generation=trigger.config_generation,
         )
 
 

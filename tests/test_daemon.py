@@ -3,7 +3,7 @@ import json
 import shutil
 import socket
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -209,6 +209,55 @@ def test_daemon_reload_applies_hot_config_and_stages_next_turn(
                 (rule.server, rule.tool, rule.reversibility)
                 for rule in runtime.ingestor.normalizer.mcp_semantics
             ] == [("inventory", "lookup", "A")]
+        finally:
+            await server.close()
+
+    asyncio.run(scenario())
+
+
+def test_daemon_automatically_reloads_config_file_changes(
+    socket_path: Path, tmp_path: Path
+) -> None:
+    layout = RuntimeLayout.discover(spotter_root=tmp_path / "home")
+    config_path = layout.user_config_dir / "spotter.toml"
+    initial = resolve_config(layout=layout)
+
+    async def wait_until(predicate: Callable[[], bool]) -> None:
+        async with asyncio.timeout(2):
+            while not predicate():
+                await asyncio.sleep(0.01)
+
+    async def scenario() -> None:
+        server = DaemonServer(
+            socket_path,
+            config_store=ConfigSnapshotStore(initial),
+            config_loader=lambda: resolve_config(layout=layout),
+            config_watch_interval=0.01,
+        )
+        await server.start()
+        try:
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text("[reviewer]\nmax_per_day = 7\n")
+            await wait_until(lambda: server.reviewer_config.max_per_day == 7)
+            applied_generation = server.config_generation
+
+            config_path.write_text("[reviewer\n")
+            await wait_until(
+                lambda: (
+                    server.config_store is not None and server.config_store.last_error() is not None
+                )
+            )
+            assert server.config_generation == applied_generation
+            assert server.reviewer_config.max_per_day == 7
+
+            config_path.write_text("[reviewer]\nmax_per_day = 9\n")
+            await wait_until(lambda: server.reviewer_config.max_per_day == 9)
+            assert server.config_generation != applied_generation
+
+            config_path.unlink()
+            await wait_until(lambda: server.reviewer_config.max_per_day == 100)
+            assert server.config_store is not None
+            assert server.config_store.last_error() is None
         finally:
             await server.close()
 

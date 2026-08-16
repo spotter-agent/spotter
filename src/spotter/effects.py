@@ -317,6 +317,7 @@ def effect_event(result: TraceEvent) -> TraceEvent | None:
         item_id=result.item_id,
         provenance=result.provenance,
         connection_epoch=result.connection_epoch,
+        config_generation=result.config_generation,
     )
 
 

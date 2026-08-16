@@ -1296,10 +1296,15 @@ the active/pending generations and last rejected reload. Signal reviews pin the 
 model, budgets, and delivery policy at submission. A staged generation activates immediately before
 normalizing a newly observed turn, but only when no older turn remains active in any daemon-owned
 thread. This global quiescent boundary prevents a concurrent old turn from inheriting the new
-reviewer or MCP-semantics generation midway through execution. Automatic file watching remains
-separate follow-up wiring. Each PreToolUse bridge request also carries the exact generation resolved
-by that Hook invocation; both Hook IPC telemetry and any daemon-correlated deterministic block retain
-it, so gate outcomes remain attributable even while daemon and repository layers are changing.
+reviewer or MCP-semantics generation midway through execution. The daemon automatically detects
+creation, atomic replacement, edits, and removal of its global and explicitly selected config files;
+automatic and manual reloads use the same validation and publication contract. Every daemon-owned
+source or derived Trace IR record retains the active generation, state-item provenance keeps it, and
+a `SignalCandidate` inherits the generation of its triggering source event. Each PreToolUse bridge
+request also carries the exact
+generation resolved by that Hook invocation; both Hook IPC telemetry and any daemon-correlated
+deterministic block retain it, so gate outcomes remain attributable even while daemon and repository
+layers are changing.
 
 ---
 

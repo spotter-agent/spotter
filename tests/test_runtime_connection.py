@@ -123,6 +123,20 @@ def test_turn_boundary_callback_runs_before_turn_is_reduced(tmp_path: Path) -> N
     asyncio.run(scenario())
 
 
+def test_runtime_records_the_active_config_generation(tmp_path: Path) -> None:
+    recovery = AppServerRecoveryLoop(
+        "ws://unused",
+        tmp_path / "sessions",
+        ThreadStateStore(),
+        config_generation="cfg-runtime",
+    )
+
+    record = recovery.record_review_event(TraceEvent("runtime_event_unknown"))
+
+    assert record is not None
+    assert record.event.config_generation == "cfg-runtime"
+
+
 def test_reconnect_reconciles_epoch_gap_and_stale_control(tmp_path: Path) -> None:
     async def scenario() -> None:
         connections: list[ServerConnection] = []

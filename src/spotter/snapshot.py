@@ -345,6 +345,7 @@ class StepJournal:
                     arrival_seq=event.arrival_seq,
                     observed_monotonic_ns=observed_monotonic_ns,
                     monotonic_clock_id=monotonic_clock_id,
+                    config_generation=event.config_generation,
                 )
                 record = StepRecord(step, stored_event, snapshot, recorded_at, SCHEMA_VERSION)
                 line = json.dumps(
@@ -464,6 +465,7 @@ def _trace_metadata(event: TraceEvent) -> dict[str, Any]:
         "arrival_seq",
         "observed_monotonic_ns",
         "monotonic_clock_id",
+        "config_generation",
     ):
         value = getattr(event, name)
         if value is not None:
@@ -558,6 +560,7 @@ def _trace_event(raw: dict[str, Any]) -> TraceEvent:
             else None
         ),
         monotonic_clock_id=_optional_string(metadata.get("monotonic_clock_id")),
+        config_generation=_optional_string(metadata.get("config_generation")),
     )
 
 
