@@ -616,6 +616,81 @@ def test_accepted_steer_without_observed_input_finishes_durably(
     asyncio.run(scenario())
 
 
+def test_turn_terminal_before_steer_ack_closes_acceptance_once(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        async def handler(connection: ServerConnection) -> None:
+            await _initialize(connection)
+            listed = await _receive(connection, "thread/list")
+            await _reply(
+                connection,
+                listed,
+                {"data": [{"id": "thread-1"}], "nextCursor": None},
+            )
+            read = await _receive(connection, "thread/read")
+            await _reply(
+                connection,
+                read,
+                {
+                    "thread": {
+                        "id": "thread-1",
+                        "turns": [{"id": "turn-1", "status": "active"}],
+                    }
+                },
+            )
+            steer = await _receive(connection, "turn/steer")
+            await connection.send(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "turn/completed",
+                        "params": {
+                            "threadId": "thread-1",
+                            "turn": {"id": "turn-1", "status": "completed"},
+                        },
+                    }
+                )
+            )
+            await _wait_until(
+                lambda: any(
+                    record.event.kind == "turn_completed" for record in recovery.ingestor.records()
+                )
+            )
+            await _reply(connection, steer, {"turnId": "turn-1"})
+            await connection.wait_closed()
+
+        async with _server(handler) as endpoint:
+            recovery = AppServerRecoveryLoop(
+                endpoint,
+                tmp_path / "sessions",
+                ThreadStateStore(),
+            )
+            await recovery.start()
+            await _wait_until(lambda: recovery.state == RecoveryState.READY)
+            state = recovery.thread_states.snapshots()[0]
+            target = RuntimeControlTarget(state.identity, state.connection_epoch or 0)
+
+            assert await recovery.steer(
+                target,
+                "verify",
+                control_id="spotter:intervention:job-race",
+                review_job_id="job-race",
+            ) == {"turnId": "turn-1"}
+            await recovery.flush_control_telemetry()
+
+            terminals = [
+                record.event
+                for record in recovery.ingestor.records()
+                if record.event.kind == "control_terminal"
+                and record.event.payload.get("control_id") == "spotter:intervention:job-race"
+            ]
+            assert len(terminals) == 1
+            assert terminals[0].payload["outcome"] == "rpc_accepted_only"
+            assert terminals[0].payload["reason_code"] == "target_completed_without_observed_input"
+            await recovery.close()
+
+    asyncio.run(scenario())
+
+
 def test_control_rpc_does_not_wait_for_bounded_telemetry_io(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
