@@ -47,3 +47,10 @@ After an arm's terminal event is observed, the experiment runs the frozen task m
 Secondary trajectory annotations live in a separate, independently versioned JSONL so they cannot rewrite mechanical run evidence. They pin a fingerprint of the exact arm result, original-task ownership, conservative post-nudge relations, rater identity, and zero or more non-exclusive susceptibility classes. `REFUTED_WITH_EVIDENCE` requires a concrete evidence reference and `REFUTED_AND_CONTINUED`; compliance classes must agree with the mechanical PASS/TASK_FAIL result. Rejected, stale, or incomplete deliveries cannot receive semantic robustness labels.
 
 Coverage-aware reports reload durable mechanical rows, recheck same-experiment prefix/task provenance, and pair each framing condition with its neutral control. They report delivery and completion coverage, mechanically judgeable pair coverage, control-pass → nudge-fail harm, semantic-label coverage, annotation conflicts/staleness, evidence-backed refutation, compliance, task replacement, constraint loss, and persistent contamination. Latest corrections are selected per rater; disagreeing current raters reduce coverage instead of being silently resolved.
+
+Render an offline report without rerunning any agent arm:
+
+```bash
+spotter wrong-nudge report ~/.spotter/experiments/wrong-nudges/<run>.jsonl \
+  --annotations ~/.spotter/experiments/wrong-nudges/<experiment>-annotations.jsonl
+```

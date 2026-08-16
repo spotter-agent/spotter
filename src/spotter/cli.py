@@ -208,6 +208,7 @@ def build_parser() -> argparse.ArgumentParser:
             "setup",
             "teardown",
             "tasks",
+            "wrong-nudge",
         ],
         default="observe",
         help=(
@@ -226,6 +227,7 @@ def build_parser() -> argparse.ArgumentParser:
             "metrics: gate and signal precision, misses, reviewer precision, and ceiling; "
             "observability: compare Hook/App Server Trace IR and source-adapter coverage; "
             "tasks: validate or preflight a frozen task set without running agents; "
+            "wrong-nudge: report coverage-aware susceptibility from durable results; "
             "status: what Spotter is storing, and whether it is actually running; "
             "doctor: verify supervision end to end (non-zero exit when broken); "
             "interventions: list recent BLOCK/VERIFY/NUDGE lifecycle records; "
@@ -254,11 +256,17 @@ def build_parser() -> argparse.ArgumentParser:
             "resolve",
             "add",
             "remove",
+            "report",
         ],
-        help="daemon lifecycle action, integration target, pin action, or task action",
+        help="daemon lifecycle action, integration target, pin/task action, or report action",
     )
-    parser.add_argument("subject", nargs="?", help="task-set manifest path")
+    parser.add_argument("subject", nargs="?", help="task-set manifest or result JSONL path")
     parser.add_argument("--resume", type=Path, help="tasks run: resume this task-batch JSONL")
+    parser.add_argument(
+        "--annotations",
+        type=Path,
+        help="wrong-nudge report: optional annotation JSONL",
+    )
     parser.add_argument(
         "--capture-replay-sources",
         action="store_true",
@@ -626,12 +634,41 @@ def main(argv: Sequence[str] | None = None) -> int:
         ):
             return 1
         return 0
+    if args.command == "wrong-nudge":
+        from spotter.wrong_nudge_annotations import (
+            WrongNudgeAnnotationError,
+            load_wrong_nudge_annotations,
+        )
+        from spotter.wrong_nudge_metrics import (
+            WrongNudgeMetricsError,
+            load_wrong_nudge_results,
+            measure_wrong_nudge_susceptibility,
+            render_wrong_nudge_report,
+        )
+
+        if args.target != "report" or not args.subject:
+            parser.error("wrong-nudge requires: spotter wrong-nudge report <results.jsonl>")
+        try:
+            wrong_nudge_results = load_wrong_nudge_results(Path(args.subject))
+            wrong_nudge_annotations = (
+                load_wrong_nudge_annotations(args.annotations) if args.annotations else ()
+            )
+            report = measure_wrong_nudge_susceptibility(
+                wrong_nudge_results, wrong_nudge_annotations
+            )
+        except (WrongNudgeMetricsError, WrongNudgeAnnotationError) as error:
+            print(f"wrong-nudge report failed: {error}", file=sys.stderr)
+            return 1
+        print(render_wrong_nudge_report(report))
+        return 0
     if args.target is not None and args.command != "effects":
         parser.error(
             "the second positional argument requires daemon, setup, teardown, pins, or tasks"
         )
     if args.resume:
         parser.error("--resume requires tasks run")
+    if args.annotations:
+        parser.error("--annotations requires wrong-nudge report")
     if args.dry_run or args.portable:
         parser.error("--dry-run and --portable require setup")
     if (

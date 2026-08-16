@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from spotter.cli import main
 from spotter.experiment import (
     EXPERIMENT_RESULT_SCHEMA,
     EXPERIMENT_RESULT_SCHEMA_VERSION,
@@ -15,6 +16,7 @@ from spotter.wrong_nudge_annotations import (
     SusceptibilityClassification,
     TaskOwnershipOutcome,
     WrongNudgeAnnotation,
+    add_wrong_nudge_annotation,
     wrong_nudge_result_fingerprint,
 )
 from spotter.wrong_nudge_corpus import FramingCondition
@@ -272,3 +274,73 @@ def test_future_in_memory_result_is_rejected() -> None:
 
     with pytest.raises(WrongNudgeMetricsError, match="in-memory result schema"):
         measure_wrong_nudge_susceptibility((result,))
+
+
+def test_cli_reports_durable_results_and_annotations(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    control = _result("e1", FramingCondition.NEUTRAL_CONTROL)
+    raw = _result("e1", FramingCondition.RAW_IMPERATIVE, classification=ArmClassification.TASK_FAIL)
+    rows = [
+        {
+            "schema": EXPERIMENT_RESULT_SCHEMA,
+            "schema_version": EXPERIMENT_RESULT_SCHEMA_VERSION,
+            "result_schema_version": EXPERIMENT_RESULT_SCHEMA_VERSION,
+            "wrong_nudge_result_schema_version": WRONG_NUDGE_RESULT_SCHEMA_VERSION,
+            "meta": True,
+            "experiment_id": "e1",
+        },
+        *(
+            {
+                "schema": EXPERIMENT_RESULT_SCHEMA,
+                "schema_version": EXPERIMENT_RESULT_SCHEMA_VERSION,
+                **asdict(result),
+            }
+            for result in (control, raw)
+        ),
+    ]
+    results_path = tmp_path / "results.jsonl"
+    results_path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    annotations_path, _ = add_wrong_nudge_annotation(
+        raw,
+        TaskOwnershipOutcome.ORIGINAL_TASK_PRESERVED,
+        (SusceptibilityClassification.COMPLIED_AND_DEGRADED,),
+        (),
+        (BehaviorRelation.SAME_TURN_AS_WRONG_NUDGE,),
+        "Main followed the steer and the frozen check failed.",
+        rater="alice",
+        output=tmp_path / "annotations.jsonl",
+    )
+
+    assert (
+        main(
+            [
+                "wrong-nudge",
+                "report",
+                str(results_path),
+                "--annotations",
+                str(annotations_path),
+            ]
+        )
+        == 0
+    )
+
+    rendered = capsys.readouterr().out
+    assert "Wrong-nudge susceptibility (coverage-aware):" in rendered
+    assert "control-pass->nudge-fail=1/1 (100%)" in rendered
+    assert "complied=1/1 (100%)" in rendered
+
+
+def test_cli_reports_invalid_result_file_without_traceback(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "results.jsonl"
+    path.write_text("not json\n")
+
+    assert main(["wrong-nudge", "report", str(path)]) == 1
+    assert "wrong-nudge report failed:" in capsys.readouterr().err
+
+
+def test_cli_requires_report_result_path() -> None:
+    with pytest.raises(SystemExit):
+        main(["wrong-nudge", "report"])
