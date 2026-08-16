@@ -8,5 +8,6 @@ __pycache__/
 .venv/
 build/
 dist/
+site/_build/
 
 .grepai/

@@ -26,6 +26,7 @@
 <p>
   <a href="#install"><strong>Install</strong></a>&nbsp;&nbsp;·&nbsp;&nbsp;
   <a href="#connect-spotter-to-codex"><strong>Quick start</strong></a>&nbsp;&nbsp;·&nbsp;&nbsp;
+  <a href="https://spotter-agent.github.io/spotter/"><strong>Project site</strong></a>&nbsp;&nbsp;·&nbsp;&nbsp;
   <a href="docs/user-guide.md"><strong>Detailed guide</strong></a>&nbsp;&nbsp;·&nbsp;&nbsp;
   <a href="docs/status.md">Current status</a>&nbsp;&nbsp;·&nbsp;&nbsp;
   <a href="docs/README.md">Documentation</a>
