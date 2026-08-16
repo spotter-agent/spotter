@@ -155,6 +155,10 @@ class ObjectiveOutcomeReport:
     neutral_pairs: int
     judgeable_neutral_pairs: int
     neutral_disagreements: int
+    neutral_preflight_failures: int
+    neutral_infrastructure_failures: int
+    neutral_preflight_categories: Mapping[str, int]
+    neutral_infrastructure_categories: Mapping[str, int]
     reported_tokens: int | None
     token_arms: int
     elapsed_ms: tuple[float, ...]
@@ -179,6 +183,7 @@ class _ObjectiveArm:
     pair_key: str
     arm: str
     classification: str
+    environment_preflight: str | None
     reported_tokens: int | None
     elapsed_ms: float | None
 
@@ -1064,6 +1069,9 @@ def measure_objective_outcomes(
     guidance_pairs = judgeable_guidance_pairs = 0
     guidance_better = control_better = guidance_tied = 0
     neutral_pairs = judgeable_neutral_pairs = neutral_disagreements = 0
+    neutral_preflight_failures = neutral_infrastructure_failures = 0
+    neutral_preflight_categories: Counter[str] = Counter()
+    neutral_infrastructure_categories: Counter[str] = Counter()
     paired_arms: dict[str, list[_ObjectiveArm]] = {}
     for pair in groups.values():
         if set(pair) == {"control", "guidance"}:
@@ -1081,6 +1089,21 @@ def measure_objective_outcomes(
             neutral_pairs += 1
             for arm in pair.values():
                 paired_arms.setdefault(arm.arm, []).append(arm)
+            preflight_categories = {
+                category
+                for row in pair.values()
+                if (category := row.environment_preflight) is not None and category != "MATCHED"
+            }
+            if preflight_categories:
+                neutral_preflight_failures += 1
+                neutral_preflight_categories.update(preflight_categories)
+            infrastructure_categories = [
+                row.classification
+                for row in pair.values()
+                if row.classification not in judgeable | {"UNJUDGEABLE"}
+            ]
+            neutral_infrastructure_failures += len(infrastructure_categories)
+            neutral_infrastructure_categories.update(infrastructure_categories)
             if all(row.classification in judgeable for row in pair.values()):
                 judgeable_neutral_pairs += 1
                 neutral_disagreements += (
@@ -1103,6 +1126,10 @@ def measure_objective_outcomes(
         neutral_pairs,
         judgeable_neutral_pairs,
         neutral_disagreements,
+        neutral_preflight_failures,
+        neutral_infrastructure_failures,
+        dict(sorted(neutral_preflight_categories.items())),
+        dict(sorted(neutral_infrastructure_categories.items())),
         sum(tokens) if tokens else None,
         len(tokens),
         elapsed,
@@ -1135,6 +1162,18 @@ def render_objective_outcomes(
         f"  neutral pairs: n={report.judgeable_neutral_pairs}/{report.neutral_pairs} "
         f"judgeable; disagreements={report.neutral_disagreements}"
     )
+    if report.neutral_pairs:
+        neutral_arms = report.neutral_pairs * 2
+        lines.append(
+            "  neutral fidelity: "
+            f"preflight_failures={report.neutral_preflight_failures}/"
+            f"{report.neutral_pairs} pairs; "
+            f"infrastructure_failures={report.neutral_infrastructure_failures}/"
+            f"{neutral_arms} arms; "
+            f"preflight_categories={_category_counts(report.neutral_preflight_categories)}; "
+            "infrastructure_categories="
+            f"{_category_counts(report.neutral_infrastructure_categories)}"
+        )
     _append_paired_costs(lines, report, "neutral", ("neutral_a", "neutral_b"))
     tokens = str(report.reported_tokens) if report.reported_tokens is not None else "unknown"
     lines.append(
@@ -1144,6 +1183,10 @@ def render_objective_outcomes(
         "identity=run/pair/arm from durable result rows"
     )
     return "\n".join(lines)
+
+
+def _category_counts(categories: Mapping[str, int]) -> str:
+    return ",".join(f"{name}={count}" for name, count in categories.items()) or "none"
 
 
 def _objective_arm_cost(arms: Iterable[_ObjectiveArm]) -> ObjectiveArmCost:
@@ -1265,9 +1308,19 @@ def _objective_arm(row: Mapping[str, object], path: Path) -> _ObjectiveArm | Non
         pair_key,
         arm,
         classification,
+        _optional_objective_text(row, "environment_preflight", path),
         _agent_reported_tokens(row),
         _agent_elapsed(row),
     )
+
+
+def _optional_objective_text(row: Mapping[str, object], field: str, path: Path) -> str | None:
+    value = row.get(field)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ObjectiveOutcomeError(f"{path}: objective result has invalid {field}")
+    return value
 
 
 def _validate_task_result_schema(row: Mapping[str, object], path: Path, number: int) -> None:

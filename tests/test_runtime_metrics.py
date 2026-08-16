@@ -86,6 +86,10 @@ def test_objective_outcomes_join_costs_by_durable_arm_identity(tmp_path: Path) -
     assert report.guidance_better == report.guidance_tied == 0
     assert report.judgeable_neutral_pairs == report.neutral_pairs == 1
     assert report.neutral_disagreements == 1
+    assert report.neutral_preflight_failures == 0
+    assert report.neutral_infrastructure_failures == 0
+    assert report.neutral_preflight_categories == {}
+    assert report.neutral_infrastructure_categories == {}
     assert report.reported_tokens == 300
     assert report.token_arms == 2
     assert report.elapsed_ms == (1000.0, 2000.0)
@@ -102,6 +106,81 @@ def test_objective_outcomes_join_costs_by_durable_arm_identity(tmp_path: Path) -
     assert "guidance tokens=200 (1/1 arms), elapsed=avg=2000.00ms" in rendered
     assert "neutral_a tokens=unknown (0/1 arms), elapsed=unknown (0/1)" in rendered
     assert "disagreements=1" in rendered
+    assert "preflight_failures=0/1 pairs" in rendered
+    assert "infrastructure_failures=0/2 arms" in rendered
+
+
+def test_objective_outcomes_report_neutral_preflight_and_infrastructure_failures(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "neutral-failures.jsonl"
+    _write_rows(
+        path,
+        {
+            "result_schema_version": 3,
+            "experiment_id": "experiment-1",
+            "pair": 0,
+            "arm": "neutral_a",
+            "classification": "INFRA_FAIL",
+            "environment_preflight": "ENVIRONMENT_MISMATCH:MISSING_IGNORED_FILE",
+        },
+        {
+            "result_schema_version": 3,
+            "experiment_id": "experiment-1",
+            "pair": 0,
+            "arm": "neutral_b",
+            "classification": "INFRA_FAIL",
+            "environment_preflight": "ENVIRONMENT_MISMATCH:MISSING_IGNORED_FILE",
+        },
+        {
+            "result_schema_version": 3,
+            "experiment_id": "experiment-1",
+            "pair": 1,
+            "arm": "neutral_a",
+            "classification": "PASS",
+            "environment_preflight": "MATCHED",
+        },
+        {
+            "result_schema_version": 3,
+            "experiment_id": "experiment-1",
+            "pair": 1,
+            "arm": "neutral_b",
+            "classification": "PASS",
+            "environment_preflight": "MATCHED",
+        },
+    )
+
+    report = measure_objective_outcomes([path])
+
+    assert report.neutral_pairs == 2
+    assert report.judgeable_neutral_pairs == 1
+    assert report.neutral_preflight_failures == 1
+    assert report.neutral_infrastructure_failures == 2
+    assert report.neutral_preflight_categories == {"ENVIRONMENT_MISMATCH:MISSING_IGNORED_FILE": 1}
+    assert report.neutral_infrastructure_categories == {"INFRA_FAIL": 2}
+    rendered = render_objective_outcomes(report)
+    assert "preflight_failures=1/2 pairs" in rendered
+    assert "infrastructure_failures=2/4 arms" in rendered
+    assert "ENVIRONMENT_MISMATCH:MISSING_IGNORED_FILE=1" in rendered
+    assert "INFRA_FAIL=2" in rendered
+
+
+def test_objective_outcomes_reject_invalid_environment_preflight(tmp_path: Path) -> None:
+    path = tmp_path / "invalid-preflight.jsonl"
+    _write_rows(
+        path,
+        {
+            "result_schema_version": 3,
+            "experiment_id": "experiment-1",
+            "pair": 0,
+            "arm": "neutral_a",
+            "classification": "INFRA_FAIL",
+            "environment_preflight": ["not", "text"],
+        },
+    )
+
+    with pytest.raises(ObjectiveOutcomeError, match="invalid environment_preflight"):
+        measure_objective_outcomes([path])
 
 
 def test_objective_outcomes_accept_current_task_batch_schema(tmp_path: Path) -> None:
