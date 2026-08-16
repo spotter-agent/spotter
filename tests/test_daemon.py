@@ -443,7 +443,7 @@ def test_gate_request_carries_hook_identity_for_live_signal_correlation(
             identity=RuntimeIdentity.legacy_hook("codex", "thread-1"),
         )
         try:
-            await DaemonClient(socket_path).gate(event, GatesConfig(), "/repo")
+            await DaemonClient(socket_path).gate(event, GatesConfig(), "/repo", "cfg-gate-test")
             async with asyncio.timeout(1):
                 while not recovery.observations:
                     await asyncio.sleep(0)
@@ -452,6 +452,7 @@ def test_gate_request_carries_hook_identity_for_live_signal_correlation(
 
         params, decision = recovery.observations[0]
         assert decision["rule"] == "git_reset_hard"
+        assert params["config_generation"] == "cfg-gate-test"
         assert params["identity"] == {"thread_id": "thread-1", "turn_id": "turn-1"}
         assert params["proposal"] == {
             "command": "git reset --hard",

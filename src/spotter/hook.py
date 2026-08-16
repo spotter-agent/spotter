@@ -241,7 +241,10 @@ def _maybe_spawn_shadow_review(
 
 
 def run_hook(
-    payload: dict[str, Any], config: SpotterConfig, config_path: Path | None = None
+    payload: dict[str, Any],
+    config: SpotterConfig,
+    config_path: Path | None = None,
+    config_generation: str = "unversioned",
 ) -> str | None:
     """Process one hook invocation. Returns stdout JSON, or None to allow."""
     hook_started = time.perf_counter_ns()
@@ -275,7 +278,11 @@ def run_hook(
     gate_telemetry: dict[str, Any] | None = None
     if event.kind == "tool_proposal":
         gate_decision, gate_telemetry = _gate_over_ipc(
-            event, config, str(cwd) if isinstance(cwd, str) else None, gate
+            event,
+            config,
+            str(cwd) if isinstance(cwd, str) else None,
+            gate,
+            config_generation,
         )
     if event.kind == "tool_result":
         event.payload["checkpoint"] = journal.last_snapshot()
@@ -321,7 +328,11 @@ def run_hook(
 
 
 def _gate_over_ipc(
-    event: TraceEvent, config: SpotterConfig, root: str | None, fallback: Gate
+    event: TraceEvent,
+    config: SpotterConfig,
+    root: str | None,
+    fallback: Gate,
+    config_generation: str,
 ) -> tuple[GateDecision, dict[str, Any]]:
     started = time.perf_counter_ns()
     if os.environ.get("SPOTTER_CAPTURE_ONLY"):
@@ -333,6 +344,7 @@ def _gate_over_ipc(
             "daemon_evaluation_ms": None,
             "tool_use_id": event.payload.get("tool_use_id"),
             "tool": event.payload.get("tool"),
+            "config_generation": config_generation,
         }
     status = "ok"
     evaluation_ms: float | None = None
@@ -341,7 +353,7 @@ def _gate_over_ipc(
     try:
         decision, evaluation_ms, runtime_sample = asyncio.run(
             DaemonClient(timeout=GATE_TIMEOUT, component="hook_bridge").gate(
-                event, config.gates, root
+                event, config.gates, root, config_generation
             )
         )
     except DaemonTimeout as error:
@@ -364,6 +376,7 @@ def _gate_over_ipc(
         "daemon_evaluation_ms": evaluation_ms,
         "tool_use_id": event.payload.get("tool_use_id"),
         "tool": event.payload.get("tool"),
+        "config_generation": config_generation,
     }
     if error_detail is not None:
         telemetry["error"] = error_detail[:300]

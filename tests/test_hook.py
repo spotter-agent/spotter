@@ -91,7 +91,14 @@ def test_active_mode_emits_deny_json(daemon: None) -> None:
 
 def test_shadow_mode_allows_but_journals_the_block(spotter_home: Path, daemon: None) -> None:
     payload = _payload("git push --force")
-    assert run_hook(payload, _config(observation_only=True)) is None
+    assert (
+        run_hook(
+            payload,
+            _config(observation_only=True),
+            config_generation="cfg-hook-test",
+        )
+        is None
+    )
     records = StepJournal.load(journal_path(payload))
     assert [r.event.kind for r in records] == [
         "tool_proposal",
@@ -100,6 +107,7 @@ def test_shadow_mode_allows_but_journals_the_block(spotter_home: Path, daemon: N
     ]
     assert records[1].event.payload["rule"] == "git_push_force"
     assert records[2].event.payload["status"] == "ok"
+    assert records[2].event.payload["config_generation"] == "cfg-hook-test"
     assert records[2].event.payload["ipc_ms"] >= 0
     assert records[2].event.payload["hook_ms"] >= records[2].event.payload["ipc_ms"]
     sample = records[2].event.payload["runtime_sample"]

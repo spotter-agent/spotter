@@ -262,6 +262,7 @@ class AppServerRecoveryLoop:
         external_turn_id = identity.get("turn_id")
         tool_use_id = proposal.get("tool_use_id")
         rule = decision.get("rule")
+        config_generation = params.get("config_generation")
         if not all(
             isinstance(value, str) and value
             for value in (external_thread_id, external_turn_id, tool_use_id, rule)
@@ -293,6 +294,11 @@ class AppServerRecoveryLoop:
                     "tool_use_id": tool_use_id,
                     "equivalence_key": key,
                     "involved_resources": list(resources),
+                    "config_generation": (
+                        config_generation
+                        if isinstance(config_generation, str) and config_generation
+                        else "unversioned"
+                    ),
                 },
                 event_id=f"spotter:gate-block:{source_id}",
                 occurred_at=time.time(),

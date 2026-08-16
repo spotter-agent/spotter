@@ -1297,7 +1297,9 @@ model, budgets, and delivery policy at submission. A staged generation activates
 normalizing a newly observed turn, but only when no older turn remains active in any daemon-owned
 thread. This global quiescent boundary prevents a concurrent old turn from inheriting the new
 reviewer or MCP-semantics generation midway through execution. Automatic file watching remains
-separate follow-up wiring.
+separate follow-up wiring. Each PreToolUse bridge request also carries the exact generation resolved
+by that Hook invocation; both Hook IPC telemetry and any daemon-correlated deterministic block retain
+it, so gate outcomes remain attributable even while daemon and repository layers are changing.
 
 ---
 

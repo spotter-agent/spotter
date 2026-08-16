@@ -282,7 +282,11 @@ class DaemonClient:
         )
 
     async def gate(
-        self, event: TraceEvent, gates: GatesConfig, root: str | None
+        self,
+        event: TraceEvent,
+        gates: GatesConfig,
+        root: str | None,
+        config_generation: str = "unversioned",
     ) -> tuple[GateDecision, float, dict[str, int | float | str] | None]:
         provenance = event.identity.provenance if event.identity is not None else None
         response = await self.request(
@@ -312,6 +316,7 @@ class DaemonClient:
                     "block_dependency_changes": gates.block_dependency_changes,
                 },
                 "root": root,
+                "config_generation": config_generation,
             },
         )
         raw = response.get("decision")
@@ -673,6 +678,7 @@ def _evaluate_gate(raw: object) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise DaemonProtocolError("gate params must be an object")
     proposal, gates, root = raw.get("proposal"), raw.get("gates"), raw.get("root")
+    config_generation = raw.get("config_generation", "unversioned")
     if not isinstance(proposal, dict) or not isinstance(gates, dict):
         raise DaemonProtocolError("gate proposal and config must be objects")
     forbidden_paths = gates.get("forbidden_paths")
@@ -682,6 +688,8 @@ def _evaluate_gate(raw: object) -> dict[str, Any]:
         or not all(isinstance(path, str) for path in forbidden_paths)
         or not isinstance(block_dependencies, bool)
         or (root is not None and not isinstance(root, str))
+        or not isinstance(config_generation, str)
+        or not config_generation
     ):
         raise DaemonProtocolError("invalid gate config")
 
@@ -708,6 +716,7 @@ def _evaluate_gate(raw: object) -> dict[str, Any]:
             "reason": decision.reason,
         },
         "evaluation_ms": evaluation_ms,
+        "gate_config_generation": config_generation,
     }
 
 

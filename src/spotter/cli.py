@@ -2670,10 +2670,12 @@ def _hook_main(
             if isinstance(configured_cwd, str) and configured_cwd.strip()
             else Path.cwd()
         )
+        config_generation = "unversioned"
         if config is None:
             try:
                 resolved = resolve_config(repository=repository, explicit_path=config_path)
                 config = resolved.config
+                config_generation = resolved.resolved_config_generation
                 for diagnostic in resolved.diagnostics:
                     print(f"spotter: {diagnostic}", file=sys.stderr)
             except Exception as error:  # noqa: BLE001 — config is inside fail-open boundary
@@ -2684,7 +2686,8 @@ def _hook_main(
                     file=sys.stderr,
                 )
                 config = SpotterConfig.from_mapping({"main_agent": {"adapter": "codex"}})
-        output = run_hook(payload, config, config_path)
+                config_generation = "fallback-unversioned"
+        output = run_hook(payload, config, config_path, config_generation)
     except Exception as error:  # noqa: BLE001 — deliberate fail-open boundary
         print(f"spotter hook error (failing open): {error}", file=sys.stderr)
         return 0
