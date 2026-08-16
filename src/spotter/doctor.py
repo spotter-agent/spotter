@@ -505,6 +505,28 @@ def check_runtime(*, deep: bool = False) -> list[Check]:
             )
         )
 
+    if integration.manifest is not None and daemon.available and daemon.app_server_version:
+        try:
+            configured_codex = str(validate_codex_host_version(integration.manifest.agent_version))
+        except CodexHostVersionError:
+            pass  # The integration check already reports the invalid recorded host.
+        else:
+            runtime_codex = daemon.app_server_version
+            if runtime_codex == configured_codex:
+                checks.append(
+                    Check("Codex host version", OK, f"setup/runtime matched {runtime_codex}")
+                )
+            else:
+                checks.append(
+                    Check(
+                        "Codex host version",
+                        WARN,
+                        f"setup recorded Codex {configured_codex}, connected App Server is "
+                        f"{runtime_codex}; run `spotter setup codex` to reconcile after a "
+                        "Codex upgrade",
+                    )
+                )
+
     endpoint = (
         integration.manifest.app_server_endpoint if integration.manifest is not None else None
     )

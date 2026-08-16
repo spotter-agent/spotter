@@ -326,6 +326,53 @@ def test_runtime_check_reports_reconciled_capability_change(
 
 
 @pytest.mark.parametrize(
+    ("configured", "connected", "expected", "detail"),
+    [
+        ("codex-cli 0.147.0", "0.147.0", OK, "matched 0.147.0"),
+        ("codex-cli 0.147.0", "0.150.0", WARN, "spotter setup codex"),
+        ("codex-cli 0.150.0", "0.147.0", WARN, "spotter setup codex"),
+    ],
+)
+def test_runtime_check_classifies_mixed_codex_upgrade_versions(
+    homes: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    configured: str,
+    connected: str,
+    expected: str,
+    detail: str,
+) -> None:
+    manifest = replace(
+        _ready_manifest(homes),
+        agent_version=configured,
+        app_server_endpoint="ws://127.0.0.1:4321",
+    )
+    manifest.save(homes[0] / "integrations/codex.json")
+
+    async def status(self: DaemonClient) -> DaemonStatus:
+        return DaemonStatus(
+            RuntimeHealth.HEALTHY,
+            pid=123,
+            protocol=1,
+            build_id=current_build_identity().build_id,
+            compatibility=RuntimeCompatibility.MATCHED,
+            construction_fingerprint=expected_runtime_construction_fingerprint(
+                RuntimeLayout.discover()
+            ),
+            app_server_state="ready",
+            app_server_version=connected,
+            app_server_connection_epoch=4,
+            app_server_capabilities=(("observation", "available"),),
+        )
+
+    monkeypatch.setattr(DaemonClient, "status", status)
+
+    check = {item.name: item for item in check_runtime()}["Codex host version"]
+
+    assert check.status == expected
+    assert detail in check.detail
+
+
+@pytest.mark.parametrize(
     "health,expected",
     [(OK, 0), (INFO, 0), (WARN, 1), (FAIL, 2)],
 )

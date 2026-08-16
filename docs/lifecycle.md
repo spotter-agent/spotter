@@ -1191,6 +1191,11 @@ This is a valid degraded state; it is better than incorrectly declaring the whol
 
 `doctor` should detect drift after Codex upgrade and recommend `spotter setup codex` reconciliation if integration files changed.
 
+The runtime diagnostic also compares the normalized Codex version recorded by setup with the
+version reported by the connected App Server. A mismatch in either direction is a mixed-version
+window: observation may continue according to negotiated capabilities, while `doctor` warns to run
+`spotter setup codex` so the ownership manifest reflects the selected host.
+
 ---
 
 # 12. Spotter upgrade
@@ -1843,8 +1848,8 @@ The target lifecycle is not complete until all of these work end-to-end:
 - [x] `doctor` performs a real synthetic round-trip;
 - [ ] multiple concurrent threads/sessions remain isolated;
 - [ ] daemon crash recovers without corrupting journal/live state;
-- [ ] Codex upgrade degrades by capability rather than silently breaking;
-- [ ] Spotter upgrade handles a running old daemon and schema migration;
+- [x] Codex upgrade degrades by capability rather than silently breaking;
+- [x] Spotter upgrade handles a running old daemon and schema migration;
 - [x] `teardown codex` removes only Spotter-owned integration changes;
 - [x] uninstall without teardown does not break Codex;
 - [x] user data survives normal uninstall;

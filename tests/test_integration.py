@@ -470,6 +470,34 @@ def test_package_build_change_rotates_generated_integration_identity(
     assert old.integration_generation != new.integration_generation
 
 
+def test_codex_upgrade_reconciles_the_recorded_host_version(
+    homes: tuple[Path, Path],
+) -> None:
+    spotter_home, codex_home = homes
+    service = FakeService(spotter_home / "service/spotterd")
+    first = IntegrationManager(
+        codex_home=codex_home,
+        codex=CodexInstall("/bin/codex", "codex-cli 0.147.0", True, True),
+        service=service,
+        spotter_executable="/bin/spotter",
+        verifier=lambda _: True,
+    )
+    old = first.setup()
+    second = IntegrationManager(
+        codex_home=codex_home,
+        codex=CodexInstall("/bin/codex", "codex-cli 0.150.0", True, True),
+        service=service,
+        spotter_executable="/bin/spotter",
+        verifier=lambda _: True,
+    )
+
+    new = second.setup()
+
+    assert new.agent_version == "codex-cli 0.150.0"
+    assert new.integration_generation == old.integration_generation
+    assert service.stops == 0
+
+
 def test_failed_verification_rolls_back_hooks_service_and_manifest(
     homes: tuple[Path, Path],
 ) -> None:
