@@ -376,6 +376,28 @@ def summarize_task_batch(results: tuple[TaskArmResult, ...]) -> str:
     return "\n".join(lines)
 
 
+def run_task_checks(
+    task: TaskManifest, workspace: Path
+) -> tuple[ArmClassification, tuple[CommandResult, ...]]:
+    """Run a frozen task's checks in an existing workspace."""
+
+    checks = tuple(
+        _run_command(f"check:{check.id}", check.command, workspace) for check in task.checks
+    )
+    required = tuple(
+        result for check, result in zip(task.checks, checks, strict=True) if check.required
+    )
+    if any(result.timed_out for result in required):
+        classification = ArmClassification.TIMEOUT_CHECK
+    elif any(result.returncode is None for result in required):
+        classification = ArmClassification.CHECK_ERROR
+    elif all(result.returncode == 0 for result in required):
+        classification = ArmClassification.PASS
+    else:
+        classification = ArmClassification.TASK_FAIL
+    return classification, checks
+
+
 def _run_task_arm(
     run_id: str,
     task_set: TaskSetManifest,
@@ -447,23 +469,7 @@ def _run_task_arm(
                     if agent_exit != 0:
                         classification = ArmClassification.INFRA_FAIL
                     else:
-                        checks = tuple(
-                            _run_command(f"check:{check.id}", check.command, workspace)
-                            for check in task.checks
-                        )
-                        required = tuple(
-                            result
-                            for check, result in zip(task.checks, checks, strict=True)
-                            if check.required
-                        )
-                        if any(result.timed_out for result in required):
-                            classification = ArmClassification.TIMEOUT_CHECK
-                        elif any(result.returncode is None for result in required):
-                            classification = ArmClassification.CHECK_ERROR
-                        elif all(result.returncode == 0 for result in required):
-                            classification = ArmClassification.PASS
-                        else:
-                            classification = ArmClassification.TASK_FAIL
+                        classification, checks = run_task_checks(task, workspace)
                 except subprocess.TimeoutExpired as error:
                     classification = ArmClassification.TIMEOUT_AGENT
                     agent_stdout = _bounded_output(error.stdout)

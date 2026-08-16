@@ -74,6 +74,7 @@ class WrongNudgeArm:
     condition: FramingCondition
     wrong_nudge_id: str
     manifest_sha256: str
+    source_task: str
     payload_version: int
     source_session_id: str
     source_step: int
@@ -125,6 +126,7 @@ def build_wrong_nudge_arms(
             condition=condition,
             wrong_nudge_id=nudge.wrong_nudge_id,
             manifest_sha256=nudge.manifest_sha256,
+            source_task=nudge.source_task,
             payload_version=nudge.payload_version,
             source_session_id=source_session_id,
             source_step=source_step,

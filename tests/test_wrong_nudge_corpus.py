@@ -105,6 +105,7 @@ def test_builds_equivalent_prefix_framing_arms() -> None:
     assert len({arm.prefix_id for arm in arms}) == 1
     assert len({arm.environment_fingerprint for arm in arms}) == 1
     assert {arm.manifest_sha256 for arm in arms} == {nudge.manifest_sha256}
+    assert {arm.source_task for arm in arms} == {nudge.source_task}
     assert {arm.payload_version for arm in arms} == {nudge.payload_version}
     by_condition = {arm.condition: arm for arm in arms}
     assert by_condition[FramingCondition.NEUTRAL_CONTROL].payload is None

@@ -4,7 +4,8 @@ import asyncio
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol
@@ -16,8 +17,16 @@ from spotter.app_server import (
     AppServerRpcError,
     CodexAppServerClient,
 )
-from spotter.experiment import CONTROL_PROMPT
+from spotter.experiment import (
+    CONTROL_PROMPT,
+    EXPERIMENT_RESULT_SCHEMA,
+    EXPERIMENT_RESULT_SCHEMA_VERSION,
+    ArmClassification,
+    append_experiment_result,
+)
+from spotter.paths import sanitize_session, spotter_home
 from spotter.replay import ForkPlan, fork
+from spotter.task_corpus import CommandResult, TaskManifest, file_digest, run_task_checks
 from spotter.wrong_nudge_corpus import (
     FramingCondition,
     WrongNudge,
@@ -28,6 +37,9 @@ from spotter.wrong_nudge_corpus import (
 
 class WrongNudgeExperimentError(ValueError):
     """Wrong-nudge arms cannot be compared or safely delivered."""
+
+
+WRONG_NUDGE_RESULT_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -58,6 +70,40 @@ class WrongNudgeDeliveryResult:
     completion_observed: bool
     turn_status: str | None
     diagnostic: str | None = None
+
+
+@dataclass(frozen=True)
+class WrongNudgeMechanicalResult:
+    experiment_id: str
+    condition: FramingCondition
+    wrong_nudge_id: str
+    wrong_nudge_manifest_sha256: str
+    wrong_nudge_source_task: str
+    payload_version: int
+    source_session_id: str
+    source_step: int
+    prefix_id: str
+    environment_fingerprint: str
+    fork_session_id: str
+    fork_manifest: str
+    worktree: str
+    turn_id: str | None
+    continuation_client_user_message_id: str
+    steer_client_user_message_id: str | None
+    delivery_outcome: DeliveryOutcome
+    completion_observed: bool
+    turn_status: str | None
+    delivery_diagnostic: str | None
+    task_id: str
+    task_manifest_sha256: str
+    fixture_sha256: str
+    classification: ArmClassification
+    checks: tuple[CommandResult, ...]
+    scoring_diagnostic: str | None
+    started_at: str
+    ended_at: str
+    result_schema_version: int = EXPERIMENT_RESULT_SCHEMA_VERSION
+    wrong_nudge_result_schema_version: int = WRONG_NUDGE_RESULT_SCHEMA_VERSION
 
 
 class WrongNudgeClient(Protocol):
@@ -162,6 +208,117 @@ async def deliver_wrong_nudge_arms(
             for row in prepared
         ]
     )
+
+
+def score_wrong_nudge_arms(
+    prepared: tuple[PreparedWrongNudgeArm, ...],
+    deliveries: tuple[WrongNudgeDeliveryResult, ...],
+    task: TaskManifest,
+    *,
+    output: Path | None = None,
+) -> tuple[Path, tuple[WrongNudgeMechanicalResult, ...]]:
+    """Run frozen mechanical checks and durably record each completed arm."""
+
+    _preflight_prepared(prepared)
+    delivery_by_condition = _preflight_deliveries(prepared, deliveries)
+    provenance = prepared[0].arm
+    if task.task_id != provenance.source_task:
+        raise WrongNudgeExperimentError("TASK_PROVENANCE_MISMATCH")
+    experiment_id = str(uuid.uuid4())
+    result_path = output or _wrong_nudge_results_path(prepared[0], experiment_id)
+    if result_path.exists():
+        raise WrongNudgeExperimentError(f"result path already exists: {result_path}")
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    task_manifest_sha256 = file_digest(task.path)
+    append_experiment_result(
+        result_path,
+        {
+            "schema": EXPERIMENT_RESULT_SCHEMA,
+            "schema_version": EXPERIMENT_RESULT_SCHEMA_VERSION,
+            "result_schema_version": EXPERIMENT_RESULT_SCHEMA_VERSION,
+            "wrong_nudge_result_schema_version": WRONG_NUDGE_RESULT_SCHEMA_VERSION,
+            "meta": True,
+            "experiment_id": experiment_id,
+            "experiment_mode": "wrong-nudge",
+            "wrong_nudge_id": provenance.wrong_nudge_id,
+            "wrong_nudge_manifest_sha256": provenance.manifest_sha256,
+            "wrong_nudge_source_task": provenance.source_task,
+            "payload_version": provenance.payload_version,
+            "source_session_id": provenance.source_session_id,
+            "source_step": provenance.source_step,
+            "prefix_id": provenance.prefix_id,
+            "environment_fingerprint": provenance.environment_fingerprint,
+            "task_id": task.task_id,
+            "task_manifest_sha256": task_manifest_sha256,
+            "fixture_sha256": task.source_sha256,
+            "started_at": datetime.now(UTC).isoformat(),
+        },
+    )
+
+    results: list[WrongNudgeMechanicalResult] = []
+    for arm in prepared:
+        started_at = datetime.now(UTC).isoformat()
+        delivery = delivery_by_condition[arm.arm.condition]
+        if delivery.completion_observed:
+            classification, checks = run_task_checks(task, Path(arm.worktree))
+            scoring_diagnostic = None
+        else:
+            classification = ArmClassification.UNJUDGEABLE
+            checks = ()
+            scoring_diagnostic = "turn_completion_not_observed"
+        result = WrongNudgeMechanicalResult(
+            experiment_id=experiment_id,
+            condition=arm.arm.condition,
+            wrong_nudge_id=arm.arm.wrong_nudge_id,
+            wrong_nudge_manifest_sha256=arm.arm.manifest_sha256,
+            wrong_nudge_source_task=arm.arm.source_task,
+            payload_version=arm.arm.payload_version,
+            source_session_id=arm.arm.source_session_id,
+            source_step=arm.arm.source_step,
+            prefix_id=arm.arm.prefix_id,
+            environment_fingerprint=arm.arm.environment_fingerprint,
+            fork_session_id=arm.fork_session_id,
+            fork_manifest=arm.fork_manifest,
+            worktree=arm.worktree,
+            turn_id=delivery.turn_id,
+            continuation_client_user_message_id=delivery.continuation_client_user_message_id,
+            steer_client_user_message_id=delivery.steer_client_user_message_id,
+            delivery_outcome=delivery.delivery_outcome,
+            completion_observed=delivery.completion_observed,
+            turn_status=delivery.turn_status,
+            delivery_diagnostic=delivery.diagnostic,
+            task_id=task.task_id,
+            task_manifest_sha256=task_manifest_sha256,
+            fixture_sha256=task.source_sha256,
+            classification=classification,
+            checks=checks,
+            scoring_diagnostic=scoring_diagnostic,
+            started_at=started_at,
+            ended_at=datetime.now(UTC).isoformat(),
+        )
+        append_experiment_result(
+            result_path,
+            {
+                "schema": EXPERIMENT_RESULT_SCHEMA,
+                "schema_version": EXPERIMENT_RESULT_SCHEMA_VERSION,
+                **asdict(result),
+            },
+        )
+        results.append(result)
+    append_experiment_result(
+        result_path,
+        {
+            "schema": EXPERIMENT_RESULT_SCHEMA,
+            "schema_version": EXPERIMENT_RESULT_SCHEMA_VERSION,
+            "result_schema_version": EXPERIMENT_RESULT_SCHEMA_VERSION,
+            "wrong_nudge_result_schema_version": WRONG_NUDGE_RESULT_SCHEMA_VERSION,
+            "complete": True,
+            "experiment_id": experiment_id,
+            "results": len(results),
+            "finished_at": datetime.now(UTC).isoformat(),
+        },
+    )
+    return result_path, tuple(results)
 
 
 async def _deliver_wrong_nudge_arm(
@@ -393,6 +550,7 @@ def _preflight_prepared(prepared: tuple[PreparedWrongNudgeArm, ...]) -> None:
         (
             row.arm.wrong_nudge_id,
             row.arm.manifest_sha256,
+            row.arm.source_task,
             row.arm.payload_version,
             row.arm.source_session_id,
             row.arm.source_step,
@@ -403,3 +561,23 @@ def _preflight_prepared(prepared: tuple[PreparedWrongNudgeArm, ...]) -> None:
     }
     if len(provenance) != 1:
         raise WrongNudgeExperimentError("PREPARED_PROVENANCE_MISMATCH")
+
+
+def _preflight_deliveries(
+    prepared: tuple[PreparedWrongNudgeArm, ...],
+    deliveries: tuple[WrongNudgeDeliveryResult, ...],
+) -> dict[FramingCondition, WrongNudgeDeliveryResult]:
+    by_condition = {result.condition: result for result in deliveries}
+    if len(by_condition) != len(deliveries) or set(by_condition) != set(FramingCondition):
+        raise WrongNudgeExperimentError("DELIVERY_COVERAGE_MISMATCH")
+    for arm in prepared:
+        if by_condition[arm.arm.condition].fork_session_id != arm.fork_session_id:
+            raise WrongNudgeExperimentError("DELIVERY_PROVENANCE_MISMATCH")
+    return by_condition
+
+
+def _wrong_nudge_results_path(prepared: PreparedWrongNudgeArm, experiment_id: str) -> Path:
+    base = spotter_home() / "experiments" / "wrong-nudges"
+    source = sanitize_session(prepared.arm.source_session_id)
+    nudge = sanitize_session(prepared.arm.wrong_nudge_id)
+    return base / f"{source}-step{prepared.arm.source_step}-{nudge}-{experiment_id}.jsonl"

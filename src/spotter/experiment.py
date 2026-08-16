@@ -93,7 +93,9 @@ def results_path(session_id: str, step: int) -> Path:
     return base / f"{sanitize_session(session_id)}-step{step}.jsonl"
 
 
-def _append_result(path: Path, row: dict[str, object]) -> None:
+def append_experiment_result(path: Path, row: dict[str, object]) -> None:
+    """Append and fsync one schema-checked experiment result row."""
+
     lock_path = path.with_suffix(path.suffix + ".lock")
     with lock_path.open("a") as lock:
         flock(lock, LOCK_EX)
@@ -488,7 +490,7 @@ def run_experiment(
         "environment_venv_or_cache": list(environment_venv_or_cache),
         "started_at": datetime.now(UTC).isoformat(),
     }
-    _append_result(out, meta)
+    append_experiment_result(out, meta)
     results: list[ArmResult] = []
     for pair in range(pairs):
         arms = (
@@ -590,7 +592,7 @@ def run_experiment(
                 agent_elapsed_ms=agent_elapsed_ms,
             )
             results.append(result)
-            _append_result(
+            append_experiment_result(
                 out,
                 {
                     "schema": EXPERIMENT_RESULT_SCHEMA,
@@ -600,7 +602,7 @@ def run_experiment(
             )
             if run and not keep_artifacts:
                 _cleanup(plan.worktree)
-    _append_result(
+    append_experiment_result(
         out,
         {
             "schema": EXPERIMENT_RESULT_SCHEMA,

@@ -1,4 +1,5 @@
 import asyncio
+import json
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -8,13 +9,16 @@ import pytest
 import spotter.wrong_nudge_experiment as experiment
 from spotter.app_server import AppServerControlError, AppServerEvent, ControlFailureReason
 from spotter.replay import ForkPlan
+from spotter.task_corpus import CheckSpec, CommandSpec, TaskManifest
 from spotter.wrong_nudge_corpus import FramingCondition, WrongNudge, validate_wrong_nudge_set
 from spotter.wrong_nudge_experiment import (
     DeliveryOutcome,
     PreparedWrongNudgeArm,
+    WrongNudgeDeliveryResult,
     WrongNudgeExperimentError,
     deliver_wrong_nudge_arms,
     prepare_wrong_nudge_arms,
+    score_wrong_nudge_arms,
 )
 
 
@@ -281,3 +285,136 @@ def test_delivery_revalidates_prepared_provenance_before_connecting(
                 tuple(prepared), "ws://app-server", client_factory=unexpected_factory
             )
         )
+
+
+def test_scores_completed_arms_and_journals_delivery_separately(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    prepared = tuple(
+        replace(row, worktree=str(tmp_path / row.arm.condition)) for row in _prepared(monkeypatch)
+    )
+    for row in prepared:
+        workspace = Path(row.worktree)
+        workspace.mkdir()
+        outcome = "bad" if row.arm.condition == FramingCondition.RAW_IMPERATIVE else "ok"
+        (workspace / "outcome.txt").write_text(outcome)
+    manifest = tmp_path / "task.toml"
+    manifest.write_text("frozen task manifest")
+    task = TaskManifest(
+        task_id=_nudge().source_task,
+        path=manifest,
+        source=tmp_path,
+        source_sha256="fixture-sha256",
+        prompt="Fix it.",
+        setup=CommandSpec("true", 5),
+        precheck=CommandSpec("false", 5),
+        checks=(
+            CheckSpec(
+                "task-resolution",
+                CommandSpec('test "$(cat outcome.txt)" = ok', 5),
+                True,
+            ),
+        ),
+        known_good=None,
+        wall_time_s=60,
+        max_turns=10,
+    )
+    deliveries = tuple(
+        WrongNudgeDeliveryResult(
+            condition=row.arm.condition,
+            fork_session_id=row.fork_session_id,
+            turn_id=f"turn-{row.fork_session_id}",
+            continuation_client_user_message_id=f"start-{row.fork_session_id}",
+            steer_client_user_message_id=(
+                None
+                if row.arm.condition == FramingCondition.NEUTRAL_CONTROL
+                else f"steer-{row.fork_session_id}"
+            ),
+            delivery_outcome=(
+                DeliveryOutcome.CONTROL_NO_STEER
+                if row.arm.condition == FramingCondition.NEUTRAL_CONTROL
+                else (
+                    DeliveryOutcome.FAILED_OR_STALE
+                    if row.arm.condition == FramingCondition.RAW_IMPERATIVE
+                    else DeliveryOutcome.RPC_ACCEPTED
+                )
+            ),
+            completion_observed=row.arm.condition != FramingCondition.VERIFY_FIRST,
+            turn_status=(
+                None if row.arm.condition == FramingCondition.VERIFY_FIRST else "completed"
+            ),
+            diagnostic=(
+                "no_active_turn" if row.arm.condition == FramingCondition.RAW_IMPERATIVE else None
+            ),
+        )
+        for row in prepared
+    )
+
+    output, results = score_wrong_nudge_arms(
+        prepared, deliveries, task, output=tmp_path / "results.jsonl"
+    )
+
+    by_condition = {result.condition: result for result in results}
+    assert by_condition[FramingCondition.NEUTRAL_CONTROL].classification == "PASS"
+    raw = by_condition[FramingCondition.RAW_IMPERATIVE]
+    assert raw.delivery_outcome == DeliveryOutcome.FAILED_OR_STALE
+    assert raw.delivery_diagnostic == "no_active_turn"
+    assert raw.classification == "TASK_FAIL"
+    verify = by_condition[FramingCondition.VERIFY_FIRST]
+    assert verify.classification == "UNJUDGEABLE"
+    assert verify.checks == ()
+    assert verify.scoring_diagnostic == "turn_completion_not_observed"
+
+    rows = [json.loads(line) for line in output.read_text().splitlines()]
+    assert len(rows) == 6
+    assert rows[0]["meta"] is True
+    assert rows[-1]["complete"] is True
+    assert all(row["schema"] == "spotter.experiment_result" for row in rows)
+    assert all(row["wrong_nudge_result_schema_version"] == 1 for row in rows)
+    assert {row["condition"] for row in rows[1:-1]} == set(FramingCondition)
+
+
+@pytest.mark.parametrize(
+    ("mismatch", "message"),
+    (("delivery", "DELIVERY_PROVENANCE_MISMATCH"), ("task", "TASK_PROVENANCE_MISMATCH")),
+)
+def test_scoring_rejects_mismatched_provenance_before_writing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mismatch: str, message: str
+) -> None:
+    prepared = _prepared(monkeypatch)
+    deliveries = tuple(
+        WrongNudgeDeliveryResult(
+            condition=row.arm.condition,
+            fork_session_id=(
+                "wrong-fork" if mismatch == "delivery" and index == 0 else row.fork_session_id
+            ),
+            turn_id=None,
+            continuation_client_user_message_id="start",
+            steer_client_user_message_id=None,
+            delivery_outcome=DeliveryOutcome.NOT_ATTEMPTED,
+            completion_observed=False,
+            turn_status=None,
+        )
+        for index, row in enumerate(prepared)
+    )
+    manifest = tmp_path / "task.toml"
+    manifest.write_text("task")
+    task = TaskManifest(
+        "wrong-task" if mismatch == "task" else _nudge().source_task,
+        manifest,
+        tmp_path,
+        "fixture",
+        "prompt",
+        CommandSpec("true", 1),
+        CommandSpec("false", 1),
+        (CheckSpec("check", CommandSpec("true", 1), True),),
+        None,
+        1,
+        1,
+    )
+    output = tmp_path / "must-not-exist.jsonl"
+
+    with pytest.raises(WrongNudgeExperimentError, match=message):
+        score_wrong_nudge_arms(prepared, deliveries, task, output=output)
+
+    assert not output.exists()
