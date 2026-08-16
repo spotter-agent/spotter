@@ -90,6 +90,7 @@ class StaleControlTarget(AppServerError):
 StateCallback = Callable[[RecoveryState, str | None], None]
 ClientFactory = Callable[[str], CodexAppServerClient]
 ReviewJobCallback = Callable[[ReviewerJob], None]
+TurnBoundaryCallback = Callable[[], object]
 
 
 class AppServerRecoveryLoop:
@@ -106,6 +107,7 @@ class AppServerRecoveryLoop:
         signals: SignalEngine | None = None,
         review_scheduler: ReviewScheduler | None = None,
         on_review_job: ReviewJobCallback | None = None,
+        on_turn_boundary: TurnBoundaryCallback | None = None,
         initial_backoff: float = 0.1,
         maximum_backoff: float = 30,
         control_telemetry_queue_size: int = 256,
@@ -128,6 +130,7 @@ class AppServerRecoveryLoop:
         self.signals = signals or SignalEngine()
         self.review_scheduler = review_scheduler or ReviewScheduler()
         self.on_review_job = on_review_job
+        self.on_turn_boundary = on_turn_boundary
         self.initial_backoff = initial_backoff
         self.maximum_backoff = maximum_backoff
         self.state = RecoveryState.DISCONNECTED
@@ -230,6 +233,17 @@ class AppServerRecoveryLoop:
     def update_hot_config(self, *, snapshot_on_patch: bool) -> None:
         """Apply settings whose contract permits immediate use by future observations."""
 
+        self.ingestor.snapshot_on_patch = snapshot_on_patch
+
+    def update_turn_config(
+        self,
+        *,
+        mcp_semantics: tuple[McpToolSemantics, ...],
+        snapshot_on_patch: bool,
+    ) -> None:
+        """Publish a full turn-bound config before normalizing the next turn."""
+
+        self.ingestor.normalizer.mcp_semantics = mcp_semantics
         self.ingestor.snapshot_on_patch = snapshot_on_patch
 
     def record_review_event(self, event: TraceEvent) -> StepRecord | None:
@@ -608,6 +622,8 @@ class AppServerRecoveryLoop:
                 raw_event = await client.next_event()
                 if epoch != self._connection_epoch:
                     return
+                if raw_event.method == "turn/started" and self.on_turn_boundary is not None:
+                    self.on_turn_boundary()
                 event = self.ingestor.normalizer.normalize(raw_event)
                 event = replace(
                     event,

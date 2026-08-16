@@ -1293,8 +1293,11 @@ and records a value-free error for diagnostics. The daemon resolves one generati
 atomically update future reviewer submissions and patch-snapshot observations; `NEXT_TURN`
 candidates remain staged, and action-required candidates remain inactive. Control status reports
 the active/pending generations and last rejected reload. Signal reviews pin the active generation,
-model, budgets, and delivery policy at submission. Automatic file watching and turn-boundary
-activation remain separate follow-up wiring.
+model, budgets, and delivery policy at submission. A staged generation activates immediately before
+normalizing a newly observed turn, but only when no older turn remains active in any daemon-owned
+thread. This global quiescent boundary prevents a concurrent old turn from inheriting the new
+reviewer or MCP-semantics generation midway through execution. Automatic file watching remains
+separate follow-up wiring.
 
 ---
 

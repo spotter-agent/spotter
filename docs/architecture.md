@@ -113,7 +113,9 @@ handshake rather than treating a PID file as liveness. The server serializes own
 concurrent clients, reports `healthy` / `degraded` / `recovering`, and makes absence explicit as
 `unavailable`. Reload resolution runs off the daemon event loop, then atomically applies only `HOT`
 changes or stages the whole candidate for a later turn boundary; status reports active/pending
-generations and the last rejected reload.
+generations and the last rejected reload. Staged snapshots publish before normalization of the next
+turn only after every daemon-owned thread is quiescent, so concurrent turns cannot mix reviewer or
+MCP-effect semantics generations.
 
 Manual process management implements the `ServiceManager` boundary used by the CLI. For a configured
 endpoint, the daemon owns one App Server connection/reconnect loop, routes epoch-tagged Trace IR into

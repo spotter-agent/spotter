@@ -80,6 +80,49 @@ async def _wait_until(predicate: Callable[[], bool]) -> None:
             await asyncio.sleep(0)
 
 
+def test_turn_boundary_callback_runs_before_turn_is_reduced(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        boundaries: list[tuple[bool, ...]] = []
+        store = ThreadStateStore()
+
+        async def handler(connection: ServerConnection) -> None:
+            await _initialize(connection)
+            listed = await _receive(connection, "thread/list")
+            await _reply(connection, listed, {"data": [], "nextCursor": None})
+            await connection.send(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "turn/started",
+                        "params": {"threadId": "thread-1", "turn": {"id": "turn-1"}},
+                    }
+                )
+            )
+            await connection.wait_closed()
+
+        def boundary() -> None:
+            boundaries.append(
+                tuple(state.active_turn_id is not None for state in store.snapshots())
+            )
+
+        async with _server(handler) as endpoint:
+            recovery = AppServerRecoveryLoop(
+                endpoint,
+                tmp_path / "sessions",
+                store,
+                on_turn_boundary=boundary,
+            )
+            await recovery.start()
+            await _wait_until(lambda: bool(boundaries))
+            await _wait_until(
+                lambda: bool(store.snapshots()) and store.snapshots()[0].active_turn_id is not None
+            )
+            assert boundaries == [()]
+            await recovery.close()
+
+    asyncio.run(scenario())
+
+
 def test_reconnect_reconciles_epoch_gap_and_stale_control(tmp_path: Path) -> None:
     async def scenario() -> None:
         connections: list[ServerConnection] = []

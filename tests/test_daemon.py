@@ -39,6 +39,7 @@ from spotter.daemon import (
 from spotter.gates import Gate
 from spotter.identity import IdentityProvenance, RuntimeIdentity, ThreadId, TurnId
 from spotter.paths import RuntimeLayout
+from spotter.runtime_connection import AppServerRecoveryLoop
 from spotter.snapshot import StepRecord
 from spotter.trace import TraceEvent
 
@@ -140,6 +141,8 @@ def test_daemon_reload_applies_hot_config_and_stages_next_turn(
             config_store=ConfigSnapshotStore(initial),
             config_loader=load,
         )
+        runtime = AppServerRecoveryLoop("ws://unused", tmp_path / "sessions", server.thread_states)
+        server.recovery = runtime
         await server.start()
         client = DaemonClient(socket_path)
         try:
@@ -158,6 +161,8 @@ def test_daemon_reload_applies_hot_config_and_stages_next_turn(
                 'snapshot_on_patch = false\n[main_agent]\nadapter = "codex"\n'
                 '[reviewer]\nmodel = "next-model"\non_signals = true\n'
                 "max_per_session = 7\n"
+                '[mcp_semantics."inventory"."lookup"]\n'
+                'operation = "read"\nreversibility = "A"\n'
             )
             staged = await client.reload_config()
             status = await client.status()
@@ -175,6 +180,35 @@ def test_daemon_reload_applies_hot_config_and_stages_next_turn(
             assert status.config_generation == applied.active_generation
             assert status.pending_config_generation == staged.candidate_generation
             assert status.config_reload_error
+
+            identity = RuntimeIdentity(
+                ThreadId("thread-config"),
+                TurnId("turn-old"),
+                None,
+                IdentityProvenance("codex", "thread-config", "turn-old"),
+            )
+            server.observe_trace(
+                TraceEvent("turn_started", event_id="turn-old-start", identity=identity)
+            )
+            assert server.activate_pending_config_at_turn_boundary() is None
+            assert server.config_generation == applied.active_generation
+
+            server.observe_trace(
+                TraceEvent("turn_completed", event_id="turn-old-done", identity=identity)
+            )
+            activated = server.activate_pending_config_at_turn_boundary()
+            status = await client.status()
+
+            assert activated is not None
+            assert activated.disposition == ReloadDisposition.APPLIED
+            assert status.config_generation == staged.candidate_generation
+            assert status.pending_config_generation is None
+            assert status.config_reload_error is None
+            assert server.reviewer_config.model == "next-model"
+            assert [
+                (rule.server, rule.tool, rule.reversibility)
+                for rule in runtime.ingestor.normalizer.mcp_semantics
+            ] == [("inventory", "lookup", "A")]
         finally:
             await server.close()
 

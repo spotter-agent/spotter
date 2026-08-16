@@ -436,6 +436,7 @@ class DaemonServer:
                 self.journals_dir,
                 self.thread_states,
                 on_state=self._on_recovery_state,
+                on_turn_boundary=self.activate_pending_config_at_turn_boundary,
                 mcp_semantics=self.mcp_semantics,
                 snapshot_on_patch=self.snapshot_on_patch,
             )
@@ -533,6 +534,17 @@ class DaemonServer:
             self._apply_active_config()
         return result
 
+    def activate_pending_config_at_turn_boundary(self) -> ConfigReloadResult | None:
+        """Activate a staged generation only when no older turn remains active."""
+
+        if self.config_store is None or self.config_store.pending_generation() is None:
+            return None
+        if any(state.active_turn_id is not None for state in self.thread_states.snapshots()):
+            return None
+        result = self.config_store.activate_next_turn()
+        self._apply_turn_config()
+        return result
+
     def _apply_active_config(self) -> None:
         assert self.config_store is not None
         resolved = self.config_store.snapshot()
@@ -545,6 +557,18 @@ class DaemonServer:
         update_runtime = getattr(self.recovery, "update_hot_config", None)
         if callable(update_runtime):
             update_runtime(snapshot_on_patch=config.snapshot_on_patch)
+
+    def _apply_turn_config(self) -> None:
+        assert self.config_store is not None
+        self._apply_active_config()
+        config = self.config_store.snapshot().config
+        self.mcp_semantics = config.mcp_semantics
+        update_runtime = getattr(self.recovery, "update_turn_config", None)
+        if callable(update_runtime):
+            update_runtime(
+                mcp_semantics=config.mcp_semantics,
+                snapshot_on_patch=config.snapshot_on_patch,
+            )
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         shutdown = False
