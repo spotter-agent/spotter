@@ -171,11 +171,11 @@
             <span class="status-chip active">CURRENT</span>
             <h3>Hook-backed supervision</h3>
             <div class="flow" aria-label="Current architecture flow">
-              <span>Codex Hooks</span><b>↓</b><span>spotterd</span><b>↓</b><span>Journal · Gate · Review</span>
+              <span>Codex Hooks</span><b>↓</b><span>Hook process ↔ spotterd</span><b>↓</b><span>Journal · Gate · Review</span>
             </div>
             <p>
-              Durable journals, daemon-backed deterministic gates, snapshots, replay, diagnostics,
-              signal detection, and shadow semantic review exist today.
+              Hook processes write journals, snapshots, and periodic reviews; bounded daemon IPC
+              serves deterministic gates. Replay, diagnostics, and signal-driven review also exist.
             </p>
           </article>
           <article>
