@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+import spotter.wrong_nudge_experiment as experiment
 from spotter.cli import main
 from spotter.experiment import (
     EXPERIMENT_RESULT_SCHEMA,
@@ -344,3 +345,79 @@ def test_cli_reports_invalid_result_file_without_traceback(
 def test_cli_requires_report_result_path() -> None:
     with pytest.raises(SystemExit):
         main(["wrong-nudge", "report"])
+
+
+def test_cli_runs_one_frozen_wrong_nudge_with_explicit_paid_confirmation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output = tmp_path / "results.jsonl"
+    captured: dict[str, Any] = {}
+
+    def fake_run(
+        *args: object, **kwargs: object
+    ) -> tuple[Path, tuple[WrongNudgeMechanicalResult, ...]]:
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return output, tuple(_result("e1", condition) for condition in FramingCondition)
+
+    monkeypatch.setattr(experiment, "run_wrong_nudge_experiment", fake_run)
+
+    assert (
+        main(
+            [
+                "wrong-nudge",
+                "run",
+                "wrong-nudges.toml",
+                "--task-set",
+                "tasks.toml",
+                "--wrong-nudge-id",
+                "wrong/query-parser-false-cause-001",
+                "--session",
+                "source-session",
+                "--step",
+                "7",
+                "--endpoint",
+                "ws://app-server",
+                "--environment-resource",
+                ".env",
+                "--run",
+            ]
+        )
+        == 0
+    )
+
+    args = captured["args"]
+    kwargs = captured["kwargs"]
+    assert args[:6] == (
+        Path("wrong-nudges.toml"),
+        Path("tasks.toml"),
+        "wrong/query-parser-false-cause-001",
+        "source-session",
+        7,
+        "ws://app-server",
+    )
+    assert kwargs["environment_resources"] == (".env",)
+    rendered = capsys.readouterr().out
+    assert "completed 4 wrong-nudge arm(s)" in rendered
+    assert f"results written to {output}" in rendered
+
+
+def test_cli_requires_confirmation_before_paid_wrong_nudge_run() -> None:
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "wrong-nudge",
+                "run",
+                "wrong-nudges.toml",
+                "--task-set",
+                "tasks.toml",
+                "--wrong-nudge-id",
+                "wrong/one",
+                "--session",
+                "source-session",
+                "--step",
+                "7",
+                "--endpoint",
+                "ws://app-server",
+            ]
+        )

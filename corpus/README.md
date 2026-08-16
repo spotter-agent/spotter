@@ -54,3 +54,14 @@ Render an offline report without rerunning any agent arm:
 spotter wrong-nudge report ~/.spotter/experiments/wrong-nudges/<run>.jsonl \
   --annotations ~/.spotter/experiments/wrong-nudges/<experiment>-annotations.jsonl
 ```
+
+Execute one frozen wrong-nudge item from an equivalent recorded prefix only after explicitly
+accepting the paid four-arm run:
+
+```bash
+spotter wrong-nudge run corpus/wrong-nudges-v1.toml \
+  --task-set corpus/dev-v2.toml \
+  --wrong-nudge-id wrong/query-parser-false-cause-001 \
+  --session <source-session> --step <source-step> \
+  --endpoint ws://127.0.0.1:<port> --run
+```

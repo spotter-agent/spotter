@@ -9,7 +9,14 @@ import pytest
 import spotter.wrong_nudge_experiment as experiment
 from spotter.app_server import AppServerControlError, AppServerEvent, ControlFailureReason
 from spotter.replay import ForkPlan
-from spotter.task_corpus import CheckSpec, CommandSpec, TaskManifest
+from spotter.task_corpus import (
+    CheckSpec,
+    CommandSpec,
+    PreflightClassification,
+    TaskManifest,
+    TaskPreflight,
+    validate_task_set,
+)
 from spotter.wrong_nudge_corpus import FramingCondition, WrongNudge, validate_wrong_nudge_set
 from spotter.wrong_nudge_experiment import (
     DeliveryOutcome,
@@ -18,6 +25,7 @@ from spotter.wrong_nudge_experiment import (
     WrongNudgeExperimentError,
     deliver_wrong_nudge_arms,
     prepare_wrong_nudge_arms,
+    run_wrong_nudge_experiment,
     score_wrong_nudge_arms,
 )
 
@@ -52,6 +60,90 @@ def _prepared(monkeypatch: pytest.MonkeyPatch) -> tuple[PreparedWrongNudgeArm, .
 
     monkeypatch.setattr(experiment, "fork", fake_fork)
     return prepare_wrong_nudge_arms(_nudge(), "source-session", 7)
+
+
+def test_run_validates_inputs_then_executes_and_scores_paid_arms(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    root = Path(__file__).parents[1] / "corpus"
+    task_set = validate_task_set(root / "dev-v2.toml")
+    ready = tuple(
+        TaskPreflight(task.task_id, PreflightClassification.READY, ()) for task in task_set.tasks
+    )
+    prepared = (object(),)
+    deliveries = (object(),)
+    output = tmp_path / "results.jsonl"
+    calls: list[str] = []
+    captured: dict[str, Any] = {}
+
+    monkeypatch.setattr(experiment, "preflight_task_set", lambda _: (task_set, ready))
+
+    def fake_prepare(*args: Any, **kwargs: Any) -> Any:
+        calls.append("prepare")
+        captured["prepare"] = (args, kwargs)
+        return prepared
+
+    async def fake_deliver(*args: Any, **kwargs: Any) -> Any:
+        calls.append("deliver")
+        captured["deliver"] = (args, kwargs)
+        return deliveries
+
+    def fake_score(*args: Any, **kwargs: Any) -> Any:
+        calls.append("score")
+        captured["score"] = (args, kwargs)
+        return output, ()
+
+    monkeypatch.setattr(experiment, "prepare_wrong_nudge_arms", fake_prepare)
+    monkeypatch.setattr(experiment, "deliver_wrong_nudge_arms", fake_deliver)
+    monkeypatch.setattr(experiment, "score_wrong_nudge_arms", fake_score)
+
+    result = run_wrong_nudge_experiment(
+        root / "wrong-nudges-v1.toml",
+        root / "dev-v2.toml",
+        _nudge().wrong_nudge_id,
+        "source-session",
+        7,
+        "ws://app-server",
+        repo=tmp_path,
+        environment_resources=(".env",),
+    )
+
+    assert result == (output, ())
+    assert calls == ["prepare", "deliver", "score"]
+    prepare_args, prepare_kwargs = captured["prepare"]
+    assert prepare_args[0] == _nudge()
+    assert prepare_kwargs["repo"] == tmp_path
+    assert prepare_kwargs["environment_resources"] == (".env",)
+    deliver_args, _ = captured["deliver"]
+    assert deliver_args == (prepared, "ws://app-server")
+    score_args, _ = captured["score"]
+    assert score_args[0:2] == (prepared, deliveries)
+
+
+def test_run_rejects_unknown_nudge_before_creating_forks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = Path(__file__).parents[1] / "corpus"
+    task_set = validate_task_set(root / "dev-v2.toml")
+    ready = tuple(
+        TaskPreflight(task.task_id, PreflightClassification.READY, ()) for task in task_set.tasks
+    )
+    monkeypatch.setattr(experiment, "preflight_task_set", lambda _: (task_set, ready))
+    monkeypatch.setattr(
+        experiment,
+        "prepare_wrong_nudge_arms",
+        lambda *args, **kwargs: pytest.fail("unknown nudge must not create forks"),
+    )
+
+    with pytest.raises(WrongNudgeExperimentError, match="is not in"):
+        run_wrong_nudge_experiment(
+            root / "wrong-nudges-v1.toml",
+            root / "dev-v2.toml",
+            "wrong/missing",
+            "source-session",
+            7,
+            "ws://app-server",
+        )
 
 
 class FakeClient:

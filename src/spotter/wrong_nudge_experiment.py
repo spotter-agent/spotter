@@ -26,12 +26,20 @@ from spotter.experiment import (
 )
 from spotter.paths import sanitize_session, spotter_home
 from spotter.replay import ForkPlan, fork
-from spotter.task_corpus import CommandResult, TaskManifest, file_digest, run_task_checks
+from spotter.task_corpus import (
+    CommandResult,
+    PreflightClassification,
+    TaskManifest,
+    file_digest,
+    preflight_task_set,
+    run_task_checks,
+)
 from spotter.wrong_nudge_corpus import (
     FramingCondition,
     WrongNudge,
     WrongNudgeArm,
     build_wrong_nudge_arms,
+    validate_wrong_nudge_set,
 )
 
 
@@ -135,6 +143,62 @@ class WrongNudgeClient(Protocol):
 
 
 ClientFactory = Callable[[str, float], WrongNudgeClient]
+
+
+def run_wrong_nudge_experiment(
+    nudge_set_path: Path,
+    task_set_path: Path,
+    wrong_nudge_id: str,
+    source_session_id: str,
+    source_step: int,
+    endpoint: str,
+    *,
+    repo: Path | None = None,
+    environment_resources: Sequence[str] = (),
+    environment_variables: Sequence[str] = (),
+    environment_venv_or_cache: Sequence[str] = (),
+) -> tuple[Path, tuple[WrongNudgeMechanicalResult, ...]]:
+    """Validate frozen inputs, execute the paid arms, and persist mechanical results."""
+
+    if not endpoint.strip():
+        raise WrongNudgeExperimentError("App Server endpoint must be non-empty")
+    if not wrong_nudge_id.strip():
+        raise WrongNudgeExperimentError("wrong_nudge_id must be non-empty text")
+
+    nudge_set = validate_wrong_nudge_set(nudge_set_path)
+    nudge = next(
+        (row for row in nudge_set.nudges if row.wrong_nudge_id == wrong_nudge_id),
+        None,
+    )
+    if nudge is None:
+        raise WrongNudgeExperimentError(
+            f"wrong nudge {wrong_nudge_id!r} is not in {nudge_set_path}"
+        )
+
+    task_set, preflight = preflight_task_set(task_set_path)
+    not_ready = [
+        result for result in preflight if result.classification != PreflightClassification.READY
+    ]
+    if not_ready:
+        detail = ", ".join(f"{row.task_id}={row.classification}" for row in not_ready)
+        raise WrongNudgeExperimentError(f"task preflight failed: {detail}")
+    task = next((row for row in task_set.tasks if row.task_id == nudge.source_task), None)
+    if task is None:
+        raise WrongNudgeExperimentError(
+            f"source task {nudge.source_task!r} is not in {task_set_path}"
+        )
+
+    prepared = prepare_wrong_nudge_arms(
+        nudge,
+        source_session_id,
+        source_step,
+        repo=repo,
+        environment_resources=environment_resources,
+        environment_variables=environment_variables,
+        environment_venv_or_cache=environment_venv_or_cache,
+    )
+    deliveries = asyncio.run(deliver_wrong_nudge_arms(prepared, endpoint))
+    return score_wrong_nudge_arms(prepared, deliveries, task)
 
 
 def prepare_wrong_nudge_arms(
