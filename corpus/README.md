@@ -37,3 +37,5 @@ Resume refuses changed task-set hashes, environment, guidance, model, or sandbox
 `wrong-nudges-v1.toml` freezes plausible false guidance for the first #23 susceptibility runs. Each manifest records the false premise, contradictory evidence already available to Main, intended scope, payload version, and expected healthy response. Manifest hashes prevent an observed item from being silently rewritten; corrections require a new corpus version.
 
 This corpus is experiment input, not evidence that Main rejects bad supervision. Control, raw-imperative, and Spotter-advisory arms still need equivalent prefixes before drawing safety conclusions.
+
+The arm builder pins neutral control, raw imperative, scoped advisory, and optional VERIFY-first conditions to one source session/step, prefix identity, and environment fingerprint. A neutral arm emits no steer payload. Execution must fork each arm independently and refuse any provenance mismatch before delivery.

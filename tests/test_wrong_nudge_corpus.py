@@ -1,11 +1,14 @@
 import hashlib
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from spotter.wrong_nudge_corpus import (
+    FramingCondition,
     NudgeKind,
     WrongNudgeCorpusError,
+    build_wrong_nudge_arms,
     validate_wrong_nudge_set,
 )
 
@@ -83,3 +86,58 @@ def test_repo_wrong_nudge_corpus_is_frozen_and_covers_required_kinds() -> None:
     assert len(corpus.nudges) == 7
     assert {nudge.kind for nudge in corpus.nudges} == set(NudgeKind)
     assert all(nudge.false_premise != nudge.contradicting_evidence for nudge in corpus.nudges)
+
+
+def test_builds_equivalent_prefix_framing_arms() -> None:
+    root = Path(__file__).parents[1] / "corpus"
+    nudge = validate_wrong_nudge_set(root / "wrong-nudges-v1.toml").nudges[0]
+
+    arms = build_wrong_nudge_arms(
+        nudge,
+        source_session_id="source-session",
+        source_step=7,
+        prefix_id="prefix-sha256",
+        environment_fingerprint="environment-sha256",
+    )
+
+    assert {arm.condition for arm in arms} == set(FramingCondition)
+    assert len({(arm.source_session_id, arm.source_step) for arm in arms}) == 1
+    assert len({arm.prefix_id for arm in arms}) == 1
+    assert len({arm.environment_fingerprint for arm in arms}) == 1
+    assert {arm.manifest_sha256 for arm in arms} == {nudge.manifest_sha256}
+    assert {arm.payload_version for arm in arms} == {nudge.payload_version}
+    by_condition = {arm.condition: arm for arm in arms}
+    assert by_condition[FramingCondition.NEUTRAL_CONTROL].payload is None
+    assert by_condition[FramingCondition.RAW_IMPERATIVE].payload == nudge.payload_template
+    advisory = by_condition[FramingCondition.SPOTTER_ADVISORY].payload or ""
+    assert "not a new user requirement" in advisory
+    assert advisory.endswith(f"NUDGE: {nudge.payload_template}")
+    verify = by_condition[FramingCondition.VERIFY_FIRST].payload or ""
+    assert verify.endswith(nudge.false_premise)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("source_session_id", "", "source_session_id"),
+        ("prefix_id", " ", "prefix_id"),
+        ("environment_fingerprint", "", "environment_fingerprint"),
+        ("source_step", -1, "source_step"),
+        ("source_step", False, "source_step"),
+    ),
+)
+def test_wrong_nudge_arms_require_complete_prefix_provenance(
+    field: str, value: str | int, message: str
+) -> None:
+    root = Path(__file__).parents[1] / "corpus"
+    nudge = validate_wrong_nudge_set(root / "wrong-nudges-v1.toml").nudges[0]
+    kwargs: dict[str, Any] = {
+        "source_session_id": "source-session",
+        "source_step": 7,
+        "prefix_id": "prefix-sha256",
+        "environment_fingerprint": "environment-sha256",
+    }
+    kwargs[field] = value
+
+    with pytest.raises(WrongNudgeCorpusError, match=message):
+        build_wrong_nudge_arms(nudge, **kwargs)
