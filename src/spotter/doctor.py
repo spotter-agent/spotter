@@ -494,6 +494,53 @@ def check_runtime(*, deep: bool = False) -> list[Check]:
     endpoint = (
         integration.manifest.app_server_endpoint if integration.manifest is not None else None
     )
+    if endpoint is not None and daemon.available:
+        capability_summary = ", ".join(
+            f"{name}={value}" for name, value in (daemon.app_server_capabilities or ())
+        )
+        epoch = daemon.app_server_connection_epoch
+        if daemon.app_server_state is None:
+            checks.append(
+                Check(
+                    "App Server runtime",
+                    WARN,
+                    "running daemon does not report App Server connection identity; "
+                    "restart required",
+                )
+            )
+        elif daemon.app_server_state != "ready":
+            checks.append(
+                Check(
+                    "App Server runtime",
+                    WARN,
+                    f"{daemon.app_server_state}; epoch={epoch or 'unknown'}",
+                )
+            )
+        elif daemon.app_server_capabilities_changed:
+            checks.append(
+                Check(
+                    "App Server runtime",
+                    WARN,
+                    f"capabilities changed at epoch {epoch}; {capability_summary}",
+                )
+            )
+        elif daemon.app_server_server_changed:
+            checks.append(
+                Check(
+                    "App Server runtime",
+                    INFO,
+                    f"server identity changed and reconciled at epoch {epoch}; "
+                    f"{capability_summary}",
+                )
+            )
+        else:
+            checks.append(
+                Check(
+                    "App Server runtime",
+                    OK,
+                    f"ready epoch={epoch}; {capability_summary}",
+                )
+            )
     if endpoint is None:
         capability_status = WARN if configured else INFO
         checks.extend(

@@ -278,6 +278,40 @@ def test_doctor_probe_reports_an_unreachable_configured_app_server(
     assert by_name["live control"].status == WARN
 
 
+def test_runtime_check_reports_reconciled_capability_change(
+    homes: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest = replace(_ready_manifest(homes), app_server_endpoint="ws://127.0.0.1:4321")
+    manifest.save(homes[0] / "integrations/codex.json")
+
+    async def changed_status(self: DaemonClient) -> DaemonStatus:
+        return DaemonStatus(
+            RuntimeHealth.HEALTHY,
+            pid=123,
+            protocol=1,
+            build_id=current_build_identity().build_id,
+            compatibility=RuntimeCompatibility.MATCHED,
+            construction_fingerprint=expected_runtime_construction_fingerprint(
+                RuntimeLayout.discover()
+            ),
+            app_server_state="ready",
+            app_server_connection_epoch=3,
+            app_server_capabilities=(
+                ("observation", "available"),
+                ("steer", "unavailable"),
+            ),
+            app_server_capabilities_changed=True,
+        )
+
+    monkeypatch.setattr(DaemonClient, "status", changed_status)
+
+    check = {item.name: item for item in check_runtime()}["App Server runtime"]
+
+    assert check.status == WARN
+    assert "changed at epoch 3" in check.detail
+    assert "steer=unavailable" in check.detail
+
+
 @pytest.mark.parametrize(
     "health,expected",
     [(OK, 0), (INFO, 0), (WARN, 1), (FAIL, 2)],

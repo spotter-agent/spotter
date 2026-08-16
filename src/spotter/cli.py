@@ -1472,6 +1472,20 @@ def _daemon_main(action: str, manager: ServiceManager | None = None) -> int:
         details.append(f"runtime={status.runtime_generation}")
     if status.construction_fingerprint is not None:
         details.append(f"construction={status.construction_fingerprint}")
+    if status.app_server_state is not None:
+        app_server = status.app_server_state
+        if status.app_server_connection_epoch is not None:
+            app_server += f"@{status.app_server_connection_epoch}"
+        details.append(f"app-server={app_server}")
+    if status.app_server_capabilities is not None:
+        details.append(
+            "app-capabilities="
+            + ",".join(f"{name}:{value}" for name, value in status.app_server_capabilities)
+        )
+    if status.app_server_server_changed:
+        details.append("app-server-changed=true")
+    if status.app_server_capabilities_changed:
+        details.append("app-capabilities-changed=true")
     if status.started_at is not None:
         details.append(f"started-at={status.started_at:.3f}")
     if status.detail:

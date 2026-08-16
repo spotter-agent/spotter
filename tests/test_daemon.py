@@ -5,9 +5,12 @@ import socket
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
+from spotter.app_server import AppServerCapabilities, CapabilityStatus
 from spotter.build_identity import current_build_identity
 from spotter.cli import main
 from spotter.config import (
@@ -75,6 +78,38 @@ def test_control_socket_handles_concurrent_clients_and_health_states(socket_path
             assert all(status.started_at is not None for status in statuses)
             assert all(status.capabilities is not None for status in statuses)
             assert socket_path.stat().st_mode & 0o777 == 0o600
+
+            server.recovery = cast(
+                Any,
+                SimpleNamespace(
+                    state=SimpleNamespace(value="ready"),
+                    connection=SimpleNamespace(
+                        connection_epoch=7,
+                        server_changed=True,
+                        capabilities_changed=True,
+                        capabilities=AppServerCapabilities(
+                            observation=CapabilityStatus.AVAILABLE,
+                            thread_query=CapabilityStatus.AVAILABLE,
+                            steer=CapabilityStatus.UNAVAILABLE,
+                            interrupt=CapabilityStatus.UNKNOWN,
+                            atomic_pre_tool_veto=CapabilityStatus.UNAVAILABLE,
+                        ),
+                    ),
+                ),
+            )
+            app_status = await DaemonClient(socket_path).status()
+            assert app_status.app_server_state == "ready"
+            assert app_status.app_server_connection_epoch == 7
+            assert dict(app_status.app_server_capabilities or ()) == {
+                "atomic_pre_tool_veto": "unavailable",
+                "interrupt": "unknown",
+                "observation": "available",
+                "steer": "unavailable",
+                "thread_query": "available",
+            }
+            assert app_status.app_server_server_changed is True
+            assert app_status.app_server_capabilities_changed is True
+            server.recovery = None
 
             server.set_health(RuntimeHealth.DEGRADED)
             assert (await DaemonClient(socket_path).status()).health == RuntimeHealth.DEGRADED

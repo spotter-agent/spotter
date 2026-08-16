@@ -103,6 +103,11 @@ class DaemonStatus:
     runtime_generation: str | None = None
     started_at: float | None = None
     construction_fingerprint: str | None = None
+    app_server_state: str | None = None
+    app_server_connection_epoch: int | None = None
+    app_server_capabilities: tuple[tuple[str, str], ...] | None = None
+    app_server_server_changed: bool | None = None
+    app_server_capabilities_changed: bool | None = None
 
     @property
     def available(self) -> bool:
@@ -287,6 +292,27 @@ class DaemonClient:
                     if isinstance(response.get("construction_fingerprint"), str)
                     else None
                 ),
+                app_server_state=(
+                    response.get("app_server_state")
+                    if isinstance(response.get("app_server_state"), str)
+                    else None
+                ),
+                app_server_connection_epoch=_optional_int(
+                    response.get("app_server_connection_epoch")
+                ),
+                app_server_capabilities=_string_mapping_tuple(
+                    response.get("app_server_capabilities")
+                ),
+                app_server_server_changed=(
+                    response.get("app_server_server_changed")
+                    if isinstance(response.get("app_server_server_changed"), bool)
+                    else None
+                ),
+                app_server_capabilities_changed=(
+                    response.get("app_server_capabilities_changed")
+                    if isinstance(response.get("app_server_capabilities_changed"), bool)
+                    else None
+                ),
             )
         except DaemonUnavailable as error:
             return DaemonStatus(RuntimeHealth.UNAVAILABLE, detail=str(error))
@@ -409,6 +435,14 @@ def _string_tuple(value: object) -> tuple[str, ...] | None:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         return None
     return tuple(value)
+
+
+def _string_mapping_tuple(value: object) -> tuple[tuple[str, str], ...] | None:
+    if not isinstance(value, dict) or not all(
+        isinstance(key, str) and isinstance(item, str) for key, item in value.items()
+    ):
+        return None
+    return tuple(sorted(value.items()))
 
 
 def _response_compatibility(response: dict[str, Any]) -> RuntimeCompatibility:
@@ -815,6 +849,7 @@ class DaemonServer:
                 "construction_fingerprint": self.construction_fingerprint,
                 "started_at": self._started_at,
                 **current_build_identity().peer_metadata("daemon"),
+                **self._app_server_status_metadata(),
             }
             if self.health_detail is not None:
                 response["detail"] = self.health_detail
@@ -873,6 +908,36 @@ class DaemonServer:
                 self.set_health(RuntimeHealth.DEGRADED, f"gate observation failed: {error}")
         if shutdown:
             self._shutdown.set()
+
+    def _app_server_status_metadata(self) -> dict[str, object]:
+        recovery = cast(Any, self.recovery)
+        if recovery is None:
+            return {}
+        state = getattr(recovery, "state", None)
+        metadata: dict[str, object] = {
+            "app_server_state": getattr(state, "value", str(state)),
+        }
+        connection = getattr(recovery, "connection", None)
+        if connection is None:
+            return metadata
+        metadata.update(
+            {
+                "app_server_connection_epoch": connection.connection_epoch,
+                "app_server_server_changed": connection.server_changed,
+                "app_server_capabilities_changed": connection.capabilities_changed,
+                "app_server_capabilities": {
+                    name: getattr(connection.capabilities, name).value
+                    for name in (
+                        "observation",
+                        "thread_query",
+                        "steer",
+                        "interrupt",
+                        "atomic_pre_tool_veto",
+                    )
+                },
+            }
+        )
+        return metadata
 
     def _maybe_sample_resources(self) -> dict[str, int | float | str] | None:
         """Bounded resource sample, kept off all but one in 64 gate requests."""

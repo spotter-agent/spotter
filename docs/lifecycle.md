@@ -1123,6 +1123,14 @@ RECONNECTING
 
 A running daemon without its observation/control plane is not fully healthy.
 
+Reconnect always rotates the connection epoch before thread reconciliation. Once the new connection
+is ready, Spotter compares its server fingerprint and concrete capability statuses with the prior
+connection. A changed server or supported/unsupported capability transition becomes a durable
+`runtime_capabilities_changed` event on reconciled threads and appears in the daemon handshake,
+`status`, and `doctor`. An `unknown` capability on a fresh connection means “not probed” and is not
+treated as evidence of loss. Old turn/control targets remain fenced to their prior epoch and are not
+replayed against the changed capability set.
+
 ## 10.3 Journal write failure
 
 Policy must distinguish:

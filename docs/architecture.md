@@ -935,6 +935,15 @@ When the integration manifest contains an endpoint, `spotterd` keeps the persist
 full per-connection capability/server fingerprint. Endpoint selection remains explicit and pending in
 setup rather than being inferred from a listener that merely answers a socket.
 
+Every successful reconnect allocates a new connection epoch before reconciliation, so controls from
+the prior attachment are stale by construction. The reconciler compares the prior server fingerprint
+and concrete capability statuses with the new connection, ignoring `unknown` as merely unprobed. A
+server or capability change is journaled as `runtime_capabilities_changed` for each reconciled thread;
+the event contains only fingerprints, epochs, and capability status transitions. The daemon handshake,
+CLI status, and doctor expose the current App Server state, epoch, capability snapshot, and whether the
+latest reconnect changed server or capability identity. Thread history remains intact, while pending
+control targets cannot cross the epoch boundary.
+
 ---
 
 # 11. Failure and degraded mode

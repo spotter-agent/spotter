@@ -10,9 +10,13 @@ import pytest
 from websockets.asyncio.server import ServerConnection, serve
 
 from spotter.app_server import (
+    AppServerCapabilities,
     AppServerControlError,
+    AppServerEvent,
     AppServerRpcError,
     AppServerTransportError,
+    CapabilityStatus,
+    CodexAppServerClient,
 )
 from spotter.runtime_connection import (
     AppServerRecoveryLoop,
@@ -244,6 +248,89 @@ def test_reconnect_reconciles_epoch_gap_and_stale_control(tmp_path: Path) -> Non
             assert stale[0].payload["outcome"] == "stale"
             assert stale[0].payload["reason_code"] == "stale_target"
             await recovery.close()
+
+    asyncio.run(scenario())
+
+
+def test_reconnect_records_server_and_capability_change(tmp_path: Path) -> None:
+    class FakeClient:
+        def __init__(self, version: str, steer: CapabilityStatus) -> None:
+            self.server_info = {"userAgent": version}
+            self.capabilities = AppServerCapabilities(
+                observation=CapabilityStatus.AVAILABLE,
+                thread_query=CapabilityStatus.AVAILABLE,
+                steer=steer,
+                interrupt=CapabilityStatus.UNKNOWN,
+                atomic_pre_tool_veto=CapabilityStatus.UNAVAILABLE,
+            )
+            self.closed = asyncio.Event()
+
+        async def connect(self) -> None:
+            return None
+
+        async def disconnect(self) -> None:
+            self.closed.set()
+
+        async def list_threads(self, *, limit: int, cursor: str | None = None) -> dict[str, object]:
+            return {"data": [{"id": "thread-1"}], "nextCursor": None}
+
+        async def read_thread(
+            self, thread_id: str, *, include_turns: bool = False
+        ) -> dict[str, object]:
+            return {
+                "thread": {
+                    "id": thread_id,
+                    "turns": [{"id": "turn-1", "status": "active"}],
+                }
+            }
+
+        async def next_event(self) -> AppServerEvent:
+            await self.closed.wait()
+            raise AppServerTransportError("closed")
+
+        async def wait_closed(self) -> AppServerTransportError:
+            await self.closed.wait()
+            return AppServerTransportError("closed")
+
+    async def scenario() -> None:
+        first = FakeClient("codex/1", CapabilityStatus.AVAILABLE)
+        second = FakeClient("codex/2", CapabilityStatus.UNAVAILABLE)
+        pending = iter((first, second))
+        recovery = AppServerRecoveryLoop(
+            "ws://unused",
+            tmp_path / "sessions",
+            ThreadStateStore(),
+            client_factory=lambda _: cast(CodexAppServerClient, next(pending)),
+            initial_backoff=0,
+            maximum_backoff=0,
+        )
+
+        await recovery.start()
+        await _wait_until(lambda: recovery.state == RecoveryState.READY)
+        first.closed.set()
+        await _wait_until(
+            lambda: (
+                recovery.state == RecoveryState.READY
+                and recovery.connection is not None
+                and recovery.connection.connection_epoch == 2
+            )
+        )
+
+        assert recovery.connection is not None
+        assert recovery.connection.server_changed is True
+        assert recovery.connection.capabilities_changed is True
+        [changed] = [
+            record.event
+            for record in recovery.ingestor.records()
+            if record.event.kind == "runtime_capabilities_changed"
+        ]
+        assert changed.payload["epoch_before"] == 1
+        assert changed.payload["epoch_after"] == 2
+        assert changed.payload["server_changed"] is True
+        assert changed.payload["capability_changes"] == [
+            {"capability": "steer", "before": "available", "after": "unavailable"}
+        ]
+        await recovery.close()
 
     asyncio.run(scenario())
 

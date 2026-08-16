@@ -54,6 +54,7 @@ class ConnectionIdentity:
     connected_at: float
     capabilities: AppServerCapabilities
     server_changed: bool
+    capabilities_changed: bool
 
 
 @dataclass(frozen=True)
@@ -466,6 +467,8 @@ class AppServerRecoveryLoop:
                 error=error,
             )
             raise
+        finally:
+            self._refresh_connection_capabilities(client, target.connection_epoch)
 
         accepted = dict(payload)
         accepted_turn_id = result.get("turnId")
@@ -475,6 +478,18 @@ class AppServerRecoveryLoop:
         self._record_control_event("control_rpc_accepted", target, accepted)
         self._reconcile_settled_acceptance(target, accepted)
         return result
+
+    def _refresh_connection_capabilities(
+        self,
+        client: CodexAppServerClient,
+        epoch: int,
+    ) -> None:
+        if (
+            client is self._client
+            and self.connection is not None
+            and self.connection.connection_epoch == epoch
+        ):
+            self.connection = replace(self.connection, capabilities=client.capabilities)
 
     def _record_control_event(
         self,
@@ -586,8 +601,11 @@ class AppServerRecoveryLoop:
                     attachment_id = uuid4().hex
                     connected_at = time.time()
                     server_fingerprint = _fingerprint(client.server_info or {})
+                    previous_connection = self.connection
                     previous_server = (
-                        self.connection.server_fingerprint if self.connection is not None else None
+                        previous_connection.server_fingerprint
+                        if previous_connection is not None
+                        else None
                     )
                     self.connection = ConnectionIdentity(
                         attachment_id,
@@ -597,6 +615,7 @@ class AppServerRecoveryLoop:
                         connected_at,
                         client.capabilities,
                         previous_server is not None and previous_server != server_fingerprint,
+                        False,
                     )
                     consumer = asyncio.create_task(self._consume(client, epoch, attachment_id))
                     stack.push_async_callback(_cancel_task, consumer)
@@ -605,7 +624,25 @@ class AppServerRecoveryLoop:
                     await self._reconcile(client, epoch, attachment_id)
                     if epoch != self._connection_epoch or self._stop.is_set():
                         continue
-                    self.connection = replace(self.connection, capabilities=client.capabilities)
+                    capability_changes = _capability_changes(
+                        previous_connection.capabilities
+                        if previous_connection is not None
+                        else None,
+                        client.capabilities,
+                    )
+                    self.connection = replace(
+                        self.connection,
+                        capabilities=client.capabilities,
+                        capabilities_changed=bool(capability_changes),
+                    )
+                    if previous_connection is not None and (
+                        self.connection.server_changed or capability_changes
+                    ):
+                        self._record_runtime_capability_change(
+                            previous_connection,
+                            self.connection,
+                            capability_changes,
+                        )
                     self.metrics = replace(
                         self.metrics,
                         reconnect_successes=self.metrics.reconnect_successes + 1,
@@ -794,6 +831,41 @@ class AppServerRecoveryLoop:
             )
         )
         self.metrics = replace(self.metrics, observation_gaps=self.metrics.observation_gaps + 1)
+
+    def _record_runtime_capability_change(
+        self,
+        previous: ConnectionIdentity,
+        current: ConnectionIdentity,
+        changes: tuple[tuple[str, str, str], ...],
+    ) -> None:
+        """Persist reconnect identity/capability drift without exposing server details."""
+        payload = {
+            "epoch_before": previous.connection_epoch,
+            "epoch_after": current.connection_epoch,
+            "server_changed": current.server_changed,
+            "server_fingerprint_before": previous.server_fingerprint,
+            "server_fingerprint_after": current.server_fingerprint,
+            "capability_changes": [
+                {"capability": name, "before": before, "after": after}
+                for name, before, after in changes
+            ],
+        }
+        for state in self.thread_states.snapshots():
+            if state.connection_epoch != current.connection_epoch:
+                continue
+            self._record(
+                TraceEvent(
+                    "runtime_capabilities_changed",
+                    payload,
+                    event_id=(
+                        f"spotter:capabilities:{state.thread_id.value}:{current.connection_epoch}"
+                    ),
+                    occurred_at=time.time(),
+                    identity=state.identity,
+                    provenance=TraceProvenance("spotterd", "runtime_capabilities_changed"),
+                    connection_epoch=current.connection_epoch,
+                )
+            )
 
     def _record(self, event: TraceEvent) -> StepRecord | None:
         if event.config_generation is None:
@@ -1205,6 +1277,23 @@ def _available_capabilities(capabilities: AppServerCapabilities) -> tuple[str, .
         for name in ("observation", "thread_query", "steer", "interrupt")
         if getattr(capabilities, name) == CapabilityStatus.AVAILABLE
     )
+
+
+def _capability_changes(
+    previous: AppServerCapabilities | None,
+    current: AppServerCapabilities,
+) -> tuple[tuple[str, str, str], ...]:
+    if previous is None:
+        return ()
+    changes: list[tuple[str, str, str]] = []
+    for name in ("observation", "thread_query", "steer", "interrupt", "atomic_pre_tool_veto"):
+        before = getattr(previous, name)
+        after = getattr(current, name)
+        # UNKNOWN means the new connection has not probed this surface yet;
+        # it is not evidence that a previously available capability vanished.
+        if after != CapabilityStatus.UNKNOWN and before != after:
+            changes.append((name, before.value, after.value))
+    return tuple(changes)
 
 
 def _fingerprint(value: object) -> str:
