@@ -100,10 +100,26 @@ def append_experiment_result(path: Path, row: dict[str, object]) -> None:
     with lock_path.open("a") as lock:
         flock(lock, LOCK_EX)
         _validate_result_history(path)
-        with path.open("a", encoding="utf-8") as sink:
-            sink.write(json.dumps(row) + "\n")
-            sink.flush()
-            os.fsync(sink.fileno())
+        _write_result_row(path, row)
+
+
+def initialize_experiment_result(path: Path, row: dict[str, object]) -> None:
+    """Write a result header once while concurrent initializers share the lock."""
+
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    with lock_path.open("a") as lock:
+        flock(lock, LOCK_EX)
+        _validate_result_history(path)
+        if path.exists() and path.stat().st_size:
+            return
+        _write_result_row(path, row)
+
+
+def _write_result_row(path: Path, row: dict[str, object]) -> None:
+    with path.open("a", encoding="utf-8") as sink:
+        sink.write(json.dumps(row) + "\n")
+        sink.flush()
+        os.fsync(sink.fileno())
 
 
 def _validate_result_history(path: Path) -> None:

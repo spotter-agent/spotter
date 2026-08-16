@@ -18,6 +18,7 @@ from spotter.experiment import (
     ArmClassification,
     ArmResult,
     ExperimentResultError,
+    initialize_experiment_result,
     results_path,
     run_experiment,
     summarize,
@@ -49,6 +50,21 @@ def _fake_fork(counter: dict[str, int]) -> Callable[..., ForkPlan]:
         )
 
     return fake
+
+
+def test_concurrent_result_initializers_write_one_header(tmp_path: Path) -> None:
+    path = tmp_path / "results.jsonl"
+    row = {
+        "schema": EXPERIMENT_RESULT_SCHEMA,
+        "schema_version": EXPERIMENT_RESULT_SCHEMA_VERSION,
+        "result_schema_version": EXPERIMENT_RESULT_SCHEMA_VERSION,
+        "meta": True,
+    }
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        list(executor.map(lambda _: initialize_experiment_result(path, row), range(20)))
+
+    assert path.read_text().splitlines() == [json.dumps(row)]
 
 
 def _agent_run(returncode: int = 0, stderr: str = "") -> subprocess.CompletedProcess[str]:

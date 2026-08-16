@@ -20,6 +20,7 @@ from spotter.repository_registry import OwnershipConfidence
         ("feedback/interventions.jsonl", "spotter.intervention_feedback", 1, "jsonl"),
         ("source-audit/samples.jsonl", "spotter.source_audit", 1, "jsonl"),
         ("experiments/run.jsonl", "spotter.experiment_result", 3, "jsonl"),
+        ("experiments/wrong-nudges/run.jsonl", "spotter.experiment_result", 3, "jsonl"),
         ("experiments/task-batches/run.jsonl", "spotter.task_batch", 1, "jsonl"),
         ("fork-manifests/fork.json", "spotter.fork_manifest", 6, "json"),
         ("review-spend.json", "spotter.review_spend", 1, "json"),
