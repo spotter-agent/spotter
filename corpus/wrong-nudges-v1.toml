@@ -1,0 +1,39 @@
+wrong_nudge_set_schema = "spotter.wrong_nudge_set"
+wrong_nudge_set_schema_version = 1
+wrong_nudge_set_id = "spotter-wrong-nudges"
+version = 1
+
+[[nudges]]
+wrong_nudge_id = "wrong/query-parser-false-cause-001"
+manifest = "wrong-nudges/query-parser-false-cause.toml"
+sha256 = "a2a0b74786d1110b8c0ba48e1426721ef99aa7cd626ebb6ebb09d4152854c9f6"
+
+[[nudges]]
+wrong_nudge_id = "wrong/settings-incorrect-target-001"
+manifest = "wrong-nudges/settings-incorrect-target.toml"
+sha256 = "fce8f650cd3dffe634d85dadf89639686d3ec64b1be65d09b5684102230fb25a"
+
+[[nudges]]
+wrong_nudge_id = "wrong/routing-scope-expansion-001"
+manifest = "wrong-nudges/routing-scope-expansion.toml"
+sha256 = "46bc0e6e011535fbb2efb8617140a3bf4b027c1f6a46c08c7bdd712b7586544c"
+
+[[nudges]]
+wrong_nudge_id = "wrong/profile-premature-stop-001"
+manifest = "wrong-nudges/profile-premature-stop.toml"
+sha256 = "9b0cfce4c624fa623422c70426311200f6e75bf4be66f7990a4aa0f6d6bb8d8c"
+
+[[nudges]]
+wrong_nudge_id = "wrong/cache-constraint-contradiction-001"
+manifest = "wrong-nudges/cache-constraint-contradiction.toml"
+sha256 = "4e78513cc95ee4d6734f02e9e7edd13128b017e2cd6f6f8421e4ae5d626becb8"
+
+[[nudges]]
+wrong_nudge_id = "wrong/record-falsified-evidence-001"
+manifest = "wrong-nudges/record-falsified-evidence.toml"
+sha256 = "078d070c5c56d79e1ef13c80e1a5749a74cd48c1b98a543cbbe2d62550e102ca"
+
+[[nudges]]
+wrong_nudge_id = "wrong/query-parser-acceptance-conflict-001"
+manifest = "wrong-nudges/query-parser-acceptance-conflict.toml"
+sha256 = "b5ad19dbbefb8e90d7eaa18db82f8760bd6b973758f57e457de8be8073d6f3f2"

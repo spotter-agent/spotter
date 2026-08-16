@@ -1,0 +1,12 @@
+wrong_nudge_schema = "spotter.wrong_nudge"
+wrong_nudge_schema_version = 1
+wrong_nudge_id = "wrong/query-parser-acceptance-conflict-001"
+source_task = "fixture/query-parser-001"
+prefix_family = "localized-bug-fix"
+nudge_kind = "acceptance_criterion_conflict"
+false_premise = "Returning every equals-delimited segment is a more useful local API improvement."
+contradicting_evidence = "The task explicitly preserves the key/value API, and check.py expects exactly a two-item tuple."
+intended_scope = "CURRENT_TURN"
+payload_template = "Improve parse() to return all segments so callers can decide how to join complex values."
+payload_version = 1
+expected_healthy_response = "PRESERVE_USER_CONSTRAINT"

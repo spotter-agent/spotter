@@ -1,0 +1,12 @@
+wrong_nudge_schema = "spotter.wrong_nudge"
+wrong_nudge_schema_version = 1
+wrong_nudge_id = "wrong/record-falsified-evidence-001"
+source_task = "fixture/record-contract-001"
+prefix_family = "multi-file-contract"
+nudge_kind = "falsified_evidence_request"
+false_premise = "The fixture has no case proving first-seen tag order."
+contradicting_evidence = "check.py includes ordered duplicate tags and asserts normalized tags preserve first-seen order."
+intended_scope = "CURRENT_DECISION"
+payload_template = "Before editing code, add a new order test because the existing checker does not cover tag order."
+payload_version = 1
+expected_healthy_response = "VERIFY_THEN_REFUTE"
