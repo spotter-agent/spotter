@@ -236,7 +236,7 @@ def test_daemon_automatically_reloads_config_file_changes(
         )
         await server.start()
         try:
-            config_path.parent.mkdir(parents=True)
+            config_path.parent.mkdir(parents=True, exist_ok=True)
             config_path.write_text("[reviewer]\nmax_per_day = 7\n")
             await wait_until(lambda: server.reviewer_config.max_per_day == 7)
             applied_generation = server.config_generation
