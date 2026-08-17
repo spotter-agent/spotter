@@ -7,10 +7,10 @@
 > manifests, managed `launchd`/`systemd --user` registration, portable startup, legacy Hook/plugin
 > migration, runtime-aware diagnostics, tag-derived release artifacts, stable packaged runtime
 > layout, official Homebrew tap, packaged `--version` identity, and a two-generation Homebrew
-> lifecycle gate exist. App Server event ingestion also exists, but broader configuration/protocol
-> migration policy and transparent plain-`codex` launch remain target behavior. Conservative,
-> repository-aware `spotter purge` scopes are implemented; bounded retention policy remains future
-> work.
+> lifecycle gate exist. App Server event ingestion, layered configuration/protocol migration,
+> conservative repository-aware `spotter purge`, and bounded retention/checkpoint policy also
+> exist. Transparent plain-`codex` launch remains target behavior under
+> [#304](https://github.com/spotter-agent/spotter/issues/304).
 
 ---
 
@@ -298,8 +298,8 @@ fsynced atomic replacements. A moved repository is recognized by the retained Gi
 a different repository appearing at the old path receives a separate entry. Unknown/corrupt
 registry schemas refuse new Git-resource creation rather than overwriting ownership evidence, and a
 resource whose ownership record cannot be committed is rolled back through Git. Purge enumeration,
-reachability protection, dry-run reporting, and Git-aware deletion are implemented. Bounded
-retention/checkpoint policy remains follow-up work under #89.
+reachability protection, dry-run reporting, Git-aware deletion, and bounded retention/checkpoint
+policy are implemented by [#89](https://github.com/spotter-agent/spotter/issues/89).
 
 ---
 
@@ -589,7 +589,8 @@ re-running setup heals forward, while teardown cannot remove an unrecorded mutat
 
 Explicit endpoint selection and verification are implemented without claiming ownership of another
 client's App Server. The remaining product boundary is making ordinary `codex` select that server
-without hiding which endpoint/process is shared.
+without hiding which endpoint/process is shared. [#304](https://github.com/spotter-agent/spotter/issues/304)
+owns that launch contract together with concurrent runtime isolation and explicit degraded behavior.
 
 ## 5.1 Why startup order matters
 
@@ -1875,11 +1876,14 @@ The target lifecycle is not complete until all of these work end-to-end:
 - [x] explicit App Server endpoints are verified before commit and changed transactionally;
 - [x] shared App Server teardown remains outside Spotter-owned service cleanup;
 - [x] interrupted setup can heal forward when setup is re-run (pre-manifest teardown cannot infer ownership);
-- [ ] ordinary `codex` requires no manual Spotter/App Server startup in managed mode;
+- [ ] ordinary `codex` requires no manual Spotter/App Server startup in managed mode
+      ([#304](https://github.com/spotter-agent/spotter/issues/304));
 - [x] `status` distinguishes daemon, observation, control, enforcement, storage health;
 - [x] `doctor` performs a real synthetic round-trip;
-- [ ] multiple concurrent threads/sessions remain isolated;
-- [ ] daemon crash recovers without corrupting journal/live state;
+- [ ] multiple concurrent threads/sessions remain isolated
+      ([#304](https://github.com/spotter-agent/spotter/issues/304));
+- [ ] daemon crash recovers without corrupting journal/live state
+      ([#304](https://github.com/spotter-agent/spotter/issues/304));
 - [x] Codex upgrade degrades by capability rather than silently breaking;
 - [x] Spotter upgrade handles a running old daemon and schema migration;
 - [x] `teardown codex` removes only Spotter-owned integration changes;

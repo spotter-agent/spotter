@@ -84,6 +84,7 @@ The Runtime milestone is now decomposed into concrete boundaries rather than one
 | [#84](https://github.com/spotter-agent/spotter/issues/84) | runtime-aware `status` / `doctor` and degraded capability reporting (implemented) |
 | [#87](https://github.com/spotter-agent/spotter/issues/87) | daemon/App Server reconnect and thread reconciliation |
 | [#301](https://github.com/spotter-agent/spotter/issues/301) | verified explicit App Server endpoint selection during transactional setup (implemented) |
+| [#304](https://github.com/spotter-agent/spotter/issues/304) | ordinary launch contract, concurrent runtime isolation, and explicit degraded behavior |
 
 Native GitHub issue dependencies encode the actual order between these issues. The table describes responsibility, not a second dependency system.
 
@@ -124,7 +125,10 @@ The journal remains durable history and recovery input; it is not the normal hot
 - normalize App Server events into identity-rich Trace IR and durable history ([#85](https://github.com/spotter-agent/spotter/issues/85), implemented);
 - maintain live state from that stream ([#31](https://github.com/spotter-agent/spotter/issues/31), implemented);
 - record runtime cost/timing/provenance ([#33](https://github.com/spotter-agent/spotter/issues/33), implemented); durable records now project globally deduplicated Main actions with per-surface observation counts, field-level Main-token and explicit reviewer session/call token coverage, gate latency, clock-domain-safe signal/queue/detection-to-decision lifecycle timing, decision and post-dispatch observed-adoption lead/lag against the target turn boundary, asynchronously persisted control dispatch/acceptance/adoption/stale-delivery coverage, terminal-job coverage, bounded daemon resources, storage, paired objective outcomes with per-arm cost coverage, and session-specific objective joins backed only by durable arm/fork provenance;
-- measure the actual observability ceiling after migration ([#37](https://github.com/spotter-agent/spotter/issues/37)); the [measurement instrument and current zero-sample baseline](observability-baseline.md) are documented, but labeled App Server failures are still required;
+- measure the actual observability ceiling after migration: [#37](https://github.com/spotter-agent/spotter/issues/37)
+  implemented the [measurement instrument and current zero-sample baseline](observability-baseline.md),
+  while [#303](https://github.com/spotter-agent/spotter/issues/303) owns representative labeled App
+  Server evidence and the per-responsibility Hook-removal decision;
 - remove `SessionStart`, `UserPromptSubmit`, and `PostToolUse` only after parity is demonstrated, leaving the minimal enforcement bridge ([#86](https://github.com/spotter-agent/spotter/issues/86)).
 
 ## Evidence gate
@@ -272,7 +276,8 @@ Make months of use boring: install, upgrade, recover, clean up, and reinstall wi
 
 - persisted schema/version contracts and migrations ([#47](https://github.com/spotter-agent/spotter/issues/47));
 - repeatable standalone/Homebrew packaging and release artifacts ([#88](https://github.com/spotter-agent/spotter/issues/88));
-- repository-aware purge, retention, uninstall, and reinstall lifecycle ([#89](https://github.com/spotter-agent/spotter/issues/89)); conservative purge scopes are implemented, while bounded retention policy remains;
+- repository-aware purge, retention, uninstall, and reinstall lifecycle
+  ([#89](https://github.com/spotter-agent/spotter/issues/89), implemented);
 - runtime configuration, protocol/version handshake, and upgrade compatibility ([#90](https://github.com/spotter-agent/spotter/issues/90));
 - run the real-session configuration comparison once the relevant product states exist ([#36](https://github.com/spotter-agent/spotter/issues/36)).
 
