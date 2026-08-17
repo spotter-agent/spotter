@@ -138,7 +138,12 @@ def check_storage() -> list[Check]:
     return checks
 
 
-def check_roundtrip(config_path: Path | None, *, command: Sequence[str] | None = None) -> Check:
+def check_roundtrip(
+    config_path: Path | None,
+    *,
+    command: Sequence[str] | None = None,
+    capture_only: bool = False,
+) -> Check:
     """Feed the real CLI a synthetic payload and confirm a record appears.
 
     Nothing else in the tool proves the whole path works; every component
@@ -156,6 +161,13 @@ def check_roundtrip(config_path: Path | None, *, command: Sequence[str] | None =
     args = list(command or RuntimeLayout.discover().bridge_command)
     if config_path is not None:
         args += ["--config", str(config_path)]
+    environment = {**os.environ}
+    if capture_only:
+        environment.pop("SPOTTER_DISABLE", None)
+        environment["SPOTTER_CAPTURE_ONLY"] = "1"
+    else:
+        environment.pop("SPOTTER_CAPTURE_ONLY", None)
+        environment["SPOTTER_DISABLE"] = "1"
     try:
         result = subprocess.run(
             args,
@@ -163,7 +175,7 @@ def check_roundtrip(config_path: Path | None, *, command: Sequence[str] | None =
             capture_output=True,
             text=True,
             timeout=30,
-            env={**os.environ, "SPOTTER_DISABLE": "1"},
+            env=environment,
         )
     except (OSError, subprocess.SubprocessError) as error:
         return Check("round-trip", FAIL, f"hook could not run: {error}")

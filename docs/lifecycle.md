@@ -1003,9 +1003,15 @@ Do not treat experiment machinery as evidence of positive intervention advantage
 Frozen task-set batches run control/guidance arms from separate clean fixture copies. Each arm row
 records the task/set identity, declared budget, setup/check diagnostics, and an explicit task versus
 infrastructure/timeout classification. Rows are flushed durably after scoring; resume skips existing
-task/arm keys only when the task-set hash, environment, guidance, model, and sandbox still match.
-The current Codex backend enforces wall time and records the declared max-turn budget; the Codex CLI
-does not yet expose a hard max-turn limit for the batch runner to enforce.
+task/arm keys only when the task-set hash, environment, guidance, model, reasoning effort, sandbox,
+Codex home/version, platform, and capture flag still match. Capture-requested batches additionally
+prove the exact owned Hook integration, selected Codex/Spotter homes, capture config, and a
+capture-only journal round-trip before creating the header or starting a paid arm. New headers pin a
+non-secret readiness receipt; incomplete resumes with a receipt require an exact match. Legacy
+receipt-less incomplete capture batches rerun current readiness before continuing, while completed
+batches remain readable without an active integration. The current Codex backend enforces wall time
+and records the declared max-turn budget; the Codex CLI does not yet expose a hard max-turn limit for
+the batch runner to enforce.
 
 Wrong-nudge persistence cohorts are a separate `spotter.experiment_result` container with
 `wrong_nudge_persistence_schema_version = 1`. They refuse partial, mismatched, undelivered, or

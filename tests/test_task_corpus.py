@@ -3,12 +3,15 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import spotter.cli as cli
 import spotter.task_corpus as task_corpus
 from spotter.cli import main
+from spotter.doctor import OK
+from spotter.paths import RuntimeLayout
 from spotter.replay import fork
 from spotter.snapshot import StepJournal, snapshot_worktree
 from spotter.task_corpus import (
@@ -337,6 +340,15 @@ def test_task_batch_captures_replay_source_sessions(
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(task_corpus, "_codex_version", lambda: "codex-test")
+    readiness = {
+        "integration_generation": "generation-a",
+        "setup_build_id": "build-a",
+        "spotter_home": str(home),
+        "codex_home": str(codex_home),
+        "hook_command_sha256": "hook-a",
+        "config_generation": "config-a",
+    }
+    monkeypatch.setattr(task_corpus, "_capture_readiness", lambda _: readiness, raising=False)
     sessions = iter(("source-control", "source-guidance"))
 
     def solve(
@@ -421,7 +433,168 @@ def test_task_batch_captures_replay_source_sessions(
         assert Path(plan.worktree, "parser.py").read_text() == "def parse(): return 0\n"
     rows = [json.loads(line) for line in output.read_text().splitlines()]
     assert rows[0]["capture_replay_sources"] is True
+    assert rows[0]["capture_readiness"] == readiness
     assert all(row["replay_source_session_id"] for row in rows if "task_id" in row)
+
+    output.write_text("\n".join(json.dumps(row) for row in rows[:2]) + "\n")
+    for key in ("integration_generation", "hook_command_sha256", "config_generation"):
+        changed = {**readiness, key: f"changed-{key}"}
+        monkeypatch.setattr(task_corpus, "_capture_readiness", lambda _, row=changed: row)
+        with pytest.raises(TaskCorpusError, match="capture_readiness does not match"):
+            run_task_batch(
+                path,
+                "Inspect first.",
+                resume=output,
+                reasoning_effort="low",
+                capture_replay_sources=True,
+            )
+
+    legacy_header = {key: value for key, value in rows[0].items() if key != "capture_readiness"}
+    output.write_text("\n".join((json.dumps(legacy_header), json.dumps(rows[1]))) + "\n")
+    sessions = iter(("source-legacy-resume",))
+    monkeypatch.setattr(task_corpus, "_capture_readiness", lambda _: readiness)
+
+    _, resumed = run_task_batch(
+        path,
+        "Inspect first.",
+        resume=output,
+        reasoning_effort="low",
+        capture_replay_sources=True,
+    )
+
+    assert len(resumed) == 2
+    assert {result.replay_source_session_id for result in resumed} >= {"source-legacy-resume"}
+
+
+def test_capture_readiness_failure_starts_no_agent_or_batch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _corpus(tmp_path / "corpus")
+    home = tmp_path / "home"
+    monkeypatch.setenv("SPOTTER_HOME", str(home))
+
+    def unavailable(_: object) -> dict[str, str]:
+        raise TaskCorpusError("replay-source capture unavailable: Spotter Hook is missing")
+
+    def unexpected(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise AssertionError("capture readiness must fail before the paid agent")
+
+    monkeypatch.setattr(task_corpus, "_capture_readiness", unavailable, raising=False)
+    monkeypatch.setattr(task_corpus, "_run_task_agent", unexpected)
+
+    with pytest.raises(TaskCorpusError, match="capture unavailable"):
+        run_task_batch(path, "Inspect first.", capture_replay_sources=True)
+
+    batches = home / "experiments" / "task-batches"
+    assert not batches.exists() or not list(batches.glob("*.jsonl"))
+
+
+def test_capture_readiness_receipt_binds_integration_and_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _corpus(tmp_path / "corpus")
+    home = tmp_path / "home"
+    codex_home = tmp_path / "codex"
+    monkeypatch.setenv("SPOTTER_HOME", str(home))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    command = f"SPOTTER_HOME={home} /bin/spotter hook || true"
+    layout = SimpleNamespace(user_data_dir=home, bridge_command=("/trusted/spotter", "hook"))
+    monkeypatch.setattr(RuntimeLayout, "discover", lambda: layout)
+    manifest = SimpleNamespace(
+        codex_home=str(codex_home),
+        runtime_layout={"user_data_dir": str(home)},
+        owned_hooks=[
+            {"event": event, "hook": {"command": command}}
+            for event in ("SessionStart", "PreToolUse", "PostToolUse")
+        ],
+        config_path=None,
+        integration_generation="generation-a",
+        setup_build_id="build-a",
+    )
+    inspection = SimpleNamespace(
+        manifest=manifest,
+        check=SimpleNamespace(status=OK, detail="ready"),
+        hook_ready=True,
+    )
+    monkeypatch.setattr(task_corpus, "check_integration", lambda: inspection)
+    monkeypatch.setattr(
+        task_corpus,
+        "resolve_config",
+        lambda **kwargs: SimpleNamespace(
+            config=SimpleNamespace(snapshot_on_patch=True),
+            resolved_config_generation="config-a",
+        ),
+    )
+
+    def roundtrip(config_path: object, *, command: list[str], capture_only: bool) -> object:
+        assert config_path is None
+        assert command == [
+            "/trusted/spotter",
+            "hook",
+            "--integration-generation",
+            "generation-a",
+        ]
+        assert capture_only is True
+        return SimpleNamespace(status=OK, detail="recorded")
+
+    monkeypatch.setattr(task_corpus, "check_roundtrip", roundtrip)
+
+    receipt = task_corpus._capture_readiness(validate_task_set(path))
+
+    assert receipt == {
+        "integration_generation": "generation-a",
+        "setup_build_id": "build-a",
+        "spotter_home": str(home),
+        "codex_home": str(codex_home),
+        "hook_command_sha256": hashlib.sha256(command.encode()).hexdigest(),
+        "config_generation": "config-a",
+        "task_set_id": "spotter-dev",
+    }
+
+    manifest.owned_hooks[1]["hook"]["command"] += " --stale"
+    with pytest.raises(TaskCorpusError, match="commands are missing or inconsistent"):
+        task_corpus._capture_readiness(validate_task_set(path))
+
+
+def test_capture_readiness_refuses_unready_integration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _corpus(tmp_path / "corpus")
+    inspection = SimpleNamespace(
+        manifest=None,
+        check=SimpleNamespace(status="fail", detail="owned Hook is missing"),
+        hook_ready=False,
+    )
+    monkeypatch.setattr(task_corpus, "check_integration", lambda: inspection)
+
+    with pytest.raises(TaskCorpusError, match="owned Hook is missing"):
+        task_corpus._capture_readiness(validate_task_set(path))
+
+
+@pytest.mark.parametrize("mismatch", ("spotter", "codex"))
+def test_capture_readiness_refuses_home_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mismatch: str
+) -> None:
+    path = _corpus(tmp_path / "corpus")
+    home = tmp_path / "home"
+    codex_home = tmp_path / "codex"
+    monkeypatch.setenv("SPOTTER_HOME", str(home))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    manifest = SimpleNamespace(
+        codex_home=str(codex_home if mismatch != "codex" else tmp_path / "other-codex"),
+        runtime_layout={
+            "user_data_dir": str(home if mismatch != "spotter" else tmp_path / "other-home")
+        },
+    )
+    inspection = SimpleNamespace(
+        manifest=manifest,
+        check=SimpleNamespace(status=OK, detail="ready"),
+        hook_ready=True,
+    )
+    monkeypatch.setattr(task_corpus, "check_integration", lambda: inspection)
+
+    with pytest.raises(TaskCorpusError, match=f"different {mismatch.upper()}_HOME"):
+        task_corpus._capture_readiness(validate_task_set(path))
 
 
 def test_task_agent_capture_mode_enables_json_hooks_without_supervision(
