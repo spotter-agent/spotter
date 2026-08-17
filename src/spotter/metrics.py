@@ -292,7 +292,8 @@ def tally_signal_silence(
     tallies: dict[str, Tally] = {}
     for sample in samples.values():
         batch = batches_by_id[sample.batch_id]
-        key = f"{sample.signal_type}/{sample.event_kind}@p={batch.inclusion_probability:g}"
+        event_kinds = ",".join(batch.event_kinds)
+        key = f"{sample.signal_type}/{event_kinds}@p={batch.inclusion_probability:g}"
         label = labels[sample.signal_type].get(sample.step)
         stale = not sample_matches(sample, records) or bool(
             label is not None and not matches(label, records)

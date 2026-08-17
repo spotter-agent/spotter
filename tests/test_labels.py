@@ -328,7 +328,7 @@ def test_rate_is_withheld_below_minimum_samples() -> None:
         add_label("s1", step, "fp", "", records)
     gates, _, _ = tally_session("s1", records)
     line = gates["git_reset_hard"].rate_line(
-        "git_reset_hard", "false-positive", count_negative=True
+        "git_reset_hard", "false-discovery (1 - precision)", count_negative=True
     )
     assert "too few decided labels" in line
     assert "%" not in line  # no headline number from two samples
@@ -341,7 +341,7 @@ def test_rate_is_marked_provisional_until_coverage_is_complete() -> None:
         add_label("s1", step, "fp", "", records)
     gates, _, _ = tally_session("s1", records)
     line = gates["git_reset_hard"].rate_line(
-        "git_reset_hard", "false-positive", count_negative=True
+        "git_reset_hard", "false-discovery (1 - precision)", count_negative=True
     )
     assert "provisional" in line and f"{MIN_SAMPLES}/{MIN_SAMPLES + 2} labeled" in line
 
@@ -349,11 +349,11 @@ def test_rate_is_marked_provisional_until_coverage_is_complete() -> None:
         add_label("s1", step, "fp", "", records)
     gates, _, _ = tally_session("s1", records)
     complete = gates["git_reset_hard"].rate_line(
-        "git_reset_hard", "false-positive", count_negative=True
+        "git_reset_hard", "false-discovery (1 - precision)", count_negative=True
     )
-    # all seven labels were fp: the gate report must show 100% false positives,
+    # All seven labels were fp: the flagged set has 100% false discovery,
     # not the 0% true-positive share the old wording printed (PR #17 review P2)
-    assert "provisional" not in complete and "false-positive 100%" in complete
+    assert "provisional" not in complete and "false-discovery (1 - precision) 100%" in complete
 
 
 def test_gate_miss_rate_counts_only_correlated_unflagged_proposals() -> None:
@@ -470,7 +470,8 @@ def test_cli_label_and_metrics_roundtrip(capsys: pytest.CaptureFixture[str]) -> 
     out = capsys.readouterr().out
     assert "step 1: fp by alice" in out
     assert "step 2: miss by bob" in out
-    assert "P3 gate false positives" in out
+    assert "P3 gate flag precision" in out
+    assert "true FPR unavailable" in out
     assert "P3 gate misses" in out
     assert "Signal candidate precision" in out
     assert "P4 reviewer precision" in out
@@ -480,6 +481,21 @@ def test_cli_label_and_metrics_roundtrip(capsys: pytest.CaptureFixture[str]) -> 
     assert "Runtime cost / efficiency (coverage-aware)" in out
     assert "Rater agreement (double-label subset)" in out
     assert "too few decided labels" in out  # honest about n=1
+
+
+def test_cli_names_flagged_denominator_false_discovery(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    records = _journal("s1", _flagged(MIN_SAMPLES))
+    for record in records:
+        if record.event.kind == "gate_shadow_block":
+            add_label("s1", record.step, "fp", "", records)
+
+    assert main(["metrics", "--session", "s1"]) == 0
+
+    output = capsys.readouterr().out
+    assert "false-discovery (1 - precision) 100%" in output
+    assert "true FPR unavailable" in output
 
 
 def test_cli_label_rejects_bad_verdict(capsys: pytest.CaptureFixture[str]) -> None:

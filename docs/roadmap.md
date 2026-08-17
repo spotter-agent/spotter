@@ -178,7 +178,8 @@ A signal is a hypothesis, not a verdict.
 
 Report together:
 
-- precision / false-positive rate;
+- precision / false-discovery rate among emitted flags; true false-positive rate only when a
+  per-rule true-negative frame exists;
 - miss rate or recall estimate;
 - abstention / blind-spot rate;
 - detection delay / wasted actions;
