@@ -39,6 +39,7 @@ from spotter.replay import (
     fingerprint_environment,
     fork,
     load_fork_manifest,
+    prefix_contamination_preflight,
 )
 from spotter.snapshot import StepJournal
 
@@ -220,6 +221,8 @@ def _pair_environment_preflight(prepared: list[tuple[str, str, ForkPlan]]) -> st
         return "FORK_PROVENANCE_UNAVAILABLE"
     if Path(plans[0].worktree).resolve() == Path(plans[1].worktree).resolve():
         return "SHARED_ARM_WORKTREE"
+    if contamination := prefix_contamination_preflight(plans):
+        return contamination
     source_mismatch = next(
         (
             plan.source_environment_preflight
@@ -746,11 +749,12 @@ def summarize(results: list[ArmResult]) -> str:
             disagreements += (
                 pair_rows["neutral_a"].classification != pair_rows["neutral_b"].classification
             )
-        environment_mismatches = len(
+        preflight_failures = len(
             {
                 result.pair
                 for result in results
                 if result.environment_preflight not in {None, "MATCHED"}
+                or result.classification == ArmClassification.SETUP_FAIL
             }
         )
         infrastructure_failures = sum(
@@ -765,8 +769,8 @@ def summarize(results: list[ArmResult]) -> str:
         rate = f"{disagreements / judgeable_pairs:.1%}" if judgeable_pairs else "unknown"
         lines.append(
             f"noise pairs: n={judgeable_pairs}/{len(pairs)} judgeable; mechanical outcome "
-            f"disagreements={disagreements}/{judgeable_pairs} ({rate}); environment mismatches="
-            f"{environment_mismatches}/{len(pairs)}; infrastructure failures="
+            f"disagreements={disagreements}/{judgeable_pairs} ({rate}); preflight failures="
+            f"{preflight_failures}/{len(pairs)}; infrastructure failures="
             f"{infrastructure_failures}/{len(results)}"
         )
         return "\n".join(lines)

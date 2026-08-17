@@ -1160,4 +1160,5 @@ def test_prefix_manifest_carries_gap_and_external_effect_limits(
     assert manifest.prefix.external_effects == (
         {"kind": "git_remote_write", "resource": "origin", "reversible": False},
     )
+    assert plan.observation_gaps == 1
     assert plan.external_effects == list(manifest.prefix.external_effects)

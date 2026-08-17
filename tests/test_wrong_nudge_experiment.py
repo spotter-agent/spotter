@@ -244,6 +244,11 @@ def test_prepares_four_independent_equivalent_prefix_forks(
         ({"environment_fingerprint": "different"}, "ENVIRONMENT_FINGERPRINT_MISMATCH"),
         ({"source_environment_preflight": "SOURCE_ENVIRONMENT_MISMATCH"}, "SOURCE_ENVIRONMENT"),
         ({"manifest": None}, "FORK_MANIFEST_UNAVAILABLE"),
+        ({"observation_gaps": 1}, "PREFIX_OBSERVATION_GAP"),
+        (
+            {"external_effects": [{"kind": "git_remote_write", "resource": "origin"}]},
+            "PREFIX_EXTERNAL_EFFECT",
+        ),
     ),
 )
 def test_preflight_refuses_any_non_equivalent_fork_before_delivery(
