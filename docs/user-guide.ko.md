@@ -244,6 +244,26 @@ spotter setup codex --config /absolute/path/to/spotter.toml
 
 ## 7. Spotter 운영 및 점검
 
+### 외부 효과와 복구 근거
+
+세션에 기록된 외부 효과를 확인합니다.
+
+```bash
+spotter effects list --session SESSION
+```
+
+명시적인 확인 작업이나 보상 작업 후에는 원래 효과를 덮어쓰지 않고 관찰된 해결 상태를 추가합니다.
+
+```bash
+spotter effects resolve --session SESSION --effect-id EFFECT_ID \
+  --resolution reconciled_absent --note "명시적 확인에서 리소스를 찾지 못함"
+```
+
+지원하는 상태는 `reversed`, `compensated`, `reconciled_present`,
+`reconciled_absent`, `still_unresolved`입니다. `compensated`는 별도로 기록된
+보상 효과를 `--related-effect-id`로 지정해야 하며, 관련 기록이 없으면 Spotter는
+해결된 것으로 처리하지 않습니다.
+
 ### 상태와 런타임
 
 ```bash

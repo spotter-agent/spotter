@@ -51,7 +51,7 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 needs experiment · ❌ m
 | counterfactual experiment framework | ✅ | frozen/resumable machinery completed its first 6-arm development qualification run |
 | ground-truth task set | 🟡 | six synthetic frozen tasks across five failure families; external/ecosystem breadth remains missing |
 | positive intervention advantage | ❌ | not established |
-| event-driven reviewer dispatch | 🟡 | periodic Hook review remains, while opted-in failure-streak and repeated-equivalent-tool signals also queue bounded asynchronous shadow reviews; merge/priority policy, broader signal coverage, and comparative detection evidence remain open |
+| event-driven reviewer dispatch | 🟡 | periodic Hook review remains, while all eight initial signal families can queue merged, priority-ordered, bounded asynchronous reviews with explicit opt-in; comparative precision, miss-rate, delay, and cost evidence remains open |
 | live `VERIFY / NUDGE` delivery | 🟡 | exact-target signal-driven `turn/steer` is opt-in; task-ownership and harm evidence remain |
 | `INTERRUPT / RESTART` | ❌ | target only |
 | App Server observation/control viability | ✅ PoC | #78 proved a Spotter-managed external App Server can be shared by the real TUI and Spotter and can steer the active turn |

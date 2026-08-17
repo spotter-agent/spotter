@@ -237,6 +237,25 @@ spotter setup codex --config /absolute/path/to/spotter.toml
 
 ## 7. 操作与检查 Spotter
 
+### 外部效应与恢复证据
+
+列出会话中已投影的外部效应：
+
+```bash
+spotter effects list --session SESSION
+```
+
+完成显式探测或补偿操作后，追加观察到的解决状态，而不覆盖原始效应：
+
+```bash
+spotter effects resolve --session SESSION --effect-id EFFECT_ID \
+  --resolution reconciled_absent --note "显式探测未找到该资源"
+```
+
+支持的状态为 `reversed`、`compensated`、`reconciled_present`、
+`reconciled_absent` 和 `still_unresolved`。`compensated` 还需要用
+`--related-effect-id` 指定另行记录的补偿效应；如果缺少该关联，Spotter 不会将其视为已解决。
+
 ### 健康状态与运行时
 
 ```bash
