@@ -87,4 +87,5 @@ environment-resource/drift cases.
 - [Edit-decision run](fork-neutral-edit-decision.md)
 - [Induced final-outcome-failure run](fork-neutral-final-outcome-failure.md)
 - [Validation-v2 passing-prefix run](fork-neutral-validation-v2.md)
+- [Predeclared natural-failure capture v2 null result](fork-natural-failure-v2-result.md)
 - [Machine-readable qualification](fork-fidelity-v1.json)

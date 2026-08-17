@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "protocol": "fork-natural-failure-v2",
+  "protocol_commit": "c5cc70d",
+  "measured_at": "2026-08-17",
+  "run_id": "d52b4f98-d781-447a-aa2f-f9c0a7075a3d",
+  "task_set": {
+    "id": "spotter-validation",
+    "version": 2,
+    "sha256": "b232d3fc3647a1e0924822ddd6530479f5933c9b61374db2106cd0cbd4040c7e"
+  },
+  "runtime": {
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "low",
+    "sandbox": "workspace-write",
+    "codex_version": "codex-cli 0.147.0",
+    "python": "3.11.10"
+  },
+  "raw_batch": {
+    "filename": "spotter-validation-v2-d52b4f98-d781-447a-aa2f-f9c0a7075a3d.jsonl",
+    "sha256": "3bcf75713e1c4b7b79d1b84f000e2d53a8f6c6beb56f5b0bc960616b61224106",
+    "bytes": 36332,
+    "started_at": "2026-08-17T10:53:11.097333+00:00",
+    "finished_at": "2026-08-17T10:59:32.296652+00:00"
+  },
+  "arms": {
+    "total": 6,
+    "pass": 6,
+    "task_fail": 0,
+    "infrastructure_fail": 0,
+    "setup_fail": 0,
+    "control": {
+      "total": 3,
+      "pass": 3,
+      "task_fail": 0
+    },
+    "guidance": {
+      "total": 3,
+      "pass": 3,
+      "task_fail": 0,
+      "eligible_as_natural_source": false
+    }
+  },
+  "replay_source_capture": {
+    "requested": 6,
+    "succeeded": 0,
+    "failed": 6,
+    "failure_category": "SPOTTER_JOURNAL_MISSING_OR_UNREADABLE",
+    "cause": "active Codex configuration had no Spotter Hook integration",
+    "follow_up_issue": 307
+  },
+  "selection": {
+    "eligible_control_failures": 0,
+    "neutral_forks_started": 0,
+    "stop_rule_applied": true
+  },
+  "decision": "NO_GO_REPRESENTATIVE_CAUSAL_USE",
+  "issue_42_complete": false
+}
