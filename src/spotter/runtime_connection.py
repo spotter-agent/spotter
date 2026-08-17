@@ -18,6 +18,7 @@ from spotter.app_server import (
     AppServerCapabilities,
     AppServerControlError,
     AppServerError,
+    AppServerEvent,
     AppServerRpcError,
     AppServerTransportError,
     CapabilityStatus,
@@ -149,6 +150,7 @@ class AppServerRecoveryLoop:
         self._stop = asyncio.Event()
         self._retry = asyncio.Event()
         self._attachments: dict[ThreadId, AttachmentId] = {}
+        self._subscribed_threads: set[str] = set()
         self._disconnected_at: float | None = None
         self._control_telemetry_queue_size = control_telemetry_queue_size
         self._control_telemetry_queue: asyncio.Queue[_QueuedControlEvent] | None = None
@@ -599,6 +601,7 @@ class AppServerRecoveryLoop:
                     stack.push_async_callback(client.disconnect)
                     self._connection_epoch += 1
                     epoch = self._connection_epoch
+                    self._subscribed_threads.clear()
                     attachment_id = uuid4().hex
                     connected_at = time.time()
                     server_fingerprint = _fingerprint(client.server_info or {})
@@ -710,6 +713,7 @@ class AppServerRecoveryLoop:
                     disposition="ingested" if record is not None else "deduplicated",
                     state_status=state_status,
                 )
+                await self._subscribe_from_event(client, raw_event)
             except IngestionError as error:
                 self.last_error = str(error)
             except AppServerError:
@@ -720,6 +724,34 @@ class AppServerRecoveryLoop:
                 self._set_state(RecoveryState.DEGRADED, message)
                 await client.disconnect()
                 raise AppServerTransportError(message) from error
+
+    async def _subscribe_from_event(
+        self, client: CodexAppServerClient, raw_event: AppServerEvent
+    ) -> None:
+        if raw_event.method not in {"thread/started", "thread/status/changed", "turn/started"}:
+            return
+        params = raw_event.raw.get("params")
+        if not isinstance(params, Mapping):
+            return
+        external_thread_id = params.get("threadId")
+        if not isinstance(external_thread_id, str):
+            thread = params.get("thread")
+            external_thread_id = thread.get("id") if isinstance(thread, Mapping) else None
+        if (
+            not isinstance(external_thread_id, str)
+            or not external_thread_id
+            or external_thread_id in self._subscribed_threads
+        ):
+            return
+        try:
+            await client.resume_thread(external_thread_id)
+        except AppServerRpcError as error:
+            if _rollout_pending(error):
+                return
+            raise RuntimeError(
+                f"could not subscribe to App Server thread {external_thread_id}"
+            ) from error
+        self._subscribed_threads.add(external_thread_id)
 
     async def _reconcile(
         self,
@@ -749,7 +781,14 @@ class AppServerRecoveryLoop:
         capabilities = _available_capabilities(client.capabilities)
         ended_at = time.time()
         for external_thread_id in sorted(discovered):
-            result = await client.read_thread(external_thread_id, include_turns=True)
+            try:
+                result = await client.resume_thread(external_thread_id)
+            except AppServerRpcError as error:
+                if not _rollout_pending(error):
+                    raise
+                result = await client.read_thread(external_thread_id, include_turns=True)
+            else:
+                self._subscribed_threads.add(external_thread_id)
             thread = result.get("thread")
             thread = thread if isinstance(thread, Mapping) else discovered[external_thread_id]
             active_turn_id = _active_turn_id(thread)
@@ -1275,6 +1314,10 @@ def _active_turn_id(thread: Mapping[str, Any]) -> str | None:
             if status in {"active", "inProgress", "running"} and isinstance(turn_id, str):
                 return turn_id
     return None
+
+
+def _rollout_pending(error: AppServerRpcError) -> bool:
+    return "no rollout found" in error.message.casefold()
 
 
 def _available_capabilities(capabilities: AppServerCapabilities) -> tuple[str, ...]:

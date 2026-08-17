@@ -14,6 +14,10 @@ from spotter.codex_host import (
         ("codex_cli_rs/1.2.3", CodexHostVersion(1, 2, 3)),
         ("codex 1.0", CodexHostVersion(1, 0, 0)),
         ("codex-cli 0.147.0+homebrew", CodexHostVersion(0, 147, 0)),
+        (
+            "Codex Desktop/0.147.0 (Mac OS 26.5.1; arm64) dumb (spotter; 0.1.0)",
+            CodexHostVersion(0, 147, 0),
+        ),
     ],
 )
 def test_supported_codex_host_versions(raw: str, expected: CodexHostVersion) -> None:
@@ -26,6 +30,7 @@ def test_supported_codex_host_versions(raw: str, expected: CodexHostVersion) -> 
         ("codex-cli 0.146.9", "too old"),
         ("codex-cli 0.148.0-beta.1", "prerelease"),
         ("codex development", "malformed"),
+        ("Codex Desktop/0.147.0 arbitrary metadata", "malformed"),
         ("0.147.0", "malformed"),
         (None, "missing"),
     ],

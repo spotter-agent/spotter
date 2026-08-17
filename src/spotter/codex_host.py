@@ -4,10 +4,18 @@ import re
 from dataclasses import dataclass
 
 _CODEX_VERSION = re.compile(
-    r"^(?:codex|codex-cli|codex_cli_rs)[ /]"
+    r"^(?:(?:codex|codex-cli|codex_cli_rs)[ /]|Codex Desktop/)"
     r"(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)"
     r"(?:\.(?P<patch>0|[1-9]\d*))?"
     r"(?P<suffix>[-+][0-9A-Za-z.-]+)?$"
+)
+
+_CODEX_DESKTOP_VERSION = re.compile(
+    r"^Codex Desktop/"
+    r"(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)"
+    r"(?:\.(?P<patch>0|[1-9]\d*))?"
+    r"(?P<suffix>[-+][0-9A-Za-z.-]+)?"
+    r" \([^()\r\n]+\) [^()\s]+ \([^()\r\n]+\)$"
 )
 
 
@@ -32,7 +40,8 @@ def parse_codex_host_version(raw: object) -> CodexHostVersion:
     """Parse CLI and App Server identities without guessing arbitrary text."""
     if not isinstance(raw, str) or not raw.strip():
         raise CodexHostVersionError("Codex host version is missing")
-    match = _CODEX_VERSION.fullmatch(raw.strip())
+    value = raw.strip()
+    match = _CODEX_VERSION.fullmatch(value) or _CODEX_DESKTOP_VERSION.fullmatch(value)
     if match is None:
         raise CodexHostVersionError(f"malformed Codex host version {raw!r}")
     suffix = match.group("suffix")
