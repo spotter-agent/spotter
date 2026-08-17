@@ -25,7 +25,7 @@ from spotter.experiment import (
     append_experiment_result,
 )
 from spotter.paths import sanitize_session, spotter_home
-from spotter.replay import ForkPlan, fork
+from spotter.replay import ForkPlan, fork, prefix_contamination_preflight
 from spotter.task_corpus import (
     CommandResult,
     PreflightClassification,
@@ -578,6 +578,8 @@ def _preflight_forks(plans: tuple[ForkPlan, ...]) -> tuple[str, str]:
         raise WrongNudgeExperimentError("DUPLICATE_FORK_SESSION")
     if len({Path(plan.worktree).resolve() for plan in plans}) != len(plans):
         raise WrongNudgeExperimentError("SHARED_ARM_WORKTREE")
+    if contamination := prefix_contamination_preflight(plans):
+        raise WrongNudgeExperimentError(contamination)
     source_mismatch = next(
         (
             plan.source_environment_preflight

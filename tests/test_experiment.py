@@ -279,7 +279,7 @@ def test_neutral_noise_runs_identical_prompts_and_reports_outcome_disagreement(
     assert all(result.experiment_mode == "neutral-noise" for result in results)
     summary = summarize(results)
     assert "mechanical outcome disagreements=1/2 (50.0%)" in summary
-    assert "environment mismatches=0/2" in summary
+    assert "preflight failures=0/2" in summary
     rows = [json.loads(line) for line in results_path("s1", 5).read_text().splitlines()]
     assert rows[0]["experiment_mode"] == "neutral-noise"
     assert rows[0]["guidance"] is None
@@ -321,7 +321,7 @@ def test_environment_mismatch_prevents_both_agent_arms(
         result.environment_preflight == "ENVIRONMENT_FINGERPRINT_MISMATCH" for result in results
     )
     assert all(result.agent_exit is None for result in results)
-    assert "environment mismatches=1/1" in summarize(results)
+    assert "preflight failures=1/1" in summarize(results)
     assert "infrastructure failures=2/2" in summarize(results)
 
 
@@ -353,6 +353,64 @@ def test_shared_arm_worktree_prevents_both_agent_runs(
     assert ran == []
     assert all(result.classification == ArmClassification.INFRA_FAIL for result in results)
     assert all(result.environment_preflight == "SHARED_ARM_WORKTREE" for result in results)
+
+
+@pytest.mark.parametrize(
+    ("observation_gaps", "external_effects", "expected"),
+    (
+        (1, [], "PREFIX_OBSERVATION_GAP"),
+        (
+            0,
+            [{"kind": "git_remote_write", "resource": "origin", "reversible": False}],
+            "PREFIX_EXTERNAL_EFFECT",
+        ),
+    ),
+)
+def test_prefix_contamination_prevents_both_agent_runs(
+    monkeypatch: pytest.MonkeyPatch,
+    observation_gaps: int,
+    external_effects: list[dict[str, object]],
+    expected: str,
+) -> None:
+    counter = 0
+
+    def contaminated_fork(*args: object, **kwargs: object) -> ForkPlan:
+        nonlocal counter
+        counter += 1
+        return ForkPlan(
+            f"fork-{counter}",
+            5,
+            f"/wt/{counter}",
+            f"/ro/{counter}",
+            "codex ...",
+            external_effects=external_effects if counter == 2 else [],
+            prefix_id="same-prefix",
+            environment_fingerprint="same-environment",
+            observation_gaps=observation_gaps if counter == 2 else 0,
+        )
+
+    ran: list[str] = []
+    monkeypatch.setattr(experiment, "fork", contaminated_fork)
+    monkeypatch.setattr(experiment, "_run_arm", lambda *args, **kwargs: ran.append("run"))
+    monkeypatch.setattr(experiment, "_cleanup", lambda worktree: None)
+
+    results = run_experiment("s1", 5, None, run=True, neutral=True)
+
+    assert ran == []
+    assert all(result.classification == ArmClassification.INFRA_FAIL for result in results)
+    assert all(result.environment_preflight == expected for result in results)
+    assert all(result.infra_diagnostic == expected for result in results)
+    assert all(result.agent_exit is None for result in results)
+    rows = [
+        row
+        for line in results_path("s1", 5).read_text().splitlines()
+        if "arm" in (row := json.loads(line))
+    ]
+    assert len(rows) == 2
+    assert all(row["classification"] == "INFRA_FAIL" for row in rows)
+    assert all(row["environment_preflight"] == expected for row in rows)
+    assert all(row["infra_diagnostic"] == expected for row in rows)
+    assert "preflight failures=1/1" in summarize(results)
 
 
 def test_arm_rechecks_environment_immediately_before_agent_run(
@@ -508,7 +566,7 @@ def test_arm_environment_drift_is_persisted_and_summarized(
         result.environment_preflight == "ENVIRONMENT_MISMATCH:TRACKED_STATE_MISMATCH"
         for result in results
     )
-    assert "environment mismatches=1/1" in summarize(results)
+    assert "preflight failures=1/1" in summarize(results)
 
 
 def test_source_environment_drift_blocks_both_arms_before_agent_run(
@@ -618,6 +676,7 @@ def test_explicit_source_config_mismatch_prevents_agent_runs(
     assert ran == []
     assert all(result.classification == ArmClassification.SETUP_FAIL for result in results)
     assert all(result.infra_diagnostic == "SOURCE_REASONING_EFFORT_MISMATCH" for result in results)
+    assert "preflight failures=1/1" in summarize(results)
 
 
 def test_empty_experiment_is_an_error(monkeypatch: pytest.MonkeyPatch) -> None:

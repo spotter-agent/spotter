@@ -4,6 +4,11 @@
 
 **Decision:** **NO-GO for representative causal use by #34 or #23**
 
+> **Erratum (2026-08-17):** v1 correctly classified prefixes after observation gaps or external
+> effects as unsafe in coverage, but pair admission did not enforce those classifications before
+> model execution. The measured outcomes below are unchanged. The machine-readable control is
+> corrected to `false`; current code now rejects both contamination classes before either arm runs.
+
 ## Scope
 
 This report consolidates the historical coverage baseline and fresh identical-arm evidence through
@@ -49,7 +54,8 @@ three task-prefix observations, and all tasks are synthetic Python fixtures.
 - distinct resolved worktrees for both arms;
 - environment re-fingerprint immediately before each model continuation;
 - source/continuation model and reasoning-effort parity when pins are supplied;
-- explicit exclusion after observation gaps or unresolved external effects;
+- coverage classification, but not pair-admission enforcement, after observation gaps or external
+  effects (corrected in current code after v1);
 - session-start baseline for early pre-mutation branch coverage.
 
 ## Why the decision is NO-GO

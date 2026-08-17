@@ -228,6 +228,15 @@ class ForkPlan:
     prefix_id: str | None = None
     environment_fingerprint: str | None = None
     source_environment_preflight: str = "MATCHED"
+    observation_gaps: int = 0
+
+
+def prefix_contamination_preflight(plans: Sequence[ForkPlan]) -> str | None:
+    if any(plan.observation_gaps for plan in plans):
+        return "PREFIX_OBSERVATION_GAP"
+    if any(plan.external_effects for plan in plans):
+        return "PREFIX_EXTERNAL_EFFECT"
+    return None
 
 
 def find_rollout(session_id: str, codex_home: Path | None = None) -> Path:
@@ -962,6 +971,7 @@ def fork(
         rollout=str(forked_rollout),
         command=command,
         external_effects=list(prefix.external_effects),
+        observation_gaps=prefix.observation_gaps,
         manifest=str(manifest_file),
         prefix_id=prefix.prefix_id,
         environment_fingerprint=environment.fingerprint_sha256,
