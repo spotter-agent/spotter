@@ -127,6 +127,63 @@ def test_turn_boundary_callback_runs_before_turn_is_reduced(tmp_path: Path) -> N
     asyncio.run(scenario())
 
 
+def test_new_thread_notification_subscribes_to_followup_events(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        async def handler(connection: ServerConnection) -> None:
+            await _initialize(connection)
+            listed = await _receive(connection, "thread/list")
+            await _reply(connection, listed, {"data": [], "nextCursor": None})
+            await connection.send(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "thread/started",
+                        "params": {"thread": {"id": "thread-1"}},
+                    }
+                )
+            )
+            resumed = await _receive(connection, "thread/resume")
+            assert resumed["params"]["threadId"] == "thread-1"
+            await _reply_error(connection, resumed, -32000, "no rollout found for thread")
+            await connection.send(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "thread/status/changed",
+                        "params": {"threadId": "thread-1", "status": "active"},
+                    }
+                )
+            )
+            resumed = await _receive(connection, "thread/resume")
+            await _reply(connection, resumed, {"thread": {"id": "thread-1", "turns": []}})
+            await connection.send(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "turn/started",
+                        "params": {"threadId": "thread-1", "turn": {"id": "turn-1"}},
+                    }
+                )
+            )
+            await connection.wait_closed()
+
+        async with _server(handler) as endpoint:
+            recovery = AppServerRecoveryLoop(endpoint, tmp_path / "sessions", ThreadStateStore())
+            await recovery.start()
+            await _wait_until(
+                lambda: (
+                    bool(recovery.thread_states.snapshots())
+                    and recovery.thread_states.snapshots()[0].active_turn_id is not None
+                )
+            )
+            state = recovery.thread_states.snapshots()[0]
+            assert state.identity.provenance.agent_thread_id == "thread-1"
+            assert state.identity.provenance.agent_turn_id == "turn-1"
+            await recovery.close()
+
+    asyncio.run(scenario())
+
+
 def test_runtime_records_the_active_config_generation(tmp_path: Path) -> None:
     recovery = AppServerRecoveryLoop(
         "ws://unused",
@@ -155,7 +212,7 @@ def test_reconnect_reconciles_epoch_gap_and_stale_control(tmp_path: Path) -> Non
                 listed,
                 {"data": [{"id": "thread-1"}], "nextCursor": None},
             )
-            read = await _receive(connection, "thread/read")
+            read = await _receive(connection, "thread/resume")
             turns = [{"id": "turn-1", "status": "active"}] if number == 1 else []
             await _reply(
                 connection,
@@ -274,9 +331,7 @@ def test_reconnect_records_server_and_capability_change(tmp_path: Path) -> None:
         async def list_threads(self, *, limit: int, cursor: str | None = None) -> dict[str, object]:
             return {"data": [{"id": "thread-1"}], "nextCursor": None}
 
-        async def read_thread(
-            self, thread_id: str, *, include_turns: bool = False
-        ) -> dict[str, object]:
+        async def resume_thread(self, thread_id: str) -> dict[str, object]:
             return {
                 "thread": {
                     "id": thread_id,
@@ -345,7 +400,7 @@ def test_restart_hydrates_without_control_until_live_reconciliation(tmp_path: Pa
                 listed,
                 {"data": [{"id": "thread-1"}], "nextCursor": None},
             )
-            read = await _receive(connection, "thread/read")
+            read = await _receive(connection, "thread/resume")
             await _reply(
                 connection,
                 read,
@@ -393,7 +448,7 @@ def test_settled_final_answer_fences_steer_but_not_interrupt(tmp_path: Path) -> 
                 listed,
                 {"data": [{"id": "thread-1"}], "nextCursor": None},
             )
-            read = await _receive(connection, "thread/read")
+            read = await _receive(connection, "thread/resume")
             await _reply(
                 connection,
                 read,
@@ -456,7 +511,7 @@ def test_control_rejection_and_unknown_acceptance_are_distinct(tmp_path: Path) -
                 listed,
                 {"data": [{"id": "thread-1"}], "nextCursor": None},
             )
-            read = await _receive(connection, "thread/read")
+            read = await _receive(connection, "thread/resume")
             await _reply(
                 connection,
                 read,
@@ -556,7 +611,7 @@ def test_accepted_steer_without_observed_input_finishes_durably(
                 listed,
                 {"data": [{"id": "thread-1"}], "nextCursor": None},
             )
-            read = await _receive(connection, "thread/read")
+            read = await _receive(connection, "thread/resume")
             await _reply(
                 connection,
                 read,
@@ -626,7 +681,7 @@ def test_turn_terminal_before_steer_ack_closes_acceptance_once(tmp_path: Path) -
                 listed,
                 {"data": [{"id": "thread-1"}], "nextCursor": None},
             )
-            read = await _receive(connection, "thread/read")
+            read = await _receive(connection, "thread/resume")
             await _reply(
                 connection,
                 read,
@@ -703,7 +758,7 @@ def test_control_rpc_does_not_wait_for_bounded_telemetry_io(
                 listed,
                 {"data": [{"id": "thread-1"}], "nextCursor": None},
             )
-            read = await _receive(connection, "thread/read")
+            read = await _receive(connection, "thread/resume")
             await _reply(
                 connection,
                 read,
@@ -787,7 +842,7 @@ def test_intervention_input_is_scoped_without_replacing_later_user_goals(tmp_pat
                 listed,
                 {"data": [{"id": "thread-1"}], "nextCursor": None},
             )
-            read = await _receive(connection, "thread/read")
+            read = await _receive(connection, "thread/resume")
             await _reply(
                 connection,
                 read,
@@ -943,7 +998,7 @@ def test_reconciliation_keeps_multiple_threads_isolated(tmp_path: Path) -> None:
                 },
             )
             for thread_id, turn_id in (("thread-1", "turn-1"), ("thread-2", "turn-2")):
-                read = await _receive(connection, "thread/read")
+                read = await _receive(connection, "thread/resume")
                 assert read["params"]["threadId"] == thread_id
                 await _reply(
                     connection,
