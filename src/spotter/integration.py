@@ -8,6 +8,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import time
 import tomllib
 from collections.abc import Callable
 from contextlib import suppress
@@ -17,10 +18,17 @@ from fcntl import LOCK_EX, LOCK_UN, flock
 from pathlib import Path
 from typing import Any, cast
 
+from spotter.app_server_endpoint import (
+    AppServerEndpointError,
+    display_app_server_endpoint,
+    normalize_app_server_endpoint,
+    redact_app_server_error,
+)
 from spotter.build_identity import current_build_identity
 from spotter.codex_host import CodexHostVersionError, validate_codex_host_version
 from spotter.config import ConfigurationError, resolve_config
 from spotter.daemon import (
+    DaemonStatus,
     ManagedServiceManager,
     ManualServiceManager,
     RuntimeHealth,
@@ -302,14 +310,46 @@ class IntegrationPlan:
     app_server_endpoint: str | None
 
     def lines(self) -> list[str]:
+        app_server = (
+            f"verify external endpoint {display_app_server_endpoint(self.app_server_endpoint)}"
+            if self.app_server_endpoint is not None
+            else "pending; pass --endpoint ws://127.0.0.1:4500 when a shared server is running"
+        )
         return [
             "Codex hooks: "
             f"{'update' if self.hooks_changed else 'already current'} {self.hooks_file}",
             f"Legacy Spotter hooks to migrate: {self.legacy_hooks}",
             f"Legacy Spotter plugins to remove: {len(self.legacy_plugins)}",
             f"Runtime: {self.runtime_mode}",
-            "App Server: pending external endpoint (#85/#87)",
+            f"App Server: {app_server}",
         ]
+
+
+def _verify_external_app_server(endpoint: str) -> None:
+    """Initialize an external server and require the minimum observation surface."""
+
+    async def verify() -> None:
+        # Keep WebSockets off the generated Hook import path.
+        from spotter.app_server import CapabilityStatus, CodexAppServerClient, ConnectionState
+
+        client = CodexAppServerClient(endpoint)
+        try:
+            await client.connect()
+            capabilities = client.capabilities
+            if (
+                client.state != ConnectionState.CONNECTED
+                or client.host_version is None
+                or capabilities.observation != CapabilityStatus.AVAILABLE
+                or capabilities.thread_query != CapabilityStatus.AVAILABLE
+            ):
+                raise IntegrationError(
+                    "App Server does not provide compatible observation and "
+                    "thread-query capabilities"
+                )
+        finally:
+            await client.disconnect()
+
+    asyncio.run(verify())
 
 
 class IntegrationManager:
@@ -326,6 +366,10 @@ class IntegrationManager:
         layout: RuntimeLayout | None = None,
         config_path: Path | None = None,
         verifier: Callable[[Path | None], bool] | None = None,
+        app_server_endpoint: str | None = None,
+        app_server_verifier: Callable[[str], None] | None = None,
+        app_server_ready_timeout: float = 10.0,
+        app_server_poll_interval: float = 0.1,
     ) -> None:
         self.codex_home = codex_home or Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
         self.codex = codex
@@ -348,6 +392,10 @@ class IntegrationManager:
         self.verifier = verifier or (
             lambda path: check_roundtrip(path, command=self.layout.bridge_command).status == OK
         )
+        self.requested_app_server_endpoint = app_server_endpoint
+        self.app_server_verifier = app_server_verifier or _verify_external_app_server
+        self.app_server_ready_timeout = app_server_ready_timeout
+        self.app_server_poll_interval = app_server_poll_interval
         integrations = self.layout.integration_dir
         self.manifest_path = integrations / "codex.json"
         self.lock_path = integrations / "codex.lock"
@@ -504,6 +552,14 @@ class IntegrationManager:
         hooks, before = self._read_hooks()
         migrated, removed = self._migrate_hooks(hooks, existing)
         after = (json.dumps(migrated, indent=2, sort_keys=True) + "\n").encode()
+        endpoint = self.requested_app_server_endpoint
+        if endpoint is None and existing is not None:
+            endpoint = existing.app_server_endpoint
+        if endpoint is not None:
+            try:
+                endpoint = normalize_app_server_endpoint(endpoint)
+            except AppServerEndpointError as error:
+                raise IntegrationError(str(error)) from error
         plan = IntegrationPlan(
             hooks_file=self.hooks_path,
             hooks_changed=before != after,
@@ -511,7 +567,7 @@ class IntegrationManager:
             legacy_plugins=self._legacy_plugins(),
             runtime_mode="portable" if self.portable else "managed",
             service_registration=self._service_registration(),
-            app_server_endpoint=None,
+            app_server_endpoint=endpoint,
         )
         return plan, migrated, before, removed
 
@@ -532,12 +588,48 @@ class IntegrationManager:
         _atomic_write(self.hooks_path, content)
         return content
 
-    def _verify(self, owned: list[dict[str, Any]]) -> None:
-        status = asyncio.run(self.service.status())
+    def _runtime_status(self, endpoint: str | None) -> DaemonStatus:
+        async def wait_for_status() -> DaemonStatus:
+            deadline = time.monotonic() + self.app_server_ready_timeout
+            status = await self.service.status()
+            while endpoint is not None and status.app_server_state != "ready":
+                if status.health == RuntimeHealth.UNAVAILABLE or time.monotonic() >= deadline:
+                    return status
+                await asyncio.sleep(self.app_server_poll_interval)
+                status = await self.service.status()
+            return status
+
+        status = asyncio.run(wait_for_status())
         if status.health != RuntimeHealth.HEALTHY:
             raise IntegrationError(
                 f"spotterd verification failed: {status.detail or status.health}"
             )
+        if endpoint is not None:
+            capabilities = dict(status.app_server_capabilities or ())
+            if status.app_server_state != "ready":
+                raise IntegrationError(
+                    "spotterd did not connect to the configured App Server before the setup timeout"
+                )
+            if (
+                capabilities.get("observation") != "available"
+                or capabilities.get("thread_query") != "available"
+            ):
+                raise IntegrationError(
+                    "spotterd App Server connection lacks observation or thread-query capability"
+                )
+            try:
+                identity = status.app_server_version
+                validate_codex_host_version(
+                    f"codex-cli {identity}" if identity is not None else None
+                )
+            except CodexHostVersionError as error:
+                raise IntegrationError(
+                    f"spotterd connected to an incompatible Codex App Server identity: {error}"
+                ) from error
+        return status
+
+    def _verify(self, owned: list[dict[str, Any]], endpoint: str | None) -> None:
+        self._runtime_status(endpoint)
         current, _ = self._read_hooks()
         matches = []
         for event, groups in cast(dict[str, list[dict[str, Any]]], current["hooks"]).items():
@@ -566,6 +658,14 @@ class IntegrationManager:
             existing = IntegrationManifest.load(self.manifest_path)
             plan, hooks, hooks_before, removed_hooks = self.inspect(existing)
             codex = self._codex_install()
+            if plan.app_server_endpoint is not None:
+                try:
+                    self.app_server_verifier(plan.app_server_endpoint)
+                except Exception as error:
+                    detail = redact_app_server_error(error, plan.app_server_endpoint)
+                    raise IntegrationError(
+                        f"App Server endpoint verification failed: {detail}"
+                    ) from error
             hooks_after = (json.dumps(hooks, indent=2, sort_keys=True) + "\n").encode()
             config_before = (
                 self.codex_config_path.read_bytes() if self.codex_config_path.exists() else None
@@ -587,7 +687,7 @@ class IntegrationManager:
             previous_plugins = existing.legacy_plugins_removed if existing else []
             retained = existing if existing is not None and existing.state != "purged" else None
 
-            def rollback() -> None:
+            def rollback() -> str | None:
                 if hooks_before is None:
                     self.hooks_path.unlink(missing_ok=True)
                 else:
@@ -601,15 +701,37 @@ class IntegrationManager:
                     self.manifest_path.unlink(missing_ok=True)
                 else:
                     _atomic_write(self.manifest_path, manifest_before)
-                if service_was_running and service_attempted:
-                    with suppress(Exception):
-                        asyncio.run(self.service.restart())
-                elif service_preexisting and service_attempted:
-                    with suppress(Exception):
-                        asyncio.run(self.service.stop())
-                elif not service_preexisting and not service_was_running:
-                    with suppress(Exception):
-                        asyncio.run(self.service.uninstall())
+                try:
+                    if service_was_running:
+                        if not service_attempted:
+                            return None
+                        restored = asyncio.run(self.service.restart())
+                        if not restored.available:
+                            return (
+                                "could not restart the previous spotterd runtime: "
+                                f"{restored.detail or restored.health}"
+                            )
+                        if existing is not None and existing.state == "ready":
+                            self._runtime_status(existing.app_server_endpoint)
+                    elif service_preexisting:
+                        if not service_attempted:
+                            return None
+                        stopped = asyncio.run(self.service.stop())
+                        if stopped.available:
+                            return (
+                                "could not restore the previously stopped spotterd state: "
+                                f"{stopped.detail or stopped.health}"
+                            )
+                    else:
+                        removed = asyncio.run(self.service.uninstall())
+                        if removed.available:
+                            return (
+                                "could not remove the newly installed spotterd service: "
+                                f"{removed.detail or removed.health}"
+                            )
+                except Exception as error:
+                    return f"could not restore the previous spotterd runtime: {error}"
+                return None
 
             try:
                 if hooks_before != hooks_after:
@@ -631,7 +753,11 @@ class IntegrationManager:
                     agent_path=codex.path,
                     agent_version=codex.version,
                     codex_home=str(self.codex_home),
-                    app_server_strategy="pending-external",
+                    app_server_strategy=(
+                        "external-explicit"
+                        if plan.app_server_endpoint is not None
+                        else "pending-external"
+                    ),
                     app_server_endpoint=plan.app_server_endpoint,
                     runtime_mode=plan.runtime_mode,
                     service_registration=plan.service_registration,
@@ -679,22 +805,41 @@ class IntegrationManager:
                 restart_required = retained is not None and (
                     retained.state != "ready"
                     or retained.integration_generation != manifest.integration_generation
+                    or retained.app_server_strategy != manifest.app_server_strategy
+                    or retained.app_server_endpoint != manifest.app_server_endpoint
                 )
                 service_attempted = True
                 started = asyncio.run(
                     self.service.restart() if restart_required else self.service.start()
                 )
-                if started.health != RuntimeHealth.HEALTHY:
+                if started.health == RuntimeHealth.UNAVAILABLE or (
+                    plan.app_server_endpoint is None and started.health != RuntimeHealth.HEALTHY
+                ):
                     raise IntegrationError(
                         f"spotterd failed to start: {started.detail or started.health}"
                     )
                 owned = self._owned_hooks()
-                self._verify(owned)
+                self._verify(owned, plan.app_server_endpoint)
                 manifest = replace(manifest, state="ready", updated_at=_now())
                 manifest.save(self.manifest_path)
             except Exception as error:
-                rollback()
-                raise IntegrationError(f"setup rolled back: {error}") from error
+                rollback_error = rollback()
+                detail = str(error)
+                endpoints = [
+                    endpoint
+                    for endpoint in (
+                        plan.app_server_endpoint,
+                        existing.app_server_endpoint if existing is not None else None,
+                    )
+                    if endpoint is not None
+                ]
+                for endpoint in dict.fromkeys(endpoints):
+                    detail = redact_app_server_error(detail, endpoint)
+                    if rollback_error is not None:
+                        rollback_error = redact_app_server_error(rollback_error, endpoint)
+                if rollback_error is not None:
+                    detail += f"; rollback incomplete: {rollback_error}"
+                raise IntegrationError(f"setup rolled back: {detail}") from error
             return manifest
         finally:
             flock(lock, LOCK_UN)

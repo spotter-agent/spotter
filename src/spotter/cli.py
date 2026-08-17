@@ -18,6 +18,7 @@ from io import StringIO
 from pathlib import Path
 from typing import cast
 
+from spotter.app_server_endpoint import display_app_server_endpoint
 from spotter.budget import (
     LedgerCorrupt,
     cancel,
@@ -271,7 +272,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--task-set", type=Path, help="wrong-nudge run: frozen task-set manifest")
     parser.add_argument("--wrong-nudge-id", help="wrong-nudge run: exact frozen corpus item")
     parser.add_argument(
-        "--endpoint", help="wrong-nudge run/persist: controlled App Server WebSocket URL"
+        "--endpoint",
+        help="setup or wrong-nudge run/persist: Codex App Server WebSocket URL",
     )
     parser.add_argument(
         "--capture-replay-sources",
@@ -538,13 +540,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error(
                 "--all, --snapshots, --data, --integration, --logs, and --json require purge"
             )
-        if args.command == "teardown" and (args.dry_run or args.portable):
-            parser.error("--dry-run and --portable are only supported by setup")
+        if args.command == "teardown" and (args.dry_run or args.portable or args.endpoint):
+            parser.error("--dry-run, --portable, and --endpoint are only supported by setup")
         return _integration_main(
             args.command,
             config_path=args.config,
             portable=args.portable,
             dry_run=args.dry_run,
+            app_server_endpoint=args.endpoint,
         )
     if args.command == "purge":
         if (
@@ -1697,11 +1700,16 @@ def _integration_main(
     config_path: Path | None,
     portable: bool,
     dry_run: bool,
+    app_server_endpoint: str | None = None,
     manager: IntegrationManager | None = None,
 ) -> int:
     """Install or remove the owned Codex integration transactionally."""
     try:
-        integration = manager or IntegrationManager(portable=portable, config_path=config_path)
+        integration = manager or IntegrationManager(
+            portable=portable,
+            config_path=config_path,
+            app_server_endpoint=app_server_endpoint,
+        )
         if action == "setup":
             plan = integration.plan()
             for line in plan.lines():
@@ -1711,7 +1719,20 @@ def _integration_main(
                 return 0
             manifest = integration.setup()
             print(f"Codex integration: {manifest.state} ({integration.manifest_path})")
-            print("App Server endpoint: pending runtime integration (#85/#87)")
+            if manifest.app_server_endpoint is None:
+                print(
+                    "App Server endpoint: pending; start a shared server and rerun setup with "
+                    "--endpoint ws://127.0.0.1:4500"
+                )
+            else:
+                endpoint = display_app_server_endpoint(manifest.app_server_endpoint)
+                print(f"App Server endpoint: verified ({endpoint})")
+                remote = (
+                    endpoint
+                    if endpoint == manifest.app_server_endpoint
+                    else "<configured App Server endpoint>"
+                )
+                print(f"Start the shared Codex TUI: codex --remote {remote}")
             return 0
         removed = integration.teardown()
         print("Codex integration removed" if removed else "Codex integration not configured")

@@ -24,11 +24,12 @@ The packaged lifecycle is four operations. The qualified install command selects
 brew install spotter-agent/spotter/spotter
 
 # 2. Integrate an agent once
-spotter setup codex
+codex app-server --listen ws://127.0.0.1:4500  # separate terminal
+spotter setup codex --endpoint ws://127.0.0.1:4500
 spotter doctor
 
-# 3. Use the agent normally
-codex
+# 3. Use the same external App Server from the TUI
+codex --remote ws://127.0.0.1:4500
 
 # 4. Remove the integration/product
 spotter teardown codex
@@ -370,19 +371,25 @@ uninstall, and reinstall while fast fixtures cover Intel/macOS and Linuxbrew pat
 `setup` is the **integration installer**.
 
 ```bash
-spotter setup codex
+spotter setup codex --endpoint ws://127.0.0.1:4500
 ```
 
 It must be **idempotent** and **transactional**.
 
-The implemented command supports `--dry-run` and `--portable`. Managed mode registers `spotterd`
-as a login-scoped user service; portable mode starts it without persistent registration. Setup
-mutates only Codex Hook/plugin configuration, keeps fingerprinted backups, stages a `configuring`
-manifest before runtime reconciliation, verifies daemon health and a synthetic packaged-bridge
-round-trip, then atomically commits that manifest as `ready`. This ordering lets a restarted daemon
-load the candidate config path and integration inputs rather than the retired manifest. Generated
-Hooks invoke the stable packaged CLI, not a copied module tree or a persisted Python interpreter
-path.
+The implemented command supports `--endpoint`, `--dry-run`, and `--portable`. Managed mode registers
+`spotterd` as a login-scoped user service; portable mode starts it without persistent registration.
+For an explicit endpoint, setup first validates its WebSocket form and preflights the Codex identity
+and observation/thread-query capabilities without changing owned integration state. It then mutates
+only Codex Hook/plugin configuration, keeps fingerprinted backups, stages a `configuring` manifest,
+and requires the reconciled daemon to report a compatible App Server identity and capabilities
+before atomically committing that manifest as `ready`. Generated Hooks invoke the stable packaged
+CLI, not a copied module tree or a persisted Python interpreter path.
+
+Omitting `--endpoint` preserves the backward-compatible Hook-only installation and records
+`pending-external`; setup and diagnostics report App Server observation/control as unavailable.
+Rerunning setup without the flag retains and re-verifies an endpoint from an existing ready
+manifest. Passing a different endpoint performs a transactional daemon restart and restores the
+previous manifest/runtime if the new connection cannot become ready.
 
 ## 4.1 Transaction stages
 
@@ -390,6 +397,8 @@ path.
 INSPECT
    ↓
 PLAN
+   ↓
+PREFLIGHT APP SERVER
    ↓
 BACKUP
    ↓
@@ -444,7 +453,8 @@ Example:
 
 ```text
 Plan
-  App Server strategy: codex-managed-external
+  App Server strategy: external-explicit
+  App Server endpoint: ws://127.0.0.1:4500
   Runtime mode: managed/login-scoped
   Hooks:
     add SessionStart
@@ -459,7 +469,7 @@ Plan
 The mutation plan is available without writes:
 
 ```bash
-spotter setup codex --dry-run
+spotter setup codex --endpoint ws://127.0.0.1:4500 --dry-run
 ```
 
 ## 4.4 BACKUP
@@ -477,7 +487,7 @@ Do **not** plan teardown as “restore the entire old file”. The user may legi
 The exact changes depend on the App Server strategy selected by the Runtime gate. Conceptually:
 
 1. register/prepare the Spotter runtime service if managed mode requires it;
-2. ensure the external App Server path or attach strategy;
+2. record the already-running external App Server endpoint without claiming process ownership;
 3. prepare Spotter's App Server client connection;
 4. register only the minimum required Hook surface;
 5. remove legacy duplicate Spotter Hooks/plugin wiring;
@@ -494,10 +504,11 @@ Spotter ↔ App Server initialized
 Hook IPC reachable
 ```
 
-The current setup verifies Codex's `app-server --listen` and `--remote` capability but records
-endpoint selection as pending because it does not create or own a shared App Server. When a verified
-endpoint is present in the manifest, `spotterd` owns connection, epoch, backoff, and reconciliation;
-`doctor` continues to probe the same explicit endpoint.
+The external App Server must already be running. Setup accepts `--endpoint ws://...` or
+`--endpoint wss://...`, initializes it as a second client, validates a compatible Codex identity,
+and requires successful thread-query/observation negotiation. It then stages that endpoint for
+`spotterd`, which owns connection epochs, backoff, and reconciliation. `doctor` probes the same
+explicit endpoint. Query values are retained for transport but redacted from output.
 
 ## 4.7 VERIFY
 
@@ -506,14 +517,17 @@ A synthetic E2E verification should check at least:
 ```text
 spotterd handshake succeeds
 App Server initialize succeeds
-Spotter can subscribe/read required event surface
+Codex identity satisfies the supported bootstrap contract
+thread-query and observation capabilities are available
+spotterd reports the same ready identity and capabilities
 Hook round-trip succeeds
 journal path is writable and private
 protocol versions are compatible
 schemas are readable
 ```
 
-Once live steering is implemented, also verify the control capability without mutating user work unexpectedly.
+Steer and interrupt remain `unknown` until a real active turn permits a non-destructive capability
+attempt; setup does not mutate user work merely to prove those optional controls.
 
 ## 4.8 COMMIT MANIFEST
 
@@ -530,8 +544,8 @@ Example manifest:
   "integration_generation": "<sha256>",
   "agent_path": "/opt/homebrew/bin/codex",
   "agent_version": "...",
-  "app_server_strategy": "pending-external",
-  "app_server_endpoint": null,
+  "app_server_strategy": "external-explicit",
+  "app_server_endpoint": "ws://127.0.0.1:4500",
   "runtime_mode": "managed",
   "runtime_layout": {
     "cli_executable": "/opt/homebrew/opt/spotter/bin/spotter",
@@ -559,10 +573,11 @@ Example manifest:
 | --- | --- |
 | INSPECT | no mutation |
 | PLAN | no mutation |
+| PREFLIGHT APP SERVER | no owned integration mutation; report a redacted connection/protocol error |
 | BACKUP | no mutation |
 | APPLY | roll back Spotter-owned mutations already applied |
-| START/CONNECT | either roll back or leave an explicit incomplete/degraded manifest |
-| VERIFY | do not report READY; preserve actionable diagnostics |
+| START/CONNECT | restore the previous manifest/runtime or remove the new candidate |
+| VERIFY | do not report READY; restore the previous working integration and diagnose the failure |
 
 A second `spotter setup codex` heals an interruption after inspectable changes were written. A
 process crash before the manifest commit can leave the owned Hook without an ownership record;
@@ -572,8 +587,9 @@ re-running setup heals forward, while teardown cannot remove an unrecorded mutat
 
 # 5. App Server lifecycle
 
-Connection recovery is implemented; selecting and verifying the shared endpoint without claiming
-ownership of another client's App Server remains the lifecycle dependency.
+Explicit endpoint selection and verification are implemented without claiming ownership of another
+client's App Server. The remaining product boundary is making ordinary `codex` select that server
+without hiding which endpoint/process is shared.
 
 ## 5.1 Why startup order matters
 
@@ -594,9 +610,9 @@ codex starts
 
 If Codex has already selected an embedded server, waking Spotter later at the first `PreToolUse` is too late to create an external sidecar observation/control plane for that turn.
 
-## 5.2 Candidate canonical strategies
+## 5.2 Implemented and candidate strategies
 
-### Strategy A — explicit remote TUI
+### Strategy A — explicit remote TUI (implemented)
 
 ```text
 ensure external Codex App Server
@@ -734,12 +750,12 @@ Portable mode must display exactly which guarantees are lost.
 
 ## 7.1 Codex launch
 
-Target managed flow:
+Implemented explicit-endpoint flow:
 
 ```text
 external App Server already reachable
         │
-user runs `codex`
+user runs `codex --remote <endpoint>`
         │
         ▼
 TUI attaches to server
@@ -1856,6 +1872,8 @@ The target lifecycle is not complete until all of these work end-to-end:
 
 - [x] clean package install does not modify Codex;
 - [x] `spotter setup codex` is idempotent;
+- [x] explicit App Server endpoints are verified before commit and changed transactionally;
+- [x] shared App Server teardown remains outside Spotter-owned service cleanup;
 - [x] interrupted setup can heal forward when setup is re-run (pre-manifest teardown cannot infer ownership);
 - [ ] ordinary `codex` requires no manual Spotter/App Server startup in managed mode;
 - [x] `status` distinguishes daemon, observation, control, enforcement, storage health;

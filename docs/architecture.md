@@ -1259,12 +1259,15 @@ PreToolUse:  possibly available
 - Path B proved a shared App Server/thread, live event delivery, and real `turn/steer` delivery.
 - `CodexAppServerClient` provides the initialized transport, raw events, thread/control methods, and
   explicit per-capability degradation used by later runtime components.
-- Path A remains unavailable for the tested Homebrew Cask because the managed daemon expects the
-  standalone installer layout.
+- Path A is the supported setup path when the installed Codex exposes `app-server --listen` and
+  `--remote`; plain `codex` still does not auto-discover the external endpoint.
 - The concurrent thread identity registry from #81 is consumed by normalized App Server event
   routing. The daemon connection loop reconciles identities and live state across reconnect epochs.
-- Transactional Codex setup now owns only its recorded Hook/plugin/service mutations. App Server
-  endpoint selection remains explicitly pending; setup neither owns nor stops a shared App Server.
+- Transactional Codex setup now accepts an explicit external WebSocket endpoint, preflights the
+  Codex identity and observation/thread-query capabilities, and commits it only after `spotterd`
+  reports a compatible healthy runtime identity and capabilities. Endpoint changes restart the daemon;
+  failed reconciliation restores the previous manifest/runtime. Setup neither starts, owns, nor
+  stops the shared App Server.
 
 ---
 

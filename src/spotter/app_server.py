@@ -12,6 +12,7 @@ from websockets.asyncio.client import ClientConnection
 from websockets.asyncio.client import connect as websocket_connect
 from websockets.exceptions import ConnectionClosed, WebSocketException
 
+from spotter.app_server_endpoint import display_app_server_endpoint, redact_app_server_error
 from spotter.codex_host import (
     CodexHostVersion,
     CodexHostVersionError,
@@ -217,8 +218,9 @@ class CodexAppServerClient:
             self.last_error = error
             raise
         except (OSError, TimeoutError, WebSocketException) as error:
+            detail = redact_app_server_error(error, self.endpoint)
             transport_error = AppServerTransportError(
-                f"could not connect to {self.endpoint}: {error}"
+                f"could not connect to {display_app_server_endpoint(self.endpoint)}: {detail}"
             )
             await self._abort_connect()
             self.last_error = transport_error

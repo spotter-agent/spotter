@@ -28,7 +28,10 @@ def test_readme_uses_supported_package_and_setup_commands() -> None:
     readme = Path("README.md").read_text()
 
     assert "brew install spotter-agent/spotter/spotter" in readme
-    assert "spotter setup codex --dry-run\nspotter setup codex\nspotter doctor" in readme
+    assert (
+        "spotter setup codex --endpoint ws://127.0.0.1:4500 --dry-run\n"
+        "spotter setup codex --endpoint ws://127.0.0.1:4500\nspotter doctor"
+    ) in readme
 
 
 def test_bundled_hook_runs_without_installing_package(tmp_path: Path) -> None:
