@@ -199,6 +199,24 @@ def test_roundtrip_leaves_no_probe_journal(home: Path) -> None:
     assert probes == []
 
 
+def test_capture_roundtrip_uses_capture_only_and_cleans_probe(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def run_hook_command(
+        args: object, *, input: str, env: dict[str, str], **kwargs: object
+    ) -> object:
+        assert env["SPOTTER_CAPTURE_ONLY"] == "1"
+        assert "SPOTTER_DISABLE" not in env
+        payload = json.loads(input)
+        StepJournal(journal_path(payload)).record(TraceEvent("tool_proposal"))
+        return type("Completed", (), {"stderr": ""})()
+
+    monkeypatch.setattr("spotter.doctor.subprocess.run", run_hook_command)
+
+    assert check_roundtrip(None, command=("spotter", "hook"), capture_only=True).status == OK
+    assert not list((home / "sessions").glob("doctor-probe-*"))
+
+
 def test_freshness_reports_never_observed() -> None:
     assert check_freshness().status == INFO
     assert "recorded yet" in check_freshness().detail

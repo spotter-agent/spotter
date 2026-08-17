@@ -30,6 +30,21 @@ spotter tasks run corpus/dev-v2.toml --guidance "Inspect the failing check first
   --resume ~/.spotter/experiments/task-batches/<batch>.jsonl
 ```
 
+Capture future replay sources only through a ready owned Codex Hook integration:
+
+```bash
+spotter tasks run corpus/dev-v2.toml \
+  --guidance "Inspect the failing check first." \
+  --capture-replay-sources --run
+```
+
+Before the first paid arm, capture mode verifies the exact owned Hooks, selected Codex and Spotter
+homes, capture config, and a reversible capture-only journal round-trip. The non-secret readiness
+receipt is pinned in the batch header and must match before an incomplete batch resumes. Missing or
+stale integration fails without creating a batch or starting an agent; the command never runs setup
+implicitly. Legacy incomplete capture batches without a receipt rerun current readiness before
+continuing; batches created with a receipt require an exact match.
+
 Resume refuses changed task-set hashes, environment, guidance, model, or sandbox settings and skips already journaled arms. These synthetic fixtures establish harness behavior. They are not evidence of intervention advantage and do not replace the later executed experiment across a larger heterogeneous corpus.
 
 ## Wrong-nudge corpus

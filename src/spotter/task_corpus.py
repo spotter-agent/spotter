@@ -18,8 +18,10 @@ from fcntl import LOCK_EX, flock
 from pathlib import Path
 from typing import Any
 
+from spotter.config import ConfigurationError, resolve_config
+from spotter.doctor import OK, check_integration, check_roundtrip
 from spotter.experiment import CONTROL_PROMPT, ArmClassification
-from spotter.paths import sanitize_session, secure_dir, spotter_home
+from spotter.paths import RuntimeLayout, sanitize_session, secure_dir, spotter_home
 from spotter.replay import ReplayError, find_rollout
 from spotter.snapshot import SnapshotError, StepJournal
 
@@ -234,6 +236,12 @@ def run_task_batch(
         detail = ", ".join(f"{row.task_id}={row.classification}" for row in not_ready)
         raise TaskCorpusError(f"task batch preflight failed: {detail}")
 
+    resume_complete = (
+        resumed is not None and resumed[2] and len(resumed[1]) == len(task_set.tasks) * 2
+    )
+    capture_readiness = (
+        _capture_readiness(task_set) if capture_replay_sources and not resume_complete else None
+    )
     set_sha256 = file_digest(set_path)
     if resume is None:
         run_id = str(uuid.uuid4())
@@ -259,6 +267,8 @@ def run_task_batch(
             "capture_replay_sources": capture_replay_sources,
             "started_at": datetime.now(UTC).isoformat(),
         }
+        if capture_readiness is not None:
+            header["capture_readiness"] = capture_readiness
         _append_task_batch(output, header)
         existing: list[TaskArmResult] = []
     else:
@@ -275,6 +285,7 @@ def run_task_batch(
             reasoning_effort=reasoning_effort,
             sandbox=sandbox,
             capture_replay_sources=capture_replay_sources,
+            capture_readiness=capture_readiness,
             existing=existing,
         )
         run_id = str(header["run_id"])
@@ -327,6 +338,93 @@ def run_task_batch(
         },
     )
     return output, tuple(results)
+
+
+def _capture_readiness(task_set: TaskSetManifest) -> dict[str, str]:
+    layout = RuntimeLayout.discover()
+    inspection = check_integration()
+    manifest = inspection.manifest
+    remediation = (
+        "run `spotter status` and reconcile the selected SPOTTER_HOME/CODEX_HOME "
+        "with `spotter setup codex`"
+    )
+    if inspection.check.status != OK or not inspection.hook_ready or manifest is None:
+        raise TaskCorpusError(
+            f"replay-source capture unavailable: {inspection.check.detail}; {remediation}"
+        )
+
+    current_codex_home = (
+        Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")).expanduser().resolve()
+    )
+    if Path(manifest.codex_home).expanduser().resolve() != current_codex_home:
+        raise TaskCorpusError(
+            "replay-source capture unavailable: active integration uses a different CODEX_HOME; "
+            f"{remediation}"
+        )
+
+    recorded_home = manifest.runtime_layout.get("user_data_dir")
+    selected_home = layout.user_data_dir.resolve()
+    if not isinstance(recorded_home, str) or Path(recorded_home).resolve() != selected_home:
+        raise TaskCorpusError(
+            "replay-source capture unavailable: active Hook uses a different SPOTTER_HOME; "
+            f"{remediation}"
+        )
+
+    required_events = {"SessionStart", "PreToolUse", "PostToolUse"}
+    events = {entry.get("event") for entry in manifest.owned_hooks if isinstance(entry, dict)}
+    if not required_events <= events:
+        missing = ", ".join(sorted(required_events - events))
+        raise TaskCorpusError(
+            f"replay-source capture unavailable: active Hook is missing {missing}; {remediation}"
+        )
+
+    commands = {
+        hook.get("command")
+        for entry in manifest.owned_hooks
+        if isinstance(entry, dict)
+        and entry.get("event") in required_events
+        and isinstance((hook := entry.get("hook")), dict)
+        and isinstance(hook.get("command"), str)
+    }
+    if len(commands) != 1:
+        raise TaskCorpusError(
+            "replay-source capture unavailable: owned Hook commands are missing or inconsistent; "
+            f"{remediation}"
+        )
+    recorded_command = commands.pop()
+    assert isinstance(recorded_command, str)
+
+    config_path = Path(manifest.config_path) if manifest.config_path is not None else None
+    try:
+        resolved = resolve_config(layout=layout, explicit_path=config_path)
+    except ConfigurationError as error:
+        raise TaskCorpusError(
+            f"replay-source capture unavailable: {error}; {remediation}"
+        ) from error
+    if not resolved.config.snapshot_on_patch:
+        raise TaskCorpusError(
+            f"replay-source capture unavailable: snapshot_on_patch is disabled; {remediation}"
+        )
+
+    probe_command = [*layout.bridge_command]
+    if config_path is not None:
+        probe_command += ["--config", str(config_path)]
+    probe_command += ["--integration-generation", manifest.integration_generation]
+    roundtrip = check_roundtrip(None, command=probe_command, capture_only=True)
+    if roundtrip.status != OK:
+        raise TaskCorpusError(
+            f"replay-source capture unavailable: {roundtrip.detail}; {remediation}"
+        )
+
+    return {
+        "integration_generation": manifest.integration_generation,
+        "setup_build_id": manifest.setup_build_id,
+        "spotter_home": str(selected_home),
+        "codex_home": str(current_codex_home),
+        "hook_command_sha256": hashlib.sha256(recorded_command.encode()).hexdigest(),
+        "config_generation": resolved.resolved_config_generation,
+        "task_set_id": task_set.task_set_id,
+    }
 
 
 def task_batch_path(task_set: TaskSetManifest, run_id: str) -> Path:
@@ -790,6 +888,7 @@ def _validate_resume(
     reasoning_effort: str | None,
     sandbox: str,
     capture_replay_sources: bool,
+    capture_readiness: dict[str, str] | None,
     existing: list[TaskArmResult],
 ) -> None:
     expected = {
@@ -813,6 +912,13 @@ def _validate_resume(
         raise TaskCorpusError(f"cannot resume {path}: reasoning_effort does not match")
     if bool(header.get("capture_replay_sources", False)) != capture_replay_sources:
         raise TaskCorpusError(f"cannot resume {path}: capture_replay_sources does not match")
+    recorded_readiness = header.get("capture_readiness")
+    if (
+        capture_readiness is not None
+        and recorded_readiness is not None
+        and recorded_readiness != capture_readiness
+    ):
+        raise TaskCorpusError(f"cannot resume {path}: capture_readiness does not match")
     try:
         uuid.UUID(str(header["run_id"]))
     except (KeyError, ValueError) as error:
