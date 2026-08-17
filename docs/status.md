@@ -61,7 +61,7 @@ PreToolUse Hook only
 (deterministic synchronous enforcement)
 ```
 
-The shared App Server gate is resolved: an explicitly connected TUI and Spotter can observe and steer the same real turn. The Hook now uses bounded daemon IPC for deterministic enforcement, and `spotterd` owns reconnect/reconciliation for configured App Server endpoints. The #37 instrument now separates Hook, App Server source, Trace IR, and ThreadState coverage, but the available snapshot has no App Server or labeled failure samples, so the post-migration ceiling remains unmeasured under [#303](https://github.com/spotter-agent/spotter/issues/303). See [Observability ceiling baseline](observability-baseline.md).
+The shared App Server gate is resolved: an explicitly connected TUI and Spotter can observe and steer the same real turn. The Hook now uses bounded daemon IPC for deterministic enforcement, and `spotterd` owns reconnect/reconciliation and explicit thread subscriptions for configured App Server endpoints. The [#303 ceiling run](experiments/app-server-observability-v1-result.md) stopped after two attempts exposed no later-user-input notification: command outcomes were exact and timely after the subscription fix, but all three observation Hooks remain **NO-GO** for removal. See [Observability ceiling baseline](observability-baseline.md) for the instrument's earlier zero-sample state.
 The roadmap no longer uses `P0–P9` / `E0–E5`. It is organized by named outcomes:
 
 ```text
@@ -117,8 +117,8 @@ In parallel, the highest-value evidence foundations remain:
 
 - [#42](https://github.com/spotter-agent/spotter/issues/42) — replay/fork fidelity and noise floor;
 - [#37](https://github.com/spotter-agent/spotter/issues/37) — implemented the observability
-  instrument and zero-sample baseline; [#303](https://github.com/spotter-agent/spotter/issues/303)
-  owns representative post-migration measurement and the Hook-removal decision;
+  instrument and zero-sample baseline; the [#303](https://github.com/spotter-agent/spotter/issues/303)
+  run found a structural user-input gap and retained every observation Hook;
 - [#38](https://github.com/spotter-agent/spotter/issues/38) and [#34](https://github.com/spotter-agent/spotter/issues/34) — use the completed #33 runtime cost/timing foundation to measure detection and intervention benefit or harm.
 
 [#21](https://github.com/spotter-agent/spotter/issues/21) now has frozen dev/validation v2 sets,
@@ -139,7 +139,7 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 
 | Area | Status | What exists now | Next concrete step |
 | --- | --- | --- | --- |
-| Hook ingestion | ✅ | `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse` are journaled | Measure App Server parity in #303, then remove only proven-redundant Hooks in #86 |
+| Hook ingestion | ✅ | `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse` are journaled; #303 found no removable observation Hook | Retain all Hooks; revisit only after a newer source surface closes the measured gaps |
 | Deterministic gate | ✅ | Shell-aware daemon evaluation over bounded local IPC; unavailable/timeout uses the local Gate, while incompatible responses fail open; each Hook request and its IPC/correlated-block telemetry retain the exact resolved config generation; enforced and shadow blocks carry stable supervision IDs, rule versions, normalized effect/resource context, and an on-demand actionable explanation | Continue policy precision/miss-rate measurement |
 | Journal | ✅ | Crash-tolerant JSONL stores identity-rich App Server Trace IR with locking, fsync, torn-tail recovery, recovery gaps, and the bounded retention lifecycle implemented in #89 | Keep retention and recovery behavior in the release regression gate |
 | Snapshot | ✅ | App Server thread baselines and terminal local-mutation snapshots, Hook before-state snapshots, deduplication, pruning, detached restore | Remove only observation Hooks whose snapshot responsibilities pass #303/#86 parity |
@@ -151,7 +151,7 @@ Legend: ✅ implemented · 🟡 partial/shadow · 🧪 proof required · 🎯 ta
 | Counterfactual harness | ✅ | Same-prefix experiments preflight both forks and support explicit neutral-noise or guidance modes; their independently versioned result journal reads legacy history and refuses incompatible or corrupt history before fsynced appends, and durable aggregate reporting preserves neutral outcome disagreement, exact preflight-failure categories, and infrastructure-failure classifications. Frozen task, task-set, and resumable batch schemas are independently identified; batch resume validates before preflight, uses locked fsynced appends and atomic torn-tail repair, and retains optional replay-source session provenance; capture-requested batches prove the exact owned Hook, selected homes, config, and reversible journal round-trip before paid execution, then pin that readiness receipt across incomplete resume | Execute broader natural-failure/noise cohorts in #42 before interpreting intervention effects |
 | Standalone runtime | 🟡 | Long-lived process, IPC, lifecycle, isolated per-thread state, App Server recovery ownership, and verified explicit endpoint setup | Validate multi-TUI and ordinary-launch product behavior in #304 |
 | Runtime identity | ✅ | Logical threads/turns remain separate from per-connection attachment IDs and monotonically recovered epochs; signal-driven reviewer jobs retain their exact turn/epoch target | Enforce the same target identity at future reviewer delivery |
-| App Server primary observation | 🟡 | Configured endpoints route through `spotterd` into independently versioned durable Trace IR with schema-validated, rebuildable journal sidecars and incremental ThreadState; a bounded value-free, independently versioned source audit and conformance corpus measure projection coverage, including Spotter advisory inputs as intervention delivery rather than dropped user-goal evidence; unknown audit schemas degrade visibly without interrupting primary journals | Collect labeled App Server failures in #303, then reduce only proven-redundant Hooks in #86 |
+| App Server primary observation | 🟡 | Configured endpoints subscribe through `thread/resume` and route into independently versioned durable Trace IR with schema-validated, rebuildable journal sidecars and incremental ThreadState; #303 proved exact timely successful-command outcomes but found no later-user-input source notification | Keep App Server observation additive and retain Hooks until a new predeclared parity run closes the source and correlation gaps |
 | Managed Codex lifecycle | 🟡 | Transactional setup/teardown, verified explicit external endpoints, an independently versioned ownership manifest with rollback, managed service, diagnostics, configured-endpoint recovery, and temporary observation Hooks until #86 parity; shared App Server process ownership remains external | Productize ordinary Codex launch in #304 without weakening ownership boundaries |
 | Runtime reconnect/recovery | ✅ | Explicit connect/reconcile/backoff states, restart hydration, durable gaps, capability/server fingerprints, stale-control fencing, and the retention/checkpoint lifecycle implemented in #89 | Keep reconnect, hydration, and retention behavior in the release regression gate |
 | Event-driven detection | 🟡 | All eight initial families journal identity/evidence-rich active, cooled-down, resolved, and stale candidates for explicit normalized failures, equivalent calls, frontierless reads, deterministic-block recurrence, request-scope growth, scope-matched unvalidated edits, causal stale-hypothesis reuse, and relative token/duration pressure; opted-in active candidates merge into priority-ordered, budget-capped asynchronous reviews with bounded immutable inputs, while stale targets never deliver; queue/decision provenance and metrics now stratify signal, periodic, and manual launches | Compare event-driven, periodic-only, and mixed fallback-cadence precision/cost in #38/#24 using #33 telemetry |
@@ -205,7 +205,7 @@ Implementation progress and research evidence remain separate.
 | Is there a reproducible mechanically scored task corpus? | **Yes for the synthetic v2 foundation — six frozen tasks and a reportable 6/6-arm dev run; external/ecosystem breadth remains future work (#21)** |
 | Has live Spotter guidance been shown to improve outcomes? | **No** |
 | Is the App Server control boundary operationally viable? | **Yes for a configured Spotter-managed external path, including daemon reconnect/reconciliation** |
-| Is the post-App-Server visible-in-time ceiling measured? | **No — #37 implemented the instrument, but the current sample has 0 App Server sessions and 0/9 labeled sessions; #303 owns representative measurement** |
+| Is the post-App-Server visible-in-time ceiling measured? | **Partially — #303 stopped by rule after the later-user-input row failed twice; command success was visible in time, but every observation Hook remains NO-GO for removal** |
 
 A mechanism being implemented does not prove it improves outcomes. Null and negative results are first-class outcomes for this project.
 

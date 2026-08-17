@@ -525,10 +525,10 @@ The target Codex integration should keep only the hook surface that provides a u
 
 | Hook | Current use | Target |
 | --- | --- | --- |
-| `SessionStart` | legacy session baseline snapshot | App Server `thread/started` now owns the baseline; remove the redundant Hook |
-| `UserPromptSubmit` | user goal capture | replace with App Server user-message events |
+| `SessionStart` | legacy session baseline snapshot | retain after the #303 lifecycle minimum stopped incomplete |
+| `UserPromptSubmit` | user goal capture | retain: Codex 0.147.0 exposed no user-input notification in the #303 ceiling run |
 | `PreToolUse` | proposal observation + gate | **retain for deterministic atomic enforcement** |
-| `PostToolUse` | legacy result/snapshot/reviewer cadence | App Server terminal items now own after-state snapshots; finish result/reviewer migration, then remove the Hook |
+| `PostToolUse` | legacy result/snapshot/reviewer cadence | retain until failure, patch, MCP, approval, interrupt, and reconnect parity is measured |
 
 ### Appropriate synchronous policies
 
@@ -761,7 +761,7 @@ only be created by an explicit verification-satisfied event. Duplicate event IDs
 out-of-order lifecycle is recorded as partial coverage, and thread identities remain isolated.
 
 Journal hydration deterministically replays Trace IR but clears active-turn/control readiness. A
-recovered daemon receives a live `runtime_reconciled` event only after the App Server thread list/read
+recovered daemon receives a live `runtime_reconciled` event only after the App Server thread list/resume
 pass proves current attachment and exact active-turn identity. Until then control remains unavailable.
 
 ## 8.2 Durable journal

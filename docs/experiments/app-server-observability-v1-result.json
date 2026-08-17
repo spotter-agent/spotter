@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "run_date": "2026-08-18",
+  "issue": 303,
+  "predeclaration_commit": "b47eb611afaf61ddcc76e784426ccf7da5ef4e5f",
+  "runtime_fix_commit": "5a6160bf263104921c324b26b8fb326659a1523d",
+  "codex_version": "0.147.0",
+  "stop_rule": "second_failed_attempt_for_any_scenario",
+  "stop_scenario": "ASO-NORMAL-2",
+  "cohort": {
+    "distinct_app_server_threads": 1,
+    "hook_turns": 3,
+    "planned_distinct_threads": 7,
+    "planned_turns": 9,
+    "complete": false
+  },
+  "decisions": {
+    "SessionStart": "NO-GO",
+    "UserPromptSubmit": "NO-GO",
+    "PostToolUse": "NO-GO"
+  },
+  "decisive_attempt": {
+    "scenario": "ASO-NORMAL-2",
+    "attempt": 2,
+    "app_server_events": 45,
+    "observation_gaps": 3,
+    "source_vs_adapter": {
+      "observed_exact": 15,
+      "unknown": 22
+    },
+    "trace_ir": {
+      "command_tool_call_observed_exact": 2,
+      "runtime_usage_observed_exact": 4,
+      "thread_turn_identity_observed_exact": 9,
+      "tool_outcome_observed_exact": 1
+    },
+    "thread_state": {
+      "command_tool_call_observed_exact": 2,
+      "runtime_usage_adapter_dropped": 4,
+      "thread_turn_identity_observed_exact": 3,
+      "thread_turn_identity_observed_partial": 6,
+      "tool_outcome_observed_exact": 2
+    },
+    "later_user_input": "STRUCTURALLY_INVISIBLE",
+    "command_outcome": "VISIBLE_IN_TIME",
+    "cross_surface_overlap": 0
+  },
+  "raw_artifact_sha256": {
+    "hook_journal": "7a28bc644e8bea2b3cca5742f86fdeb4532bb1332d39e670069fd51e4fe4bd65",
+    "app_server_thread_journal": "54f722c00ebfd2a7371c73e7182acbad8f1d482686eee970a39309fb7b7c5be4",
+    "app_server_unscoped_journal": "5e64af5e1becf24cef5fe9b26f17097b293d10909fddd17023462044b9e334d8",
+    "source_audit": "8b278bca4c989f0c1d309269f9d0862cd1c65f84ff1327a15fbb99707939724d"
+  }
+}
