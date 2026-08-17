@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "declared_at": "2026-08-18",
+  "issue": 303,
+  "runtime": {
+    "minimum_codex_cli": "0.147.0",
+    "transport": "local_websocket",
+    "isolated_spotter_home": true,
+    "isolated_codex_home": true
+  },
+  "minimum_complete_cohort": {
+    "distinct_threads": 7,
+    "turns": 9,
+    "attempts_per_scenario": 2
+  },
+  "scenarios": [
+    "ASO-NORMAL-1",
+    "ASO-NORMAL-2",
+    "ASO-FAIL-1",
+    "ASO-PATCH-1",
+    "ASO-MCP-1",
+    "ASO-LONG-1",
+    "ASO-APPROVAL-1",
+    "ASO-RECONNECT-1",
+    "ASO-LIFECYCLE-1"
+  ],
+  "failure_families": [
+    "normal",
+    "command_failure",
+    "degraded",
+    "interrupted",
+    "long_running",
+    "approval_blocked",
+    "disconnect_reconnect"
+  ],
+  "responsibilities": {
+    "SessionStart": ["new", "stored", "late_attached", "resumed", "reconnected"],
+    "UserPromptSubmit": ["initial", "later", "spotter_steer", "other_client", "replay", "history"],
+    "PostToolUse": [
+      "command_success",
+      "command_failure",
+      "patch",
+      "mcp",
+      "streaming",
+      "approval",
+      "interruption",
+      "reconnect",
+      "partial_unknown"
+    ],
+    "overlap_deduplication": ["hook_first", "app_server_first"]
+  },
+  "stop_rule": [
+    "all_minimums_met",
+    "second_failed_attempt_for_any_scenario",
+    "unsafe_runtime_or_collection_failure"
+  ],
+  "decision_rule": "Any unmet minimum, unjudgeable consequential boundary, or semantic-action duplicate is NO-GO for the affected responsibility."
+}
