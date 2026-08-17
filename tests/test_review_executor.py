@@ -169,7 +169,11 @@ def test_running_and_queued_reviews_pin_their_submission_config_generation(
     asyncio.run(scenario())
 
 
-def test_live_opt_in_delivers_a_fresh_intervention_decision(tmp_path: Path) -> None:
+def test_live_opt_in_delivers_a_fresh_intervention_decision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SPOTTER_HOME", str(tmp_path / "home"))
+
     async def scenario() -> None:
         runtime = AppServerRecoveryLoop("ws://unused", tmp_path / "sessions", ThreadStateStore())
         delivered: list[tuple[ReviewerJob, ReviewerDecision]] = []
