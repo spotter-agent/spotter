@@ -357,9 +357,11 @@ spotter metrics --session <id>
 ```
 
 Repeated sampling with the same detector, event kinds, and rate consumes only the new journal
-suffix. Metrics preserve the frame probability and exclusions, report coverage separately per
-detector/event-kind/rate stratum, and explicitly avoid generalizing the result to unsampled event
-kinds.
+suffix. Metrics preserve the frame probability and exclusions, keep every declared multi-kind batch
+as one detector/event-kind-set/rate stratum, and explicitly avoid generalizing the result to
+unsampled event kinds. Gate `fp / (tp + fp)` is reported as false discovery (`1 - precision`), not
+false-positive rate; true FPR remains unavailable until a per-rule true-negative sampling frame
+exists.
 
 For detection-delay studies, record both the retrospective semantic window and the separate window
 where Spotter could actually observe the required evidence. The two intervals are not assumed to be

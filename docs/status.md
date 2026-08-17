@@ -126,6 +126,11 @@ preflight, resumable classified execution, and a [first real three-task developm
 All three pairs were tie-success; this qualifies the instrument but is not evidence of intervention
 advantage.
 
+Detector-quality reports preserve each declared multi-event-kind silence batch as one sampling
+stratum, so its rate and eligibility/exclusion denominator describe the same frame. Gate
+`fp / (tp + fp)` is named false discovery (`1 - precision`); true false-positive rate remains
+unavailable until #38 has a per-rule true-negative sampling frame.
+
 ---
 
 ## Quick capability status

@@ -2,7 +2,7 @@
 
 The plan's evidence gates wait on the same thing: was a judgment right?
 - P1 observability ceiling: was a failure visible in the observable stream?
-- P3 active gates: what fraction of shadow blocks were false positives?
+- P3 active gates: what fraction of shadow blocks were false discoveries?
 - P4 injection: what fraction of reviewer nudges were correct?
 
 Labels live in their own store, NOT in the session journal. Two reasons:

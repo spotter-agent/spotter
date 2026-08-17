@@ -136,6 +136,48 @@ def test_scoped_signal_labels_coexist_with_gate_negative_labels() -> None:
     assert agreement.double_labeled_targets == agreement.agreed_targets == 1
 
 
+def test_signal_silence_tally_preserves_a_multi_kind_sampling_frame() -> None:
+    records = _journal(
+        "s1",
+        [
+            _event("tool-1"),
+            TraceEvent("file_edit", {}, event_id="edit-1", identity=_identity()),
+        ],
+    )
+    sample_signal_silence(
+        "s1",
+        records,
+        "failure_streak",
+        ("tool_proposal", "file_edit"),
+        1,
+    )
+    add_label(
+        "s1",
+        0,
+        "miss",
+        "tool failure criterion met",
+        records,
+        signal_type="failure_streak",
+    )
+    add_label(
+        "s1",
+        1,
+        "tn",
+        "file edit criterion absent",
+        records,
+        signal_type="failure_streak",
+    )
+
+    tallies, batches = tally_signal_silence("s1", records)
+
+    assert len(batches) == 1
+    assert batches[0].eligible == batches[0].selected == 2
+    assert set(tallies) == {"failure_streak/file_edit,tool_proposal@p=1"}
+    tally = tallies["failure_streak/file_edit,tool_proposal@p=1"]
+    assert tally.total == tally.labeled == 2
+    assert tally.positive == tally.negative == 1
+
+
 def test_sampling_appends_only_the_new_journal_suffix() -> None:
     records = _journal("s1", [_event("source-1")])
     first = sample_signal_silence("s1", records, "failure_streak", ("tool_proposal",), 1)

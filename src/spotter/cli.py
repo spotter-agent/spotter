@@ -2011,11 +2011,12 @@ def _metrics_main(session: str | None) -> int:
             print(f"metrics aborted: {error}", file=sys.stderr)
             return 1
 
-    print("P3 gate false positives (label each flag tp|fp):")
+    print("P3 gate flag precision (label each flag tp|fp):")
     if not gates:
         print("  no gate flags recorded")
     for rule, tally in sorted(gates.items()):
-        print("  " + tally.rate_line(rule, "false-positive", count_negative=True))
+        print("  " + tally.rate_line(rule, "false-discovery (1 - precision)", count_negative=True))
+    print("  true FPR unavailable: no per-rule true-negative sampling frame")
     if blind_spots:
         rules = ", ".join(f"{rule}={count}" for rule, count in sorted(blind_spots.items()))
         print(
