@@ -33,3 +33,20 @@ def test_endpoint_display_and_errors_redact_query_values() -> None:
     detail = redact_app_server_error(f"connection to {endpoint} failed", endpoint)
     assert detail == "connection to wss://example.test:4500/socket?<redacted> failed"
     assert "setup-secret" not in detail
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        OSError("authentication failed for s3cret"),
+        OSError("authentication failed for s%33cr%65t"),
+    ],
+)
+def test_endpoint_errors_redact_raw_and_decoded_query_values(error: OSError) -> None:
+    endpoint = "wss://example.test/socket?access_token=s%33cr%65t"
+
+    detail = redact_app_server_error(error, endpoint)
+
+    assert detail == "authentication failed for <redacted>"
+    assert "s3cret" not in detail
+    assert "s%33cr%65t" not in detail

@@ -127,6 +127,23 @@ class RecoveringAppServerService(AppServerService):
         return await super().status()
 
 
+class RollbackFailingAppServerService(AppServerService):
+    def __init__(self, registration_path: Path, manifest_path: Path) -> None:
+        super().__init__(registration_path, manifest_path)
+        self.restarts = 0
+
+    async def restart(self) -> DaemonStatus:
+        self.restarts += 1
+        if self.restarts == 2:
+            self.health = RuntimeHealth.UNAVAILABLE
+            return DaemonStatus(
+                self.health,
+                detail="previous runtime restart failed",
+                build_id=current_build_identity().build_id,
+            )
+        return await super().restart()
+
+
 @pytest.fixture()
 def homes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
     spotter_home = tmp_path / "spotter"
@@ -565,6 +582,40 @@ def test_endpoint_change_restarts_daemon_and_rolls_back_if_it_cannot_reconnect(
     assert service.stops == 2  # candidate restart plus rollback restart
     assert (awaitable_status := asyncio.run(service.status())).app_server_state == "ready"
     assert awaitable_status.app_server_version == "0.147.0"
+
+
+def test_endpoint_change_reports_an_incomplete_runtime_rollback(
+    homes: tuple[Path, Path],
+) -> None:
+    spotter_home, codex_home = homes
+    old_endpoint = "ws://127.0.0.1:4500"
+    new_endpoint = "ws://127.0.0.1:4600"
+    manifest_path = spotter_home / "integrations/codex.json"
+    service = RollbackFailingAppServerService(spotter_home / "service/spotterd", manifest_path)
+
+    def endpoint_manager(endpoint: str, *, ready_timeout: float = 10.0) -> IntegrationManager:
+        return IntegrationManager(
+            codex_home=codex_home,
+            codex=CodexInstall("/bin/codex", "codex-cli 0.147.0", True, True),
+            service=service,
+            spotter_executable="/bin/spotter",
+            verifier=lambda _: True,
+            app_server_endpoint=endpoint,
+            app_server_verifier=lambda _: None,
+            app_server_ready_timeout=ready_timeout,
+        )
+
+    endpoint_manager(old_endpoint).setup()
+    original_manifest = manifest_path.read_bytes()
+    service.broken_endpoints.add(new_endpoint)
+
+    with pytest.raises(IntegrationError) as captured:
+        endpoint_manager(new_endpoint, ready_timeout=0).setup()
+
+    assert "rollback incomplete" in str(captured.value)
+    assert "previous runtime restart failed" in str(captured.value)
+    assert manifest_path.read_bytes() == original_manifest
+    assert service.health == RuntimeHealth.UNAVAILABLE
 
 
 def test_setup_records_stable_layout_build_and_integration_generation(

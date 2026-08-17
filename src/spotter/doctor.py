@@ -604,13 +604,25 @@ def check_runtime(*, deep: bool = False) -> list[Check]:
         observation = capabilities.get("observation", "unknown")
         controls = tuple(capabilities.get(name, "unknown") for name in ("steer", "interrupt"))
         display_endpoint = display_app_server_endpoint(endpoint)
-        observation_ready = daemon.app_server_state == "ready" and observation == "available"
-        if all(control == "available" for control in controls):
+        runtime_ready = (
+            daemon.health == RuntimeHealth.HEALTHY and daemon.app_server_state == "ready"
+        )
+        observation_ready = runtime_ready and observation == "available"
+        if not runtime_ready:
+            control_status = WARN
+            control_detail = (
+                f"unavailable while daemon is {daemon.app_server_state or daemon.health.value}; "
+                f"last negotiated steer/interrupt {'/'.join(controls)}"
+            )
+        elif all(control == "available" for control in controls):
             control_status = OK
+            control_detail = f"daemon reports steer/interrupt {'/'.join(controls)}"
         elif "unavailable" in controls:
             control_status = WARN
+            control_detail = f"daemon reports steer/interrupt {'/'.join(controls)}"
         else:
             control_status = INFO
+            control_detail = f"daemon reports steer/interrupt {'/'.join(controls)}"
         checks.extend(
             [
                 Check(
@@ -622,7 +634,7 @@ def check_runtime(*, deep: bool = False) -> list[Check]:
                 Check(
                     "live control",
                     control_status,
-                    f"daemon reports steer/interrupt {'/'.join(controls)}",
+                    control_detail,
                 ),
             ]
         )

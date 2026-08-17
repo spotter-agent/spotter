@@ -343,6 +343,41 @@ def test_status_uses_the_daemons_ready_app_server_capabilities(
     assert "unknown/unknown" in by_name["live control"].detail
 
 
+def test_status_does_not_report_retained_controls_as_live_while_disconnected(
+    homes: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    endpoint = "ws://127.0.0.1:4321"
+    manifest = replace(_ready_manifest(homes), app_server_endpoint=endpoint)
+    manifest.save(homes[0] / "integrations/codex.json")
+
+    async def backing_off_status(self: DaemonClient) -> DaemonStatus:
+        return DaemonStatus(
+            RuntimeHealth.DEGRADED,
+            build_id=current_build_identity().build_id,
+            compatibility=RuntimeCompatibility.MATCHED,
+            construction_fingerprint=expected_runtime_construction_fingerprint(
+                RuntimeLayout.discover()
+            ),
+            app_server_state="backing_off",
+            app_server_connection_epoch=2,
+            app_server_capabilities=(
+                ("observation", "available"),
+                ("steer", "available"),
+                ("interrupt", "available"),
+            ),
+        )
+
+    monkeypatch.setattr(DaemonClient, "status", backing_off_status)
+
+    by_name = {check.name: check for check in check_runtime()}
+
+    assert by_name["App Server runtime"].status == WARN
+    assert by_name["observation"].status == WARN
+    assert by_name["live control"].status == WARN
+    assert "unavailable while daemon is backing_off" in by_name["live control"].detail
+    assert "last negotiated steer/interrupt available/available" in by_name["live control"].detail
+
+
 def test_runtime_check_reports_reconciled_capability_change(
     homes: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:

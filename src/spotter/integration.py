@@ -687,7 +687,7 @@ class IntegrationManager:
             previous_plugins = existing.legacy_plugins_removed if existing else []
             retained = existing if existing is not None and existing.state != "purged" else None
 
-            def rollback() -> None:
+            def rollback() -> str | None:
                 if hooks_before is None:
                     self.hooks_path.unlink(missing_ok=True)
                 else:
@@ -701,15 +701,37 @@ class IntegrationManager:
                     self.manifest_path.unlink(missing_ok=True)
                 else:
                     _atomic_write(self.manifest_path, manifest_before)
-                if service_was_running and service_attempted:
-                    with suppress(Exception):
-                        asyncio.run(self.service.restart())
-                elif service_preexisting and service_attempted:
-                    with suppress(Exception):
-                        asyncio.run(self.service.stop())
-                elif not service_preexisting and not service_was_running:
-                    with suppress(Exception):
-                        asyncio.run(self.service.uninstall())
+                try:
+                    if service_was_running:
+                        if not service_attempted:
+                            return None
+                        restored = asyncio.run(self.service.restart())
+                        if not restored.available:
+                            return (
+                                "could not restart the previous spotterd runtime: "
+                                f"{restored.detail or restored.health}"
+                            )
+                        if existing is not None and existing.state == "ready":
+                            self._runtime_status(existing.app_server_endpoint)
+                    elif service_preexisting:
+                        if not service_attempted:
+                            return None
+                        stopped = asyncio.run(self.service.stop())
+                        if stopped.available:
+                            return (
+                                "could not restore the previously stopped spotterd state: "
+                                f"{stopped.detail or stopped.health}"
+                            )
+                    else:
+                        removed = asyncio.run(self.service.uninstall())
+                        if removed.available:
+                            return (
+                                "could not remove the newly installed spotterd service: "
+                                f"{removed.detail or removed.health}"
+                            )
+                except Exception as error:
+                    return f"could not restore the previous spotterd runtime: {error}"
+                return None
 
             try:
                 if hooks_before != hooks_after:
@@ -801,12 +823,22 @@ class IntegrationManager:
                 manifest = replace(manifest, state="ready", updated_at=_now())
                 manifest.save(self.manifest_path)
             except Exception as error:
-                rollback()
-                detail = (
-                    redact_app_server_error(error, plan.app_server_endpoint)
-                    if plan.app_server_endpoint is not None
-                    else str(error)
-                )
+                rollback_error = rollback()
+                detail = str(error)
+                endpoints = [
+                    endpoint
+                    for endpoint in (
+                        plan.app_server_endpoint,
+                        existing.app_server_endpoint if existing is not None else None,
+                    )
+                    if endpoint is not None
+                ]
+                for endpoint in dict.fromkeys(endpoints):
+                    detail = redact_app_server_error(detail, endpoint)
+                    if rollback_error is not None:
+                        rollback_error = redact_app_server_error(rollback_error, endpoint)
+                if rollback_error is not None:
+                    detail += f"; rollback incomplete: {rollback_error}"
                 raise IntegrationError(f"setup rolled back: {detail}") from error
             return manifest
         finally:

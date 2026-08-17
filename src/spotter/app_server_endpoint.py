@@ -1,6 +1,6 @@
 """Validation and secret-safe display for Codex App Server endpoints."""
 
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import unquote_plus, urlsplit, urlunsplit
 
 
 class AppServerEndpointError(ValueError):
@@ -54,5 +54,21 @@ def display_app_server_endpoint(endpoint: str) -> str:
 
 
 def redact_app_server_error(error: object, endpoint: str) -> str:
-    """Remove the exact configured endpoint from an exception or status detail."""
-    return str(error).replace(endpoint, display_app_server_endpoint(endpoint))
+    """Remove the endpoint and any raw or decoded query values from diagnostic text."""
+    marker = "\0spotter-app-server-endpoint\0"
+    detail = str(error).replace(endpoint, marker)
+    try:
+        query = urlsplit(endpoint).query
+    except ValueError:
+        query = ""
+    secrets = {
+        candidate
+        for field in query.split("&")
+        if "=" in field
+        for raw_value in [field.partition("=")[2]]
+        for candidate in (raw_value, unquote_plus(raw_value))
+        if candidate
+    }
+    for secret in sorted(secrets, key=len, reverse=True):
+        detail = detail.replace(secret, "<redacted>")
+    return detail.replace(marker, display_app_server_endpoint(endpoint))
