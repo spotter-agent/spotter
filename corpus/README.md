@@ -2,6 +2,13 @@
 
 `dev-v2.toml` is the current harness/supervision tuning set. `validation-v2.toml` is the current frozen held-out split for the first decision-quality measurements. Each contains three disjoint tasks; together they cover localized fixes, missing validation, regression avoidance, evidence inspection, and multi-file contracts. The v1 sets remain immutable for provenance.
 
+`fidelity-validation-v1.toml` is a separate #42 qualification split. Its four
+standard-library-only fixtures cover dependency scheduling, durable JSONL recovery, endpoint
+security policy, and out-of-order trace correlation. It was frozen independently because the
+observed v2 tasks could not be rerun to search for a natural failure. Its first fixed run produced
+four control passes and is now immutable; see the
+[v4 result](../docs/experiments/fork-natural-failure-v4-result.md).
+
 Changing a fixture or task manifest requires a new set version and new hashes; do not rewrite an observed validation set in place. In-place re-freezing is allowed only before the set has been used in a recorded run.
 
 Static freeze validation is safe for untrusted input:
@@ -11,6 +18,7 @@ spotter tasks validate corpus/dev-v1.toml
 spotter tasks validate corpus/validation-v1.toml
 spotter tasks validate corpus/dev-v2.toml
 spotter tasks validate corpus/validation-v2.toml
+spotter tasks validate corpus/fidelity-validation-v1.toml
 ```
 
 Preflight executes the repo-authored setup and scorer commands in temporary fixture copies:
@@ -20,6 +28,7 @@ spotter tasks preflight corpus/dev-v1.toml
 spotter tasks preflight corpus/validation-v1.toml
 spotter tasks preflight corpus/dev-v2.toml
 spotter tasks preflight corpus/validation-v2.toml
+spotter tasks preflight corpus/fidelity-validation-v1.toml
 ```
 
 Run paid control/guidance arms from independent clean fixture copies:

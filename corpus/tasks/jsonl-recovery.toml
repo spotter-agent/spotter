@@ -1,0 +1,85 @@
+task_schema = "spotter.task"
+task_schema_version = 1
+task_id = "fixture/jsonl-recovery-001"
+prompt = "Make the append-only ledger reader accept complete schema-v1 records with or without a final newline, tolerate only an actually torn final record, return the exact safe repair offset, and reject interior corruption, complete corrupt tails, blank records, future schemas, and invalid record identities. Preserve the public ReadResult and read_ledger API."
+
+[source]
+kind = "fixture"
+path = "fixtures/jsonl-recovery"
+sha256 = "7778e8c4251d9f40fc8778b2ce6e8d457b4237717b019c6d7587202c7bb7bb36"
+
+[setup]
+command = "python3 -m compileall -q ."
+timeout_s = 30
+
+[precheck]
+command = "python3 check.py"
+timeout_s = 30
+expected = "failure"
+
+[known_good]
+command = """
+python3 - <<'PY'
+from pathlib import Path
+
+Path("ledger.py").write_text('''import json
+from dataclasses import dataclass
+from pathlib import Path
+
+
+class LedgerError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class ReadResult:
+    records: tuple[dict[str, object], ...]
+    repair_offset: int
+
+
+def read_ledger(path: Path) -> ReadResult:
+    data = path.read_bytes()
+    lines = data.splitlines(keepends=True)
+    records: list[dict[str, object]] = []
+    offset = 0
+    for index, raw in enumerate(lines):
+        complete = raw.endswith(b"\\\\n")
+        content = raw[:-1] if complete else raw
+        if not content:
+            raise LedgerError("blank record")
+        try:
+            decoded = content.decode("utf-8")
+            record = json.loads(decoded)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            if index == len(lines) - 1 and not complete:
+                return ReadResult(tuple(records), offset)
+            raise LedgerError(f"corrupt record at byte {offset}") from error
+        if not isinstance(record, dict):
+            raise LedgerError(f"corrupt record at byte {offset}")
+        if record.get("schema_version") != 1:
+            raise LedgerError("unsupported schema")
+        record_id = record.get("record_id")
+        if not isinstance(record_id, str) or not record_id:
+            raise LedgerError("record_id must be non-empty")
+        records.append(record)
+        offset += len(raw)
+    return ReadResult(tuple(records), len(data))
+''')
+PY
+"""
+timeout_s = 30
+
+[[checks]]
+id = "task-resolution"
+command = "python3 check.py"
+timeout_s = 30
+required = true
+
+[budget]
+wall_time_s = 900
+max_turns = 30
+
+[metadata]
+family = "durable-state-recovery"
+difficulty = "qualification"
+provenance = "Spotter journal-inspired synthetic fixture v1"

@@ -1,0 +1,113 @@
+task_schema = "spotter.task"
+task_schema_version = 1
+task_id = "fixture/trace-correlation-001"
+prompt = "Repair TraceIndex so events correlate by epoch plus item identity, exact duplicate event IDs are idempotent, ID collisions and conflicting terminal outcomes fail without mutation, terminal-before-start state is retained, late starts cannot regress outcomes, and timestamp regressions remain visible. Preserve the Event, Action, TraceConflict, TraceIndex, and ingest APIs."
+
+[source]
+kind = "fixture"
+path = "fixtures/trace-correlation"
+sha256 = "c43f27374e5c61bc889669b51df0d63679e33e324a716ccae747f33fdb4d2861"
+
+[setup]
+command = "python3 -m compileall -q ."
+timeout_s = 30
+
+[precheck]
+command = "python3 check.py"
+timeout_s = 30
+expected = "failure"
+
+[known_good]
+command = """
+python3 - <<'PY'
+from pathlib import Path
+
+Path("trace_index.py").write_text('''from dataclasses import dataclass
+
+
+class TraceConflict(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class Event:
+    event_id: str
+    epoch: int
+    item_id: str
+    kind: str
+    timestamp: int
+    outcome: str | None = None
+
+
+@dataclass(frozen=True)
+class Action:
+    epoch: int
+    item_id: str
+    observed_start: bool
+    outcome: str | None
+    last_timestamp: int
+    out_of_order: bool
+
+
+class TraceIndex:
+    def __init__(self) -> None:
+        self.actions: dict[tuple[int, str], Action] = {}
+        self._events: dict[str, Event] = {}
+
+    def ingest(self, event: Event) -> Action:
+        if event.kind not in {"start", "terminal"}:
+            raise TraceConflict("unsupported event kind")
+        if event.kind == "terminal" and event.outcome is None:
+            raise TraceConflict("terminal outcome is required")
+        previous_event = self._events.get(event.event_id)
+        if previous_event is not None:
+            if previous_event != event:
+                raise TraceConflict("event_id collision")
+            return self.actions[(event.epoch, event.item_id)]
+
+        key = (event.epoch, event.item_id)
+        previous = self.actions.get(key)
+        if (
+            event.kind == "terminal"
+            and previous is not None
+            and previous.outcome is not None
+            and previous.outcome != event.outcome
+        ):
+            raise TraceConflict("conflicting terminal outcome")
+
+        observed_start = event.kind == "start" or bool(previous and previous.observed_start)
+        outcome = previous.outcome if previous is not None else None
+        if event.kind == "terminal":
+            outcome = event.outcome
+        last_timestamp = max(event.timestamp, previous.last_timestamp if previous else event.timestamp)
+        out_of_order = bool(previous and (previous.out_of_order or event.timestamp < previous.last_timestamp))
+        action = Action(
+            event.epoch,
+            event.item_id,
+            observed_start,
+            outcome,
+            last_timestamp,
+            out_of_order,
+        )
+        self._events[event.event_id] = event
+        self.actions[key] = action
+        return action
+''')
+PY
+"""
+timeout_s = 30
+
+[[checks]]
+id = "task-resolution"
+command = "python3 check.py"
+timeout_s = 30
+required = true
+
+[budget]
+wall_time_s = 900
+max_turns = 30
+
+[metadata]
+family = "out-of-order-correlation"
+difficulty = "qualification"
+provenance = "Spotter Trace IR-inspired synthetic fixture v1"

@@ -1,0 +1,100 @@
+task_schema = "spotter.task"
+task_schema_version = 1
+task_id = "fixture/workflow-scheduler-001"
+prompt = "Repair the workflow runner so it validates the full dependency graph before executing, runs ready tasks in stable registration order, blocks transitive dependents after a failure, and continues unrelated work without changing the public Task, Result, or run API."
+
+[source]
+kind = "fixture"
+path = "fixtures/workflow-scheduler"
+sha256 = "8e6a990863b3e9bf9ddacdeffd4064eda3feadbe265c7df045a7ea0ec165d267"
+
+[setup]
+command = "python3 -m compileall -q ."
+timeout_s = 30
+
+[precheck]
+command = "python3 check.py"
+timeout_s = 30
+expected = "failure"
+
+[known_good]
+command = """
+python3 - <<'PY'
+from pathlib import Path
+
+Path("workflow.py").write_text('''from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class Task:
+    name: str
+    requires: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class Result:
+    name: str
+    status: str
+
+
+def _execution_order(tasks: Sequence[Task]) -> list[Task]:
+    by_name: dict[str, Task] = {}
+    for task in tasks:
+        if task.name in by_name:
+            raise ValueError(f"duplicate task: {task.name}")
+        by_name[task.name] = task
+    missing = sorted(
+        dependency
+        for task in tasks
+        for dependency in task.requires
+        if dependency not in by_name
+    )
+    if missing:
+        raise ValueError(f"missing dependency: {missing[0]}")
+
+    remaining = list(tasks)
+    resolved: set[str] = set()
+    order: list[Task] = []
+    while remaining:
+        ready = [task for task in remaining if set(task.requires) <= resolved]
+        if not ready:
+            raise ValueError("dependency cycle")
+        order.extend(ready)
+        resolved.update(task.name for task in ready)
+        ready_names = {task.name for task in ready}
+        remaining = [task for task in remaining if task.name not in ready_names]
+    return order
+
+
+def run(tasks: Sequence[Task], execute: Callable[[str], bool]) -> list[Result]:
+    order = _execution_order(tasks)
+    statuses: dict[str, str] = {}
+    results: list[Result] = []
+    for task in order:
+        if any(statuses[dependency] != "passed" for dependency in task.requires):
+            status = "blocked"
+        else:
+            status = "passed" if execute(task.name) else "failed"
+        statuses[task.name] = status
+        results.append(Result(task.name, status))
+    return results
+''')
+PY
+"""
+timeout_s = 30
+
+[[checks]]
+id = "task-resolution"
+command = "python3 check.py"
+timeout_s = 30
+required = true
+
+[budget]
+wall_time_s = 900
+max_turns = 30
+
+[metadata]
+family = "dependency-ordering"
+difficulty = "qualification"
+provenance = "Spotter runtime-inspired synthetic fixture v1"

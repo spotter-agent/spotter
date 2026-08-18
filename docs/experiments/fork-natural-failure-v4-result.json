@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "protocol": "fork-natural-failure-v4",
+  "protocol_commit": "dc4cd0f",
+  "measured_at": "2026-08-18",
+  "run_id": "904ea6b1-af5d-4790-ad72-a960d9cd11e3",
+  "task_set": {
+    "id": "spotter-fidelity-validation",
+    "version": 1,
+    "sha256": "c033efceb1a8d2a52674267590997afed21dcb2bd57b62c1746ba6a9ec97d84d"
+  },
+  "runtime": {
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "low",
+    "sandbox": "workspace-write",
+    "codex_version": "codex-cli 0.147.0",
+    "python": "3.12.13"
+  },
+  "raw_batch": {
+    "filename": "spotter-fidelity-validation-v1-904ea6b1-af5d-4790-ad72-a960d9cd11e3.jsonl",
+    "sha256": "2ffb64d89b218c12582659fd6aebe5cef0e0405f31699305e8f713631042fdc2",
+    "bytes": 45184,
+    "started_at": "2026-08-18T00:16:13.789754+00:00",
+    "finished_at": "2026-08-18T00:28:26.230343+00:00"
+  },
+  "arms": {
+    "total": 8,
+    "pass": 8,
+    "task_fail": 0,
+    "infrastructure_fail": 0,
+    "setup_fail": 0,
+    "control": {
+      "total": 4,
+      "pass": 4,
+      "task_fail": 0
+    },
+    "guidance": {
+      "total": 4,
+      "pass": 4,
+      "task_fail": 0,
+      "eligible_as_natural_source": false
+    }
+  },
+  "task_results": [
+    {
+      "task_id": "fixture/workflow-scheduler-001",
+      "family": "dependency-ordering",
+      "control": "PASS",
+      "guidance": "PASS"
+    },
+    {
+      "task_id": "fixture/jsonl-recovery-001",
+      "family": "durable-state-recovery",
+      "control": "PASS",
+      "guidance": "PASS"
+    },
+    {
+      "task_id": "fixture/endpoint-policy-001",
+      "family": "security-validation",
+      "control": "PASS",
+      "guidance": "PASS"
+    },
+    {
+      "task_id": "fixture/trace-correlation-001",
+      "family": "out-of-order-correlation",
+      "control": "PASS",
+      "guidance": "PASS"
+    }
+  ],
+  "capture_readiness": {
+    "passed": true,
+    "portable_integration": true,
+    "isolated_homes": true,
+    "integration_generation": "1c2decc1ea8db29350fb82d9c7b4b646a4effcb8449b66d5defd09a8dee4ec44",
+    "setup_build_id": "source",
+    "hook_command_sha256": "d671737e76c7fbe6b6dad0104834a71ceaf82f64c0e36f62e1e03affb2a03060",
+    "config_generation": "cfg-b337cb31971e13c13e4b"
+  },
+  "replay_source_capture": {
+    "requested": 8,
+    "succeeded": 8,
+    "failed": 0
+  },
+  "selection": {
+    "eligible_control_failures": 0,
+    "neutral_forks_started": 0,
+    "stop_rule_applied": true
+  },
+  "calibration": {
+    "control_pass_rate": 1.0,
+    "failure_region_sampled": false,
+    "interpretation": "the fixed synthetic split did not calibrate natural-failure difficulty for this model/config"
+  },
+  "decision": "NO_GO_REPRESENTATIVE_CAUSAL_USE",
+  "issue_42_complete": false
+}

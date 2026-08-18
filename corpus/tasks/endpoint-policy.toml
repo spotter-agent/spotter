@@ -1,0 +1,91 @@
+task_schema = "spotter.task"
+task_schema_version = 1
+task_id = "fixture/endpoint-policy-001"
+prompt = "Harden endpoint canonicalization: accept only HTTPS service URLs, reject credentials, query strings, fragments, invalid hosts or ports, traversal and encoded path separators, preserve path case and non-default ports, canonicalize IPv4/host/IPv6 forms, and deduplicate in first-seen order. Preserve canonicalize_endpoints(values) -> list[str]."
+
+[source]
+kind = "fixture"
+path = "fixtures/endpoint-policy"
+sha256 = "caca5d92c0da299052308d2cdb49c1b38b032d8ed2c83ae10b2e8c36fa546d1e"
+
+[setup]
+command = "python3 -m compileall -q ."
+timeout_s = 30
+
+[precheck]
+command = "python3 check.py"
+timeout_s = 30
+expected = "failure"
+
+[known_good]
+command = """
+python3 - <<'PY'
+from pathlib import Path
+
+Path("endpoints.py").write_text('''from collections.abc import Iterable
+from urllib.parse import unquote, urlsplit
+
+
+class EndpointError(ValueError):
+    pass
+
+
+def _canonicalize(value: str) -> str:
+    raw = value.strip()
+    try:
+        parsed = urlsplit(raw)
+        port = parsed.port
+    except ValueError as error:
+        raise EndpointError("invalid port") from error
+    if parsed.scheme.lower() != "https":
+        raise EndpointError("endpoint must use https")
+    if parsed.username is not None or parsed.password is not None:
+        raise EndpointError("credentials are forbidden")
+    if parsed.query:
+        raise EndpointError("query strings are forbidden")
+    if parsed.fragment:
+        raise EndpointError("fragments are forbidden")
+    host = parsed.hostname
+    if not host or any(character.isspace() for character in host):
+        raise EndpointError("invalid host")
+    if port is not None and not 1 <= port <= 65535:
+        raise EndpointError("invalid port")
+
+    path = parsed.path or "/"
+    lowered = path.lower()
+    if "%2f" in lowered or "%5c" in lowered:
+        raise EndpointError("encoded separator is forbidden")
+    if "\\\\\\\\" in path:
+        raise EndpointError("backslash separator is forbidden")
+    decoded = unquote(path)
+    if any(part in {".", ".."} for part in decoded.split("/")):
+        raise EndpointError("path traversal is forbidden")
+    path = path.rstrip("/") or "/"
+
+    normalized_host = host.lower()
+    rendered_host = f"[{normalized_host}]" if ":" in normalized_host else normalized_host
+    rendered_port = "" if port in {None, 443} else f":{port}"
+    return f"https://{rendered_host}{rendered_port}{path}"
+
+
+def canonicalize_endpoints(values: Iterable[str]) -> list[str]:
+    return list(dict.fromkeys(_canonicalize(value) for value in values))
+''')
+PY
+"""
+timeout_s = 30
+
+[[checks]]
+id = "task-resolution"
+command = "python3 check.py"
+timeout_s = 30
+required = true
+
+[budget]
+wall_time_s = 900
+max_turns = 30
+
+[metadata]
+family = "security-validation"
+difficulty = "qualification"
+provenance = "Spotter endpoint-redaction-inspired synthetic fixture v1"

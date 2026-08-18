@@ -49,11 +49,13 @@ repeat precision.
 | --- | --- | ---: | ---: | ---: |
 | Validation-v2 capture | 3 PASS | 0/6 | 0 | 0 |
 | Development-v2 capture | 3 PASS | 6/6 | 0 | 0 |
+| Fidelity-validation-v1 capture | 4 PASS | 8/8 | 0 | 0 |
 
 The first predeclared capture cohort exposed the missing-readiness bug tracked by #307. After that
-guard landed, the second cohort proved the exact isolated Hook path before model cost and captured a
-source for every arm. Both fixed cohorts had zero control failures, so their stop rules correctly
-started no neutral forks. These rows establish capture coverage, not neutral outcome evidence.
+guard landed, the next two cohorts proved the exact isolated Hook path before model cost and
+captured a source for all 14 arms. All three fixed cohorts had zero control failures, so their stop
+rules correctly started no neutral forks. These rows establish capture coverage and task-family
+breadth, not neutral outcome evidence.
 
 For orientation only, treating repeated pairs as independent Bernoulli observations gives one-sided
 95% zero-event upper bounds of 22.09% for 0/12 and 63.16% for each 0/3 stratum. Those bounds are
@@ -79,7 +81,7 @@ causal deltas:
 - no neutral pair has disagreed, so the failure region remains uncalibrated;
 - the first six final-outcome-failure arms all failed, but their source failure was deliberately
   induced rather than naturally observed;
-- two predeclared capture cohorts added six passing controls but no naturally occurring source
+- three predeclared capture cohorts added ten passing controls but no naturally occurring source
   failure;
 - capture readiness and source coverage now work, but no captured source reaches the natural
   failure region;
@@ -104,4 +106,5 @@ environment-resource/drift cases.
 - [Validation-v2 passing-prefix run](fork-neutral-validation-v2.md)
 - [Predeclared natural-failure capture v2 null result](fork-natural-failure-v2-result.md)
 - [Predeclared natural-failure capture v3 null result](fork-natural-failure-v3-result.md)
+- [Predeclared natural-failure capture v4 null result](fork-natural-failure-v4-result.md)
 - [Machine-readable qualification](fork-fidelity-v1.json)
