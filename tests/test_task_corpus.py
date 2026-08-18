@@ -18,11 +18,13 @@ from spotter.task_corpus import (
     TASK_BATCH_SCHEMA,
     TASK_BATCH_SCHEMA_VERSION,
     TASK_SCHEMA,
+    TASK_SCHEMA_VERSION,
     TASK_SET_SCHEMA,
     PreflightClassification,
     TaskCorpusError,
     file_digest,
     fixture_digest,
+    git_source_digest,
     preflight_task_set,
     run_task_batch,
     summarize_task_batch,
@@ -96,11 +98,102 @@ sha256 = "{file_digest(task)}"
     return task_set
 
 
-def _refreeze_task(root: Path, task_set: Path) -> None:
-    task = root / "tasks" / "parser.toml"
+def _refreeze_task(root: Path, task_set: Path, task_name: str = "parser.toml") -> None:
+    task = root / "tasks" / task_name
     set_text = task_set.read_text()
     old_hash = set_text.split('sha256 = "', 1)[1].split('"', 1)[0]
     task_set.write_text(set_text.replace(old_hash, file_digest(task)))
+
+
+def _git_corpus(root: Path) -> tuple[Path, Path]:
+    upstream = root / "upstream"
+    upstream.mkdir()
+    subprocess.run(("git", "init", "-q"), cwd=upstream, check=True)
+    subprocess.run(("git", "config", "user.name", "Task fixture"), cwd=upstream, check=True)
+    subprocess.run(
+        ("git", "config", "user.email", "fixture@spotter.invalid"),
+        cwd=upstream,
+        check=True,
+    )
+    (upstream / "state.txt").write_text("broken\n")
+    subprocess.run(("git", "add", "state.txt"), cwd=upstream, check=True)
+    subprocess.run(("git", "commit", "-qm", "broken base"), cwd=upstream, check=True)
+    commit = subprocess.run(
+        ("git", "rev-parse", "HEAD"),
+        cwd=upstream,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    tree = subprocess.run(
+        ("git", "rev-parse", "HEAD^{tree}"),
+        cwd=upstream,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    repository = upstream.as_uri()
+
+    task = root / "tasks" / "upstream.toml"
+    task.parent.mkdir()
+    task.write_text(
+        f'''task_schema = "spotter.task"
+task_schema_version = 2
+task_id = "upstream/example-001"
+prompt = "Fix the upstream regression."
+
+[source]
+kind = "git"
+repository = "{repository}"
+commit = "{commit}"
+tree = "{tree}"
+sha256 = "{git_source_digest(repository, commit, tree)}"
+timeout_s = 30
+
+[setup]
+command = "true"
+timeout_s = 30
+
+[precheck]
+command = 'test "$(cat state.txt)" = fixed'
+timeout_s = 30
+expected = "failure"
+
+[known_good]
+command = 'printf "fixed\\n" > state.txt'
+timeout_s = 30
+
+[[checks]]
+id = "task-resolution"
+command = 'test "$(cat state.txt)" = fixed'
+timeout_s = 30
+required = true
+
+[budget]
+wall_time_s = 600
+max_turns = 20
+
+[metadata]
+family = "external-repository"
+difficulty = "dev"
+provenance = "local immutable Git test fixture"
+'''
+    )
+    task_set = root / "git.toml"
+    task_set.write_text(
+        f'''task_set_schema = "spotter.task_set"
+task_set_schema_version = 1
+task_set_id = "spotter-git"
+version = 1
+split = "validation"
+
+[[tasks]]
+task_id = "upstream/example-001"
+manifest = "tasks/upstream.toml"
+sha256 = "{file_digest(task)}"
+'''
+    )
+    return task_set, upstream
 
 
 def test_validates_versioned_task_set_and_cli(
@@ -116,6 +209,74 @@ def test_validates_versioned_task_set_and_cli(
     assert TASK_SCHEMA == "spotter.task" and TASK_SET_SCHEMA == "spotter.task_set"
     assert main(["tasks", "validate", str(path)]) == 0
     assert "validated spotter-dev v1 (dev): 1 task(s)" in capsys.readouterr().out
+
+
+def test_git_source_materializes_pinned_commit_and_preflights(tmp_path: Path) -> None:
+    path, upstream = _git_corpus(tmp_path)
+    (upstream / "state.txt").write_text("fixed in later commit\n")
+    subprocess.run(("git", "add", "state.txt"), cwd=upstream, check=True)
+    subprocess.run(("git", "commit", "-qm", "later state"), cwd=upstream, check=True)
+
+    task_set = validate_task_set(path)
+    _, results = preflight_task_set(path)
+
+    task = task_set.tasks[0]
+    assert TASK_SCHEMA_VERSION == 2
+    assert task.source is None
+    assert task.source_repository == upstream.as_uri()
+    assert results[0].classification == PreflightClassification.READY
+    assert [result.phase for result in results[0].commands] == [
+        "source",
+        "setup",
+        "precheck",
+        "negative:task-resolution",
+        "known_good",
+        "positive:task-resolution",
+    ]
+
+
+def test_git_source_unavailability_is_not_a_task_failure(tmp_path: Path) -> None:
+    path, upstream = _git_corpus(tmp_path)
+    validate_task_set(path)
+    upstream.rename(tmp_path / "moved-upstream")
+
+    _, results = preflight_task_set(path)
+
+    assert results[0].classification == PreflightClassification.SOURCE_FAIL
+    assert [result.phase for result in results[0].commands] == ["source"]
+
+
+def test_git_source_tree_mismatch_fails_before_setup(tmp_path: Path) -> None:
+    path, _ = _git_corpus(tmp_path)
+    task = tmp_path / "tasks" / "upstream.toml"
+    text = task.read_text()
+    repository = text.split('repository = "', 1)[1].split('"', 1)[0]
+    commit = text.split('commit = "', 1)[1].split('"', 1)[0]
+    old_tree = text.split('tree = "', 1)[1].split('"', 1)[0]
+    old_digest = text.split('sha256 = "', 1)[1].split('"', 1)[0]
+    wrong_tree = "0" * 40
+    task.write_text(
+        text.replace(old_tree, wrong_tree).replace(
+            old_digest, git_source_digest(repository, commit, wrong_tree)
+        )
+    )
+    _refreeze_task(tmp_path, path, "upstream.toml")
+
+    validate_task_set(path)
+    _, results = preflight_task_set(path)
+
+    assert results[0].classification == PreflightClassification.SOURCE_FAIL
+    assert "git source tree mismatch" in results[0].commands[0].stderr
+
+
+def test_git_source_requires_current_task_schema(tmp_path: Path) -> None:
+    path, _ = _git_corpus(tmp_path)
+    task = tmp_path / "tasks" / "upstream.toml"
+    task.write_text(task.read_text().replace("task_schema_version = 2", "task_schema_version = 1"))
+    _refreeze_task(tmp_path, path, "upstream.toml")
+
+    with pytest.raises(TaskCorpusError, match="git sources require task_schema_version 2"):
+        validate_task_set(path)
 
 
 def test_legacy_schema_name_less_task_manifests_remain_readable(tmp_path: Path) -> None:

@@ -1763,10 +1763,13 @@ atomic sidecar replacements are fsynced.
 
 Frozen evaluation artifacts use separate `spotter.task`, `spotter.task_set`, and
 `spotter.task_batch` schemas. Released schema-name-less v1 task and set manifests remain readable;
-new bundled manifests declare their identity explicitly. Batch resume validates the complete
-history under its resource lock before preflight or mutation, writes only current records, and
-repairs a validated torn tail through fsync plus atomic replacement. Future, foreign, or corrupt
-history is never truncated or extended.
+new bundled manifests declare their identity explicitly. Task v2 adds immutable Git sources whose
+URL, full commit object, tree object, canonical source digest, and fetch timeout are frozen before
+execution. Static validation remains offline; preflight fetches and verifies the exact commit/tree,
+rejects submodules, and classifies source failures separately before setup or scoring. Batch resume
+validates the complete history under its resource lock before preflight or mutation, writes only
+current records, and repairs a validated torn tail through fsync plus atomic replacement. Future,
+foreign, or corrupt history is never truncated or extended.
 
 Fork lineage metadata uses the independent `spotter.fork_manifest` schema while retaining bounded
 v1-v6 reads. New CREATING, READY, and FAILED states write v6 identity through a locked, fsynced
@@ -1784,7 +1787,7 @@ the same resource lock; future, foreign, or corrupt lineage is never overwritten
 | Intervention opportunities | `spotter.intervention_opportunity` v1 | Read schema-name-less v1 and write current rows | Refuse append |
 | Intervention feedback | `spotter.intervention_feedback` v1 | Read schema-name-less v1 and write current rows | Refuse append |
 | Counterfactual results | `spotter.experiment_result` v3; wrong-nudge persistence and annotation sub-schemas v1 | Read v1-v3, including released version-less completion rows | Refuse append; persistence readers refuse foreign/future sub-schemas |
-| Frozen task manifest | `spotter.task` v1 | Read schema-name-less v1 | Refuse validation/execution |
+| Frozen task manifest | `spotter.task` v2 | Read schema-name-less and named v1 fixture manifests | Refuse validation/execution; v1 cannot declare Git sources |
 | Frozen task-set manifest | `spotter.task_set` v1 | Read schema-name-less v1 | Refuse validation/execution |
 | Frozen task-batch results | `spotter.task_batch` v1 | Read schema-name-less v1; atomically repair only a validated torn tail | Refuse preflight, repair, and append |
 | Fork lineage | `spotter.fork_manifest` v6 | Read v1-v6 with explicit historical coverage defaults | Refuse replacement |

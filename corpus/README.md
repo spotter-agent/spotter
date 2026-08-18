@@ -56,6 +56,33 @@ continuing; batches created with a receipt require an exact match.
 
 Resume refuses changed task-set hashes, environment, guidance, model, or sandbox settings and skips already journaled arms. These synthetic fixtures establish harness behavior. They are not evidence of intervention advantage and do not replace the later executed experiment across a larger heterogeneous corpus.
 
+## Immutable Git sources
+
+Task schema v2 can pin an external repository without vendoring or trusting a moving branch:
+
+```toml
+task_schema = "spotter.task"
+task_schema_version = 2
+
+[source]
+kind = "git"
+repository = "https://github.com/example/project.git"
+commit = "<full 40-hex commit object>"
+tree = "<full 40-hex tree object>"
+sha256 = "<sha256 of git\\0repository\\0commit\\0tree>"
+timeout_s = 120
+```
+
+`spotter tasks validate` checks this identity and the surrounding frozen manifest without network
+access. `spotter tasks preflight` then fetches the exact commit into a temporary repository, verifies
+both `HEAD` and `HEAD^{tree}`, rejects submodules, and only then runs setup and scorer commands. A
+missing remote, fetch timeout, or identity mismatch is `SOURCE_FAIL`; a paid arm that cannot
+materialize the same source is `INFRA_FAIL`, never `TASK_FAIL`. HTTPS URLs are the portable external
+form. Absolute local `file://` URLs are supported for hermetic internal fixtures and tests.
+
+Released schema-v1 fixture manifests remain readable. Git sources require v2 so older Spotter
+versions fail closed instead of treating a remote repository as a local fixture.
+
 ## Wrong-nudge corpus
 
 `wrong-nudges-v1.toml` freezes plausible false guidance for the first #23 susceptibility runs. Each manifest records the false premise, contradictory evidence already available to Main, intended scope, payload version, and expected healthy response. Manifest hashes prevent an observed item from being silently rewritten; corrections require a new corpus version.
