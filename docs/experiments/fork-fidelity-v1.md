@@ -1,6 +1,6 @@
 # Fork fidelity qualification v1
 
-**Measured through:** 2026-08-14
+**Measured through:** 2026-08-18
 
 **Decision:** **NO-GO for representative causal use by #34 or #23**
 
@@ -11,8 +11,8 @@
 
 ## Scope
 
-This report consolidates the historical coverage baseline and fresh identical-arm evidence through
-the validation-v2 run. It is
+This report consolidates the historical coverage baseline, fresh identical-arm evidence, and
+natural-source capture evidence through the development-v2 capture run. It is
 the versioned fidelity artifact downstream experiments can cite instead of assuming replay validity.
 The decision applies to representative causal claims, not to continued development experiments.
 
@@ -43,6 +43,18 @@ and continuations. The induced cohort also changes the source context deliberate
 uses three naturally passing control sources and one pair per prefix, adding breadth rather than
 repeat precision.
 
+## Natural-source capture cohorts
+
+| Cohort | Control outcomes | Captured sources | Eligible natural failures | Neutral forks |
+| --- | --- | ---: | ---: | ---: |
+| Validation-v2 capture | 3 PASS | 0/6 | 0 | 0 |
+| Development-v2 capture | 3 PASS | 6/6 | 0 | 0 |
+
+The first predeclared capture cohort exposed the missing-readiness bug tracked by #307. After that
+guard landed, the second cohort proved the exact isolated Hook path before model cost and captured a
+source for every arm. Both fixed cohorts had zero control failures, so their stop rules correctly
+started no neutral forks. These rows establish capture coverage, not neutral outcome evidence.
+
 For orientation only, treating repeated pairs as independent Bernoulli observations gives one-sided
 95% zero-event upper bounds of 22.09% for 0/12 and 63.16% for each 0/3 stratum. Those bounds are
 **not representative qualification bounds**: some strata repeat prefixes, validation-v2 has only
@@ -67,7 +79,10 @@ causal deltas:
 - no neutral pair has disagreed, so the failure region remains uncalibrated;
 - the first six final-outcome-failure arms all failed, but their source failure was deliberately
   induced rather than naturally observed;
-- validation-v2 added three passing prefixes but no naturally occurring source failure;
+- two predeclared capture cohorts added six passing controls but no naturally occurring source
+  failure;
+- capture readiness and source coverage now work, but no captured source reaches the natural
+  failure region;
 - the fresh sample remains a small synthetic Python corpus with repeated task families;
 - the largest stratum lacks persisted effort provenance;
 - undeclared ignored files and environment variables remain explicitly uncaptured.
@@ -88,4 +103,5 @@ environment-resource/drift cases.
 - [Induced final-outcome-failure run](fork-neutral-final-outcome-failure.md)
 - [Validation-v2 passing-prefix run](fork-neutral-validation-v2.md)
 - [Predeclared natural-failure capture v2 null result](fork-natural-failure-v2-result.md)
+- [Predeclared natural-failure capture v3 null result](fork-natural-failure-v3-result.md)
 - [Machine-readable qualification](fork-fidelity-v1.json)
