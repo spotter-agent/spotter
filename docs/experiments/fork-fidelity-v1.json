@@ -97,6 +97,14 @@
       "captured_sources": 6,
       "requested_sources": 6,
       "interpretation": "null failure result; capture readiness and source coverage passed"
+    },
+    {
+      "id": "natural-failure-v4-fidelity-validation",
+      "controls": 4,
+      "control_failures": 0,
+      "captured_sources": 8,
+      "requested_sources": 8,
+      "interpretation": "null failure result; four new task families did not sample the failure region"
     }
   ],
   "errata": [
@@ -110,7 +118,7 @@
     "no neutral disagreement has been observed",
     "legacy effort provenance is unavailable for the 12-pair stratum",
     "the only final-outcome-failure cohort is deliberately induced",
-    "two predeclared capture cohorts added six passing controls but no naturally occurring failure",
+    "three predeclared capture cohorts added ten passing controls but no naturally occurring failure",
     "fresh sample remains a small synthetic Python corpus with repeated task families",
     "undeclared ignored files and environment variables remain explicitly uncaptured"
   ],
