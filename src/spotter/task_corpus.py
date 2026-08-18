@@ -17,6 +17,7 @@ from enum import StrEnum
 from fcntl import LOCK_EX, flock
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from spotter.config import ConfigurationError, resolve_config
 from spotter.doctor import OK, check_integration, check_roundtrip
@@ -26,7 +27,7 @@ from spotter.replay import ReplayError, find_rollout
 from spotter.snapshot import SnapshotError, StepJournal
 
 TASK_SCHEMA = "spotter.task"
-TASK_SCHEMA_VERSION = 1
+TASK_SCHEMA_VERSION = 2
 TASK_SET_SCHEMA = "spotter.task_set"
 TASK_SET_SCHEMA_VERSION = 1
 TASK_BATCH_SCHEMA = "spotter.task_batch"
@@ -54,7 +55,7 @@ class CheckSpec:
 class TaskManifest:
     task_id: str
     path: Path
-    source: Path
+    source: Path | None
     source_sha256: str
     prompt: str
     setup: CommandSpec
@@ -63,6 +64,10 @@ class TaskManifest:
     known_good: CommandSpec | None
     wall_time_s: int
     max_turns: int
+    source_repository: str | None = None
+    source_commit: str | None = None
+    source_tree: str | None = None
+    source_timeout_s: int = 120
 
 
 @dataclass(frozen=True)
@@ -75,6 +80,7 @@ class TaskSetManifest:
 
 class PreflightClassification(StrEnum):
     READY = "READY"
+    SOURCE_FAIL = "SOURCE_FAIL"
     SETUP_FAIL = "SETUP_FAIL"
     TIMEOUT_CHECK = "TIMEOUT_CHECK"
     CHECK_ERROR = "CHECK_ERROR"
@@ -195,6 +201,13 @@ def fixture_digest(path: Path) -> str:
         digest.update(candidate.read_bytes())
         digest.update(b"\0")
     return digest.hexdigest()
+
+
+def git_source_digest(repository: str, commit: str, tree: str) -> str:
+    """Identify an immutable Git source without fetching it during static validation."""
+
+    identity = f"git\0{repository}\0{commit.lower()}\0{tree.lower()}".encode()
+    return hashlib.sha256(identity).hexdigest()
 
 
 def _fixture_walk_error(error: OSError) -> None:
@@ -523,15 +536,16 @@ def _run_task_arm(
     replay_source_session_id: str | None = None
     replay_source_error: str | None = None
     try:
-        try:
-            shutil.copytree(task.source, workspace)
-            setup = _run_command("setup", task.setup, workspace)
-        except OSError as error:
-            setup = CommandResult("setup", None, "", _bounded_output(str(error)))
-
-        if setup.timed_out or setup.returncode != 0:
-            classification = ArmClassification.SETUP_FAIL
+        source = _materialize_task_source(task, workspace)
+        if source.timed_out or source.returncode != 0:
+            setup = source
+            classification = ArmClassification.INFRA_FAIL
         else:
+            setup = _run_command("setup", task.setup, workspace)
+
+        if source.returncode == 0 and (setup.timed_out or setup.returncode != 0):
+            classification = ArmClassification.SETUP_FAIL
+        elif source.returncode == 0:
             if capture_replay_source:
                 replay_source_error = _prepare_replay_repo(workspace)
             if replay_source_error is not None:
@@ -671,23 +685,27 @@ def _prepare_replay_repo(workspace: Path) -> str | None:
         ("git", "config", "--local", "user.name", "Spotter fixture"),
         ("git", "config", "--local", "user.email", "fixture@spotter.invalid"),
         ("git", "add", "-A"),
-        ("git", "commit", "-qm", "fixture baseline"),
     )
     for command in commands:
-        try:
-            completed = subprocess.run(
-                command,
-                cwd=workspace,
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-            )
-        except (OSError, subprocess.SubprocessError) as error:
-            return f"replay-source Git setup failed: {error}"
-        if completed.returncode != 0:
-            detail = (completed.stderr or completed.stdout).strip()
+        result = _run_argv("replay-source", command, workspace, 30)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip()
             return f"replay-source Git setup failed: {detail[:300]}"
+    staged = _run_argv("replay-source", ("git", "diff", "--cached", "--quiet"), workspace, 30)
+    if staged.returncode == 0:
+        return None
+    if staged.returncode != 1:
+        detail = (staged.stderr or staged.stdout).strip()
+        return f"replay-source Git setup failed: {detail[:300]}"
+    committed = _run_argv(
+        "replay-source",
+        ("git", "commit", "-qm", "fixture baseline"),
+        workspace,
+        30,
+    )
+    if committed.returncode != 0:
+        detail = (committed.stderr or committed.stdout).strip()
+        return f"replay-source Git setup failed: {detail[:300]}"
     return None
 
 
@@ -950,26 +968,44 @@ def _codex_version() -> str | None:
 
 def _validate_task(path: Path, corpus_root: Path) -> TaskManifest:
     data = _load_toml(path)
-    _schema_identity(
+    task_schema_version = _schema_identity(
         data,
         "task_schema",
         TASK_SCHEMA,
         "task_schema_version",
         TASK_SCHEMA_VERSION,
         path,
+        supported_old_versions=(1,),
     )
     task_id = _text(data, "task_id", path)
     prompt = _text(data, "prompt", path)
 
     source = _table(data, "source", path)
-    if _text(source, "kind", path) != "fixture":
-        raise TaskCorpusError(f"{path}: source.kind must be fixture")
-    fixture = _contained_path(corpus_root, _text(source, "path", path), path)
-    if not fixture.is_dir():
-        raise TaskCorpusError(f"{path}: fixture source does not exist: {fixture}")
-    source_sha256 = _text(source, "sha256", path)
-    if fixture_digest(fixture) != source_sha256:
-        raise TaskCorpusError(f"{path}: fixture sha256 mismatch")
+    source_kind = _text(source, "kind", path)
+    fixture: Path | None = None
+    source_repository = source_commit = source_tree = None
+    source_timeout_s = 120
+    if source_kind == "fixture":
+        fixture_path = _contained_path(corpus_root, _text(source, "path", path), path)
+        if not fixture_path.is_dir():
+            raise TaskCorpusError(f"{path}: fixture source does not exist: {fixture_path}")
+        source_sha256 = _text(source, "sha256", path)
+        if fixture_digest(fixture_path) != source_sha256:
+            raise TaskCorpusError(f"{path}: fixture sha256 mismatch")
+        fixture = fixture_path
+    elif source_kind == "git":
+        if task_schema_version < 2:
+            raise TaskCorpusError(f"{path}: git sources require task_schema_version 2")
+        source_repository = _git_repository(source, path)
+        source_commit = _git_object_id(source, "commit", path)
+        source_tree = _git_object_id(source, "tree", path)
+        source_timeout_s = _positive_int(source, "timeout_s", path)
+        source_sha256 = _text(source, "sha256", path)
+        expected_source_sha256 = git_source_digest(source_repository, source_commit, source_tree)
+        if source_sha256 != expected_source_sha256:
+            raise TaskCorpusError(f"{path}: git source sha256 mismatch")
+    else:
+        raise TaskCorpusError(f"{path}: source.kind must be fixture or git")
 
     setup = _command(_table(data, "setup", path), path)
     precheck = _table(data, "precheck", path)
@@ -1020,6 +1056,10 @@ def _validate_task(path: Path, corpus_root: Path) -> TaskManifest:
         known_good,
         wall_time_s,
         max_turns,
+        source_repository,
+        source_commit,
+        source_tree,
+        source_timeout_s,
     )
 
 
@@ -1027,11 +1067,89 @@ def _command(data: dict[str, Any], where: object) -> CommandSpec:
     return CommandSpec(_text(data, "command", where), _positive_int(data, "timeout_s", where))
 
 
+def _materialize_task_source(task: TaskManifest, workspace: Path) -> CommandResult:
+    if task.source_repository is None:
+        if task.source is None:
+            return CommandResult("source", None, "", "fixture source path is missing")
+        try:
+            shutil.copytree(task.source, workspace)
+        except OSError as error:
+            return CommandResult("source", None, "", _bounded_output(str(error)))
+        return CommandResult("source", 0, task.source_sha256, "")
+
+    if task.source_commit is None or task.source_tree is None:
+        return CommandResult("source", None, "", "git source identity is incomplete")
+    try:
+        workspace.mkdir(parents=True)
+    except OSError as error:
+        return CommandResult("source", None, "", _bounded_output(str(error)))
+
+    commands = (
+        ("git", "init", "--quiet"),
+        ("git", "remote", "add", "origin", task.source_repository),
+        (
+            "git",
+            "-c",
+            "protocol.file.allow=always",
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--depth=1",
+            "origin",
+            task.source_commit,
+        ),
+        ("git", "checkout", "--quiet", "--detach", "FETCH_HEAD"),
+    )
+    for command in commands:
+        result = _run_argv("source", command, workspace, task.source_timeout_s)
+        if result.timed_out or result.returncode != 0:
+            return result
+
+    head = _run_argv("source", ("git", "rev-parse", "HEAD"), workspace, task.source_timeout_s)
+    if head.timed_out or head.returncode != 0:
+        return head
+    actual_commit = head.stdout.strip().lower()
+    if actual_commit != task.source_commit:
+        return CommandResult(
+            "source",
+            None,
+            actual_commit,
+            f"git source commit mismatch: expected {task.source_commit}",
+        )
+
+    tree = _run_argv(
+        "source", ("git", "rev-parse", "HEAD^{tree}"), workspace, task.source_timeout_s
+    )
+    if tree.timed_out or tree.returncode != 0:
+        return tree
+    actual_tree = tree.stdout.strip().lower()
+    if actual_tree != task.source_tree:
+        return CommandResult(
+            "source",
+            None,
+            actual_tree,
+            f"git source tree mismatch: expected {task.source_tree}",
+        )
+
+    files = _run_argv("source", ("git", "ls-files", "--stage"), workspace, task.source_timeout_s)
+    if files.timed_out or files.returncode != 0:
+        return files
+    if any(line.startswith("160000 ") for line in files.stdout.splitlines()):
+        return CommandResult(
+            "source", None, actual_tree, "git sources with submodules are unsupported"
+        )
+    return CommandResult("source", 0, f"commit={actual_commit} tree={actual_tree}", "")
+
+
 def _preflight_task(task: TaskManifest) -> TaskPreflight:
     results: list[CommandResult] = []
     with tempfile.TemporaryDirectory(prefix="spotter-task-") as scratch:
         workspace = Path(scratch) / "workspace"
-        shutil.copytree(task.source, workspace)
+        source = _materialize_task_source(task, workspace)
+        if task.source_repository is not None or source.returncode != 0:
+            results.append(source)
+        if source.timed_out or source.returncode != 0:
+            return TaskPreflight(task.task_id, PreflightClassification.SOURCE_FAIL, tuple(results))
         setup = _run_command("setup", task.setup, workspace)
         results.append(setup)
         if setup.timed_out or setup.returncode != 0:
@@ -1093,6 +1211,39 @@ def _preflight_task(task: TaskManifest) -> TaskPreflight:
 
 
 _OUTPUT_LIMIT = 4000
+
+
+def _run_argv(phase: str, args: tuple[str, ...], workspace: Path, timeout_s: int) -> CommandResult:
+    try:
+        process = subprocess.Popen(
+            args,
+            cwd=workspace,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+    except OSError as error:
+        return CommandResult(phase, None, "", _bounded_output(str(error)))
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_s)
+    except subprocess.TimeoutExpired as error:
+        with suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+        stdout, stderr = process.communicate()
+        return CommandResult(
+            phase,
+            None,
+            _bounded_output(stdout or error.stdout),
+            _bounded_output(stderr or error.stderr),
+            timed_out=True,
+        )
+    return CommandResult(
+        phase,
+        process.returncode,
+        _bounded_output(stdout),
+        _bounded_output(stderr),
+    )
 
 
 def _run_command(phase: str, spec: CommandSpec, workspace: Path) -> CommandResult:
@@ -1165,15 +1316,19 @@ def _schema_identity(
     version_key: str,
     expected_version: int,
     where: object,
-) -> None:
+    *,
+    supported_old_versions: tuple[int, ...] = (),
+) -> int:
     name = data.get(name_key)
     if name is not None and name != expected_name:
         raise TaskCorpusError(f"{where}: {name_key} must be {expected_name!r}")
     version = data.get(version_key)
     if not isinstance(version, int) or isinstance(version, bool):
         raise TaskCorpusError(f"{where}: {version_key} must be an integer")
-    if version != expected_version:
-        raise TaskCorpusError(f"{where}: {version_key} must be {expected_version}")
+    if version != expected_version and version not in supported_old_versions:
+        supported = ", ".join(str(item) for item in (*supported_old_versions, expected_version))
+        raise TaskCorpusError(f"{where}: {version_key} must be one of {supported}")
+    return version
 
 
 def _table(data: dict[str, Any], key: str, where: object) -> dict[str, Any]:
@@ -1188,6 +1343,27 @@ def _text(data: dict[str, Any], key: str, where: object) -> str:
     if not isinstance(value, str) or not value.strip():
         raise TaskCorpusError(f"{where}: {key} must be non-empty text")
     return value.strip()
+
+
+def _git_repository(data: dict[str, Any], where: object) -> str:
+    repository = _text(data, "repository", where)
+    parsed = urlsplit(repository)
+    if parsed.scheme not in {"https", "file"} or not parsed.path:
+        raise TaskCorpusError(f"{where}: git repository must use an https or file URL")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise TaskCorpusError(f"{where}: git repository URL must not contain credentials or query")
+    if parsed.scheme == "https" and not parsed.netloc:
+        raise TaskCorpusError(f"{where}: git repository https URL requires a host")
+    if parsed.scheme == "file" and (parsed.netloc or not parsed.path.startswith("/")):
+        raise TaskCorpusError(f"{where}: git repository file URL must be local and absolute")
+    return repository
+
+
+def _git_object_id(data: dict[str, Any], key: str, where: object) -> str:
+    value = _text(data, key, where).lower()
+    if len(value) != 40 or any(character not in "0123456789abcdef" for character in value):
+        raise TaskCorpusError(f"{where}: git source {key} must be a full 40-hex object id")
+    return value
 
 
 def _positive_int(data: dict[str, Any], key: str, where: object) -> int:
