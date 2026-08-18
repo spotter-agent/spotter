@@ -1,0 +1,50 @@
+task_schema = "spotter.task"
+task_schema_version = 2
+task_id = "swebench/verified/psf__requests-2931"
+prompt = "Resolve the following upstream issue. The scorer restores the frozen upstream test file, so do not change tests.\n\nRequest with binary payload fails due to calling to_native_string\nIntroduced with https://github.com/kennethreitz/requests/issues/2844\n\n```\nimport requests\nrequests.put(\"http://httpbin.org/put\", data=u\"ööö\".encode(\"utf-8\"))\n```\n\nThis works with 2.8.1, but not with 2.9.\n\n"
+
+[source]
+kind = "git"
+repository = "https://github.com/psf/requests.git"
+commit = "5f7a3a74aab1625c2bb65f643197ee885e3da576"
+tree = "bf39b3a48488c8921c8ef8a6447c4db507f62418"
+sha256 = "1970bfd817b0a20d4ced24ba37942a4fc82b17c62601d59218f72db618858250"
+timeout_s = 300
+
+[setup]
+command = "set -eu\ndocker image inspect docker.io/swebench/sweb.eval.x86_64.psf_1776_requests-2931@sha256:852d3d1ddb3c859675e5bb7d9269cb27c1bf8a6e95965108ad8a38b3495fc1d0 >/dev/null 2>&1 || docker pull docker.io/swebench/sweb.eval.x86_64.psf_1776_requests-2931@sha256:852d3d1ddb3c859675e5bb7d9269cb27c1bf8a6e95965108ad8a38b3495fc1d0\npython3 -c \"import base64, subprocess; subprocess.run(['git', 'apply', '--whitespace=nowarn', '-'], input=base64.b64decode('ZGlmZiAtLWdpdCBhL3Rlc3RfcmVxdWVzdHMucHkgYi90ZXN0X3JlcXVlc3RzLnB5Ci0tLSBhL3Rlc3RfcmVxdWVzdHMucHkKKysrIGIvdGVzdF9yZXF1ZXN0cy5weQpAQCAtMTU3LDYgKzE1NywxMSBAQCBkZWYgdGVzdF9wYXJhbXNfYnl0ZXNfYXJlX2VuY29kZWQoc2VsZik6CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHBhcmFtcz1iJ3Rlc3Q9Zm9vJykucHJlcGFyZSgpCiAgICAgICAgIGFzc2VydCByZXF1ZXN0LnVybCA9PSAnaHR0cDovL2V4YW1wbGUuY29tLz90ZXN0PWZvbycKIAorICAgIGRlZiB0ZXN0X2JpbmFyeV9wdXQoc2VsZik6CisgICAgICAgIHJlcXVlc3QgPSByZXF1ZXN0cy5SZXF1ZXN0KCdQVVQnLCAnaHR0cDovL2V4YW1wbGUuY29tJywKKyAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgZGF0YT11IsO2w7bDtiIuZW5jb2RlKCJ1dGYtOCIpKS5wcmVwYXJlKCkKKyAgICAgICAgYXNzZXJ0IGlzaW5zdGFuY2UocmVxdWVzdC5ib2R5LCBieXRlcykKKwogICAgIGRlZiB0ZXN0X21peGVkX2Nhc2Vfc2NoZW1lX2FjY2VwdGFibGUoc2VsZiwgaHR0cGJpbik6CiAgICAgICAgIHMgPSByZXF1ZXN0cy5TZXNzaW9uKCkKICAgICAgICAgcy5wcm94aWVzID0gZ2V0cHJveGllcygpCg=='), check=True)\""
+timeout_s = 1800
+
+[precheck]
+command = "set -eu\ngit checkout 5f7a3a74aab1625c2bb65f643197ee885e3da576 -- test_requests.py\npython3 -c \"import base64, subprocess; subprocess.run(['git', 'apply', '--whitespace=nowarn', '-'], input=base64.b64decode('ZGlmZiAtLWdpdCBhL3Rlc3RfcmVxdWVzdHMucHkgYi90ZXN0X3JlcXVlc3RzLnB5Ci0tLSBhL3Rlc3RfcmVxdWVzdHMucHkKKysrIGIvdGVzdF9yZXF1ZXN0cy5weQpAQCAtMTU3LDYgKzE1NywxMSBAQCBkZWYgdGVzdF9wYXJhbXNfYnl0ZXNfYXJlX2VuY29kZWQoc2VsZik6CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHBhcmFtcz1iJ3Rlc3Q9Zm9vJykucHJlcGFyZSgpCiAgICAgICAgIGFzc2VydCByZXF1ZXN0LnVybCA9PSAnaHR0cDovL2V4YW1wbGUuY29tLz90ZXN0PWZvbycKIAorICAgIGRlZiB0ZXN0X2JpbmFyeV9wdXQoc2VsZik6CisgICAgICAgIHJlcXVlc3QgPSByZXF1ZXN0cy5SZXF1ZXN0KCdQVVQnLCAnaHR0cDovL2V4YW1wbGUuY29tJywKKyAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgZGF0YT11IsO2w7bDtiIuZW5jb2RlKCJ1dGYtOCIpKS5wcmVwYXJlKCkKKyAgICAgICAgYXNzZXJ0IGlzaW5zdGFuY2UocmVxdWVzdC5ib2R5LCBieXRlcykKKwogICAgIGRlZiB0ZXN0X21peGVkX2Nhc2Vfc2NoZW1lX2FjY2VwdGFibGUoc2VsZiwgaHR0cGJpbik6CiAgICAgICAgIHMgPSByZXF1ZXN0cy5TZXNzaW9uKCkKICAgICAgICAgcy5wcm94aWVzID0gZ2V0cHJveGllcygpCg=='), check=True)\"\ndocker run --rm --platform linux/amd64 --volume \"$PWD:/testbed\" docker.io/swebench/sweb.eval.x86_64.psf_1776_requests-2931@sha256:852d3d1ddb3c859675e5bb7d9269cb27c1bf8a6e95965108ad8a38b3495fc1d0 bash -lc 'source /opt/miniconda3/bin/activate && conda activate testbed && cd /testbed && git config --global --add safe.directory /testbed && python -m pip install . >/tmp/spotter-pip-install.log && pytest -q test_requests.py'"
+timeout_s = 1200
+expected = "failure"
+
+[known_good]
+command = "set -eu\npython3 -c \"import base64, subprocess; subprocess.run(['git', 'apply', '--whitespace=nowarn', '-'], input=base64.b64decode('ZGlmZiAtLWdpdCBhL3JlcXVlc3RzL21vZGVscy5weSBiL3JlcXVlc3RzL21vZGVscy5weQotLS0gYS9yZXF1ZXN0cy9tb2RlbHMucHkKKysrIGIvcmVxdWVzdHMvbW9kZWxzLnB5CkBAIC04MSw3ICs4MSw3IEBAIGRlZiBfZW5jb2RlX3BhcmFtcyhkYXRhKToKICAgICAgICAgIiIiCiAKICAgICAgICAgaWYgaXNpbnN0YW5jZShkYXRhLCAoc3RyLCBieXRlcykpOgotICAgICAgICAgICAgcmV0dXJuIHRvX25hdGl2ZV9zdHJpbmcoZGF0YSkKKyAgICAgICAgICAgIHJldHVybiBkYXRhCiAgICAgICAgIGVsaWYgaGFzYXR0cihkYXRhLCAncmVhZCcpOgogICAgICAgICAgICAgcmV0dXJuIGRhdGEKICAgICAgICAgZWxpZiBoYXNhdHRyKGRhdGEsICdfX2l0ZXJfXycpOgpAQCAtMzg1LDYgKzM4NSw5IEBAIGRlZiBwcmVwYXJlX3VybChzZWxmLCB1cmwsIHBhcmFtcyk6CiAgICAgICAgICAgICBpZiBpc2luc3RhbmNlKGZyYWdtZW50LCBzdHIpOgogICAgICAgICAgICAgICAgIGZyYWdtZW50ID0gZnJhZ21lbnQuZW5jb2RlKCd1dGYtOCcpCiAKKyAgICAgICAgaWYgaXNpbnN0YW5jZShwYXJhbXMsIChzdHIsIGJ5dGVzKSk6CisgICAgICAgICAgICBwYXJhbXMgPSB0b19uYXRpdmVfc3RyaW5nKHBhcmFtcykKKwogICAgICAgICBlbmNfcGFyYW1zID0gc2VsZi5fZW5jb2RlX3BhcmFtcyhwYXJhbXMpCiAgICAgICAgIGlmIGVuY19wYXJhbXM6CiAgICAgICAgICAgICBpZiBxdWVyeToK'), check=True)\""
+timeout_s = 120
+
+[[checks]]
+id = "swebench-resolution"
+command = "set -eu\ngit checkout 5f7a3a74aab1625c2bb65f643197ee885e3da576 -- test_requests.py\npython3 -c \"import base64, subprocess; subprocess.run(['git', 'apply', '--whitespace=nowarn', '-'], input=base64.b64decode('ZGlmZiAtLWdpdCBhL3Rlc3RfcmVxdWVzdHMucHkgYi90ZXN0X3JlcXVlc3RzLnB5Ci0tLSBhL3Rlc3RfcmVxdWVzdHMucHkKKysrIGIvdGVzdF9yZXF1ZXN0cy5weQpAQCAtMTU3LDYgKzE1NywxMSBAQCBkZWYgdGVzdF9wYXJhbXNfYnl0ZXNfYXJlX2VuY29kZWQoc2VsZik6CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHBhcmFtcz1iJ3Rlc3Q9Zm9vJykucHJlcGFyZSgpCiAgICAgICAgIGFzc2VydCByZXF1ZXN0LnVybCA9PSAnaHR0cDovL2V4YW1wbGUuY29tLz90ZXN0PWZvbycKIAorICAgIGRlZiB0ZXN0X2JpbmFyeV9wdXQoc2VsZik6CisgICAgICAgIHJlcXVlc3QgPSByZXF1ZXN0cy5SZXF1ZXN0KCdQVVQnLCAnaHR0cDovL2V4YW1wbGUuY29tJywKKyAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgZGF0YT11IsO2w7bDtiIuZW5jb2RlKCJ1dGYtOCIpKS5wcmVwYXJlKCkKKyAgICAgICAgYXNzZXJ0IGlzaW5zdGFuY2UocmVxdWVzdC5ib2R5LCBieXRlcykKKwogICAgIGRlZiB0ZXN0X21peGVkX2Nhc2Vfc2NoZW1lX2FjY2VwdGFibGUoc2VsZiwgaHR0cGJpbik6CiAgICAgICAgIHMgPSByZXF1ZXN0cy5TZXNzaW9uKCkKICAgICAgICAgcy5wcm94aWVzID0gZ2V0cHJveGllcygpCg=='), check=True)\"\ndocker run --rm --platform linux/amd64 --volume \"$PWD:/testbed\" docker.io/swebench/sweb.eval.x86_64.psf_1776_requests-2931@sha256:852d3d1ddb3c859675e5bb7d9269cb27c1bf8a6e95965108ad8a38b3495fc1d0 bash -lc 'source /opt/miniconda3/bin/activate && conda activate testbed && cd /testbed && git config --global --add safe.directory /testbed && python -m pip install . >/tmp/spotter-pip-install.log && pytest -q test_requests.py'"
+timeout_s = 1200
+required = true
+
+[budget]
+wall_time_s = 1800
+max_turns = 30
+
+[metadata]
+family = "external-repository"
+difficulty = "15 min - 1 hour"
+provenance = "SWE-bench Verified @78f471bf655a3137b2e8a75af1501690ec009ec3"
+upstream_task_id = "psf__requests-2931"
+dataset_revision = "78f471bf655a3137b2e8a75af1501690ec009ec3"
+dataset_parquet_sha256 = "030cfd7f2a704c4c0226e7f104c725a3b41230b1d3517f9c915ad7ea5be3fa25"
+dataset_row_sha256 = "dce0cd3907eb1743334a2260c1c619d7cd1d66384212344176f3da924b3c98aa"
+environment_setup_commit = "bbeb0001cdc657ac8c7fef98e154229bc392db0e"
+test_patch_sha256 = "65b4e814631a631933cbeffa4bc9316c55a90bceeaabf6d08de988c9e9e4ffc7"
+solution_patch_sha256 = "5b5a77408b00928b0380cd6a40ccb53f0cf77b16f040e1743e313883aad104db"
+docker_image = "docker.io/swebench/sweb.eval.x86_64.psf_1776_requests-2931@sha256:852d3d1ddb3c859675e5bb7d9269cb27c1bf8a6e95965108ad8a38b3495fc1d0"
+fail_to_pass = ["test_requests.py::TestRequests::test_binary_put"]
+pass_to_pass_count = 84

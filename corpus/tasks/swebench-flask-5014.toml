@@ -1,0 +1,50 @@
+task_schema = "spotter.task"
+task_schema_version = 2
+task_id = "swebench/verified/pallets__flask-5014"
+prompt = "Resolve the following upstream issue. The scorer restores the frozen upstream test file, so do not change tests.\n\nRequire a non-empty name for Blueprints\nThings do not work correctly if a Blueprint is given an empty name (e.g. #4944).\r\nIt would be helpful if a `ValueError` was raised when trying to do that.\n"
+
+[source]
+kind = "git"
+repository = "https://github.com/pallets/flask.git"
+commit = "7ee9ceb71e868944a46e1ff00b506772a53a4f1d"
+tree = "c3d16a156c9206389b230b2884557c486e871589"
+sha256 = "2347ccbd2a3eba44c918c957d7ec5a0deec5b3a131aeb3f23b282b6b2620d805"
+timeout_s = 300
+
+[setup]
+command = "set -eu\ndocker image inspect docker.io/swebench/sweb.eval.x86_64.pallets_1776_flask-5014@sha256:eaf597005c159361cb8ee26018fb3741b320f331065f0c95726d83ccf2f1fba4 >/dev/null 2>&1 || docker pull docker.io/swebench/sweb.eval.x86_64.pallets_1776_flask-5014@sha256:eaf597005c159361cb8ee26018fb3741b320f331065f0c95726d83ccf2f1fba4\npython3 -c \"import base64, subprocess; subprocess.run(['git', 'apply', '--whitespace=nowarn', '-'], input=base64.b64decode('ZGlmZiAtLWdpdCBhL3Rlc3RzL3Rlc3RfYmx1ZXByaW50cy5weSBiL3Rlc3RzL3Rlc3RfYmx1ZXByaW50cy5weQotLS0gYS90ZXN0cy90ZXN0X2JsdWVwcmludHMucHkKKysrIGIvdGVzdHMvdGVzdF9ibHVlcHJpbnRzLnB5CkBAIC0yNTYsNiArMjU2LDExIEBAIGRlZiB0ZXN0X2RvdHRlZF9uYW1lX25vdF9hbGxvd2VkKGFwcCwgY2xpZW50KToKICAgICAgICAgZmxhc2suQmx1ZXByaW50KCJhcHAudWkiLCBfX25hbWVfXykKIAogCitkZWYgdGVzdF9lbXB0eV9uYW1lX25vdF9hbGxvd2VkKGFwcCwgY2xpZW50KToKKyAgICB3aXRoIHB5dGVzdC5yYWlzZXMoVmFsdWVFcnJvcik6CisgICAgICAgIGZsYXNrLkJsdWVwcmludCgiIiwgX19uYW1lX18pCisKKwogZGVmIHRlc3RfZG90dGVkX25hbWVzX2Zyb21fYXBwKGFwcCwgY2xpZW50KToKICAgICB0ZXN0ID0gZmxhc2suQmx1ZXByaW50KCJ0ZXN0IiwgX19uYW1lX18pCiAK'), check=True)\""
+timeout_s = 1800
+
+[precheck]
+command = "set -eu\ngit checkout 7ee9ceb71e868944a46e1ff00b506772a53a4f1d -- tests/test_blueprints.py\npython3 -c \"import base64, subprocess; subprocess.run(['git', 'apply', '--whitespace=nowarn', '-'], input=base64.b64decode('ZGlmZiAtLWdpdCBhL3Rlc3RzL3Rlc3RfYmx1ZXByaW50cy5weSBiL3Rlc3RzL3Rlc3RfYmx1ZXByaW50cy5weQotLS0gYS90ZXN0cy90ZXN0X2JsdWVwcmludHMucHkKKysrIGIvdGVzdHMvdGVzdF9ibHVlcHJpbnRzLnB5CkBAIC0yNTYsNiArMjU2LDExIEBAIGRlZiB0ZXN0X2RvdHRlZF9uYW1lX25vdF9hbGxvd2VkKGFwcCwgY2xpZW50KToKICAgICAgICAgZmxhc2suQmx1ZXByaW50KCJhcHAudWkiLCBfX25hbWVfXykKIAogCitkZWYgdGVzdF9lbXB0eV9uYW1lX25vdF9hbGxvd2VkKGFwcCwgY2xpZW50KToKKyAgICB3aXRoIHB5dGVzdC5yYWlzZXMoVmFsdWVFcnJvcik6CisgICAgICAgIGZsYXNrLkJsdWVwcmludCgiIiwgX19uYW1lX18pCisKKwogZGVmIHRlc3RfZG90dGVkX25hbWVzX2Zyb21fYXBwKGFwcCwgY2xpZW50KToKICAgICB0ZXN0ID0gZmxhc2suQmx1ZXByaW50KCJ0ZXN0IiwgX19uYW1lX18pCiAK'), check=True)\"\ndocker run --rm --platform linux/amd64 --volume \"$PWD:/testbed\" docker.io/swebench/sweb.eval.x86_64.pallets_1776_flask-5014@sha256:eaf597005c159361cb8ee26018fb3741b320f331065f0c95726d83ccf2f1fba4 bash -lc 'source /opt/miniconda3/bin/activate && conda activate testbed && cd /testbed && git config --global --add safe.directory /testbed && python -m pip install -e . >/tmp/spotter-pip-install.log && pytest -q tests/test_blueprints.py'"
+timeout_s = 1200
+expected = "failure"
+
+[known_good]
+command = "set -eu\npython3 -c \"import base64, subprocess; subprocess.run(['git', 'apply', '--whitespace=nowarn', '-'], input=base64.b64decode('ZGlmZiAtLWdpdCBhL3NyYy9mbGFzay9ibHVlcHJpbnRzLnB5IGIvc3JjL2ZsYXNrL2JsdWVwcmludHMucHkKLS0tIGEvc3JjL2ZsYXNrL2JsdWVwcmludHMucHkKKysrIGIvc3JjL2ZsYXNrL2JsdWVwcmludHMucHkKQEAgLTE5MCw2ICsxOTAsOSBAQCBkZWYgX19pbml0X18oCiAgICAgICAgICAgICByb290X3BhdGg9cm9vdF9wYXRoLAogICAgICAgICApCiAKKyAgICAgICAgaWYgbm90IG5hbWU6CisgICAgICAgICAgICByYWlzZSBWYWx1ZUVycm9yKCInbmFtZScgbWF5IG5vdCBiZSBlbXB0eS4iKQorCiAgICAgICAgIGlmICIuIiBpbiBuYW1lOgogICAgICAgICAgICAgcmFpc2UgVmFsdWVFcnJvcigiJ25hbWUnIG1heSBub3QgY29udGFpbiBhIGRvdCAnLicgY2hhcmFjdGVyLiIpCiAK'), check=True)\""
+timeout_s = 120
+
+[[checks]]
+id = "swebench-resolution"
+command = "set -eu\ngit checkout 7ee9ceb71e868944a46e1ff00b506772a53a4f1d -- tests/test_blueprints.py\npython3 -c \"import base64, subprocess; subprocess.run(['git', 'apply', '--whitespace=nowarn', '-'], input=base64.b64decode('ZGlmZiAtLWdpdCBhL3Rlc3RzL3Rlc3RfYmx1ZXByaW50cy5weSBiL3Rlc3RzL3Rlc3RfYmx1ZXByaW50cy5weQotLS0gYS90ZXN0cy90ZXN0X2JsdWVwcmludHMucHkKKysrIGIvdGVzdHMvdGVzdF9ibHVlcHJpbnRzLnB5CkBAIC0yNTYsNiArMjU2LDExIEBAIGRlZiB0ZXN0X2RvdHRlZF9uYW1lX25vdF9hbGxvd2VkKGFwcCwgY2xpZW50KToKICAgICAgICAgZmxhc2suQmx1ZXByaW50KCJhcHAudWkiLCBfX25hbWVfXykKIAogCitkZWYgdGVzdF9lbXB0eV9uYW1lX25vdF9hbGxvd2VkKGFwcCwgY2xpZW50KToKKyAgICB3aXRoIHB5dGVzdC5yYWlzZXMoVmFsdWVFcnJvcik6CisgICAgICAgIGZsYXNrLkJsdWVwcmludCgiIiwgX19uYW1lX18pCisKKwogZGVmIHRlc3RfZG90dGVkX25hbWVzX2Zyb21fYXBwKGFwcCwgY2xpZW50KToKICAgICB0ZXN0ID0gZmxhc2suQmx1ZXByaW50KCJ0ZXN0IiwgX19uYW1lX18pCiAK'), check=True)\"\ndocker run --rm --platform linux/amd64 --volume \"$PWD:/testbed\" docker.io/swebench/sweb.eval.x86_64.pallets_1776_flask-5014@sha256:eaf597005c159361cb8ee26018fb3741b320f331065f0c95726d83ccf2f1fba4 bash -lc 'source /opt/miniconda3/bin/activate && conda activate testbed && cd /testbed && git config --global --add safe.directory /testbed && python -m pip install -e . >/tmp/spotter-pip-install.log && pytest -q tests/test_blueprints.py'"
+timeout_s = 1200
+required = true
+
+[budget]
+wall_time_s = 1800
+max_turns = 30
+
+[metadata]
+family = "external-repository"
+difficulty = "<15 min fix"
+provenance = "SWE-bench Verified @78f471bf655a3137b2e8a75af1501690ec009ec3"
+upstream_task_id = "pallets__flask-5014"
+dataset_revision = "78f471bf655a3137b2e8a75af1501690ec009ec3"
+dataset_parquet_sha256 = "030cfd7f2a704c4c0226e7f104c725a3b41230b1d3517f9c915ad7ea5be3fa25"
+dataset_row_sha256 = "36d5506b22ede57cf679dd50b44232dc640663dc9fa94f3dad5f9a06760a9c2e"
+environment_setup_commit = "182ce3dd15dfa3537391c3efaf9c3ff407d134d4"
+test_patch_sha256 = "e16f06b260b5169a49397e9d571b5af70317cd23792e1437232fabf718fe8871"
+solution_patch_sha256 = "087d51d66413bfa35111ac0eca31f1db1636572702cfd967c428049b453f451d"
+docker_image = "docker.io/swebench/sweb.eval.x86_64.pallets_1776_flask-5014@sha256:eaf597005c159361cb8ee26018fb3741b320f331065f0c95726d83ccf2f1fba4"
+fail_to_pass = ["tests/test_blueprints.py::test_empty_name_not_allowed"]
+pass_to_pass_count = 59

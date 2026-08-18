@@ -419,6 +419,22 @@ def test_repo_corpus_is_frozen_and_preflight_ready(name: str, expected_tasks: in
     assert all(result.classification == PreflightClassification.READY for result in results)
 
 
+def test_repo_external_corpus_is_statically_frozen_without_network() -> None:
+    path = Path(__file__).parents[1] / "corpus" / "swebench-verified-fidelity-v1.toml"
+
+    task_set = validate_task_set(path)
+
+    assert task_set.split == "validation"
+    assert [task.task_id for task in task_set.tasks] == [
+        "swebench/verified/pallets__flask-5014",
+        "swebench/verified/psf__requests-2931",
+        "swebench/verified/pytest-dev__pytest-10356",
+        "swebench/verified/pylint-dev__pylint-8898",
+    ]
+    assert all(task.source is None for task in task_set.tasks)
+    assert all(task.source_repository is not None for task in task_set.tasks)
+
+
 def test_repo_v2_dev_and_validation_tasks_are_disjoint() -> None:
     corpus = Path(__file__).parents[1] / "corpus"
     dev = validate_task_set(corpus / "dev-v2.toml")
