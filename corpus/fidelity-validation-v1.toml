@@ -1,0 +1,25 @@
+task_set_schema = "spotter.task_set"
+task_set_schema_version = 1
+task_set_id = "spotter-fidelity-validation"
+version = 1
+split = "validation"
+
+[[tasks]]
+task_id = "fixture/workflow-scheduler-001"
+manifest = "tasks/workflow-scheduler.toml"
+sha256 = "730d337f4faa7e47b6a2b06fc2b31512e4223bde8860dc500a16a5a2f6527402"
+
+[[tasks]]
+task_id = "fixture/jsonl-recovery-001"
+manifest = "tasks/jsonl-recovery.toml"
+sha256 = "7df728900206b13a754624ecb066ee52b7c1083e3682aff0a8018c22034ba744"
+
+[[tasks]]
+task_id = "fixture/endpoint-policy-001"
+manifest = "tasks/endpoint-policy.toml"
+sha256 = "9aa631effae3a611729c6edceb3cfe2719d8dac319e3eb8fe63e56b20fc35f62"
+
+[[tasks]]
+task_id = "fixture/trace-correlation-001"
+manifest = "tasks/trace-correlation.toml"
+sha256 = "683cd542e8cad1d073e4ca476e6a968e05e09652b4ba711fd528cbf8b894e430"

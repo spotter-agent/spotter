@@ -246,6 +246,7 @@ def test_preflight_classifies_required_check_timeout(tmp_path: Path) -> None:
         ("validation-v1.toml", 1),
         ("dev-v2.toml", 3),
         ("validation-v2.toml", 3),
+        ("fidelity-validation-v1.toml", 4),
     ],
 )
 def test_repo_corpus_is_frozen_and_preflight_ready(name: str, expected_tasks: int) -> None:
@@ -265,6 +266,18 @@ def test_repo_v2_dev_and_validation_tasks_are_disjoint() -> None:
     assert {task.task_id for task in dev.tasks}.isdisjoint(
         task.task_id for task in validation.tasks
     )
+
+
+def test_fidelity_validation_tasks_are_new_and_disjoint() -> None:
+    corpus = Path(__file__).parents[1] / "corpus"
+    fidelity = validate_task_set(corpus / "fidelity-validation-v1.toml")
+    observed = {
+        task.task_id
+        for name in ("dev-v2.toml", "validation-v2.toml")
+        for task in validate_task_set(corpus / name).tasks
+    }
+
+    assert {task.task_id for task in fidelity.tasks}.isdisjoint(observed)
 
 
 def test_task_batch_runs_clean_control_and_guidance_arms(
