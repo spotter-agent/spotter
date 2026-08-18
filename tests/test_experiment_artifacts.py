@@ -37,3 +37,24 @@ def test_natural_failure_v2_null_cohort_keeps_qualification_no_go() -> None:
     assert artifact["replay_source_capture"]["follow_up_issue"] == 307
     assert artifact["decision"] == "NO_GO_REPRESENTATIVE_CAUSAL_USE"
     assert artifact["issue_42_complete"] is False
+
+
+def test_natural_failure_v3_capture_passes_without_relaxing_qualification() -> None:
+    artifact = json.loads(
+        Path("docs/experiments/fork-natural-failure-v3-result.json").read_text(encoding="utf-8")
+    )
+
+    assert artifact["protocol_commit"] == "1002292"
+    assert artifact["arms"]["total"] == 6
+    assert artifact["arms"]["control"] == {"total": 3, "pass": 3, "task_fail": 0}
+    assert artifact["capture_readiness"]["passed"] is True
+    assert artifact["capture_readiness"]["isolated_homes"] is True
+    assert artifact["replay_source_capture"] == {"requested": 6, "succeeded": 6, "failed": 0}
+    assert [row["control"] for row in artifact["task_results"]] == ["PASS", "PASS", "PASS"]
+    assert artifact["selection"] == {
+        "eligible_control_failures": 0,
+        "neutral_forks_started": 0,
+        "stop_rule_applied": True,
+    }
+    assert artifact["decision"] == "NO_GO_REPRESENTATIVE_CAUSAL_USE"
+    assert artifact["issue_42_complete"] is False

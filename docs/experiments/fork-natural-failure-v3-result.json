@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "protocol": "fork-natural-failure-v3",
+  "protocol_commit": "1002292",
+  "measured_at": "2026-08-18",
+  "run_id": "c618d8c5-95db-4ee9-9236-5bc1c7015afc",
+  "task_set": {
+    "id": "spotter-dev",
+    "version": 2,
+    "sha256": "d828672a717cac1c4acb214a127f32e09a0a099b6462d5b0638593d34ace60ff"
+  },
+  "runtime": {
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "low",
+    "sandbox": "workspace-write",
+    "codex_version": "codex-cli 0.147.0",
+    "python": "3.12.13"
+  },
+  "raw_batch": {
+    "filename": "spotter-dev-v2-c618d8c5-95db-4ee9-9236-5bc1c7015afc.jsonl",
+    "sha256": "aea0c866353988c3d6eea38f606ed113e94651a1e5d40935f53e47128661bdd4",
+    "bytes": 34999,
+    "started_at": "2026-08-17T23:58:25.237824+00:00",
+    "finished_at": "2026-08-18T00:03:00.183102+00:00"
+  },
+  "arms": {
+    "total": 6,
+    "pass": 6,
+    "task_fail": 0,
+    "infrastructure_fail": 0,
+    "setup_fail": 0,
+    "control": {
+      "total": 3,
+      "pass": 3,
+      "task_fail": 0
+    },
+    "guidance": {
+      "total": 3,
+      "pass": 3,
+      "task_fail": 0,
+      "eligible_as_natural_source": false
+    }
+  },
+  "task_results": [
+    {
+      "task_id": "fixture/query-parser-001",
+      "family": "localized-bug-fix",
+      "control": "PASS",
+      "guidance": "PASS"
+    },
+    {
+      "task_id": "fixture/settings-validation-001",
+      "family": "missing-validation",
+      "control": "PASS",
+      "guidance": "PASS"
+    },
+    {
+      "task_id": "fixture/cache-regression-001",
+      "family": "regression-avoidance",
+      "control": "PASS",
+      "guidance": "PASS"
+    }
+  ],
+  "capture_readiness": {
+    "passed": true,
+    "portable_integration": true,
+    "isolated_homes": true,
+    "integration_generation": "d8a6575689093303b43cf55eddb535d10443f8140c8d8524d90f6e2dac21244c",
+    "setup_build_id": "source",
+    "hook_command_sha256": "a0b8598636cf1ceff64010a2009eb8228a7f475f348878e60a98f9cee875ba4d",
+    "config_generation": "cfg-b337cb31971e13c13e4b"
+  },
+  "replay_source_capture": {
+    "requested": 6,
+    "succeeded": 6,
+    "failed": 0
+  },
+  "selection": {
+    "eligible_control_failures": 0,
+    "neutral_forks_started": 0,
+    "stop_rule_applied": true
+  },
+  "decision": "NO_GO_REPRESENTATIVE_CAUSAL_USE",
+  "issue_42_complete": false
+}

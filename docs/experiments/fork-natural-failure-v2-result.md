@@ -54,9 +54,9 @@ Spotter was not configured for Codex. `--dangerously-bypass-hook-trust` can bypa
 existing Hook; it cannot install a missing one. The task runner checked capture only after each paid
 arm finished, so the entire batch incurred model execution without producing a replay source.
 
-This is tracked as [#307](https://github.com/spotter-agent/spotter/issues/307), which now blocks the
-next #42 capture attempt. A future capture cohort must not run until the runner can prove the selected
-Codex/Spotter integration and effective `SPOTTER_HOME` before the first paid arm.
+This was tracked as [#307](https://github.com/spotter-agent/spotter/issues/307), which blocked the
+next #42 capture attempt. A future capture cohort was not allowed to run until the runner could prove
+the selected Codex/Spotter integration and effective `SPOTTER_HOME` before the first paid arm.
 
 ## Provenance
 
@@ -81,6 +81,8 @@ This is a valid null result for one predeclared three-task control cohort: no na
 final failure was observed. It does not estimate failure-region replay noise, prove that failures are
 rare, or add representative task-family breadth.
 
-#42 remains open and the v1 `NO_GO` decision remains unchanged. The next attempt is blocked by #307;
-after capture readiness is enforced, #42 still needs naturally occurring final failures, broader
+#42 remains open and the v1 `NO_GO` decision remains unchanged. At measurement time, the next
+attempt was blocked by #307. That guard later closed and the
+[v3 cohort](fork-natural-failure-v3-result.md) passed readiness and captured 6/6 sources, but still
+found no natural control failure. #42 continues to need naturally occurring final failures, broader
 task families, labeled intervention-opportunity coverage, natural drift, and neutral repetitions.

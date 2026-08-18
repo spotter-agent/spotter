@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "qualification_version": "fork-fidelity-v1",
-  "measured_through": "2026-08-14",
+  "measured_through": "2026-08-18",
   "decision": "NO_GO_REPRESENTATIVE_CAUSAL_USE",
   "historical_coverage": {
     "sessions": 8,
@@ -81,6 +81,24 @@
     "external_effect_and_observation_gap_exclusion": false,
     "early_session_baseline": true
   },
+  "source_capture_cohorts": [
+    {
+      "id": "natural-failure-v2-validation",
+      "controls": 3,
+      "control_failures": 0,
+      "captured_sources": 0,
+      "requested_sources": 6,
+      "interpretation": "null failure result; capture unavailable before the #307 guard"
+    },
+    {
+      "id": "natural-failure-v3-development",
+      "controls": 3,
+      "control_failures": 0,
+      "captured_sources": 6,
+      "requested_sources": 6,
+      "interpretation": "null failure result; capture readiness and source coverage passed"
+    }
+  ],
   "errata": [
     {
       "recorded_at": "2026-08-17",
@@ -92,7 +110,7 @@
     "no neutral disagreement has been observed",
     "legacy effort provenance is unavailable for the 12-pair stratum",
     "the only final-outcome-failure cohort is deliberately induced",
-    "validation-v2 added three passing prefixes but no naturally occurring failure",
+    "two predeclared capture cohorts added six passing controls but no naturally occurring failure",
     "fresh sample remains a small synthetic Python corpus with repeated task families",
     "undeclared ignored files and environment variables remain explicitly uncaptured"
   ],
