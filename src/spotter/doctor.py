@@ -544,6 +544,15 @@ def check_runtime(*, deep: bool = False) -> list[Check]:
     endpoint = (
         integration.manifest.app_server_endpoint if integration.manifest is not None else None
     )
+    if endpoint is not None:
+        checks.append(
+            Check(
+                "Codex launch",
+                INFO,
+                "use `spotter codex`; plain `codex` selects an embedded App Server, so "
+                "Spotter observation and live control do not follow that TUI",
+            )
+        )
     if endpoint is not None and daemon.available:
         capability_summary = ", ".join(
             f"{name}={value}" for name, value in (daemon.app_server_capabilities or ())

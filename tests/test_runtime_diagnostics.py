@@ -125,6 +125,20 @@ def test_configured_integration_with_dead_daemon_is_broken_with_local_fallback(
     assert "local fallback" in by_name["enforcement"].detail
 
 
+def test_configured_endpoint_reports_the_supported_codex_launch(
+    homes: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest = replace(_ready_manifest(homes), app_server_endpoint="ws://127.0.0.1:4500")
+    manifest.save(homes[0] / "integrations/codex.json")
+    _daemon_status(monkeypatch, RuntimeHealth.HEALTHY)
+
+    check = {item.name: item for item in check_runtime()}["Codex launch"]
+
+    assert check.status == INFO
+    assert "use `spotter codex`" in check.detail
+    assert "plain `codex` selects an embedded App Server" in check.detail
+
+
 def test_integration_check_detects_duplicate_owned_hooks(homes: tuple[Path, Path]) -> None:
     manifest = _ready_manifest(homes)
     hooks = json.loads(Path(manifest.hooks_file).read_text())
