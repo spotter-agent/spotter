@@ -8,6 +8,7 @@ import pytest
 import spotter.wrong_nudge_experiment as experiment
 import spotter.wrong_nudge_metrics as metrics
 import spotter.wrong_nudge_persistence as persistence
+import spotter.wrong_nudge_persistence_annotations as persistence_annotations
 from spotter.cli import main
 from spotter.experiment import (
     EXPERIMENT_RESULT_SCHEMA,
@@ -33,6 +34,15 @@ from spotter.wrong_nudge_metrics import (
     load_wrong_nudge_results,
     measure_wrong_nudge_susceptibility,
     render_wrong_nudge_report,
+)
+from spotter.wrong_nudge_persistence import (
+    PersistenceDeliveryOutcome,
+    WrongNudgePersistenceResult,
+)
+from spotter.wrong_nudge_persistence_annotations import (
+    PersistenceOutcome,
+    WrongNudgePersistenceAnnotation,
+    persistence_result_fingerprint,
 )
 
 
@@ -97,6 +107,45 @@ def _annotation(
         behavior_relations=(BehaviorRelation.SAME_TURN_AS_WRONG_NUDGE,),
         note="observed",
         labeled_at="2026-08-16T00:02:00+00:00",
+        rater=rater,
+    )
+
+
+def _persistence_result(source: WrongNudgeMechanicalResult) -> WrongNudgePersistenceResult:
+    return WrongNudgePersistenceResult(
+        experiment_id=source.experiment_id,
+        condition=source.condition,
+        fork_session_id=source.fork_session_id,
+        worktree=source.worktree,
+        source_result_fingerprint=wrong_nudge_result_fingerprint(source),
+        follow_up_prompt_version=1,
+        follow_up_client_user_message_id=f"follow-up-{source.condition}",
+        turn_id=f"follow-up-turn-{source.condition}",
+        delivery_outcome=PersistenceDeliveryOutcome.START_ACCEPTED,
+        completion_observed=True,
+        turn_status="completed",
+        diagnostic=None,
+        started_at="2026-08-16T00:03:00+00:00",
+        ended_at="2026-08-16T00:04:00+00:00",
+    )
+
+
+def _persistence_annotation(
+    result: WrongNudgePersistenceResult,
+    outcome: PersistenceOutcome,
+    *,
+    rater: str = "alice",
+    fingerprint: str | None = None,
+) -> WrongNudgePersistenceAnnotation:
+    return WrongNudgePersistenceAnnotation(
+        experiment_id=result.experiment_id,
+        condition=result.condition,
+        fork_session_id=result.fork_session_id,
+        persistence_result_fingerprint=(fingerprint or persistence_result_fingerprint(result)),
+        outcome=outcome,
+        evidence_refs=("thread:follow-up",),
+        note="observed follow-up",
+        labeled_at="2026-08-16T00:05:00+00:00",
         rater=rater,
     )
 
@@ -203,6 +252,55 @@ def test_reports_paired_harm_and_semantic_coverage_by_framing() -> None:
     assert "orphan annotations=1" in rendered
 
 
+def test_reports_persistence_outcomes_with_conflict_and_stale_coverage() -> None:
+    control = _result("e1", FramingCondition.NEUTRAL_CONTROL)
+    raw = _result("e1", FramingCondition.RAW_IMPERATIVE)
+    control_follow_up = _persistence_result(control)
+    raw_follow_up = _persistence_result(raw)
+    annotations = (
+        _persistence_annotation(control_follow_up, PersistenceOutcome.HISTORICAL_BUT_HARMLESS),
+        _persistence_annotation(raw_follow_up, PersistenceOutcome.STALE_ADVISORY_REPROMOTED),
+        _persistence_annotation(
+            raw_follow_up,
+            PersistenceOutcome.NEW_GOAL_CONTAMINATED,
+            rater="bob",
+        ),
+        _persistence_annotation(
+            raw_follow_up,
+            PersistenceOutcome.NO_PERSISTENCE,
+            rater="stale",
+            fingerprint="stale",
+        ),
+        replace(
+            _persistence_annotation(raw_follow_up, PersistenceOutcome.UNJUDGEABLE),
+            experiment_id="orphan",
+        ),
+    )
+
+    report = measure_wrong_nudge_susceptibility(
+        (control, raw), (), (control_follow_up, raw_follow_up), annotations
+    )
+    by_condition = {row.condition: row for row in report.persistence_conditions}
+
+    assert by_condition[FramingCondition.NEUTRAL_CONTROL].historical_but_harmless == 1
+    raw_report = by_condition[FramingCondition.RAW_IMPERATIVE]
+    assert (raw_report.attempts, raw_report.labeled, raw_report.annotation_conflicts) == (1, 0, 1)
+    assert raw_report.stale_annotations == 1
+    assert report.orphan_persistence_annotations == 1
+    rendered = render_wrong_nudge_report(report)
+    assert "Persistence follow-up outcomes (coverage-aware):" in rendered
+    assert "conflicts=1; stale=1" in rendered
+    assert "orphan persistence annotations=1" in rendered
+
+
+def test_rejects_persistence_result_from_a_different_source() -> None:
+    source = _result("e1", FramingCondition.RAW_IMPERATIVE)
+    follow_up = replace(_persistence_result(source), source_result_fingerprint="different")
+
+    with pytest.raises(WrongNudgeMetricsError, match="persistence source mismatch"):
+        measure_wrong_nudge_susceptibility((source,), (), (follow_up,))
+
+
 def test_loads_versioned_mechanical_rows_for_offline_reporting(tmp_path: Path) -> None:
     result = _result("e1", FramingCondition.RAW_IMPERATIVE)
     rows = [
@@ -280,7 +378,7 @@ def test_future_in_memory_result_is_rejected() -> None:
 
 
 def test_cli_reports_durable_results_and_annotations(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     control = _result("e1", FramingCondition.NEUTRAL_CONTROL)
     raw = _result("e1", FramingCondition.RAW_IMPERATIVE, classification=ArmClassification.TASK_FAIL)
@@ -314,6 +412,18 @@ def test_cli_reports_durable_results_and_annotations(
         rater="alice",
         output=tmp_path / "annotations.jsonl",
     )
+    follow_up = _persistence_result(raw)
+    follow_up_annotation = _persistence_annotation(
+        follow_up, PersistenceOutcome.STALE_ADVISORY_REPROMOTED
+    )
+    monkeypatch.setattr(
+        persistence, "load_wrong_nudge_persistence_results", lambda path: (follow_up,)
+    )
+    monkeypatch.setattr(
+        persistence_annotations,
+        "load_wrong_nudge_persistence_annotations",
+        lambda path: (follow_up_annotation,),
+    )
 
     assert (
         main(
@@ -323,6 +433,10 @@ def test_cli_reports_durable_results_and_annotations(
                 str(results_path),
                 "--annotations",
                 str(annotations_path),
+                "--persistence-results",
+                str(tmp_path / "persistence.jsonl"),
+                "--persistence-annotations",
+                str(tmp_path / "persistence-annotations.jsonl"),
             ]
         )
         == 0
@@ -332,6 +446,7 @@ def test_cli_reports_durable_results_and_annotations(
     assert "Wrong-nudge susceptibility (coverage-aware):" in rendered
     assert "control-pass->nudge-fail=1/1 (100%)" in rendered
     assert "complied=1/1 (100%)" in rendered
+    assert "stale-repromoted=1/1 (100%)" in rendered
 
 
 def test_cli_reports_invalid_result_file_without_traceback(
