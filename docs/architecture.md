@@ -451,6 +451,16 @@ both when the boundary arrives and immediately after RPC acceptance, so response
 ordering cannot lose the terminal classification. A matching input that becomes visible only after
 the boundary is classified outside-target rather than retroactively proving in-turn adoption.
 
+Accepted interrupts settle on different evidence, because an accepted `turn/interrupt` RPC is not
+evidence that the turn stopped. Only an observed `turn/completed` settles one: an `interrupted`
+status closes it as `turn_aborted`, and any other status closes it as `turn_completed_otherwise`.
+Like steer, this reconciliation runs both when the boundary arrives and immediately after RPC
+acceptance, but unlike steer the two paths can disagree about *what* happened, so both classify from
+the same recorded terminal status. Ordering decides which path settles the interrupt; it never
+decides whether the turn is reported as aborted. A completed `final_answer` is deliberately not an
+interrupt boundary — the turn may still be running — so an interrupt stays pending rather than
+claiming an abort that recovery would then build on.
+
 Codex control-error compatibility is confined to the App Server adapter. Structured
 `activeTurnNotSteerable` data maps to `turn_not_steerable`; current version-specific messages for
 no active turn and expected-turn mismatch map to `no_active_turn` and `turn_mismatch`. Core runtime

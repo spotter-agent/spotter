@@ -160,6 +160,7 @@ class AppServerRecoveryLoop:
         self._control_requests: dict[str, dict[str, object]] = {}
         self._accepted_controls: dict[str, dict[str, object]] = {}
         self._observed_control_ids: set[str] = set()
+        self._terminal_turn_status: dict[str, str | None] = {}
 
         records = self.ingestor.records()
         self._control_telemetry_ids.update(
@@ -929,9 +930,15 @@ class AppServerRecoveryLoop:
             assert isinstance(control_id, str)
             self._observed_control_ids.add(control_id)
         if record.event.kind == "turn_completed":
+            if record.event.identity is not None and record.event.identity.turn_id is not None:
+                status = record.event.payload.get("status")
+                self._terminal_turn_status[record.event.identity.turn_id.value] = (
+                    status if isinstance(status, str) else None
+                )
             self._reconcile_unobserved_acceptances(
                 record.event, "target_completed_without_observed_input"
             )
+            self._reconcile_interrupt_settlement(record.event)
         elif (
             record.event.kind == "agent_message"
             and record.event.payload.get("phase") == "final_answer"
@@ -1062,6 +1069,33 @@ class AppServerRecoveryLoop:
                 reason_code=reason_code,
             )
 
+    def _reconcile_interrupt_settlement(self, boundary: TraceEvent) -> None:
+        """Settle accepted interrupts against the turn's observed terminal status.
+
+        An accepted `turn/interrupt` RPC is not evidence that the turn stopped:
+        the target can still finish normally, which is a different outcome from
+        an abort and must not be recorded as one.
+        """
+
+        identity = boundary.identity
+        if identity is None or identity.turn_id is None:
+            return
+        outcome, reason_code = _interrupt_settlement(boundary.payload.get("status"))
+        for payload in self._accepted_controls.values():
+            if (
+                payload.get("control_kind") != "interrupt"
+                or payload.get("target_turn_id") != identity.turn_id.value
+                or payload.get("target_connection_epoch") != boundary.connection_epoch
+            ):
+                continue
+            self._record_control_event(
+                "control_terminal",
+                RuntimeControlTarget(identity, boundary.connection_epoch or 0),
+                payload,
+                outcome=outcome,
+                reason_code=reason_code,
+            )
+
     def _reconcile_settled_acceptance(
         self, target: RuntimeControlTarget, payload: Mapping[str, object]
     ) -> None:
@@ -1072,12 +1106,28 @@ class AppServerRecoveryLoop:
             state = self.thread_states.snapshot(identity.thread_id)
         except ThreadStateError:
             return
+        interrupting = payload.get("control_kind") == "interrupt"
         if identity.turn_id in state.execution.completed_turns:
-            reason_code = "target_completed_without_observed_input"
+            if interrupting:
+                # Settled through the same classifier the boundary path uses, so
+                # notification-versus-ACK ordering cannot change the outcome.
+                outcome, reason_code = _interrupt_settlement(
+                    self._terminal_turn_status.get(identity.turn_id.value)
+                )
+            else:
+                outcome = "rpc_accepted_only"
+                reason_code = "target_completed_without_observed_input"
         else:
             terminal_answer = state.execution.terminal_answer
             if terminal_answer is None or terminal_answer.provenance.turn_id != identity.turn_id:
                 return
+            if interrupting:
+                # A final answer is not a terminal turn. An interrupt stays
+                # unsettled until turn_completed says whether the trajectory
+                # actually aborted, because recovery must not start on a turn
+                # that may still be running.
+                return
+            outcome = "rpc_accepted_only"
             reason_code = "terminal_answer_without_observed_input"
         control_id = payload.get("control_id")
         if not isinstance(control_id, str) or control_id in self._observed_control_ids:
@@ -1086,7 +1136,7 @@ class AppServerRecoveryLoop:
             "control_terminal",
             target,
             payload,
-            outcome="rpc_accepted_only",
+            outcome=outcome,
             reason_code=reason_code,
         )
 
@@ -1273,6 +1323,18 @@ def _control_payload(
                 }
             )
     return payload
+
+
+def _interrupt_settlement(turn_status: object) -> tuple[str, str]:
+    """Classify one accepted interrupt from the turn's observed terminal status.
+
+    Both the boundary path and the post-ACK path route through this, so whether
+    the notification or the RPC reply lands first cannot change the outcome.
+    """
+
+    if turn_status == "interrupted":
+        return "turn_aborted", "observed_interrupted_status"
+    return "turn_completed_otherwise", "target_completed_despite_interrupt"
 
 
 def _intervention_id(review_job_id: str) -> str:
