@@ -65,6 +65,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "model": DEFAULT_REVIEWER_MODEL,
         "on_signals": False,
         "deliver_on_signals": False,
+        "shadow_interrupt": False,
         "every_steps": 0,
         "max_per_session": 20,
         "max_per_day": 100,
@@ -80,6 +81,7 @@ CONFIG_ACTIVATION_BOUNDARIES: Mapping[str, ActivationBoundary] = MappingProxyTyp
         "reviewer.model": ActivationBoundary.NEXT_TURN,
         "reviewer.on_signals": ActivationBoundary.HOT,
         "reviewer.deliver_on_signals": ActivationBoundary.NEXT_TURN,
+        "reviewer.shadow_interrupt": ActivationBoundary.NEXT_TURN,
         "reviewer.every_steps": ActivationBoundary.HOT,
         "reviewer.max_per_session": ActivationBoundary.HOT,
         "reviewer.max_per_day": ActivationBoundary.HOT,
@@ -140,6 +142,10 @@ class ReviewerConfig:
     # Live steer delivery is a separate explicit opt-in while intervention
     # benefit/harm evidence is still being collected.
     deliver_on_signals: bool = False
+    # Journal what INTERRUPT would have targeted without sending turn/interrupt.
+    # Independent of deliver_on_signals on purpose: the point is to evaluate the
+    # strong-control rung while live control is still off (#26).
+    shadow_interrupt: bool = False
     # Auto-run the SHADOW reviewer every N tool proposals (0 = off). Off by
     # default: even shadow judgments spend the user's model tokens, and silent
     # spending is not "safe" just because nothing is injected.
@@ -206,6 +212,7 @@ class SpotterConfig:
                 model=_optional_string(reviewer, "model", DEFAULT_REVIEWER_MODEL),
                 on_signals=on_signals,
                 deliver_on_signals=deliver_on_signals,
+                shadow_interrupt=_bool(reviewer, "shadow_interrupt", False),
                 every_steps=_int(reviewer, "every_steps", 0),
                 max_per_session=_int(reviewer, "max_per_session", 20),
                 max_per_day=_int(reviewer, "max_per_day", 100),

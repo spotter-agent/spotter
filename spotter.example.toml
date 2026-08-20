@@ -12,6 +12,7 @@ adapter = "codex"
 model = "default"
 # on_signals = true  # run durable signal jobs asynchronously (spends model tokens)
 # deliver_on_signals = true  # live steer; requires on_signals and observation_only = false
+# shadow_interrupt = true  # journal what INTERRUPT would target; never sends turn/interrupt
 # every_steps = 25  # auto shadow review cadence (0 = off; spends model tokens)
 # Each decision records signal/periodic/manual trigger provenance for cohort comparison.
 # max_per_session = 20   # ceilings on review spend; a cadence without one
