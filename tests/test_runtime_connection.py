@@ -1613,3 +1613,104 @@ def test_restart_does_not_resettle_an_interrupt_that_already_terminated(tmp_path
             await recovered.close()
 
     asyncio.run(scenario())
+
+
+def test_uninterrupted_turns_leave_no_settlement_bookkeeping(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        async def handler(connection: ServerConnection) -> None:
+            await _initialize(connection)
+            listed = await _receive(connection, "thread/list")
+            await _reply(connection, listed, {"data": [{"id": "thread-1"}], "nextCursor": None})
+            read = await _receive(connection, "thread/resume")
+            await _reply(
+                connection,
+                read,
+                {"thread": {"id": "thread-1", "turns": [{"id": "turn-1", "status": "active"}]}},
+            )
+            for number in range(1, 4):
+                await connection.send(
+                    json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "method": "turn/completed",
+                            "params": {
+                                "threadId": "thread-1",
+                                "turn": {"id": f"turn-{number}", "status": "completed"},
+                            },
+                        }
+                    )
+                )
+            await connection.wait_closed()
+
+        async with _server(handler) as endpoint:
+            recovery = AppServerRecoveryLoop(endpoint, tmp_path / "sessions", ThreadStateStore())
+            await recovery.start()
+            await _wait_until(
+                lambda: (
+                    sum(
+                        record.event.kind == "turn_completed"
+                        for record in recovery.ingestor.records()
+                    )
+                    >= 3
+                )
+            )
+
+            # Ordinary observation must not accumulate per-turn state: a daemon
+            # that watches turns for days would otherwise grow without bound to
+            # serve a lookup only in-flight interrupts ever read.
+            assert recovery._terminal_turn_status == {}
+            await recovery.close()
+
+    asyncio.run(scenario())
+
+
+def test_settled_interrupt_releases_its_target_turn_bookkeeping(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        async def handler(connection: ServerConnection) -> None:
+            await _initialize(connection)
+            listed = await _receive(connection, "thread/list")
+            await _reply(connection, listed, {"data": [{"id": "thread-1"}], "nextCursor": None})
+            read = await _receive(connection, "thread/resume")
+            await _reply(
+                connection,
+                read,
+                {"thread": {"id": "thread-1", "turns": [{"id": "turn-1", "status": "active"}]}},
+            )
+            interrupt = await _receive(connection, "turn/interrupt")
+            await _reply(connection, interrupt, {"turnId": "turn-1"})
+            await connection.send(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "turn/completed",
+                        "params": {
+                            "threadId": "thread-1",
+                            "turn": {"id": "turn-1", "status": "interrupted"},
+                        },
+                    }
+                )
+            )
+            await connection.wait_closed()
+
+        async with _server(handler) as endpoint:
+            recovery = AppServerRecoveryLoop(endpoint, tmp_path / "sessions", ThreadStateStore())
+            await recovery.start()
+            await _wait_until(lambda: recovery.state == RecoveryState.READY)
+            state = recovery.thread_states.snapshots()[0]
+            target = RuntimeControlTarget(state.identity, state.connection_epoch or 0)
+
+            await recovery.interrupt(target, control_id="spotter:interrupt:bounded")
+            await _wait_until(
+                lambda: any(
+                    record.event.kind == "control_terminal"
+                    and record.event.payload.get("control_id") == "spotter:interrupt:bounded"
+                    for record in recovery.ingestor.records()
+                )
+            )
+            await recovery.flush_control_telemetry()
+
+            assert recovery._interrupt_target_turns == set()
+            assert recovery._terminal_turn_status == {}
+            await recovery.close()
+
+    asyncio.run(scenario())

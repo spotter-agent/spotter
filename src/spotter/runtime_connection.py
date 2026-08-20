@@ -164,6 +164,7 @@ class AppServerRecoveryLoop:
         self._accepted_controls: dict[str, dict[str, object]] = {}
         self._observed_control_ids: set[str] = set()
         self._terminal_turn_status: dict[str, str | None] = {}
+        self._interrupt_target_turns: set[str] = set()
         self._interrupt_settlement_timeout = interrupt_settlement_timeout
         self._settled_interrupt_ids: set[str] = set()
         self._interrupt_deadlines: dict[str, asyncio.Task[None]] = {}
@@ -219,6 +220,12 @@ class AppServerRecoveryLoop:
                     self._settled_interrupt_ids.add(control_id)
                     pending_interrupts.pop(control_id, None)
         self._pending_interrupt_deadlines = tuple(pending_interrupts.values())
+        # A resumed interrupt still needs its target turn watched, or the status
+        # lookup would be empty for the one boundary it is waiting on.
+        for _, payload in self._pending_interrupt_deadlines:
+            target_turn = payload.get("target_turn_id")
+            if isinstance(target_turn, str) and target_turn:
+                self._interrupt_target_turns.add(target_turn)
         if records:
             self.thread_states.hydrate(records)
             for candidate, trigger in self.signals.hydrate(records):
@@ -455,6 +462,12 @@ class AppServerRecoveryLoop:
 
         if payload.get("intervention_id") == request_id:
             self._control_requests[request_id] = dict(payload)
+        if control_kind == "interrupt":
+            # Registered before the RPC: the boundary can be observed before the
+            # ack, and that is exactly the case the status lookup exists for.
+            target_turn = payload.get("target_turn_id")
+            if isinstance(target_turn, str) and target_turn:
+                self._interrupt_target_turns.add(target_turn)
         self._record_control_event("control_dispatch_started", target, payload)
         try:
             if control_kind == "steer":
@@ -973,10 +986,15 @@ class AppServerRecoveryLoop:
             self._observed_control_ids.add(control_id)
         if record.event.kind == "turn_completed":
             if record.event.identity is not None and record.event.identity.turn_id is not None:
-                status = record.event.payload.get("status")
-                self._terminal_turn_status[record.event.identity.turn_id.value] = (
-                    status if isinstance(status, str) else None
-                )
+                # Only turns an interrupt is waiting on. Remembering every turn a
+                # long-lived daemon ever observes would grow without bound to
+                # serve a lookup that a handful of in-flight interrupts need.
+                turn_value = record.event.identity.turn_id.value
+                if turn_value in self._interrupt_target_turns:
+                    status = record.event.payload.get("status")
+                    self._terminal_turn_status[turn_value] = (
+                        status if isinstance(status, str) else None
+                    )
             self._reconcile_unobserved_acceptances(
                 record.event, "target_completed_without_observed_input"
             )
@@ -1137,6 +1155,21 @@ class AppServerRecoveryLoop:
                 reason_code=reason_code,
             )
 
+    def _release_interrupt_target(self, target_turn: object) -> None:
+        """Forget a turn's terminal status once no interrupt is still waiting on it."""
+
+        if not isinstance(target_turn, str) or not target_turn:
+            return
+        if any(
+            payload.get("control_kind") == "interrupt"
+            and payload.get("target_turn_id") == target_turn
+            and control_id not in self._settled_interrupt_ids
+            for control_id, payload in self._accepted_controls.items()
+        ):
+            return
+        self._interrupt_target_turns.discard(target_turn)
+        self._terminal_turn_status.pop(target_turn, None)
+
     def _settle_interrupt(
         self,
         target: RuntimeControlTarget,
@@ -1154,6 +1187,7 @@ class AppServerRecoveryLoop:
         deadline = self._interrupt_deadlines.pop(control_id, None)
         if deadline is not None and not deadline.done():
             deadline.cancel()
+        self._release_interrupt_target(payload.get("target_turn_id"))
         self._record_control_event(
             "control_terminal",
             target,
