@@ -324,3 +324,61 @@ def test_cli_explains_block_policy_resource_and_safe_remedy(
         )
         == 0
     )
+
+
+@pytest.fixture
+def interrupt_journal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> StepJournal:
+    monkeypatch.setenv("SPOTTER_HOME", str(tmp_path / "home"))
+    sessions = journal_path({"session_id": "probe"}).parent
+    journal = StepJournal(sessions / "app-server-interrupt.jsonl")
+    identity = RuntimeIdentity(
+        ThreadId("thread-9"),
+        TurnId("turn-9"),
+        AttachmentId("attachment-9"),
+        IdentityProvenance("codex", "external-thread", "external-turn"),
+    )
+    # No intervention_id: interrupts inject no advisory input to correlate.
+    control = {
+        "control_id": "spt-int-0123456789ab",
+        "control_kind": "interrupt",
+        "target_turn_id": "turn-9",
+        "target_connection_epoch": 4,
+    }
+    journal.record(TraceEvent("control_dispatch_started", control, identity=identity))
+    journal.record(TraceEvent("control_rpc_accepted", control, identity=identity))
+    journal.record(
+        TraceEvent(
+            "control_terminal",
+            {
+                **control,
+                "outcome": "turn_aborted",
+                "reason_code": "observed_interrupted_status",
+            },
+            identity=identity,
+        )
+    )
+    return journal
+
+
+def test_summary_surfaces_the_interrupt_lifecycle(interrupt_journal: StepJournal) -> None:
+    summary = summarize_interventions(StepJournal.load(interrupt_journal.path))[0]
+
+    assert summary.intervention_id == "spt-int-0123456789ab"
+    assert summary.action == "INTERRUPT"
+    assert summary.status == "TURN_ABORTED"
+    assert summary.status_reason == "observed_interrupted_status"
+    assert summary.thread_id == "thread-9"
+    assert summary.turn_id == "turn-9"
+    assert summary.connection_epoch == 4
+
+
+def test_cli_lists_and_explains_an_interrupt(
+    interrupt_journal: StepJournal, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["interventions"]) == 0
+    listed = capsys.readouterr().out
+    assert "spt-int-0123456789ab  INTERRUPT" in listed
+    assert "TURN_ABORTED" in listed
+
+    assert main(["explain", "--intervention-id", "spt-int-0123456789ab"]) == 0
+    assert "observed_interrupted_status" in capsys.readouterr().out
