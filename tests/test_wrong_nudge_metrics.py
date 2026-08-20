@@ -8,7 +8,6 @@ import pytest
 import spotter.wrong_nudge_experiment as experiment
 import spotter.wrong_nudge_metrics as metrics
 import spotter.wrong_nudge_persistence as persistence
-import spotter.wrong_nudge_persistence_annotations as persistence_annotations
 from spotter.cli import main
 from spotter.experiment import (
     EXPERIMENT_RESULT_SCHEMA,
@@ -36,12 +35,14 @@ from spotter.wrong_nudge_metrics import (
     render_wrong_nudge_report,
 )
 from spotter.wrong_nudge_persistence import (
+    WRONG_NUDGE_PERSISTENCE_SCHEMA_VERSION,
     PersistenceDeliveryOutcome,
     WrongNudgePersistenceResult,
 )
 from spotter.wrong_nudge_persistence_annotations import (
     PersistenceOutcome,
     WrongNudgePersistenceAnnotation,
+    add_wrong_nudge_persistence_annotation,
     persistence_result_fingerprint,
 )
 
@@ -378,7 +379,7 @@ def test_future_in_memory_result_is_rejected() -> None:
 
 
 def test_cli_reports_durable_results_and_annotations(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     control = _result("e1", FramingCondition.NEUTRAL_CONTROL)
     raw = _result("e1", FramingCondition.RAW_IMPERATIVE, classification=ArmClassification.TASK_FAIL)
@@ -413,16 +414,31 @@ def test_cli_reports_durable_results_and_annotations(
         output=tmp_path / "annotations.jsonl",
     )
     follow_up = _persistence_result(raw)
-    follow_up_annotation = _persistence_annotation(
-        follow_up, PersistenceOutcome.STALE_ADVISORY_REPROMOTED
-    )
-    monkeypatch.setattr(
-        persistence, "load_wrong_nudge_persistence_results", lambda path: (follow_up,)
-    )
-    monkeypatch.setattr(
-        persistence_annotations,
-        "load_wrong_nudge_persistence_annotations",
-        lambda path: (follow_up_annotation,),
+    persistence_path = tmp_path / "persistence.jsonl"
+    persistence_rows = [
+        {
+            "schema": EXPERIMENT_RESULT_SCHEMA,
+            "schema_version": EXPERIMENT_RESULT_SCHEMA_VERSION,
+            "result_schema_version": EXPERIMENT_RESULT_SCHEMA_VERSION,
+            "wrong_nudge_persistence_schema_version": WRONG_NUDGE_PERSISTENCE_SCHEMA_VERSION,
+            "follow_up_prompt_version": follow_up.follow_up_prompt_version,
+            "meta": True,
+            "experiment_id": "e1",
+        },
+        {
+            "schema": EXPERIMENT_RESULT_SCHEMA,
+            "schema_version": EXPERIMENT_RESULT_SCHEMA_VERSION,
+            **asdict(follow_up),
+        },
+    ]
+    persistence_path.write_text("".join(json.dumps(row) + "\n" for row in persistence_rows))
+    persistence_annotations_path, _ = add_wrong_nudge_persistence_annotation(
+        follow_up,
+        PersistenceOutcome.STALE_ADVISORY_REPROMOTED,
+        ("thread:follow-up",),
+        "The follow-up reinstated the expired advice.",
+        rater="alice",
+        output=tmp_path / "persistence-annotations.jsonl",
     )
 
     assert (
@@ -434,9 +450,9 @@ def test_cli_reports_durable_results_and_annotations(
                 "--annotations",
                 str(annotations_path),
                 "--persistence-results",
-                str(tmp_path / "persistence.jsonl"),
+                str(persistence_path),
                 "--persistence-annotations",
-                str(tmp_path / "persistence-annotations.jsonl"),
+                str(persistence_annotations_path),
             ]
         )
         == 0
@@ -462,6 +478,43 @@ def test_cli_reports_invalid_result_file_without_traceback(
 def test_cli_requires_report_result_path() -> None:
     with pytest.raises(SystemExit):
         main(["wrong-nudge", "report"])
+
+
+def test_cli_requires_persistence_results_for_persistence_annotations(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "wrong-nudge",
+                "report",
+                "results.jsonl",
+                "--persistence-annotations",
+                "annotations.jsonl",
+            ]
+        )
+
+    assert "--persistence-annotations requires --persistence-results" in capsys.readouterr().err
+
+
+def test_cli_names_report_only_flags_rejected_by_persist(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "wrong-nudge",
+                "persist",
+                "results.jsonl",
+                "--endpoint",
+                "ws://app-server",
+                "--run",
+                "--persistence-results",
+                "persistence.jsonl",
+            ]
+        )
+
+    assert "--persistence-results" in capsys.readouterr().err
 
 
 def test_cli_runs_one_frozen_wrong_nudge_with_explicit_paid_confirmation(
