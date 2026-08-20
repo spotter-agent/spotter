@@ -6,7 +6,7 @@ import pytest
 
 from spotter.config import ReviewerConfig
 from spotter.identity import IdentityProvenance, RuntimeIdentity, ThreadId, TurnId
-from spotter.review_executor import ReviewExecutor
+from spotter.review_executor import ReviewExecutor, ReviewFunction
 from spotter.review_scheduler import ReviewerJob
 from spotter.reviewer import ReviewerDecision
 from spotter.reviewer_input import ReviewerInput
@@ -483,5 +483,119 @@ def test_pending_reviews_use_severity_before_limited_budget(
         assert len(capped) == 1
         assert capped[0].payload["review_job_id"] == "medium"
         assert capped[0].payload["priority"] == 5.0
+
+    asyncio.run(scenario())
+
+
+def _shadow_interrupt_executor(
+    runtime: AppServerRecoveryLoop,
+    reviewer: ReviewFunction,
+    *,
+    shadow_interrupt: bool = True,
+) -> ReviewExecutor:
+    return ReviewExecutor(
+        ReviewerConfig(on_signals=True, shadow_interrupt=shadow_interrupt),
+        runtime.record_review_event,
+        runtime.review_job_is_fresh,
+        reviewer=reviewer,
+    )
+
+
+def test_shadow_interrupt_records_the_exact_target_without_dispatching(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SPOTTER_HOME", str(tmp_path / "home"))
+
+    async def scenario() -> None:
+        runtime = AppServerRecoveryLoop("ws://unused", tmp_path / "sessions", ThreadStateStore())
+
+        async def reviewer(input_: object, model: str) -> tuple[ReviewerDecision, int]:
+            return ReviewerDecision("nudge", "tool_failure_loop", "retrying", 0.9), 5
+
+        executor = _shadow_interrupt_executor(runtime, reviewer)
+        runtime.set_review_job_callback(executor.submit)
+        _trigger(runtime)
+        await executor.drain()
+
+        records = [record.event for record in runtime.ingestor.records()]
+        shadow = next(event for event in records if event.kind == "would_interrupt")
+        assert shadow.payload["cause"] == "spotter_recovery"
+        assert shadow.payload["lifecycle"] == "would_interrupt"
+        assert shadow.payload["would_dispatch"] is True
+        assert shadow.payload["suppressed"] is None
+        assert shadow.payload["target_turn_id"] == "turn-1"
+        assert shadow.payload["target_connection_epoch"] == 1
+        assert shadow.identity is not None
+        assert shadow.identity.thread_id == ThreadId("thread-1")
+        # The whole point of the shadow rung: no control RPC is entered at all,
+        # so Codex never persists its canonical interrupt abort marker.
+        assert not any(event.kind.startswith("control_") for event in records)
+
+    asyncio.run(scenario())
+
+
+def test_shadow_interrupt_suppresses_a_target_that_settled_while_reviewing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SPOTTER_HOME", str(tmp_path / "home"))
+
+    async def scenario() -> None:
+        runtime = AppServerRecoveryLoop("ws://unused", tmp_path / "sessions", ThreadStateStore())
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def reviewer(input_: object, model: str) -> tuple[ReviewerDecision, int]:
+            entered.set()
+            await release.wait()
+            return ReviewerDecision("nudge", "tool_failure_loop", "retrying", 0.9), 5
+
+        executor = _shadow_interrupt_executor(runtime, reviewer)
+        runtime.set_review_job_callback(executor.submit)
+        _trigger(runtime)
+        await entered.wait()
+
+        # The turn answers before the late verdict lands: interrupting here would
+        # abort a turn that already succeeded.
+        runtime._record(
+            _event(
+                "turn-done",
+                "agent_message",
+                {"text": "Done", "phase": "final_answer", "lifecycle": "completed"},
+            )
+        )
+        release.set()
+        await executor.drain()
+
+        records = [record.event for record in runtime.ingestor.records()]
+        shadow = next(event for event in records if event.kind == "would_interrupt")
+        assert shadow.payload["would_dispatch"] is False
+        assert shadow.payload["suppressed"] == "stale_target"
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("shadow_interrupt", "decision"),
+    [(False, "nudge"), (True, "verify")],
+)
+def test_shadow_interrupt_stays_silent_when_off_or_below_the_strong_rung(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, shadow_interrupt: bool, decision: str
+) -> None:
+    monkeypatch.setenv("SPOTTER_HOME", str(tmp_path / "home"))
+
+    async def scenario() -> None:
+        runtime = AppServerRecoveryLoop("ws://unused", tmp_path / "sessions", ThreadStateStore())
+
+        async def reviewer(input_: object, model: str) -> tuple[ReviewerDecision, int]:
+            return ReviewerDecision(decision, "tool_failure_loop", "retrying", 0.9), 5
+
+        executor = _shadow_interrupt_executor(runtime, reviewer, shadow_interrupt=shadow_interrupt)
+        runtime.set_review_job_callback(executor.submit)
+        _trigger(runtime)
+        await executor.drain()
+
+        assert not any(
+            record.event.kind == "would_interrupt" for record in runtime.ingestor.records()
+        )
 
     asyncio.run(scenario())

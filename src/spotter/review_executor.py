@@ -1,6 +1,7 @@
 """Asynchronous shadow execution for durable signal-driven reviewer jobs."""
 
 import asyncio
+import hashlib
 import math
 import time
 from collections.abc import Awaitable, Callable
@@ -232,6 +233,27 @@ class ReviewExecutor:
                 config_generation,
             )
         )
+        if config.shadow_interrupt and decision.decision == "nudge":
+            # Shadow only: never call turn/interrupt here. Codex persists an abort
+            # marker on a real interrupt, so the strong rung stays unsent until
+            # #34/#38 have judged these records.
+            self.record(
+                self._event(
+                    job,
+                    "would_interrupt",
+                    {
+                        "review_job_id": job.job_id,
+                        "interrupt_id": _shadow_interrupt_id(job.job_id),
+                        "cause": "spotter_recovery",
+                        "lifecycle": "would_interrupt",
+                        "target_turn_id": job.target_turn_id.value,
+                        "target_connection_epoch": job.target_connection_epoch,
+                        "would_dispatch": not stale,
+                        "suppressed": "stale_target" if stale else None,
+                    },
+                    config_generation,
+                )
+            )
         if stale or not config.deliver_on_signals or decision.decision not in {"verify", "nudge"}:
             return
         if self.deliver is None:
@@ -288,6 +310,13 @@ class ReviewExecutor:
             connection_epoch=job.target_connection_epoch,
             config_generation=config_generation,
         )
+
+
+def _shadow_interrupt_id(review_job_id: str) -> str:
+    """Namespaced away from the steer intervention ID derived from the same job,
+    so a future live interrupt can never reuse a control ID already spent."""
+
+    return f"spt-int-{hashlib.sha256(review_job_id.encode()).hexdigest()[:12]}"
 
 
 def _spend(spend: Spend) -> dict[str, int]:

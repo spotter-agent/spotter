@@ -1357,6 +1357,7 @@ paths and boundaries, never values.
 | `reviewer.model` | `NEXT_TURN` | A turn must not mix reviewer/model generations |
 | `reviewer.on_signals` | `HOT` | Only future scheduling decisions observe the flag |
 | `reviewer.deliver_on_signals` | `NEXT_TURN` | Delivery policy is pinned for a target turn |
+| `reviewer.shadow_interrupt` | `NEXT_TURN` | One turn must not mix shadow-recovery journaling generations |
 | `reviewer.every_steps` | `HOT` | Only future periodic scheduling decisions change |
 | `reviewer.max_per_session` | `HOT` | Existing spend remains durable; new reservations use the limit |
 | `reviewer.max_per_day` | `HOT` | Existing spend remains durable; new reservations use the limit |

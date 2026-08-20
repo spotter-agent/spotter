@@ -49,6 +49,7 @@ LABELABLE_KINDS = (
     "reviewer_decision",
     "signal_candidate",
     "tool_proposal",
+    "would_interrupt",
 )
 
 
