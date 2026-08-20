@@ -58,8 +58,16 @@ def summarize_interventions(records: Iterable[StepRecord]) -> tuple[Intervention
         elif event.kind == "reviewer_decision" and job_id is not None:
             decisions[job_id] = payload
 
-        intervention_id = _text(payload.get("intervention_id"))
-        if intervention_id is None or not event.kind.startswith("control_"):
+        if not event.kind.startswith("control_"):
+            continue
+        # Interrupts carry no intervention_id — that field is the steer path's
+        # advisory-input correlation — so they are keyed by control_id instead.
+        # Without this the whole interrupt lifecycle is durable but invisible.
+        interrupting = payload.get("control_kind") == "interrupt"
+        intervention_id = _text(payload.get("intervention_id")) or (
+            _text(payload.get("control_id")) if interrupting else None
+        )
+        if intervention_id is None:
             continue
         summary = summaries.get(intervention_id, InterventionSummary(intervention_id))
         job_id = job_id or summary.review_job_id
@@ -71,7 +79,13 @@ def summarize_interventions(records: Iterable[StepRecord]) -> tuple[Intervention
         summaries[intervention_id] = replace(
             summary,
             review_job_id=job_id,
-            action=_upper_text(decision.get("decision")) or summary.action,
+            action=(
+                # An interrupt aborts a trajectory; it never carries the
+                # reviewer's own verdict even when one triggered it.
+                "INTERRUPT"
+                if interrupting
+                else _upper_text(decision.get("decision")) or summary.action
+            ),
             failure_class=_text(decision.get("failure_class")) or summary.failure_class,
             reason=_text(decision.get("reason")) or summary.reason,
             hypothesis=_text(decision.get("hypothesis")) or summary.hypothesis,

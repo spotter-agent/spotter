@@ -232,7 +232,7 @@ def build_parser() -> argparse.ArgumentParser:
             "wrong-nudge: run paid susceptibility arms or report durable results; "
             "status: what Spotter is storing, and whether it is actually running; "
             "doctor: verify supervision end to end (non-zero exit when broken); "
-            "interventions: list recent BLOCK/VERIFY/NUDGE lifecycle records; "
+            "interventions: list recent BLOCK/VERIFY/NUDGE/INTERRUPT lifecycle records; "
             "explain: inspect one intervention with --intervention-id; "
             "feedback: append structured human feedback to an intervention; "
             "effects: list or explicitly resolve external effects for a session; "
@@ -1222,14 +1222,14 @@ def _interventions_main() -> int:
         return 1
     for intervention in interventions:
         print(
-            f"{intervention.intervention_id}  {intervention.action or 'UNKNOWN':8s}  "
-            f"{intervention.status:23s}  thread={intervention.thread_id or 'unknown'} "
+            f"{intervention.intervention_id}  {intervention.action or 'UNKNOWN':9s}  "
+            f"{intervention.status:24s}  thread={intervention.thread_id or 'unknown'} "
             f"turn={intervention.turn_id or 'unknown'}"
         )
     for block in blocks:
         status = "ENFORCED" if block.enforced else "SHADOW"
         print(
-            f"{block.supervision_event_id}  BLOCK     {status:23s}  "
+            f"{block.supervision_event_id}  BLOCK      {status:24s}  "
             f"session={block.session_id or 'unknown'} rule={block.rule or 'unknown'}"
         )
     return 0
