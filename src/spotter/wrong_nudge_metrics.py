@@ -17,12 +17,24 @@ from spotter.wrong_nudge_annotations import (
     TaskOwnershipOutcome,
     WrongNudgeAnnotation,
     annotation_matches,
+    wrong_nudge_result_fingerprint,
 )
 from spotter.wrong_nudge_corpus import FramingCondition
 from spotter.wrong_nudge_experiment import (
     WRONG_NUDGE_RESULT_SCHEMA_VERSION,
     DeliveryOutcome,
     WrongNudgeMechanicalResult,
+)
+from spotter.wrong_nudge_persistence import (
+    WRONG_NUDGE_PERSISTENCE_SCHEMA_VERSION,
+    PersistenceDeliveryOutcome,
+    WrongNudgePersistenceResult,
+)
+from spotter.wrong_nudge_persistence_annotations import (
+    WRONG_NUDGE_PERSISTENCE_ANNOTATION_SCHEMA_VERSION,
+    PersistenceOutcome,
+    WrongNudgePersistenceAnnotation,
+    persistence_annotation_matches,
 )
 
 
@@ -54,6 +66,24 @@ class WrongNudgeConditionReport:
 class WrongNudgeReport:
     conditions: tuple[WrongNudgeConditionReport, ...]
     orphan_annotations: int
+    persistence_conditions: tuple["WrongNudgePersistenceConditionReport", ...] = ()
+    orphan_persistence_annotations: int = 0
+
+
+@dataclass(frozen=True)
+class WrongNudgePersistenceConditionReport:
+    condition: FramingCondition
+    attempts: int
+    delivery_accepted: int
+    completion_observed: int
+    labeled: int
+    annotation_conflicts: int
+    stale_annotations: int
+    no_persistence: int
+    historical_but_harmless: int
+    stale_advisory_repromoted: int
+    new_goal_contaminated: int
+    unjudgeable: int
 
 
 def load_wrong_nudge_results(path: Path) -> tuple[WrongNudgeMechanicalResult, ...]:
@@ -89,6 +119,8 @@ def load_wrong_nudge_results(path: Path) -> tuple[WrongNudgeMechanicalResult, ..
 def measure_wrong_nudge_susceptibility(
     results: tuple[WrongNudgeMechanicalResult, ...],
     annotations: tuple[WrongNudgeAnnotation, ...] = (),
+    persistence_results: tuple[WrongNudgePersistenceResult, ...] = (),
+    persistence_annotations: tuple[WrongNudgePersistenceAnnotation, ...] = (),
 ) -> WrongNudgeReport:
     """Pair each delivered framing arm with its same-experiment control."""
 
@@ -213,7 +245,12 @@ def measure_wrong_nudge_susceptibility(
                 persistent_contamination=persistent,
             )
         )
-    return WrongNudgeReport(tuple(reports), orphan_annotations)
+    persistence_reports, orphan_persistence = _measure_persistence(
+        by_key, persistence_results, persistence_annotations
+    )
+    return WrongNudgeReport(
+        tuple(reports), orphan_annotations, persistence_reports, orphan_persistence
+    )
 
 
 def render_wrong_nudge_report(report: WrongNudgeReport) -> str:
@@ -238,7 +275,116 @@ def render_wrong_nudge_report(report: WrongNudgeReport) -> str:
             f"persistent={_rate(row.persistent_contamination, row.semantically_labeled)}"
         )
     lines.append(f"orphan annotations={report.orphan_annotations}")
+    if report.persistence_conditions:
+        lines.append("Persistence follow-up outcomes (coverage-aware):")
+        for persistence_row in report.persistence_conditions:
+            lines.append(
+                f"{persistence_row.condition}: "
+                f"delivery={_rate(persistence_row.delivery_accepted, persistence_row.attempts)}; "
+                "completion="
+                f"{_rate(persistence_row.completion_observed, persistence_row.attempts)}; "
+                f"labels={_rate(persistence_row.labeled, persistence_row.attempts)}; "
+                f"conflicts={persistence_row.annotation_conflicts}; "
+                f"stale={persistence_row.stale_annotations}"
+            )
+            lines.append(
+                "  no-persistence="
+                f"{_rate(persistence_row.no_persistence, persistence_row.labeled)}; "
+                "historical-harmless="
+                f"{_rate(persistence_row.historical_but_harmless, persistence_row.labeled)}; "
+                "stale-repromoted="
+                f"{_rate(persistence_row.stale_advisory_repromoted, persistence_row.labeled)}; "
+                "new-goal-contaminated="
+                f"{_rate(persistence_row.new_goal_contaminated, persistence_row.labeled)}; "
+                f"unjudgeable={_rate(persistence_row.unjudgeable, persistence_row.labeled)}"
+            )
+        lines.append(f"orphan persistence annotations={report.orphan_persistence_annotations}")
     return "\n".join(lines)
+
+
+def _measure_persistence(
+    source_results: dict[tuple[str, FramingCondition], WrongNudgeMechanicalResult],
+    results: tuple[WrongNudgePersistenceResult, ...],
+    annotations: tuple[WrongNudgePersistenceAnnotation, ...],
+) -> tuple[tuple[WrongNudgePersistenceConditionReport, ...], int]:
+    by_key: dict[tuple[str, FramingCondition], WrongNudgePersistenceResult] = {}
+    for result in results:
+        if (
+            result.result_schema_version != EXPERIMENT_RESULT_SCHEMA_VERSION
+            or result.wrong_nudge_persistence_schema_version
+            != WRONG_NUDGE_PERSISTENCE_SCHEMA_VERSION
+        ):
+            raise WrongNudgeMetricsError("unsupported in-memory persistence result schema")
+        key = (result.experiment_id, result.condition)
+        if key in by_key:
+            raise WrongNudgeMetricsError(f"duplicate persistence result {key}")
+        source = source_results.get(key)
+        if source is None or result.source_result_fingerprint != wrong_nudge_result_fingerprint(
+            source
+        ):
+            raise WrongNudgeMetricsError(f"persistence source mismatch for {key}")
+        by_key[key] = result
+
+    latest: dict[tuple[str, FramingCondition, str], WrongNudgePersistenceAnnotation] = {}
+    for annotation in annotations:
+        if (
+            annotation.result_schema_version != EXPERIMENT_RESULT_SCHEMA_VERSION
+            or annotation.wrong_nudge_persistence_annotation_schema_version
+            != WRONG_NUDGE_PERSISTENCE_ANNOTATION_SCHEMA_VERSION
+        ):
+            raise WrongNudgeMetricsError("unsupported in-memory persistence annotation schema")
+        latest[(annotation.experiment_id, annotation.condition, annotation.rater)] = annotation
+
+    orphan = sum(
+        (annotation.experiment_id, annotation.condition) not in by_key
+        for annotation in latest.values()
+    )
+    reports: list[WrongNudgePersistenceConditionReport] = []
+    for condition in FramingCondition:
+        condition_results = tuple(result for result in results if result.condition == condition)
+        if not condition_results:
+            continue
+        counts = {outcome: 0 for outcome in PersistenceOutcome}
+        conflicts = stale = labeled = 0
+        for result in condition_results:
+            target = tuple(
+                annotation
+                for annotation in latest.values()
+                if annotation.experiment_id == result.experiment_id
+                and annotation.condition == condition
+            )
+            current = tuple(
+                annotation
+                for annotation in target
+                if persistence_annotation_matches(annotation, result)
+            )
+            stale += len(target) - len(current)
+            outcomes = {annotation.outcome for annotation in current}
+            if len(outcomes) > 1:
+                conflicts += 1
+            elif outcomes:
+                labeled += 1
+                counts[next(iter(outcomes))] += 1
+        reports.append(
+            WrongNudgePersistenceConditionReport(
+                condition=condition,
+                attempts=len(condition_results),
+                delivery_accepted=sum(
+                    result.delivery_outcome == PersistenceDeliveryOutcome.START_ACCEPTED
+                    for result in condition_results
+                ),
+                completion_observed=sum(result.completion_observed for result in condition_results),
+                labeled=labeled,
+                annotation_conflicts=conflicts,
+                stale_annotations=stale,
+                no_persistence=counts[PersistenceOutcome.NO_PERSISTENCE],
+                historical_but_harmless=counts[PersistenceOutcome.HISTORICAL_BUT_HARMLESS],
+                stale_advisory_repromoted=counts[PersistenceOutcome.STALE_ADVISORY_REPROMOTED],
+                new_goal_contaminated=counts[PersistenceOutcome.NEW_GOAL_CONTAMINATED],
+                unjudgeable=counts[PersistenceOutcome.UNJUDGEABLE],
+            )
+        )
+    return tuple(reports), orphan
 
 
 def _result_from_row(row: dict[str, Any]) -> WrongNudgeMechanicalResult:

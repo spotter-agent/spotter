@@ -270,6 +270,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="wrong-nudge report: optional annotation JSONL",
     )
+    parser.add_argument(
+        "--persistence-results",
+        type=Path,
+        help="wrong-nudge report: optional persistence result JSONL",
+    )
+    parser.add_argument(
+        "--persistence-annotations",
+        type=Path,
+        help="wrong-nudge report: optional persistence annotation JSONL",
+    )
     parser.add_argument("--task-set", type=Path, help="wrong-nudge run: frozen task-set manifest")
     parser.add_argument("--wrong-nudge-id", help="wrong-nudge run: exact frozen corpus item")
     parser.add_argument(
@@ -664,9 +674,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 parser.error(
                     "wrong-nudge persist requires --run because it executes paid follow-up turns"
                 )
-            if args.annotations or args.task_set or args.wrong_nudge_id:
+            if (
+                args.annotations
+                or args.persistence_results
+                or args.persistence_annotations
+                or args.task_set
+                or args.wrong_nudge_id
+            ):
                 parser.error(
-                    "--annotations, --task-set, and --wrong-nudge-id do not apply to "
+                    "report inputs, --task-set, and --wrong-nudge-id do not apply to "
                     "wrong-nudge persist"
                 )
             if (
@@ -719,8 +735,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "wrong-nudge run requires --task-set, --wrong-nudge-id, --session, --step, "
                     "and --endpoint"
                 )
-            if args.annotations:
-                parser.error("--annotations requires wrong-nudge report")
+            if args.annotations or args.persistence_results or args.persistence_annotations:
+                parser.error("report inputs require wrong-nudge report")
             try:
                 output, wrong_nudge_results = run_wrong_nudge_experiment(
                     Path(args.subject),
@@ -758,6 +774,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             measure_wrong_nudge_susceptibility,
             render_wrong_nudge_report,
         )
+        from spotter.wrong_nudge_persistence import (
+            WrongNudgePersistenceError,
+            load_wrong_nudge_persistence_results,
+        )
+        from spotter.wrong_nudge_persistence_annotations import (
+            WrongNudgePersistenceAnnotationError,
+            load_wrong_nudge_persistence_annotations,
+        )
 
         if args.target != "report" or not args.subject:
             parser.error("wrong-nudge requires run, persist, or report <path>")
@@ -765,15 +789,35 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error("--task-set and --wrong-nudge-id require wrong-nudge run")
         if args.endpoint or args.run:
             parser.error("--endpoint and --run require wrong-nudge run or persist")
+        if args.persistence_annotations and not args.persistence_results:
+            parser.error("--persistence-annotations requires --persistence-results")
         try:
             wrong_nudge_results = load_wrong_nudge_results(Path(args.subject))
             wrong_nudge_annotations = (
                 load_wrong_nudge_annotations(args.annotations) if args.annotations else ()
             )
-            report = measure_wrong_nudge_susceptibility(
-                wrong_nudge_results, wrong_nudge_annotations
+            persistence_results = (
+                load_wrong_nudge_persistence_results(args.persistence_results)
+                if args.persistence_results
+                else ()
             )
-        except (WrongNudgeMetricsError, WrongNudgeAnnotationError) as error:
+            persistence_annotations = (
+                load_wrong_nudge_persistence_annotations(args.persistence_annotations)
+                if args.persistence_annotations
+                else ()
+            )
+            report = measure_wrong_nudge_susceptibility(
+                wrong_nudge_results,
+                wrong_nudge_annotations,
+                persistence_results,
+                persistence_annotations,
+            )
+        except (
+            WrongNudgeMetricsError,
+            WrongNudgeAnnotationError,
+            WrongNudgePersistenceError,
+            WrongNudgePersistenceAnnotationError,
+        ) as error:
             print(f"wrong-nudge report failed: {error}", file=sys.stderr)
             return 1
         print(render_wrong_nudge_report(report))
@@ -785,8 +829,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     if args.resume:
         parser.error("--resume requires tasks run")
-    if args.annotations:
-        parser.error("--annotations requires wrong-nudge report")
+    if args.annotations or args.persistence_results or args.persistence_annotations:
+        parser.error("report inputs require wrong-nudge report")
     if args.task_set or args.wrong_nudge_id or args.endpoint:
         parser.error(
             "--task-set and --wrong-nudge-id require wrong-nudge run; --endpoint requires "
