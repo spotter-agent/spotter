@@ -1219,7 +1219,7 @@ The experiment proved the control premise for Path B. Its harness and recorded r
 ```text
 start/ensure external Codex App Server
       ↓
-codex --remote <endpoint>
+spotter codex
       ↓
 TUI attaches to selected external server
       ↓
@@ -1232,6 +1232,8 @@ turn/steer reaches TUI
 
 Plain `codex` does not auto-discover the separately started server in the current
 documented/source interface. See [App Server connection validation](app-server-validation.md).
+The supported wrapper starts `spotterd`, verifies the configured endpoint, and then executes the
+recorded Codex binary with the explicit `--remote` argument. It does not own or stop the server.
 
 ## Path B — Spotter-managed App Server
 

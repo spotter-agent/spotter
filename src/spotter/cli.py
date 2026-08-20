@@ -200,6 +200,7 @@ def build_parser() -> argparse.ArgumentParser:
             "observability",
             "status",
             "doctor",
+            "codex",
             "interventions",
             "explain",
             "feedback",
@@ -507,8 +508,11 @@ def _load_config(parser: argparse.ArgumentParser, path: Path | None) -> SpotterC
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    raw_args = list(sys.argv[1:] if argv is None else argv)
+    if raw_args and raw_args[0] == "codex":
+        return _codex_main(raw_args[1:])
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw_args)
 
     if args.command == "hook":
         # Config is loaded inside the hook's own fail-open boundary rather than
@@ -1655,6 +1659,42 @@ def _daemon_main(action: str, manager: ServiceManager | None = None) -> int:
     return 0 if status.health == RuntimeHealth.HEALTHY else 1
 
 
+def _codex_main(args: Sequence[str]) -> int:
+    """Launch Codex through Spotter's verified external App Server."""
+    try:
+        manifest = IntegrationManifest.load(RuntimeLayout.discover().integration_manifest)
+    except IntegrationError as error:
+        print(f"Codex launch unavailable: {error}", file=sys.stderr)
+        return 1
+    if manifest is None or manifest.state != "ready":
+        print("Codex launch unavailable: run `spotter setup codex` first", file=sys.stderr)
+        return 1
+    if manifest.app_server_endpoint is None:
+        print(
+            "Codex launch unavailable: rerun setup with --endpoint ws://127.0.0.1:4500",
+            file=sys.stderr,
+        )
+        return 1
+    if "--remote" in args:
+        print("Codex launch unavailable: Spotter supplies --remote", file=sys.stderr)
+        return 1
+    if _daemon_main("start") != 0:
+        return 1
+    observation = next(
+        (check for check in check_runtime(deep=True) if check.name == "observation"), None
+    )
+    if observation is None or observation.status != OK:
+        detail = observation.detail if observation is not None else "probe produced no result"
+        print(f"Codex launch unavailable: {detail}", file=sys.stderr)
+        return 1
+    command = [manifest.agent_path, "--remote", manifest.app_server_endpoint, *args]
+    try:
+        os.execv(manifest.agent_path, command)
+    except OSError as error:
+        print(f"Codex launch failed: {error}", file=sys.stderr)
+        return 1
+
+
 def _update_main(provenance: InstallationProvenance | None = None) -> int:
     """Report the package-owner command; never replace installed files directly."""
 
@@ -1727,12 +1767,7 @@ def _integration_main(
             else:
                 endpoint = display_app_server_endpoint(manifest.app_server_endpoint)
                 print(f"App Server endpoint: verified ({endpoint})")
-                remote = (
-                    endpoint
-                    if endpoint == manifest.app_server_endpoint
-                    else "<configured App Server endpoint>"
-                )
-                print(f"Start the shared Codex TUI: codex --remote {remote}")
+                print("Start the shared Codex TUI: spotter codex")
             return 0
         removed = integration.teardown()
         print("Codex integration removed" if removed else "Codex integration not configured")

@@ -588,9 +588,9 @@ re-running setup heals forward, while teardown cannot remove an unrecorded mutat
 # 5. App Server lifecycle
 
 Explicit endpoint selection and verification are implemented without claiming ownership of another
-client's App Server. The remaining product boundary is making ordinary `codex` select that server
-without hiding which endpoint/process is shared. [#304](https://github.com/spotter-agent/spotter/issues/304)
-owns that launch contract together with concurrent runtime isolation and explicit degraded behavior.
+client's App Server. `spotter codex` starts `spotterd`, verifies that endpoint, and launches the
+recorded Codex binary with explicit remote selection. Plain `codex` remains a visible degraded path.
+[#304](https://github.com/spotter-agent/spotter/issues/304) retains concurrent runtime validation.
 
 ## 5.1 Why startup order matters
 
@@ -756,7 +756,7 @@ Implemented explicit-endpoint flow:
 ```text
 external App Server already reachable
         │
-user runs `codex --remote <endpoint>`
+user runs `spotter codex`
         │
         ▼
 TUI attaches to server
@@ -1885,12 +1885,14 @@ The target lifecycle is not complete until all of these work end-to-end:
 - [x] explicit App Server endpoints are verified before commit and changed transactionally;
 - [x] shared App Server teardown remains outside Spotter-owned service cleanup;
 - [x] interrupted setup can heal forward when setup is re-run (pre-manifest teardown cannot infer ownership);
-- [ ] ordinary `codex` requires no manual Spotter/App Server startup in managed mode
-      ([#304](https://github.com/spotter-agent/spotter/issues/304));
+- [x] supported `spotter codex` launch starts Spotter and explicitly selects the externally managed
+      App Server; plain `codex` degrades visibly;
 - [x] `status` distinguishes daemon, observation, control, enforcement, storage health;
 - [x] `doctor` performs a real synthetic round-trip;
 - [ ] multiple concurrent threads/sessions remain isolated
       ([#304](https://github.com/spotter-agent/spotter/issues/304));
+      automated coverage proves separate attachments, ThreadState, reviewer jobs, journals, and
+      control targets; two real TUIs connected concurrently on 2026-08-20 without model calls;
 - [ ] daemon crash recovers without corrupting journal/live state
       ([#304](https://github.com/spotter-agent/spotter/issues/304));
 - [x] Codex upgrade degrades by capability rather than silently breaking;

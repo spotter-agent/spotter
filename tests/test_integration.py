@@ -13,6 +13,7 @@ import pytest
 from spotter.build_identity import BuildIdentity, current_build_identity
 from spotter.cli import main
 from spotter.daemon import DaemonStatus, ManagedServiceManager, RuntimeHealth
+from spotter.doctor import OK, Check
 from spotter.integration import (
     MANIFEST_SCHEMA,
     MANIFEST_SCHEMA_NAME,
@@ -312,6 +313,17 @@ def test_setup_records_app_server_endpoint_as_pending(
     assert manifest.app_server_endpoint is None
 
 
+def test_managed_codex_launch_explains_a_missing_endpoint(
+    homes: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    manager, service = _manager(homes)
+    manager.setup()
+
+    assert main(["codex"]) == 1
+    assert "rerun setup with --endpoint" in capsys.readouterr().err
+    assert service.starts == 1
+
+
 def test_setup_verifies_and_records_an_explicit_app_server_endpoint(
     homes: tuple[Path, Path],
 ) -> None:
@@ -337,6 +349,42 @@ def test_setup_verifies_and_records_an_explicit_app_server_endpoint(
     assert manifest.state == "ready"
     assert manifest.app_server_strategy == "external-explicit"
     assert manifest.app_server_endpoint == endpoint
+
+
+def test_configured_endpoint_drives_the_managed_codex_launch(
+    homes: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spotter_home, codex_home = homes
+    endpoint = "ws://127.0.0.1:4500"
+    service = AppServerService(
+        spotter_home / "service/spotterd", spotter_home / "integrations/codex.json"
+    )
+    manager = IntegrationManager(
+        codex_home=codex_home,
+        codex=CodexInstall("/bin/codex", "codex-cli 0.147.0", True, True),
+        service=service,
+        spotter_executable="/bin/spotter",
+        verifier=lambda _: True,
+        app_server_endpoint=endpoint,
+        app_server_verifier=lambda _: None,
+    )
+    manifest = manager.setup()
+    launched: list[str] = []
+
+    monkeypatch.setattr("spotter.cli.ManagedServiceManager", lambda: service)
+    monkeypatch.setattr(
+        "spotter.cli.check_runtime", lambda **_: [Check("observation", OK, "connected")]
+    )
+
+    def execv(_path: str, command: list[str]) -> None:
+        launched.extend(command)
+        raise SystemExit(0)
+
+    monkeypatch.setattr("spotter.cli.os.execv", execv)
+
+    with pytest.raises(SystemExit, match="0"):
+        main(["codex", "-C", "/tmp/work"])
+    assert launched == [manifest.agent_path, "--remote", endpoint, "-C", "/tmp/work"]
 
 
 def test_setup_waits_for_a_recovering_daemon_app_server_connection(
@@ -1754,7 +1802,7 @@ def test_setup_cli_prints_only_a_redacted_verified_remote_endpoint(
 
     output = capsys.readouterr().out
     assert "endpoint: verified" in output
-    assert "codex --remote <configured App Server endpoint>" in output
+    assert "Start the shared Codex TUI: spotter codex" in output
     assert "setup-secret" not in output
 
 
