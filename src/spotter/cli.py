@@ -682,8 +682,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 or args.wrong_nudge_id
             ):
                 parser.error(
-                    "report inputs, --task-set, and --wrong-nudge-id do not apply to "
-                    "wrong-nudge persist"
+                    "--annotations, --persistence-results, --persistence-annotations, "
+                    "--task-set, and --wrong-nudge-id do not apply to wrong-nudge persist"
                 )
             if (
                 args.session
@@ -736,7 +736,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "and --endpoint"
                 )
             if args.annotations or args.persistence_results or args.persistence_annotations:
-                parser.error("report inputs require wrong-nudge report")
+                parser.error(
+                    "--annotations, --persistence-results, and --persistence-annotations "
+                    "require wrong-nudge report"
+                )
             try:
                 output, wrong_nudge_results = run_wrong_nudge_experiment(
                     Path(args.subject),
@@ -830,7 +833,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.resume:
         parser.error("--resume requires tasks run")
     if args.annotations or args.persistence_results or args.persistence_annotations:
-        parser.error("report inputs require wrong-nudge report")
+        parser.error(
+            "--annotations, --persistence-results, and --persistence-annotations require "
+            "wrong-nudge report"
+        )
     if args.task_set or args.wrong_nudge_id or args.endpoint:
         parser.error(
             "--task-set and --wrong-nudge-id require wrong-nudge run; --endpoint requires "
