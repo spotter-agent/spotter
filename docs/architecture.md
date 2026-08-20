@@ -462,7 +462,10 @@ interrupt boundary — the turn may still be running — so an interrupt stays p
 claiming an abort that recovery would then build on. A bounded settlement deadline closes an
 interrupt whose turn stops emitting events as `unknown`/`interrupt_settlement_timeout` rather
 than waiting forever on evidence that is not coming; an observed terminal status always retires
-that deadline first, and the deadline is in-process only, so it does not survive a restart.
+that deadline first. Interrupt acceptances hydrate from durable history on their own terms —
+`intervention_id`, which gates the steer hydration, is steer-only — so a restart resumes an
+in-flight interrupt, rearms its deadline once the loop starts, and refuses to settle one whose
+outcome the journal already records.
 
 Codex control-error compatibility is confined to the App Server adapter. Structured
 `activeTurnNotSteerable` data maps to `turn_not_steerable`; current version-specific messages for

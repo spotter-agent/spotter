@@ -181,6 +181,7 @@ class AppServerRecoveryLoop:
             and isinstance(control_id, str)
             and control_id
         )
+        pending_interrupts: dict[str, tuple[RuntimeControlTarget, dict[str, object]]] = {}
         for record in records:
             control_id = record.event.payload.get("control_id")
             if (
@@ -197,6 +198,27 @@ class AppServerRecoveryLoop:
                     "control_observed_outside_target",
                 }:
                     self._observed_control_ids.add(control_id)
+            # Interrupts carry no intervention_id — that field belongs to the
+            # advisory-input correlation the steer path needs — so they are
+            # hydrated on their own terms or a restart forgets them entirely.
+            if (
+                isinstance(control_id, str)
+                and control_id
+                and record.event.payload.get("control_kind") == "interrupt"
+            ):
+                if record.event.kind == "control_rpc_accepted":
+                    self._accepted_controls.setdefault(control_id, dict(record.event.payload))
+                    if record.event.identity is not None:
+                        pending_interrupts[control_id] = (
+                            RuntimeControlTarget(
+                                record.event.identity, record.event.connection_epoch or 0
+                            ),
+                            dict(record.event.payload),
+                        )
+                elif record.event.kind == "control_terminal":
+                    self._settled_interrupt_ids.add(control_id)
+                    pending_interrupts.pop(control_id, None)
+        self._pending_interrupt_deadlines = tuple(pending_interrupts.values())
         if records:
             self.thread_states.hydrate(records)
             for candidate, trigger in self.signals.hydrate(records):
@@ -208,6 +230,12 @@ class AppServerRecoveryLoop:
         if self._task is not None and not self._task.done():
             return
         self._stop.clear()
+        # Armed here rather than during hydration because __init__ has no running
+        # loop. A pre-restart interrupt gets a fresh window to settle from a
+        # reconnected server, and the deadline still bounds it if none arrives.
+        for target, payload in self._pending_interrupt_deadlines:
+            self._arm_interrupt_deadline(target, payload)
+        self._pending_interrupt_deadlines = ()
         self._task = asyncio.create_task(self._run(), name="spotter-app-server-recovery")
 
     async def close(self) -> None:

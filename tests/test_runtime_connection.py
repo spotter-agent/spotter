@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 import threading
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -1478,3 +1479,137 @@ def test_interrupt_settlement_timeout_must_be_positive(tmp_path: Path) -> None:
             ThreadStateStore(),
             interrupt_settlement_timeout=0,
         )
+
+
+def test_restart_resumes_an_unsettled_interrupt_and_still_bounds_it(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        async def handler(connection: ServerConnection) -> None:
+            await _initialize(connection)
+            listed = await _receive(connection, "thread/list")
+            await _reply(connection, listed, {"data": [{"id": "thread-1"}], "nextCursor": None})
+            read = await _receive(connection, "thread/resume")
+            await _reply(
+                connection,
+                read,
+                {"thread": {"id": "thread-1", "turns": [{"id": "turn-1", "status": "active"}]}},
+            )
+            with contextlib.suppress(Exception):
+                interrupt = await _receive(connection, "turn/interrupt")
+                await _reply(connection, interrupt, {"turnId": "turn-1"})
+            await connection.wait_closed()
+
+        sessions = tmp_path / "sessions"
+        async with _server(handler) as endpoint:
+            first = AppServerRecoveryLoop(
+                endpoint, sessions, ThreadStateStore(), interrupt_settlement_timeout=30
+            )
+            await first.start()
+            await _wait_until(lambda: first.state == RecoveryState.READY)
+            state = first.thread_states.snapshots()[0]
+            target = RuntimeControlTarget(state.identity, state.connection_epoch or 0)
+            await first.interrupt(target, control_id="spotter:interrupt:restart")
+            await first.flush_control_telemetry()
+            # The turn never completes, so the interrupt is still unsettled here.
+            assert not any(
+                record.event.kind == "control_terminal"
+                and record.event.payload.get("control_id") == "spotter:interrupt:restart"
+                for record in first.ingestor.records()
+            )
+            await first.close()
+
+            recovered = AppServerRecoveryLoop(
+                endpoint, sessions, ThreadStateStore(), interrupt_settlement_timeout=0.05
+            )
+            # Durable history alone must restore the in-flight interrupt; without
+            # that a restart forgets it and the lifecycle never terminates.
+            assert "spotter:interrupt:restart" in recovered._accepted_controls
+            await recovered.start()
+            await _wait_until(
+                lambda: any(
+                    record.event.kind == "control_terminal"
+                    and record.event.payload.get("control_id") == "spotter:interrupt:restart"
+                    for record in recovered.ingestor.records()
+                )
+            )
+            await recovered.flush_control_telemetry()
+
+            terminal = next(
+                record.event
+                for record in recovered.ingestor.records()
+                if record.event.kind == "control_terminal"
+                and record.event.payload.get("control_id") == "spotter:interrupt:restart"
+            )
+            assert terminal.payload["outcome"] == "unknown"
+            assert terminal.payload["reason_code"] == "interrupt_settlement_timeout"
+            await recovered.close()
+
+    asyncio.run(scenario())
+
+
+def test_restart_does_not_resettle_an_interrupt_that_already_terminated(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        async def handler(connection: ServerConnection) -> None:
+            await _initialize(connection)
+            listed = await _receive(connection, "thread/list")
+            await _reply(connection, listed, {"data": [{"id": "thread-1"}], "nextCursor": None})
+            read = await _receive(connection, "thread/resume")
+            await _reply(
+                connection,
+                read,
+                {"thread": {"id": "thread-1", "turns": [{"id": "turn-1", "status": "active"}]}},
+            )
+            with contextlib.suppress(Exception):
+                interrupt = await _receive(connection, "turn/interrupt")
+                await _reply(connection, interrupt, {"turnId": "turn-1"})
+                await connection.send(
+                    json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "method": "turn/completed",
+                            "params": {
+                                "threadId": "thread-1",
+                                "turn": {"id": "turn-1", "status": "interrupted"},
+                            },
+                        }
+                    )
+                )
+            await connection.wait_closed()
+
+        sessions = tmp_path / "sessions"
+        async with _server(handler) as endpoint:
+            first = AppServerRecoveryLoop(
+                endpoint, sessions, ThreadStateStore(), interrupt_settlement_timeout=30
+            )
+            await first.start()
+            await _wait_until(lambda: first.state == RecoveryState.READY)
+            state = first.thread_states.snapshots()[0]
+            target = RuntimeControlTarget(state.identity, state.connection_epoch or 0)
+            await first.interrupt(target, control_id="spotter:interrupt:done")
+            await _wait_until(
+                lambda: any(
+                    record.event.kind == "turn_completed" for record in first.ingestor.records()
+                )
+            )
+            await first.flush_control_telemetry()
+            await first.close()
+
+            recovered = AppServerRecoveryLoop(
+                endpoint, sessions, ThreadStateStore(), interrupt_settlement_timeout=0.05
+            )
+            assert "spotter:interrupt:done" in recovered._settled_interrupt_ids
+            assert recovered._pending_interrupt_deadlines == ()
+            await recovered.start()
+            await asyncio.sleep(0.15)
+            await recovered.flush_control_telemetry()
+
+            terminals = [
+                record.event
+                for record in recovered.ingestor.records()
+                if record.event.kind == "control_terminal"
+                and record.event.payload.get("control_id") == "spotter:interrupt:done"
+            ]
+            # Outliving the restarted deadline must not append a second outcome.
+            assert [event.payload["outcome"] for event in terminals] == ["turn_aborted"]
+            await recovered.close()
+
+    asyncio.run(scenario())
