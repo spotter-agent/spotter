@@ -18,6 +18,7 @@ from spotter.app_server import (
     CapabilityStatus,
     CodexAppServerClient,
 )
+from spotter.review_scheduler import ReviewerJob
 from spotter.runtime_connection import (
     AppServerRecoveryLoop,
     RecoveryState,
@@ -986,6 +987,8 @@ def test_intervention_input_is_scoped_without_replacing_later_user_goals(tmp_pat
 
 def test_reconciliation_keeps_multiple_threads_isolated(tmp_path: Path) -> None:
     async def scenario() -> None:
+        controls: list[dict[str, Any]] = []
+
         async def handler(connection: ServerConnection) -> None:
             await _initialize(connection)
             listed = await _receive(connection, "thread/list")
@@ -1010,11 +1013,17 @@ def test_reconciliation_keeps_multiple_threads_isolated(tmp_path: Path) -> None:
                         }
                     },
                 )
+            for _ in range(2):
+                request = await _receive(connection, "turn/steer")
+                controls.append(request["params"])
+                await _reply(connection, request, {"turnId": request["params"]["expectedTurnId"]})
             await connection.wait_closed()
 
         async with _server(handler) as endpoint:
             store = ThreadStateStore()
             recovery = AppServerRecoveryLoop(endpoint, tmp_path / "sessions", store)
+            jobs: list[ReviewerJob] = []
+            recovery.set_review_job_callback(jobs.append)
             await recovery.start()
             await _wait_until(lambda: recovery.state == RecoveryState.READY)
 
@@ -1031,7 +1040,35 @@ def test_reconciliation_keeps_multiple_threads_isolated(tmp_path: Path) -> None:
                 "turn-2",
             ]
             assert len({state.active_turn_id for state in states}) == 2
+            assert len({state.identity.attachment_id for state in states}) == 2
             assert all(state.control_ready for state in states)
+
+            for state in states:
+                for index in range(2):
+                    recovery._record(
+                        TraceEvent(
+                            "tool_result",
+                            {"status": "failed", "server": "fixture", "tool": "lookup"},
+                            event_id=f"{state.thread_id.value}:failure:{index}",
+                            identity=state.identity,
+                            connection_epoch=state.connection_epoch,
+                        )
+                    )
+                await recovery.steer(
+                    RuntimeControlTarget(state.identity, state.connection_epoch or 0),
+                    "verify",
+                    control_id=f"control-{state.thread_id.value}",
+                )
+
+            assert {job.thread_id for job in jobs} == {state.thread_id for state in states}
+            assert {job.target_turn_id for job in jobs} == {
+                state.active_turn_id for state in states
+            }
+            assert sorted(path.name for path in (tmp_path / "sessions").glob("*.jsonl")) == sorted(
+                f"app-server-{state.thread_id.value}.jsonl" for state in states
+            )
+            assert [control["threadId"] for control in controls] == ["thread-1", "thread-2"]
+            assert [control["expectedTurnId"] for control in controls] == ["turn-1", "turn-2"]
             await recovery.close()
 
     asyncio.run(scenario())

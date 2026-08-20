@@ -143,7 +143,7 @@ endpoint:
 spotter setup codex --endpoint ws://127.0.0.1:4500 --dry-run
 spotter setup codex --endpoint ws://127.0.0.1:4500
 spotter doctor
-codex --remote ws://127.0.0.1:4500
+spotter codex
 ```
 
 Setup is transactional and idempotent. It records the exact Spotter-owned Hooks and service state so
@@ -158,6 +158,7 @@ Hook-only mode; App Server observation and live control are then unavailable.
 | --- | --- |
 | `spotter status` | Show integration, daemon, capability, and storage health |
 | `spotter doctor` | Run synthetic health checks and print actionable diagnostics |
+| `spotter codex [args...]` | Start `spotterd`, verify the configured endpoint, and launch the remote TUI |
 | `spotter daemon status` | Inspect the packaged `spotterd` process and build identity |
 | `spotter daemon reload` | Atomically apply safe config changes or stage the next generation |
 | `spotter update` | Detect the package owner and print non-mutating update guidance |
