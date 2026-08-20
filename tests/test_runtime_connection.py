@@ -1276,7 +1276,19 @@ def test_interrupt_after_a_final_answer_stays_unsettled_until_the_turn_ends(
     asyncio.run(scenario())
 
 
-def test_turn_completing_before_the_interrupt_ack_records_no_abort(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("turn_status", "outcome", "reason_code"),
+    [
+        ("completed", "turn_completed_otherwise", "target_completed_despite_interrupt"),
+        ("interrupted", "turn_aborted", "observed_interrupted_status"),
+    ],
+)
+def test_interrupt_settlement_does_not_depend_on_boundary_versus_ack_ordering(
+    tmp_path: Path,
+    turn_status: str,
+    outcome: str,
+    reason_code: str,
+) -> None:
     async def scenario() -> None:
         async def handler(connection: ServerConnection) -> None:
             await _initialize(connection)
@@ -1296,7 +1308,7 @@ def test_turn_completing_before_the_interrupt_ack_records_no_abort(tmp_path: Pat
                         "method": "turn/completed",
                         "params": {
                             "threadId": "thread-1",
-                            "turn": {"id": "turn-1", "status": "completed"},
+                            "turn": {"id": "turn-1", "status": turn_status},
                         },
                     }
                 )
@@ -1325,11 +1337,12 @@ def test_turn_completing_before_the_interrupt_ack_records_no_abort(tmp_path: Pat
                 if record.event.payload.get("control_id") == "spotter:interrupt:job-3"
                 and record.event.kind == "control_terminal"
             ]
-            # The turn finished on its own between validation and the ack, so the
-            # accepted RPC aborted nothing and must not be recorded as an abort.
+            # The boundary lands before the ack here, so settlement runs through
+            # the post-ack path instead of the boundary path. Both must agree:
+            # the outcome describes the turn, not which message arrived first.
             assert len(terminals) == 1
-            assert terminals[0].payload["outcome"] == "turn_completed_otherwise"
-            assert terminals[0].payload["reason_code"] == "target_settled_before_interrupt"
+            assert terminals[0].payload["outcome"] == outcome
+            assert terminals[0].payload["reason_code"] == reason_code
             await recovery.close()
 
     asyncio.run(scenario())
