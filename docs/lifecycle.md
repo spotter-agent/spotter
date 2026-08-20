@@ -767,8 +767,10 @@ Spotter sees/attaches same thread
 RuntimeAttachment becomes ACTIVE
 ```
 
-`status` and `doctor` always name `spotter codex` as the supported launch. Plain `codex` selects an
-embedded server and is reported as lacking Spotter observation and live control for that TUI.
+`status` and `doctor` name `spotter codex` as the supported launch whenever an App Server
+endpoint is configured; without one that launch is unavailable and the endpoint checks report it.
+Plain `codex` selects an embedded server and is reported as lacking Spotter observation and live
+control for that TUI.
 
 ## 7.2 Thread initialization
 
