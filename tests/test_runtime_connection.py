@@ -1346,3 +1346,135 @@ def test_interrupt_settlement_does_not_depend_on_boundary_versus_ack_ordering(
             await recovery.close()
 
     asyncio.run(scenario())
+
+
+def test_interrupt_that_never_observes_a_terminal_turn_settles_as_unknown(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        async def handler(connection: ServerConnection) -> None:
+            await _initialize(connection)
+            listed = await _receive(connection, "thread/list")
+            await _reply(connection, listed, {"data": [{"id": "thread-1"}], "nextCursor": None})
+            read = await _receive(connection, "thread/resume")
+            await _reply(
+                connection,
+                read,
+                {"thread": {"id": "thread-1", "turns": [{"id": "turn-1", "status": "active"}]}},
+            )
+            interrupt = await _receive(connection, "turn/interrupt")
+            await _reply(connection, interrupt, {"turnId": "turn-1"})
+            # The turn goes silent: no turn/completed will ever arrive.
+            await connection.wait_closed()
+
+        async with _server(handler) as endpoint:
+            recovery = AppServerRecoveryLoop(
+                endpoint,
+                tmp_path / "sessions",
+                ThreadStateStore(),
+                interrupt_settlement_timeout=0.05,
+            )
+            await recovery.start()
+            await _wait_until(lambda: recovery.state == RecoveryState.READY)
+            state = recovery.thread_states.snapshots()[0]
+            target = RuntimeControlTarget(state.identity, state.connection_epoch or 0)
+
+            await recovery.interrupt(target, control_id="spotter:interrupt:silent")
+            await _wait_until(
+                lambda: any(
+                    record.event.kind == "control_terminal"
+                    and record.event.payload.get("control_id") == "spotter:interrupt:silent"
+                    for record in recovery.ingestor.records()
+                )
+            )
+            await recovery.flush_control_telemetry()
+
+            terminal = next(
+                record.event
+                for record in recovery.ingestor.records()
+                if record.event.kind == "control_terminal"
+                and record.event.payload.get("control_id") == "spotter:interrupt:silent"
+            )
+            # Unknown, not aborted: the runtime never said the turn stopped, and
+            # recovery must not infer that it did.
+            assert terminal.payload["outcome"] == "unknown"
+            assert terminal.payload["reason_code"] == "interrupt_settlement_timeout"
+            await recovery.close()
+
+    asyncio.run(scenario())
+
+
+def test_observed_interrupt_settlement_preempts_the_timeout(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        async def handler(connection: ServerConnection) -> None:
+            await _initialize(connection)
+            listed = await _receive(connection, "thread/list")
+            await _reply(connection, listed, {"data": [{"id": "thread-1"}], "nextCursor": None})
+            read = await _receive(connection, "thread/resume")
+            await _reply(
+                connection,
+                read,
+                {"thread": {"id": "thread-1", "turns": [{"id": "turn-1", "status": "active"}]}},
+            )
+            interrupt = await _receive(connection, "turn/interrupt")
+            await _reply(connection, interrupt, {"turnId": "turn-1"})
+            await connection.send(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "turn/completed",
+                        "params": {
+                            "threadId": "thread-1",
+                            "turn": {"id": "turn-1", "status": "interrupted"},
+                        },
+                    }
+                )
+            )
+            await connection.wait_closed()
+
+        async with _server(handler) as endpoint:
+            recovery = AppServerRecoveryLoop(
+                endpoint,
+                tmp_path / "sessions",
+                ThreadStateStore(),
+                # Long enough that it cannot fire during this test: what is being
+                # asserted is that the observed settlement retires the deadline,
+                # not that one of them wins a race.
+                interrupt_settlement_timeout=30,
+            )
+            await recovery.start()
+            await _wait_until(lambda: recovery.state == RecoveryState.READY)
+            state = recovery.thread_states.snapshots()[0]
+            target = RuntimeControlTarget(state.identity, state.connection_epoch or 0)
+
+            await recovery.interrupt(target, control_id="spotter:interrupt:observed")
+            await _wait_until(
+                lambda: any(
+                    record.event.kind == "turn_completed" for record in recovery.ingestor.records()
+                )
+            )
+            await recovery.flush_control_telemetry()
+
+            assert recovery._interrupt_deadlines == {}
+
+            terminals = [
+                record.event
+                for record in recovery.ingestor.records()
+                if record.event.kind == "control_terminal"
+                and record.event.payload.get("control_id") == "spotter:interrupt:observed"
+            ]
+            assert len(terminals) == 1
+            assert terminals[0].payload["outcome"] == "turn_aborted"
+            await recovery.close()
+
+    asyncio.run(scenario())
+
+
+def test_interrupt_settlement_timeout_must_be_positive(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="interrupt settlement timeout"):
+        AppServerRecoveryLoop(
+            "ws://unused",
+            tmp_path / "sessions",
+            ThreadStateStore(),
+            interrupt_settlement_timeout=0,
+        )

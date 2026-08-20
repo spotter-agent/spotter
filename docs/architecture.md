@@ -459,7 +459,10 @@ acceptance, but unlike steer the two paths can disagree about *what* happened, s
 the same recorded terminal status. Ordering decides which path settles the interrupt; it never
 decides whether the turn is reported as aborted. A completed `final_answer` is deliberately not an
 interrupt boundary — the turn may still be running — so an interrupt stays pending rather than
-claiming an abort that recovery would then build on.
+claiming an abort that recovery would then build on. A bounded settlement deadline closes an
+interrupt whose turn stops emitting events as `unknown`/`interrupt_settlement_timeout` rather
+than waiting forever on evidence that is not coming; an observed terminal status always retires
+that deadline first, and the deadline is in-process only, so it does not survive a restart.
 
 Codex control-error compatibility is confined to the App Server adapter. Structured
 `activeTurnNotSteerable` data maps to `turn_not_steerable`; current version-specific messages for

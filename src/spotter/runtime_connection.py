@@ -114,6 +114,7 @@ class AppServerRecoveryLoop:
         initial_backoff: float = 0.1,
         maximum_backoff: float = 30,
         control_telemetry_queue_size: int = 256,
+        interrupt_settlement_timeout: float = 30.0,
         mcp_semantics: tuple[McpToolSemantics, ...] = (),
         snapshot_on_patch: bool = True,
         config_generation: str = "unversioned",
@@ -124,6 +125,8 @@ class AppServerRecoveryLoop:
             raise ValueError("invalid reconnect backoff")
         if control_telemetry_queue_size <= 0:
             raise ValueError("control telemetry queue size must be positive")
+        if interrupt_settlement_timeout <= 0:
+            raise ValueError("interrupt settlement timeout must be positive")
         self.endpoint = endpoint
         self.thread_states = thread_states
         self.ingestor = AppServerTraceIngestor(
@@ -161,6 +164,9 @@ class AppServerRecoveryLoop:
         self._accepted_controls: dict[str, dict[str, object]] = {}
         self._observed_control_ids: set[str] = set()
         self._terminal_turn_status: dict[str, str | None] = {}
+        self._interrupt_settlement_timeout = interrupt_settlement_timeout
+        self._settled_interrupt_ids: set[str] = set()
+        self._interrupt_deadlines: dict[str, asyncio.Task[None]] = {}
 
         records = self.ingestor.records()
         self._control_telemetry_ids.update(
@@ -207,6 +213,12 @@ class AppServerRecoveryLoop:
     async def close(self) -> None:
         self._stop.set()
         self._retry.set()
+        for deadline in self._interrupt_deadlines.values():
+            if not deadline.done():
+                deadline.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await deadline
+        self._interrupt_deadlines.clear()
         if self._client is not None:
             with contextlib.suppress(Exception):
                 await self._client.disconnect()
@@ -481,6 +493,8 @@ class AppServerRecoveryLoop:
         self._accepted_controls[request_id] = accepted
         self._record_control_event("control_rpc_accepted", target, accepted)
         self._reconcile_settled_acceptance(target, accepted)
+        if control_kind == "interrupt":
+            self._arm_interrupt_deadline(target, accepted)
         return result
 
     def _refresh_connection_capabilities(
@@ -1088,13 +1102,65 @@ class AppServerRecoveryLoop:
                 or payload.get("target_connection_epoch") != boundary.connection_epoch
             ):
                 continue
-            self._record_control_event(
-                "control_terminal",
+            self._settle_interrupt(
                 RuntimeControlTarget(identity, boundary.connection_epoch or 0),
                 payload,
                 outcome=outcome,
                 reason_code=reason_code,
             )
+
+    def _settle_interrupt(
+        self,
+        target: RuntimeControlTarget,
+        payload: Mapping[str, object],
+        *,
+        outcome: str,
+        reason_code: str,
+    ) -> None:
+        """Record one terminal interrupt outcome and retire its deadline."""
+
+        control_id = payload.get("control_id")
+        if not isinstance(control_id, str) or control_id in self._settled_interrupt_ids:
+            return
+        self._settled_interrupt_ids.add(control_id)
+        deadline = self._interrupt_deadlines.pop(control_id, None)
+        if deadline is not None and not deadline.done():
+            deadline.cancel()
+        self._record_control_event(
+            "control_terminal",
+            target,
+            payload,
+            outcome=outcome,
+            reason_code=reason_code,
+        )
+
+    def _arm_interrupt_deadline(
+        self, target: RuntimeControlTarget, payload: Mapping[str, object]
+    ) -> None:
+        """Bound how long an accepted interrupt may stay unsettled.
+
+        A turn that stops emitting events never produces the `turn/completed`
+        that would settle its interrupt, so without this the lifecycle would
+        wait forever on evidence that is not coming.
+        """
+
+        control_id = payload.get("control_id")
+        if not isinstance(control_id, str) or control_id in self._settled_interrupt_ids:
+            return
+        frozen = dict(payload)
+
+        async def expire() -> None:
+            await asyncio.sleep(self._interrupt_settlement_timeout)
+            self._settle_interrupt(
+                target,
+                frozen,
+                outcome="unknown",
+                reason_code="interrupt_settlement_timeout",
+            )
+
+        self._interrupt_deadlines[control_id] = asyncio.create_task(
+            expire(), name=f"spotter-interrupt-deadline-{control_id}"
+        )
 
     def _reconcile_settled_acceptance(
         self, target: RuntimeControlTarget, payload: Mapping[str, object]
@@ -1131,6 +1197,9 @@ class AppServerRecoveryLoop:
             reason_code = "terminal_answer_without_observed_input"
         control_id = payload.get("control_id")
         if not isinstance(control_id, str) or control_id in self._observed_control_ids:
+            return
+        if interrupting:
+            self._settle_interrupt(target, payload, outcome=outcome, reason_code=reason_code)
             return
         self._record_control_event(
             "control_terminal",
