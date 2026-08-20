@@ -767,6 +767,9 @@ Spotter sees/attaches same thread
 RuntimeAttachment becomes ACTIVE
 ```
 
+`status` and `doctor` always name `spotter codex` as the supported launch. Plain `codex` selects an
+embedded server and is reported as lacking Spotter observation and live control for that TUI.
+
 ## 7.2 Thread initialization
 
 For a newly observed thread, Spotter should create live state and a durable provenance header.
