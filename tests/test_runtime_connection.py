@@ -1142,3 +1142,194 @@ def test_unexpected_consumer_failure_forces_degraded_reconnect(
             await recovery.close()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("turn_status", "outcome", "reason_code"),
+    [
+        ("interrupted", "turn_aborted", "observed_interrupted_status"),
+        ("completed", "turn_completed_otherwise", "target_completed_despite_interrupt"),
+    ],
+)
+def test_accepted_interrupt_settles_on_the_observed_terminal_status(
+    tmp_path: Path,
+    turn_status: str,
+    outcome: str,
+    reason_code: str,
+) -> None:
+    async def scenario() -> None:
+        async def handler(connection: ServerConnection) -> None:
+            await _initialize(connection)
+            listed = await _receive(connection, "thread/list")
+            await _reply(connection, listed, {"data": [{"id": "thread-1"}], "nextCursor": None})
+            read = await _receive(connection, "thread/resume")
+            await _reply(
+                connection,
+                read,
+                {"thread": {"id": "thread-1", "turns": [{"id": "turn-1", "status": "active"}]}},
+            )
+            interrupt = await _receive(connection, "turn/interrupt")
+            await _reply(connection, interrupt, {"turnId": "turn-1"})
+            await connection.send(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "turn/completed",
+                        "params": {
+                            "threadId": "thread-1",
+                            "turn": {"id": "turn-1", "status": turn_status},
+                        },
+                    }
+                )
+            )
+            await connection.wait_closed()
+
+        async with _server(handler) as endpoint:
+            recovery = AppServerRecoveryLoop(endpoint, tmp_path / "sessions", ThreadStateStore())
+            await recovery.start()
+            await _wait_until(lambda: recovery.state == RecoveryState.READY)
+            state = recovery.thread_states.snapshots()[0]
+            target = RuntimeControlTarget(state.identity, state.connection_epoch or 0)
+
+            await recovery.interrupt(target, control_id="spotter:interrupt:job-1")
+            await _wait_until(
+                lambda: any(
+                    record.event.kind == "turn_completed" for record in recovery.ingestor.records()
+                )
+            )
+            await recovery.flush_control_telemetry()
+
+            controls = [
+                record.event
+                for record in recovery.ingestor.records()
+                if record.event.payload.get("control_id") == "spotter:interrupt:job-1"
+            ]
+            assert [event.kind for event in controls] == [
+                "control_dispatch_started",
+                "control_rpc_accepted",
+                "control_terminal",
+            ]
+            # A successful RPC is not evidence the turn stopped: only the observed
+            # status separates a real abort from a turn that finished anyway.
+            assert controls[-1].payload["outcome"] == outcome
+            assert controls[-1].payload["reason_code"] == reason_code
+            await recovery.close()
+
+    asyncio.run(scenario())
+
+
+def test_interrupt_after_a_final_answer_stays_unsettled_until_the_turn_ends(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        async def handler(connection: ServerConnection) -> None:
+            await _initialize(connection)
+            listed = await _receive(connection, "thread/list")
+            await _reply(connection, listed, {"data": [{"id": "thread-1"}], "nextCursor": None})
+            read = await _receive(connection, "thread/resume")
+            await _reply(
+                connection,
+                read,
+                {"thread": {"id": "thread-1", "turns": [{"id": "turn-1", "status": "active"}]}},
+            )
+            interrupt = await _receive(connection, "turn/interrupt")
+            await _reply(connection, interrupt, {"turnId": "turn-1"})
+            await connection.wait_closed()
+
+        async with _server(handler) as endpoint:
+            recovery = AppServerRecoveryLoop(endpoint, tmp_path / "sessions", ThreadStateStore())
+            await recovery.start()
+            await _wait_until(lambda: recovery.state == RecoveryState.READY)
+            state = recovery.thread_states.snapshots()[0]
+            recovery._record(
+                TraceEvent(
+                    "agent_message",
+                    {
+                        "text": "The task is complete",
+                        "phase": "final_answer",
+                        "lifecycle": "completed",
+                    },
+                    event_id="final-answer",
+                    identity=state.identity,
+                    connection_epoch=state.connection_epoch,
+                )
+            )
+            target = RuntimeControlTarget(state.identity, state.connection_epoch or 0)
+
+            await recovery.interrupt(target, control_id="spotter:interrupt:job-2")
+            await recovery.flush_control_telemetry()
+
+            controls = [
+                record.event
+                for record in recovery.ingestor.records()
+                if record.event.payload.get("control_id") == "spotter:interrupt:job-2"
+            ]
+            # A final answer is a steer settlement signal, not an interrupt one:
+            # the turn may still be running, so recovery must not treat this as
+            # a settled abort.
+            assert [event.kind for event in controls] == [
+                "control_dispatch_started",
+                "control_rpc_accepted",
+            ]
+            await recovery.close()
+
+    asyncio.run(scenario())
+
+
+def test_turn_completing_before_the_interrupt_ack_records_no_abort(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        async def handler(connection: ServerConnection) -> None:
+            await _initialize(connection)
+            listed = await _receive(connection, "thread/list")
+            await _reply(connection, listed, {"data": [{"id": "thread-1"}], "nextCursor": None})
+            read = await _receive(connection, "thread/resume")
+            await _reply(
+                connection,
+                read,
+                {"thread": {"id": "thread-1", "turns": [{"id": "turn-1", "status": "active"}]}},
+            )
+            interrupt = await _receive(connection, "turn/interrupt")
+            await connection.send(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "turn/completed",
+                        "params": {
+                            "threadId": "thread-1",
+                            "turn": {"id": "turn-1", "status": "completed"},
+                        },
+                    }
+                )
+            )
+            await _wait_until(
+                lambda: any(
+                    record.event.kind == "turn_completed" for record in recovery.ingestor.records()
+                )
+            )
+            await _reply(connection, interrupt, {"turnId": "turn-1"})
+            await connection.wait_closed()
+
+        async with _server(handler) as endpoint:
+            recovery = AppServerRecoveryLoop(endpoint, tmp_path / "sessions", ThreadStateStore())
+            await recovery.start()
+            await _wait_until(lambda: recovery.state == RecoveryState.READY)
+            state = recovery.thread_states.snapshots()[0]
+            target = RuntimeControlTarget(state.identity, state.connection_epoch or 0)
+
+            await recovery.interrupt(target, control_id="spotter:interrupt:job-3")
+            await recovery.flush_control_telemetry()
+
+            terminals = [
+                record.event
+                for record in recovery.ingestor.records()
+                if record.event.payload.get("control_id") == "spotter:interrupt:job-3"
+                and record.event.kind == "control_terminal"
+            ]
+            # The turn finished on its own between validation and the ack, so the
+            # accepted RPC aborted nothing and must not be recorded as an abort.
+            assert len(terminals) == 1
+            assert terminals[0].payload["outcome"] == "turn_completed_otherwise"
+            assert terminals[0].payload["reason_code"] == "target_settled_before_interrupt"
+            await recovery.close()
+
+    asyncio.run(scenario())
