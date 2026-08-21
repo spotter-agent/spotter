@@ -1078,3 +1078,27 @@ def test_task_batch_cli_requires_paid_run_opt_in(
     assert captured["capture_replay_sources"] is True
     assert captured["reasoning_effort"] == "low"
     assert f"results written to {output}" in capsys.readouterr().out
+
+
+def test_cli_preflight_failure_names_the_command_that_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = _corpus(tmp_path)
+    task = tmp_path / "tasks" / "parser.toml"
+    text = task.read_text()
+    text = text.replace(
+        '[setup]\ncommand = "python3 -m compileall ."',
+        "[setup]\ncommand = \"python3 -c 'raise SystemExit(3)' "
+        "&& echo unreachable || (echo 'missing toolchain' >&2; exit 3)\"",
+    )
+    task.write_text(text)
+    _refreeze_task(tmp_path, path)
+
+    assert main(["tasks", "preflight", str(path)]) == 1
+
+    printed = capsys.readouterr().out
+    assert "SETUP_FAIL" in printed
+    # A classification alone names which phase refused, never why. Without the
+    # failing command's own words the operator cannot act on it.
+    assert "setup: exit 3" in printed
+    assert "missing toolchain" in printed

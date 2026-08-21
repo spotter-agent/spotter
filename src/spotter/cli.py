@@ -652,6 +652,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         for result in preflight_results:
             print(f"  {result.task_id}: {result.classification}")
+            if result.classification == PreflightClassification.READY:
+                continue
+            # A bare classification cannot be acted on: it names which phase
+            # refused, never why. The failing command already holds the reason.
+            for line in _preflight_failure_lines(result):
+                print(f"    {line}")
         if any(
             result.classification != PreflightClassification.READY for result in preflight_results
         ):
@@ -1192,6 +1198,36 @@ def _effects_main(
         return 1
     print(f"recorded {resolution} resolution for {effect_id}")
     return 0
+
+
+def _preflight_failure_lines(result: TaskPreflight) -> list[str]:
+    """Explain a non-READY preflight from the command that actually refused."""
+
+    failed = next(
+        (
+            command
+            for command in reversed(result.commands)
+            if command.timed_out or command.returncode != 0
+        ),
+        result.commands[-1] if result.commands else None,
+    )
+    if failed is None:
+        return ["no command output was captured"]
+    if failed.timed_out:
+        outcome = "timed out"
+    elif failed.returncode is None:
+        outcome = "rejected"
+    else:
+        outcome = f"exit {failed.returncode}"
+    lines = [f"{failed.phase}: {outcome}"]
+    # The tail is where a failing command says why; the head is usually progress.
+    for stream, text in (("stderr", failed.stderr), ("stdout", failed.stdout)):
+        body = text.strip()
+        if not body:
+            continue
+        tail = body.splitlines()[-5:]
+        lines.extend(f"{stream}: {line[:300]}" for line in tail)
+    return lines
 
 
 def _intervention_history() -> tuple[InterventionSummary, ...]:
