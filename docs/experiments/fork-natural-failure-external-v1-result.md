@@ -119,3 +119,35 @@ Deliberate, and not applied here:
 2. attribute the `requests-2931` collection errors, ideally on a native x86_64 host;
 3. if either correction lands, publish a **new task-set version** — this frame is not retroactively
    repaired.
+
+---
+
+## Update — second preflight attempt (instrument corrected)
+
+**Measured:** 2026-08-21, after follow-up 1 was decided and applied.
+
+`_materialize_task_source` now fetches full history with tags instead of `--no-tags --depth=1`.
+Re-running the same frozen frame against the corrected instrument:
+
+| Task | Attempt 1 | Attempt 2 |
+| --- | --- | --- |
+| `pallets__flask-5014` | `READY` | `READY` |
+| `psf__requests-2931` | `UNJUDGEABLE` | `UNJUDGEABLE` |
+| `pytest-dev__pytest-10356` | `UNJUDGEABLE` | **`READY`** |
+| `pylint-dev__pylint-8898` | `READY` | `READY` |
+
+This confirms the attribution: the tagless shallow fetch, not the task, was responsible for
+`pytest-10356`. The correction was chosen over a larger `--depth`, because no fixed depth is
+defensible across repositories and a tag must be reachable for `git describe` to name it.
+
+`requests-2931` is unchanged, down to the same 86 passed / 1 xfailed / 81 errors in under half a
+second. Its cause is therefore independent of source materialisation and remains unattributed.
+
+Gate 4 requires every task to be `READY`, so **execution is still blocked and #42 remains NO-GO**.
+One of the two blocking causes is resolved; the remaining one is the unattributed cohort task.
+
+The paired `.json` records attempt 1 only. It is left unmodified: a published result should not be
+rewritten by a later run, and this attempt used a different instrument.
+
+Remaining follow-ups: attribute `requests-2931`, ideally on a native x86_64 host, which would also
+settle whether the emulation caveat above affects it.
