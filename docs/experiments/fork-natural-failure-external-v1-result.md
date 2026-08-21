@@ -151,3 +151,55 @@ rewritten by a later run, and this attempt used a different instrument.
 
 Remaining follow-ups: attribute `requests-2931`, ideally on a native x86_64 host, which would also
 settle whether the emulation caveat above affects it.
+
+---
+
+## Update — `requests-2931` attributed (frozen-frame defect)
+
+**Measured:** 2026-08-21.
+
+The remaining blocker is attributed, and it is neither emulation nor Spotter.
+
+The pinned evaluation image was run directly, with **no volume mount and no Spotter code involved**
+— just the image's own `/testbed` and the manifest's whole-file pytest command:
+
+```text
+ModuleNotFoundError: No module named 'pytest_httpbin'
+85 passed, 1 xfailed, 28 warnings, 81 errors in 0.74s
+```
+
+`pytest-httpbin` is not installed in the image's `testbed` conda environment. Without that plugin,
+the fixture override at `test_requests.py:51`
+
+```python
+@pytest.fixture
+def httpbin(httpbin):
+```
+
+has no parent fixture to override, so pytest reports `recursive dependency involving fixture
+'httpbin' detected` and 81 tests error at setup. The count matches the mounted run exactly (86 vs
+85 passed differs only by the test the gold patch adds).
+
+### Consequences
+
+- **Not an emulation artefact.** The failure is a missing Python module. A native x86_64 host would
+  produce the same result, so the emulation caveat recorded above does not explain this task, and
+  running the cohort on x86_64 hardware would not unblock it.
+- **Not an instrument defect.** Zero Spotter code ran in the reproduction.
+- **It is a defect in the frozen frame.** The manifest pins a whole-file command the pinned image
+  cannot satisfy. Resolving it means either installing the missing test dependency or narrowing the
+  command to the graded node IDs — both change the frozen manifest.
+
+Per the protocol, that correction creates a **new task-set version** and does not repair this frame.
+
+### Standing outcome
+
+| Task | Attempt 1 | Attempt 2 | Attribution |
+| --- | --- | --- | --- |
+| `pallets__flask-5014` | `READY` | `READY` | — |
+| `psf__requests-2931` | `UNJUDGEABLE` | `UNJUDGEABLE` | frozen frame: image lacks `pytest-httpbin` |
+| `pytest-dev__pytest-10356` | `UNJUDGEABLE` | `READY` | instrument, corrected in #331 |
+| `pylint-dev__pylint-8898` | `READY` | `READY` | — |
+
+Gate 4 still blocks execution at 3/4 and **#42 remains NO-GO**. Both blocking causes are now
+attributed; neither is unattributed guesswork and neither depends on the host platform.
