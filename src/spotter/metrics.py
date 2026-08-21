@@ -127,6 +127,52 @@ def tally_session(session: str, records: list[StepRecord]) -> tuple[dict[str, Ta
     return gates, reviewer, ceiling
 
 
+@dataclass(frozen=True)
+class PendingLabel:
+    """One judgeable record that still has no verdict from this rater."""
+
+    session: str
+    step: int
+    kind: str
+    subject: str
+
+
+def pending_labels(
+    session: str, records: list[StepRecord], *, rater: str | None = None
+) -> tuple[PendingLabel, ...]:
+    """List the judgeable records a rater has not decided yet.
+
+    `tally_session` already knows which records are judgeable and which carry a
+    verdict, but it only counts them. A rate of `0/122` tells a rater how much
+    work is left and nothing about where it is, which leaves reading every
+    journal by hand as the only way to start (#38).
+    """
+
+    if rater is None:
+        decided = set(load_labels(session))
+    else:
+        decided = {
+            label.step for label in load_label_history(session) if label.rater == rater.strip()
+        }
+    pending: list[PendingLabel] = []
+    for record in records:
+        kind = record.event.kind
+        payload = record.event.payload
+        if kind in GATE_KINDS:
+            subject = str(payload.get("rule") or "unknown")
+        elif kind == "reviewer_decision":
+            # CONTINUE is silence; scoring it would inflate precision for free.
+            if payload.get("decision") == "continue":
+                continue
+            subject = str(payload.get("decision") or "unknown")
+        else:
+            continue
+        if record.step in decided:
+            continue
+        pending.append(PendingLabel(session, record.step, kind, subject))
+    return tuple(pending)
+
+
 def agreement_session(session: str, records: list[StepRecord]) -> AgreementTally:
     """Measure independent latest-per-rater judgments over current targets."""
 

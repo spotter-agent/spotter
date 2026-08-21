@@ -20,6 +20,7 @@ from spotter.metrics import (
     agreement_session,
     merge,
     merge_agreement,
+    pending_labels,
     tally_reviewer_continues,
     tally_reviewer_triggers,
     tally_session,
@@ -528,3 +529,54 @@ def test_session_validation_rejects_trailing_newline() -> None:
     assert not valid_session("a\nb")
     assert valid_session("a_") and valid_session("019fee58-ab26-72f2")
     assert sanitize_session("a\n") == "a_"  # why the bypass mattered
+
+
+def test_pending_labels_lists_undecided_judgeable_records(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    records = _journal(
+        "pending-session",
+        [
+            TraceEvent("gate_shadow_block", {"rule": "workspace_escape"}),
+            TraceEvent("reviewer_decision", {"decision": "nudge"}),
+            # CONTINUE is silence, never judgeable.
+            TraceEvent("reviewer_decision", {"decision": "continue"}),
+            TraceEvent("gate_block", {"rule": "git_reset_hard"}),
+        ],
+    )
+    add_label("pending-session", 0, "tp", "escape confirmed", records, rater="alice")
+
+    pending = pending_labels("pending-session", records)
+
+    assert [(item.step, item.kind, item.subject) for item in pending] == [
+        (1, "reviewer_decision", "nudge"),
+        (3, "gate_block", "git_reset_hard"),
+    ]
+
+    assert main(["label", "--pending"]) == 0
+    printed = capsys.readouterr().out
+    assert "pending: 2" in printed
+    assert "reviewer_decision:nudge: 1" in printed
+    assert "spotter label --session" in printed
+
+
+def test_pending_labels_are_per_rater_for_double_labeling(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    records = _journal(
+        "double-session", [TraceEvent("gate_shadow_block", {"rule": "workspace_escape"})]
+    )
+    add_label("double-session", 0, "tp", "first opinion", records, rater="alice")
+
+    # #38 wants a double-labeled subset to estimate agreement, so a second
+    # rater must still see work that the first has already decided.
+    assert pending_labels("double-session", records) == ()
+    assert [item.step for item in pending_labels("double-session", records, rater="bob")] == [0]
+
+    assert main(["label", "--pending", "--rater", "bob"]) == 0
+    assert "pending: 1" in capsys.readouterr().out
+
+
+def test_pending_refuses_to_double_as_a_verdict() -> None:
+    with pytest.raises(SystemExit):
+        main(["label", "--pending", "--session", "s", "--verdict", "tp"])

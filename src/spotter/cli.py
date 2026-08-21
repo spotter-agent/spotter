@@ -78,10 +78,12 @@ from spotter.labels import LabelError, add_label, valid_session
 from spotter.log_registry import LogRegistry, LogRegistryError, LogResourceInspection
 from spotter.metrics import (
     AgreementTally,
+    PendingLabel,
     Tally,
     agreement_session,
     merge,
     merge_agreement,
+    pending_labels,
     tally_reviewer_continues,
     tally_reviewer_triggers,
     tally_session,
@@ -223,7 +225,8 @@ def build_parser() -> argparse.ArgumentParser:
             "pins: add, remove, or list durable manual snapshot roots; "
             "review: run the shadow reviewer on a session (records only, injects nothing); "
             "experiment: guidance or identical-neutral fork pairs (needs --run to execute); "
-            "label: record a human verdict on a gate flag, signal, reviewer decision, or session; "
+            "label: record a human verdict on a gate flag, signal, reviewer decision, or session, "
+            "or list what still needs one with --pending; "
             "label-opportunity: record semantic and observable intervention windows; "
             "sample-signals: persist a stratified random frame for detector misses; "
             "metrics: gate and signal precision, misses, reviewer precision, and ceiling; "
@@ -451,6 +454,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--rater",
         help="label/label-opportunity: stable human rater identity (defaults to the OS account)",
+    )
+    parser.add_argument(
+        "--pending",
+        action="store_true",
+        help="label: list judgeable records this rater has not decided yet",
     )
     parser.add_argument("--opportunity-id", help="label-opportunity: stable opportunity identity")
     parser.add_argument(
@@ -949,6 +957,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"rows appended to {results_path(args.session, args.step)}")
         return 0
     if args.command == "label":
+        if args.pending:
+            if args.verdict:
+                parser.error("--pending lists work; it does not record a verdict")
+            return _pending_labels_main(args.session, args.rater)
         if not args.session or not args.verdict:
             parser.error("label requires --session and --verdict")
         return _label_main(
@@ -2042,6 +2054,41 @@ def _sample_signals_main(
     for sample in samples:
         if sample.batch_id == batch.batch_id:
             print(f"  step {sample.step}: {sample.event_kind} {sample.event_id}")
+    return 0
+
+
+def _pending_labels_main(session: str | None, rater: str | None) -> int:
+    """List the judgeable records still waiting on a verdict."""
+
+    sessions_dir = journal_path({"session_id": "probe"}).parent
+    journals = sorted(sessions_dir.glob("*.jsonl"))
+    if session:
+        journals = [j for j in journals if j == journal_path({"session_id": session})]
+    if not journals:
+        print("no journals found", file=sys.stderr)
+        return 1
+    pending: list[PendingLabel] = []
+    for journal in journals:
+        try:
+            records = StepJournal.load(journal)
+        except SnapshotError as error:
+            print(f"{journal.stem}: unreadable journal ({error})", file=sys.stderr)
+            continue
+        pending.extend(pending_labels(journal.stem, records, rater=rater))
+    if not pending:
+        print("nothing is waiting for a verdict")
+        return 0
+    by_subject: dict[str, int] = {}
+    for item in pending:
+        by_subject[f"{item.kind}:{item.subject}"] = (
+            by_subject.get(f"{item.kind}:{item.subject}", 0) + 1
+        )
+    for item in pending:
+        print(f"{item.session}  step={item.step}  {item.kind}  {item.subject}")
+    print(f"pending: {len(pending)}")
+    for subject, count in sorted(by_subject.items(), key=lambda pair: -pair[1]):
+        print(f"  {subject}: {count}")
+    print("record one with: spotter label --session <id> --step <n> --verdict tp|fp --note <why>")
     return 0
 
 
