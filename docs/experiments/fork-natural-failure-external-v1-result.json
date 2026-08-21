@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "protocol": "fork-natural-failure-external-v1",
+  "protocol_sha256": "e6a81a6280cf88dd59428b9e8c43fdab7c476d6c010bb71bcc57df99eb131921",
+  "spotter_commit": "bb70736",
+  "freeze_pr": 317,
+  "measured_at": "2026-08-21",
+  "decision": "stopped_at_pre_run_gate_4",
+  "qualification": "NO-GO",
+  "task_set": {
+    "id": "swebench-verified-fidelity",
+    "version": 1,
+    "sha256": "b56c0e7acd5cb111c078414d41b1637e3cb67d8a5e6e3358cc9bb4bd6c559b9a",
+    "frame_intact": true
+  },
+  "environment": {
+    "os": "macOS 26.5.1",
+    "arch": "arm64",
+    "container_runtime": "docker 29.4.0",
+    "image_platform": "linux/amd64",
+    "emulated": true,
+    "python": "3.12.13"
+  },
+  "preflight": {
+    "ready": 2,
+    "unjudgeable": 2,
+    "source_fail": 0,
+    "setup_fail": 0,
+    "check_error": 0,
+    "timeout_check": 0,
+    "tasks": [
+      {
+        "task_id": "swebench/verified/pallets__flask-5014",
+        "manifest_sha256": "47c05af88b2e118fb95571422535b0a840702a43a130b36cbb10ca48f64b1cb5",
+        "image_digest_verified": true,
+        "classification": "READY",
+        "failing_phase": null,
+        "attribution": null
+      },
+      {
+        "task_id": "swebench/verified/psf__requests-2931",
+        "manifest_sha256": "d4a254b2091ec67c14854382b3938d308737102911275e1d778a8611edfe15cd",
+        "image_digest_verified": true,
+        "classification": "UNJUDGEABLE",
+        "failing_phase": "positive:swebench-resolution",
+        "exit_code": 1,
+        "observed": "86 passed, 1 xfailed, 10 warnings, 81 errors in 0.48s",
+        "attribution": "unattributed"
+      },
+      {
+        "task_id": "swebench/verified/pytest-dev__pytest-10356",
+        "manifest_sha256": "835f7d5e681f61077789c7d2ac347c0ad89230c5771406af9313003d3c0faacb",
+        "image_digest_verified": true,
+        "classification": "UNJUDGEABLE",
+        "failing_phase": "positive:swebench-resolution",
+        "exit_code": 4,
+        "observed": "'minversion' requires pytest-2.0, actual pytest-0.1.dev1+g3c1534944.d20260821",
+        "attribution": "instrument_environment_fidelity"
+      },
+      {
+        "task_id": "swebench/verified/pylint-dev__pylint-8898",
+        "manifest_sha256": "1f73be6d1ccea07673d939b93f4526d1a03bca8be9602bcadeefe3530a85d88a",
+        "image_digest_verified": true,
+        "classification": "READY",
+        "failing_phase": null,
+        "attribution": null
+      }
+    ]
+  },
+  "paid_execution": {
+    "arms_executed": 0,
+    "raw_batch": null,
+    "blocked_by": "pre_run_gate_4_requires_all_tasks_ready"
+  },
+  "admission": {
+    "eligible_controls": 0,
+    "reached": false,
+    "neutral_pairs": 0
+  },
+  "caveats": [
+    "x86_64 evaluation images ran under arm64 emulation; the requests-2931 result is not established as host-independent",
+    "the pytest-10356 attribution is host-independent and reproduces on any platform"
+  ]
+}
