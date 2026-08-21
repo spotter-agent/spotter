@@ -1102,3 +1102,48 @@ def test_cli_preflight_failure_names_the_command_that_refused(
     # failing command's own words the operator cannot act on it.
     assert "setup: exit 3" in printed
     assert "missing toolchain" in printed
+
+
+def test_git_source_keeps_tags_and_history_for_version_derivation(tmp_path: Path) -> None:
+    path, upstream = _git_corpus(tmp_path)
+    # Tag an ancestor, then advance the branch: describe must reach back to it.
+    subprocess.run(("git", "tag", "v1.2.3", "HEAD"), cwd=upstream, check=True)
+    (upstream / "state.txt").write_text("still broken\n")
+    subprocess.run(("git", "add", "state.txt"), cwd=upstream, check=True)
+    subprocess.run(("git", "commit", "-qm", "later work"), cwd=upstream, check=True)
+    commit = subprocess.run(
+        ("git", "rev-parse", "HEAD"), cwd=upstream, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    tree = subprocess.run(
+        ("git", "rev-parse", "HEAD^{tree}"),
+        cwd=upstream,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    task = tmp_path / "tasks" / "upstream.toml"
+    text = task.read_text()
+    repository = text.split('repository = "', 1)[1].split('"', 1)[0]
+    old_commit = text.split('commit = "', 1)[1].split('"', 1)[0]
+    old_tree = text.split('tree = "', 1)[1].split('"', 1)[0]
+    old_digest = text.split('sha256 = "', 1)[1].split('"', 1)[0]
+    task.write_text(
+        text.replace(old_commit, commit)
+        .replace(old_tree, tree)
+        .replace(old_digest, git_source_digest(repository, commit, tree))
+    )
+    _refreeze_task(tmp_path, path, "upstream.toml")
+    manifest = validate_task_set(path).tasks[0]
+
+    workspace = tmp_path / "workspace"
+    result = task_corpus._materialize_task_source(manifest, workspace)
+
+    assert result.returncode == 0
+    # setuptools_scm and friends derive a version this way. A depth-1 tagless
+    # fetch makes it fail, and a project gating on minversion then rejects its
+    # own test suite.
+    described = subprocess.run(
+        ("git", "describe", "--tags"), cwd=workspace, capture_output=True, text=True
+    )
+    assert described.returncode == 0, described.stderr
+    assert described.stdout.startswith("v1.2.3")

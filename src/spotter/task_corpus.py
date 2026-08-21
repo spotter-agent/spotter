@@ -1087,14 +1087,18 @@ def _materialize_task_source(task: TaskManifest, workspace: Path) -> CommandResu
     commands = (
         ("git", "init", "--quiet"),
         ("git", "remote", "add", "origin", task.source_repository),
+        # Full history and tags, not a depth-1 tagless fetch. Projects that
+        # derive their version from git describe otherwise install as
+        # 0.1.dev1+g<sha>, and a project whose own test suite gates on
+        # minversion then refuses to run against itself (#42). A shallow fetch
+        # cannot be repaired by adding tags: at depth 1 no tag is reachable.
         (
             "git",
             "-c",
             "protocol.file.allow=always",
             "fetch",
             "--quiet",
-            "--no-tags",
-            "--depth=1",
+            "--tags",
             "origin",
             task.source_commit,
         ),
