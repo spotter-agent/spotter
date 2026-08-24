@@ -203,3 +203,21 @@ Per the protocol, that correction creates a **new task-set version** and does no
 
 Gate 4 still blocks execution at 3/4 and **#42 remains NO-GO**. Both blocking causes are now
 attributed; neither is unattributed guesswork and neither depends on the host platform.
+
+---
+
+## Update — superseded by a new task-set version
+
+**Recorded:** 2026-08-24.
+
+This frame is closed and is not repaired. The correction it called for is published separately as
+[external natural-failure protocol v2](fork-natural-failure-external-v2-protocol.md) over
+`corpus/swebench-verified-fidelity-v2.toml`, which narrows only `psf__requests-2931`'s scorer to the
+pinned row's 85 graded node IDs and leaves the other three manifests byte-identical.
+
+That frame preflights **4/4 `READY`**. No arm has run under it, and **#42 remains NO-GO** until it
+does.
+
+Uniform node-ID scoring across all four tasks was evaluated during that work and rejected: the
+pinned dataset row truncates parametrized node IDs at whitespace, and prefix reconstruction is
+ambiguous. The v2 protocol records the evidence.
