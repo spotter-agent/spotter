@@ -196,8 +196,15 @@ class Gate:
         uncertain: GateDecision | None = None
         for raw in paths:
             path = posixpath.normpath(raw.replace("\\", "/"))
+            root = posixpath.normpath(self.root.replace("\\", "/")) if self.root else None
+            if path.startswith("..") and root is not None:
+                # `../../../../tmp/pr-body.md` is the same scratch write as
+                # `/tmp/pr-body.md`, and agents produce both. Judging the relative
+                # spelling without resolving it first sent every one of them to
+                # the escape branch: 30 of the flags left on this machine after
+                # the absolute case was fixed were this, and nothing else.
+                path = posixpath.normpath(posixpath.join(root, path))
             if posixpath.isabs(path):
-                root = posixpath.normpath(self.root.replace("\\", "/")) if self.root else None
                 if root is None:
                     # Can't judge an absolute path without knowing the workspace.
                     # Blocking here would be FP-prone; pass, annotated.

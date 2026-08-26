@@ -103,6 +103,14 @@ def test_scratch_writes_are_not_a_workspace_escape() -> None:
     assert gate.check_paths([f"{tempfile.gettempdir()}/report.png"]).allowed
     # An allowance, not blindness: it is not annotated as a fail-open blind spot.
     assert gate.check_paths(["/tmp/pr-body.md"]).rule is None
+    # The same write spelled relatively is the same write. Agents produce both,
+    # and judging the relative form without resolving it first blocked 30 of the
+    # scratch flags this fix exists to clear.
+    deep = Gate(forbidden_paths=("*.pem",), root="/a/b/c/d/e")
+    assert deep.check_paths(["../../../../../tmp/pr-body.md"]).allowed
+    assert not deep.check_paths(["../../../../../tmp/key.pem"]).allowed
+    assert not deep.check_paths(["../sibling/main.py"]).allowed  # another checkout
+
     # Scratch is still subject to forbidden_paths, and is not a way out of the rule.
     assert not gate.check_paths(["/tmp/key.pem"]).allowed
     assert not gate.check_paths(["/tmp/../etc/passwd"]).allowed
