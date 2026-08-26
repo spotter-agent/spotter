@@ -1,3 +1,5 @@
+import tempfile
+
 import pytest
 
 from spotter.gates import Gate
@@ -92,6 +94,19 @@ def test_absolute_paths_relativized_against_root() -> None:
     # Without a root we cannot judge absolute paths: fail open, not fail wrong.
     unknown = Gate(forbidden_paths=("secrets/*",)).check_paths(["/repo/secrets/key.pem"])
     assert unknown.allowed and unknown.rule == "unknown_workspace"
+
+
+def test_scratch_writes_are_not_a_workspace_escape() -> None:
+    # 219 of 230 shadow-mode gate flags were scratch writes like this one.
+    gate = Gate(forbidden_paths=("*.pem",), root="/repo")
+    assert gate.check_paths(["/tmp/pr-body.md"]).allowed
+    assert gate.check_paths([f"{tempfile.gettempdir()}/report.png"]).allowed
+    # An allowance, not blindness: it is not annotated as a fail-open blind spot.
+    assert gate.check_paths(["/tmp/pr-body.md"]).rule is None
+    # Scratch is still subject to forbidden_paths, and is not a way out of the rule.
+    assert not gate.check_paths(["/tmp/key.pem"]).allowed
+    assert not gate.check_paths(["/tmp/../etc/passwd"]).allowed
+    assert not gate.check_paths(["/etc/passwd"]).allowed
 
 
 def test_blocks_dependency_manifest_when_configured() -> None:
