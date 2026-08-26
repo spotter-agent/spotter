@@ -109,6 +109,14 @@ class UnsupportedAppServerCapability(AppServerRpcError):
     """The connected server doesn't implement the requested capability."""
 
 
+# The `websockets` default is 1 MiB, and a real Codex App Server exceeded it on
+# the first live connection: a 2,607,959-byte frame closed the socket with 1009
+# before any thread could be observed. Thread history is the payload here, so the
+# ceiling has to be sized for a long real session, not a synthetic one — but it
+# stays a ceiling, because an unbounded frame is an unbounded allocation in a
+# daemon that is supposed to be the dependable part of the system.
+MAX_MESSAGE_BYTES = 64 * 1024 * 1024
+
 _CAPABILITY_BY_METHOD = {
     "thread/list": AppServerCapability.THREAD_QUERY,
     "thread/read": AppServerCapability.THREAD_QUERY,
@@ -185,6 +193,7 @@ class CodexAppServerClient:
                 additional_headers=self.headers,
                 open_timeout=self.request_timeout,
                 proxy=None,
+                max_size=MAX_MESSAGE_BYTES,
             )
             self._reader = asyncio.create_task(self._read_messages())
             result = await self._request(

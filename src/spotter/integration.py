@@ -368,7 +368,12 @@ class IntegrationManager:
         verifier: Callable[[Path | None], bool] | None = None,
         app_server_endpoint: str | None = None,
         app_server_verifier: Callable[[str], None] | None = None,
-        app_server_ready_timeout: float = 10.0,
+        # A changed service definition needs the full unregister/register cycle,
+        # and launchd's teardown measured over 8s of `Connection refused` before
+        # the socket came back — so a 10s budget lost that race every time and
+        # rolled setup back. This is setup, not a hot path; the budget only has
+        # to be larger than the platform's restart, and stay bounded.
+        app_server_ready_timeout: float = 30.0,
         app_server_poll_interval: float = 0.1,
     ) -> None:
         self.codex_home = codex_home or Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
@@ -589,11 +594,21 @@ class IntegrationManager:
         return content
 
     def _runtime_status(self, endpoint: str | None) -> DaemonStatus:
+        def settled(status: DaemonStatus) -> bool:
+            # A daemon setup has just restarted is briefly unreachable while it
+            # binds its socket, which reports as UNAVAILABLE. Treating that as a
+            # terminal verdict failed verification on the very first poll and
+            # rolled the whole setup back, every time. The deadline — not the
+            # first sample — is what bounds this wait.
+            if status.health == RuntimeHealth.UNAVAILABLE:
+                return False
+            return endpoint is None or status.app_server_state == "ready"
+
         async def wait_for_status() -> DaemonStatus:
             deadline = time.monotonic() + self.app_server_ready_timeout
             status = await self.service.status()
-            while endpoint is not None and status.app_server_state != "ready":
-                if status.health == RuntimeHealth.UNAVAILABLE or time.monotonic() >= deadline:
+            while not settled(status):
+                if time.monotonic() >= deadline:
                     return status
                 await asyncio.sleep(self.app_server_poll_interval)
                 status = await self.service.status()

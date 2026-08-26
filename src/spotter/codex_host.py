@@ -10,8 +10,14 @@ _CODEX_VERSION = re.compile(
     r"(?P<suffix>[-+][0-9A-Za-z.-]+)?$"
 )
 
-_CODEX_DESKTOP_VERSION = re.compile(
-    r"^Codex Desktop/"
+# The App Server reports a user-agent whose leading token is the *caller's*
+# originator, not a fixed product name: connecting as `spotter` yields
+# `spotter/0.149.1 (…) kitty/0.42.0 (spotter; 0.1.0)`. Pinning the prefix to
+# `Codex Desktop` made Spotter reject the identity its own handshake produced.
+# The shape stays strict — version, platform, terminal, originator — because
+# that is what distinguishes this from arbitrary text; only the name is free.
+_CODEX_USER_AGENT_VERSION = re.compile(
+    r"^[A-Za-z0-9._-]+(?: [A-Za-z0-9._-]+)*/"
     r"(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)"
     r"(?:\.(?P<patch>0|[1-9]\d*))?"
     r"(?P<suffix>[-+][0-9A-Za-z.-]+)?"
@@ -41,7 +47,7 @@ def parse_codex_host_version(raw: object) -> CodexHostVersion:
     if not isinstance(raw, str) or not raw.strip():
         raise CodexHostVersionError("Codex host version is missing")
     value = raw.strip()
-    match = _CODEX_VERSION.fullmatch(value) or _CODEX_DESKTOP_VERSION.fullmatch(value)
+    match = _CODEX_VERSION.fullmatch(value) or _CODEX_USER_AGENT_VERSION.fullmatch(value)
     if match is None:
         raise CodexHostVersionError(f"malformed Codex host version {raw!r}")
     suffix = match.group("suffix")

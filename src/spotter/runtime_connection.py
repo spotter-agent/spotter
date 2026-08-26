@@ -24,6 +24,7 @@ from spotter.app_server import (
     CapabilityStatus,
     CodexAppServerClient,
     ControlFailureReason,
+    UnsupportedAppServerCapability,
 )
 from spotter.config import McpToolSemantics
 from spotter.identity import AttachmentId, RuntimeIdentity, ThreadId
@@ -801,12 +802,12 @@ class AppServerRecoveryLoop:
             return
         try:
             await client.resume_thread(external_thread_id)
-        except AppServerRpcError as error:
-            if _rollout_pending(error):
-                return
-            raise RuntimeError(
-                f"could not subscribe to App Server thread {external_thread_id}"
-            ) from error
+        except UnsupportedAppServerCapability:
+            raise  # observation is unavailable server-wide, not for this thread
+        except AppServerRpcError:
+            # One thread Spotter cannot subscribe to is a coverage gap, not a
+            # reason to drop the connection that is observing every other one.
+            return
         self._subscribed_threads.add(external_thread_id)
 
     async def _reconcile(
@@ -837,11 +838,21 @@ class AppServerRecoveryLoop:
         capabilities = _available_capabilities(client.capabilities)
         ended_at = time.time()
         for external_thread_id in sorted(discovered):
+            subscribed = True
+            subscription_error: str | None = None
             try:
                 result = await client.resume_thread(external_thread_id)
+            except UnsupportedAppServerCapability:
+                raise  # observation is unavailable server-wide, not for this thread
             except AppServerRpcError as error:
-                if not _rollout_pending(error):
-                    raise
+                # Reconciliation walks every thread the server knows. Raising on
+                # one of them abandoned the whole connection, which then
+                # reconnected into the same thread and failed again: measured as
+                # 11 epochs in three minutes, never reaching ready, so a single
+                # unsubscribable thread cost *all* observation. Degrade that one
+                # thread to a read instead, and say so in its record.
+                subscribed = False
+                subscription_error = error.message
                 result = await client.read_thread(external_thread_id, include_turns=True)
             else:
                 self._subscribed_threads.add(external_thread_id)
@@ -872,6 +883,10 @@ class AppServerRecoveryLoop:
                         "active_turn": active_turn_id is not None,
                         "capabilities": list(capabilities),
                         "runtime_attachment_id": attachment_id,
+                        # A thread read but not subscribed sees no later events:
+                        # its coverage must not read as a live subscription.
+                        "subscribed": subscribed,
+                        "subscription_error": subscription_error,
                     },
                     event_id=f"spotter:reconciled:{identity.thread_id.value}:{epoch}",
                     occurred_at=ended_at,
