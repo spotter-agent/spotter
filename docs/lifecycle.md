@@ -1895,7 +1895,9 @@ The target lifecycle is not complete until all of these work end-to-end:
       App Server; plain `codex` degrades visibly;
 - [x] `status` distinguishes daemon, observation, control, enforcement, storage health;
 - [x] `doctor` performs a real synthetic round-trip;
-- [ ] multiple concurrent threads/sessions remain isolated
+- [x] multiple concurrent threads/sessions remain isolated; two real `spotter codex` TUIs in
+  different working directories each produced a journal holding exactly one thread id and neither
+  the other's ([result](experiments/app-server-live-observation-v1-result.md))
       ([#304](https://github.com/spotter-agent/spotter/issues/304));
       automated coverage proves separate attachments, ThreadState, reviewer jobs, journals, and
       control targets; two real TUIs connected concurrently on 2026-08-20 without model calls;

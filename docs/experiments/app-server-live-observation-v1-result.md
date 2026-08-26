@@ -121,6 +121,100 @@ historical thread on disk is what produced the collision. Whether reconciliation
 to running or supervised threads is a design change for #304, and it can now be argued from the
 numbers above rather than from speculation.
 
+## Update — two real TUIs, and a live steer that was adopted
+
+**Measured:** 2026-08-26, after the reconciliation fix below.
+
+### Two concurrent TUIs
+
+`spotter codex` was launched twice, in different working directories, and each was given a prompt.
+
+| Journal | Records | Distinct thread ids | Commands | External effects |
+| --- | ---: | ---: | ---: | ---: |
+| `app-server-1dd69dc2…` | 550 | **1** | 30 started / 30 result | 24 |
+| `app-server-e9216b9e…` | 500 | **1** | 40 started / 40 result | 10 |
+
+Each journal contains exactly one thread id and neither contains the other's. This is the two-TUI
+isolation case #304 asks for, and it is the first time real tool calls and their outcomes have been
+observed through the App Server rather than through Hooks.
+
+### `steer`/`interrupt` reported `unknown` — and that is correct
+
+Capability status changes only when a method is actually called: `-32601` marks it unavailable, a
+success marks it available. `turn/steer` is never called during connect or reconciliation, so it
+stays `unknown`.
+
+There is no side-effect-free alternative. The `initialize` response advertises no capabilities at
+all:
+
+```json
+{"userAgent": "spotter/0.149.1 (…)", "codexHome": "…", "platformFamily": "unix", "platformOs": "macos"}
+```
+
+So `unknown` is the honest state, not a defect. It read like one, so the message now says why:
+
+```text
+[info] live control: steer/interrupt unknown/unknown; the App Server advertises no
+       capabilities, so this resolves the first time a control is used
+```
+
+### `turn/steer` works, and the steer was adopted
+
+Probed on a thread Spotter owned — never a user session. A turn was started, and a steer was sent
+while it was in flight:
+
+```text
+steer 전 capability: steer=unknown
+turn/steer 성공: {'turnId': '01a03ccb-7be8-7090-97df-7367e44f7550'}
+steer 후 capability: steer=available
+```
+
+Reading the thread back shows the whole chain inside **one turn**:
+
+| Item | Content |
+| --- | --- |
+| `userMessage` | "Count slowly from 1 to 30…" |
+| `agentMessage` | `1\n2\n…\n30` |
+| `userMessage` | "Actually stop counting and reply with the single word: steered" |
+| `agentMessage` | `steered` |
+
+The steer arrives as a user message in the same turn, and the model observably acted on it. That is
+the premise #22/#23/#34 rest on, verified live for the first time.
+
+**What it does not show.** The steer landed *after* the agent had finished counting, so this is
+same-turn delivery and adoption — not mid-generation redirection. That case is measured below.
+
+### A steer does not preempt work already in flight
+
+Repeated against a long response, steering as soon as the first streaming event appeared:
+
+```text
+첫 스트리밍 이벤트 관측
+steer 수락 (+0.00s): {'turnId': '01a03cd0-2f1a-7be1-a1c5-774603d23bbe'}
+```
+
+The agent nonetheless finished the whole 4,009-character essay before the steer was answered:
+
+| Item | Length |
+| --- | ---: |
+| `userMessage` — "Write a detailed 600-word explanation…" | 157 |
+| `agentMessage` — the full essay, `phase=final_answer` | 4009 |
+| `userMessage` — "Stop. Ignore the previous request…" | 125 |
+| `agentMessage` — `redirected` | 10 |
+
+**`turn/steer` queues as the next user message in the turn; it does not redirect a response that is
+already generating.** The timing rules out a race: the steer was accepted immediately after
+generation was observably underway, and the response still ran to completion.
+
+This is a material limit on live supervision. A steer can change what happens *after* the current
+response, not the work inside it — so the wasted actions a nudge is meant to prevent still happen.
+Preempting them is what `turn/interrupt` and #26 are for, and the boundary between the two is now
+measured rather than assumed.
+
+Spotter's daemon observed the exchange independently, journaling both prompts and both replies. The
+apparent doubling of each item is `lifecycle: started` and `lifecycle: completed` for the same item,
+with the completion carrying `observed_start` — timing data, not duplicate records.
+
 ## Required follow-ups
 
 1. run the actual two-TUI validation through `spotter codex`;

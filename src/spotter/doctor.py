@@ -642,8 +642,16 @@ def check_runtime(*, deep: bool = False) -> list[Check]:
             control_status = WARN
             control_detail = f"daemon reports steer/interrupt {'/'.join(controls)}"
         else:
+            # An unknown control capability is not a fault, and reading like one
+            # sent at least one person hunting a bug that was not there. The
+            # server advertises nothing at initialize, and probing a control
+            # method would steer or abort a real turn, so the status is only
+            # learned the first time Spotter actually uses it.
             control_status = INFO
-            control_detail = f"daemon reports steer/interrupt {'/'.join(controls)}"
+            control_detail = (
+                f"steer/interrupt {'/'.join(controls)}; the App Server advertises no "
+                "capabilities, so this resolves the first time a control is used"
+            )
         checks.extend(
             [
                 Check(
