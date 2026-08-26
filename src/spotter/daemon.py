@@ -1388,6 +1388,28 @@ class ManagedServiceManager:
         return DaemonStatus(RuntimeHealth.UNAVAILABLE, detail="stopped")
 
     async def restart(self) -> DaemonStatus:
+        """Replace the running process without unregistering the service.
+
+        `stop()` boots the job out of launchd entirely, and a `bootstrap` issued
+        straight after races that teardown: the daemon measured over 8s of
+        `Connection refused` before returning, which is longer than setup's
+        readiness budget, so every endpoint setup failed verification and rolled
+        back. `kickstart -k` replaces the process in place, which is what a
+        restart means. A changed service definition still needs the full cycle,
+        because kickstart would relaunch the old one.
+        """
+        if not self._install_definition():
+            if self.platform == "darwin":
+                domain = f"gui/{os.getuid()}"
+                if self._run(["launchctl", "print", f"{domain}/{self.LABEL}"]).returncode == 0:
+                    result = self._run(["launchctl", "kickstart", "-k", f"{domain}/{self.LABEL}"])
+                    if result.returncode != 0:
+                        return self._service_error(result)
+                    return await self.status()
+            else:
+                result = self._run(["systemctl", "--user", "restart", "spotterd.service"])
+                if result.returncode == 0:
+                    return await self.status()
         await self.stop()
         return await self.start()
 
