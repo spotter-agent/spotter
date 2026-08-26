@@ -13,6 +13,14 @@ from spotter.snapshot import (
 from spotter.trace import TraceEvent
 
 
+@pytest.fixture(autouse=True)
+def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Keep the snapshot lock and the cached Git index out of the real home."""
+    spotter = tmp_path / "spotter-home"
+    monkeypatch.setenv("SPOTTER_HOME", str(spotter))
+    return spotter
+
+
 @pytest.fixture()
 def repo(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
@@ -49,6 +57,27 @@ def test_snapshot_captures_untracked_and_restore_does_not_touch_worktree(
 def test_snapshot_works_on_empty_repo_without_head(repo: Path) -> None:
     (repo / "only.txt").write_text("x")
     assert snapshot_worktree(repo)
+
+
+def test_cached_index_is_reused_and_survives_corruption(repo: Path, home: Path) -> None:
+    """The index cache is what keeps snapshotting off the worktree-sized path.
+
+    It must be reused across calls, must never be the user's own index, and a
+    damaged cache must cost a slow snapshot rather than the snapshot itself.
+    """
+    (repo / "a.txt").write_text("v1")
+    first = snapshot_worktree(repo)
+    indexes = list((home / "index").glob("*.idx"))
+    assert len(indexes) == 1  # kept, not discarded
+    assert not (repo / ".git" / "index").exists()  # never the user's index
+
+    (repo / "a.txt").write_text("v2")
+    second = snapshot_worktree(repo, first)
+    assert second != first  # a real change still produces a new tree
+
+    indexes[0].write_bytes(b"not a git index")
+    (repo / "a.txt").write_text("v3")
+    assert snapshot_worktree(repo, second) not in (first, second)
 
 
 def test_snapshot_outside_git_repo_fails_loudly(tmp_path: Path) -> None:

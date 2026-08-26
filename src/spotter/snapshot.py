@@ -8,6 +8,7 @@ the full worktree (including untracked files), and restore never mutates the
 user's checkout.
 """
 
+import hashlib
 import json
 import os
 import subprocess
@@ -93,49 +94,84 @@ def snapshot_worktree(repo: Path, previous: str | None = None) -> str:
     ref, or an idle session grows the ref namespace for free (issue #7).
     Dedup is best-effort — an unreadable ``previous`` just means a new commit.
     """
-    _git(repo, "rev-parse", "--git-dir")  # fail early if not a git repo
-    index_fd, index_path = tempfile.mkstemp(prefix="spotter-index-")
-    os.close(index_fd)
-    os.unlink(index_path)  # git wants to create the index file itself
+    # Fails early if not a git repo, and names the repository for its cached index.
+    common_dir = _git(repo, "rev-parse", "--git-common-dir")
     try:
-        env = {"GIT_INDEX_FILE": index_path}
-        _git(repo, "add", "-A", env=env)
-        tree = _git(repo, "write-tree", env=env)
-        parent_args: list[str] = []
-        head = subprocess.run(
-            ["git", "rev-parse", "--verify", "-q", "HEAD"],
+        tree = _stage_tree(repo, _cached_index(repo, common_dir))
+    except SnapshotError:
+        # A stale, locked, or unreadable cache must never cost a snapshot, and
+        # deleting it could belong to another process: fall back to the
+        # throwaway index this always used before.
+        with _throwaway_index() as fallback:
+            tree = _stage_tree(repo, fallback)
+    parent_args: list[str] = []
+    head = subprocess.run(
+        ["git", "rev-parse", "--verify", "-q", "HEAD"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    if head.returncode == 0:  # unborn HEAD (empty repo) has no parent
+        parent_args = ["-p", head.stdout.strip()]
+    if previous:
+        unchanged = subprocess.run(
+            ["git", "rev-parse", "--verify", "-q", f"{previous}^{{tree}}"],
             cwd=repo,
             capture_output=True,
             text=True,
         )
-        if head.returncode == 0:  # unborn HEAD (empty repo) has no parent
-            parent_args = ["-p", head.stdout.strip()]
-        if previous:
-            unchanged = subprocess.run(
-                ["git", "rev-parse", "--verify", "-q", f"{previous}^{{tree}}"],
-                cwd=repo,
-                capture_output=True,
-                text=True,
-            )
-            if unchanged.returncode == 0 and unchanged.stdout.strip() == tree:
-                # Re-pin unconditionally. A pruned snapshot stays resolvable
-                # until gc runs, so reusing it without restoring the ref hands
-                # the journal a sha that gc will later destroy — the exact
-                # guarantee pinning exists to make (PR #19 review, P0).
-                ref = f"refs/spotter/steps/{previous}"
-                prior_target = _optional_ref_target(repo, ref)
-                _git(repo, "update-ref", ref, previous)
-                _record_ref_or_rollback(repo, ref, previous, prior_target)
-                return previous
-        sha = _git(repo, "commit-tree", tree, *parent_args, "-m", "spotter step snapshot")
-        ref = f"refs/spotter/steps/{sha}"
-        prior_target = _optional_ref_target(repo, ref)
-        _git(repo, "update-ref", ref, sha)
-        _record_ref_or_rollback(repo, ref, sha, prior_target)
-        return sha
+        if unchanged.returncode == 0 and unchanged.stdout.strip() == tree:
+            # Re-pin unconditionally. A pruned snapshot stays resolvable
+            # until gc runs, so reusing it without restoring the ref hands
+            # the journal a sha that gc will later destroy — the exact
+            # guarantee pinning exists to make (PR #19 review, P0).
+            ref = f"refs/spotter/steps/{previous}"
+            prior_target = _optional_ref_target(repo, ref)
+            _git(repo, "update-ref", ref, previous)
+            _record_ref_or_rollback(repo, ref, previous, prior_target)
+            return previous
+    sha = _git(repo, "commit-tree", tree, *parent_args, "-m", "spotter step snapshot")
+    ref = f"refs/spotter/steps/{sha}"
+    prior_target = _optional_ref_target(repo, ref)
+    _git(repo, "update-ref", ref, sha)
+    _record_ref_or_rollback(repo, ref, sha, prior_target)
+    return sha
+
+
+def _stage_tree(repo: Path, index: Path) -> str:
+    env = {"GIT_INDEX_FILE": str(index)}
+    _git(repo, "add", "-A", env=env)
+    return _git(repo, "write-tree", env=env)
+
+
+@contextmanager
+def _throwaway_index() -> Iterator[Path]:
+    index_fd, index_path = tempfile.mkstemp(prefix="spotter-index-")
+    os.close(index_fd)
+    os.unlink(index_path)  # git wants to create the index file itself
+    try:
+        yield Path(index_path)
     finally:
         if os.path.exists(index_path):
             os.unlink(index_path)
+
+
+def _cached_index(repo: Path, common_dir: str) -> Path:
+    """A per-repository index kept between snapshots.
+
+    Git's index caches stat information, so ``git add -A`` only rehashes files
+    that actually changed. Discarding the index on every call made each snapshot
+    rehash the whole worktree — 294ms versus 26ms on a 6,000-file repository —
+    and that cost sat on the synchronous `PreToolUse` path, where it produced a
+    967ms tail on file edits in real sessions.
+
+    This is never the user's own index: it lives under the Spotter home, and the
+    tree it produces is identical either way.
+    """
+    path = Path(common_dir)
+    resolved = path.resolve() if path.is_absolute() else (repo / path).resolve()
+    key = hashlib.sha256(str(resolved).encode()).hexdigest()[:16]
+    return secure_dir(spotter_home() / "index") / f"{key}.idx"
 
 
 def _optional_ref_target(repo: Path, ref: str) -> str | None:
