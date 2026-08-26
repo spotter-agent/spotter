@@ -139,9 +139,18 @@ def snapshot_worktree(repo: Path, previous: str | None = None) -> str:
 
 
 def _stage_tree(repo: Path, index: Path) -> str:
+    """Stage the whole worktree into ``index`` and return its tree.
+
+    A reused index trusts cached stat data, so snapshot fidelity would otherwise
+    inherit the user's stat-comparison settings. ``core.trustctime=false`` alone
+    is enough to miss a same-size edit whose mtime was restored, and the snapshot
+    then records the previous content. Both settings are forced for our staging
+    only; the user's own config is untouched.
+    """
     env = {"GIT_INDEX_FILE": str(index)}
-    _git(repo, "add", "-A", env=env)
-    return _git(repo, "write-tree", env=env)
+    trust = ("-c", "core.trustctime=true", "-c", "core.checkStat=default")
+    _git(repo, *trust, "add", "-A", env=env)
+    return _git(repo, *trust, "write-tree", env=env)
 
 
 @contextmanager

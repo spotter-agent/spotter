@@ -80,6 +80,32 @@ def test_cached_index_is_reused_and_survives_corruption(repo: Path, home: Path) 
     assert snapshot_worktree(repo, second) not in (first, second)
 
 
+def test_cached_index_fidelity_does_not_depend_on_user_git_config(repo: Path) -> None:
+    """A reused index trusts cached stat data, so what git compares matters.
+
+    With `core.trustctime=false` an unforced comparison misses a same-size edit
+    whose mtime was restored, and the snapshot silently records the previous
+    content — a fidelity loss the throwaway index could not have.
+    """
+    import os
+
+    subprocess.run(["git", "config", "core.trustctime", "false"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "core.checkStat", "minimal"], cwd=repo, check=True)
+    target = repo / "a.txt"
+    target.write_bytes(b"AAAA")
+    first = snapshot_worktree(repo)
+
+    before = target.stat()
+    target.write_bytes(b"BBBB")  # same size
+    os.utime(target, (before.st_atime, before.st_mtime))  # and same mtime
+
+    second = snapshot_worktree(repo, first)
+    content = subprocess.run(
+        ["git", "show", f"{second}:a.txt"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout
+    assert content == "BBBB", "the snapshot recorded stale content"
+
+
 def test_snapshot_outside_git_repo_fails_loudly(tmp_path: Path) -> None:
     plain = tmp_path / "plain"
     plain.mkdir()
