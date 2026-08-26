@@ -189,7 +189,13 @@ def test_race_hook_snapshot_vs_prune_is_serialized(repo: Path, spotter_home: Pat
     worker = subprocess.Popen(
         [sys.executable, "-c", script, str(repo), str(spotter_home)],
         cwd=Path(__file__).parent.parent,
-        env={"PYTHONPATH": "src", "PATH": "/usr/bin:/bin"},
+        # The worker snapshots, and snapshotting resolves its cached index from
+        # the home: without this the child would reach into the real one.
+        env={
+            "PYTHONPATH": "src",
+            "PATH": "/usr/bin:/bin",
+            "SPOTTER_HOME": str(spotter_home),
+        },
     )
     try:
         deadline = 50

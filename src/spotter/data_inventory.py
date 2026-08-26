@@ -62,6 +62,9 @@ _FAMILY_DEFAULTS: dict[str, SchemaIdentity] = {
 _OTHER_SCOPE_ROOTS = {
     "backups",
     "forks",
+    # Rebuildable per-repository Git index cache: not durable data, and losing
+    # it costs one slow snapshot, never a record.
+    "index",
     "integrations",
     "logs",
     "lock",
