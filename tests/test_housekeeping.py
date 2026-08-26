@@ -3,6 +3,7 @@
 import json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -368,3 +369,122 @@ def test_a_surviving_journal_keeps_its_snapshots(
     assert journal.exists()
     assert sha in snapshot_references(journal.parent, repo)
     assert prune_snapshots(repo, {sha}) == []
+
+
+def test_codex_launch_names_the_command_that_starts_the_app_server(
+    home: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Spotter does not own the App Server, so its absence is the common failure.
+
+    Reporting only what is broken leaves the user to rediscover the fix.
+    """
+    from spotter import cli
+    from spotter.doctor import WARN, Check
+
+    manifest = SimpleNamespace(
+        state="ready",
+        app_server_endpoint="ws://127.0.0.1:4500",
+        agent_path="/usr/bin/true",
+    )
+    monkeypatch.setattr(
+        "spotter.integration.IntegrationManifest.load", staticmethod(lambda _: manifest)
+    )
+    monkeypatch.setattr(cli, "_daemon_main", lambda *_: 0)
+    monkeypatch.setattr(
+        cli,
+        "check_runtime",
+        lambda **_: [
+            Check("observation", WARN, "could not connect to ws://127.0.0.1:4500: refused")
+        ],
+    )
+
+    assert cli._codex_main([]) == 1
+    err = capsys.readouterr().err
+    assert "codex app-server --listen ws://127.0.0.1:4500" in err
+
+
+def test_codex_launch_stays_quiet_when_the_endpoint_is_reachable_but_wrong(
+    home: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reachable-but-incompatible server is a different problem; do not misdirect."""
+    from spotter import cli
+    from spotter.doctor import WARN, Check
+
+    manifest = SimpleNamespace(
+        state="ready",
+        app_server_endpoint="ws://127.0.0.1:4500",
+        agent_path="/usr/bin/true",
+    )
+    monkeypatch.setattr(
+        "spotter.integration.IntegrationManifest.load", staticmethod(lambda _: manifest)
+    )
+    monkeypatch.setattr(cli, "_daemon_main", lambda *_: 0)
+    monkeypatch.setattr(
+        cli,
+        "check_runtime",
+        lambda **_: [Check("observation", WARN, "observation unavailable: capability missing")],
+    )
+
+    assert cli._codex_main([]) == 1
+    assert "codex app-server --listen" not in capsys.readouterr().err
+
+
+def test_codex_launch_starts_an_app_server_when_none_is_listening(
+    home: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Requiring a hand-started server was the main thing blocking ordinary use."""
+    from spotter import cli
+    from spotter.doctor import OK, Check
+
+    manifest = SimpleNamespace(
+        state="ready",
+        app_server_endpoint="ws://127.0.0.1:4500",
+        agent_path="/usr/bin/true",
+    )
+    monkeypatch.setattr(
+        "spotter.integration.IntegrationManifest.load", staticmethod(lambda _: manifest)
+    )
+    monkeypatch.setattr(cli, "_daemon_main", lambda *_: 0)
+    monkeypatch.setattr(cli, "_endpoint_listening", lambda _: False)
+    monkeypatch.setattr(cli, "_start_app_server", lambda *_, **__: True)
+    monkeypatch.setattr(
+        cli, "check_runtime", lambda **_: [Check("observation", OK, "observation available")]
+    )
+    monkeypatch.setattr("os.execv", lambda *_: (_ for _ in ()).throw(OSError("execv")))
+
+    assert cli._codex_main([]) == 1  # execv is stubbed out; the point is we got there
+    assert "Codex launch failed" in capsys.readouterr().err
+
+
+def test_codex_launch_never_starts_a_server_for_a_reachable_endpoint(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A server that answers but is incompatible must not be duplicated."""
+    from spotter import cli
+    from spotter.doctor import WARN, Check
+
+    manifest = SimpleNamespace(
+        state="ready",
+        app_server_endpoint="ws://127.0.0.1:4500",
+        agent_path="/usr/bin/true",
+    )
+    monkeypatch.setattr(
+        "spotter.integration.IntegrationManifest.load", staticmethod(lambda _: manifest)
+    )
+    monkeypatch.setattr(cli, "_daemon_main", lambda *_: 0)
+    started: list[str] = []
+
+    def _record(*_args: object, **_kwargs: object) -> bool:
+        started.append("x")
+        return True
+
+    monkeypatch.setattr(cli, "_endpoint_listening", lambda _: True)
+    monkeypatch.setattr(cli, "_start_app_server", _record)
+    monkeypatch.setattr(
+        cli,
+        "check_runtime",
+        lambda **_: [Check("observation", WARN, "observation unavailable: capability missing")],
+    )
+
+    assert cli._codex_main([]) == 1
+    assert started == []
