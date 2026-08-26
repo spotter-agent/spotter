@@ -1714,3 +1714,48 @@ def test_settled_interrupt_releases_its_target_turn_bookkeeping(tmp_path: Path) 
             await recovery.close()
 
     asyncio.run(scenario())
+
+
+def test_reconciliation_does_not_load_threads_nobody_is_running(tmp_path: Path) -> None:
+    """`thread/resume` on a `notLoaded` thread reads it in from disk.
+
+    Doing that for every thread the server knows opened the whole history: a real
+    server ran out of file descriptors, `thread/list` began failing with EMFILE,
+    and the connection went down with it. Only threads the server already has
+    loaded are worth subscribing to; the rest announce themselves when they start.
+    """
+
+    async def scenario() -> None:
+        resumed: list[str] = []
+
+        async def handler(connection: ServerConnection) -> None:
+            await _initialize(connection)
+            listed = await _receive(connection, "thread/list")
+            await _reply(
+                connection,
+                listed,
+                {
+                    "data": [
+                        {"id": "cold-1", "status": {"type": "notLoaded"}},
+                        {"id": "cold-2", "status": {"type": "notLoaded"}},
+                        {"id": "live-1", "status": {"type": "active", "activeFlags": []}},
+                        {"id": "idle-1", "status": {"type": "idle"}},
+                    ],
+                    "nextCursor": None,
+                },
+            )
+            for _ in range(2):
+                request = await _receive(connection, "thread/resume")
+                resumed.append(request["params"]["threadId"])
+                await _reply(connection, request, {"thread": {"id": request["params"]["threadId"]}})
+            await connection.wait_closed()
+
+        async with _server(handler) as endpoint:
+            store = ThreadStateStore()
+            recovery = AppServerRecoveryLoop(endpoint, tmp_path / "sessions", store)
+            await recovery.start()
+            await _wait_until(lambda: len(resumed) == 2)
+            assert sorted(resumed) == ["idle-1", "live-1"]
+            await recovery.close()
+
+    asyncio.run(scenario())
