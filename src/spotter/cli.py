@@ -1757,6 +1757,15 @@ def _daemon_main(action: str, manager: ServiceManager | None = None) -> int:
     return 0 if status.health == RuntimeHealth.HEALTHY else 1
 
 
+def _endpoint_unreachable(detail: str) -> bool:
+    """True when the probe failed because nothing answered, not for another reason."""
+    lowered = detail.lower()
+    return any(
+        marker in lowered
+        for marker in ("connection refused", "connect call failed", "could not connect")
+    )
+
+
 def _codex_main(args: Sequence[str]) -> int:
     """Launch Codex through Spotter's verified external App Server."""
     try:
@@ -1784,6 +1793,15 @@ def _codex_main(args: Sequence[str]) -> int:
     if observation is None or observation.status != OK:
         detail = observation.detail if observation is not None else "probe produced no result"
         print(f"Codex launch unavailable: {detail}", file=sys.stderr)
+        # By far the most common cause is that nothing is listening, because
+        # Spotter deliberately does not own the App Server. Saying only what is
+        # broken leaves the user to rediscover the command that fixes it.
+        if _endpoint_unreachable(detail):
+            print(
+                f"Start the external App Server Spotter is configured against, and leave it "
+                f"running:\n  codex app-server --listen {manifest.app_server_endpoint}",
+                file=sys.stderr,
+            )
         return 1
     command = [manifest.agent_path, "--remote", manifest.app_server_endpoint, *args]
     try:
