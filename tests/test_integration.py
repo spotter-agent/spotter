@@ -1585,6 +1585,7 @@ def test_managed_service_reports_and_recovers_from_a_failed_rebootstrap(
     )
     booted_out = False
     bootstrap_attempts = 0
+    bootstrap_always_fails = True
 
     def run(command: list[str]) -> subprocess.CompletedProcess[str]:
         nonlocal booted_out, bootstrap_attempts
@@ -1594,7 +1595,7 @@ def test_managed_service_reports_and_recovers_from_a_failed_rebootstrap(
             booted_out = True
         if command[:2] == ["launchctl", "bootstrap"]:
             bootstrap_attempts += 1
-            if bootstrap_attempts == 1:
+            if bootstrap_always_fails or bootstrap_attempts == 1:
                 return subprocess.CompletedProcess(command, 5, "", "bootstrap denied")
         return subprocess.CompletedProcess(command, 0, "", "")
 
@@ -1603,13 +1604,23 @@ def test_managed_service_reports_and_recovers_from_a_failed_rebootstrap(
 
     monkeypatch.setattr(service, "_run", run)
     monkeypatch.setattr(service, "status", status)
+    monkeypatch.setattr("spotter.daemon.SERVICE_COMMAND_TIMEOUT", 0.5)
 
+    # A bootstrap that never succeeds is still reported, not retried into silence.
     failed = asyncio.run(service.start())
-    recovered = asyncio.run(service.start())
-
     assert failed.health == RuntimeHealth.UNAVAILABLE
     assert failed.detail == "bootstrap denied"
+    assert bootstrap_attempts > 1, "a transient denial must be retried at all"
+
+    # `bootout` returns before launchd finishes unloading, so the bootstrap that
+    # follows it can be denied once and succeed a moment later. That is the
+    # common case on a real machine, and it must not fail the start.
+    bootstrap_always_fails = False
+    bootstrap_attempts = 0
+    booted_out = False
+    recovered = asyncio.run(service.start())
     assert recovered.health == RuntimeHealth.HEALTHY
+    assert bootstrap_attempts == 2
     assert bootstrap_attempts == 2
 
 

@@ -61,7 +61,10 @@ if TYPE_CHECKING:
 PROTOCOL_VERSION = CONTROL_PROTOCOL_VERSION
 CONTROL_TIMEOUT = 1.0
 GATE_TIMEOUT = 0.2
-START_TIMEOUT = 5.0
+# Must outlast the platform's respawn delay. Spotter now asks launchd not to
+# throttle (ThrottleInterval), but a service registered by an older build still
+# carries the 10s default until its definition is reinstalled.
+START_TIMEOUT = 15.0
 STOP_TIMEOUT = 5.0
 SERVICE_COMMAND_TIMEOUT = 10.0
 _MAX_REQUEST_BYTES = 64 * 1024
@@ -1231,6 +1234,14 @@ class ManagedServiceManager:
                     # integration registration repairable, but do not make
                     # launchd retry a removed executable forever.
                     "KeepAlive": {"PathState": {program[0]: True}},
+                    # launchd otherwise throttles a respawn to 10s, and setup
+                    # restarts this service more than once in that window: the
+                    # daemon measured ~10s of `Connection refused` between runs,
+                    # which every readiness budget here then lost against. A
+                    # managed restart is deliberate, not a crash loop, and the
+                    # KeepAlive PathState above is what still stops a removed
+                    # executable from being retried forever.
+                    "ThrottleInterval": 1,
                     "WorkingDirectory": str(home),
                     "EnvironmentVariables": {"SPOTTER_HOME": str(home)},
                     "StandardOutPath": str(log_path),
@@ -1315,6 +1326,23 @@ class ManagedServiceManager:
     async def status(self) -> DaemonStatus:
         return await self.client.status()
 
+    def _bootstrap(self, domain: str) -> "subprocess.CompletedProcess[str]":
+        """Register the service, tolerating a still-in-progress unload.
+
+        `launchctl bootout` returns before launchd has finished tearing the job
+        down, and a `bootstrap` issued into that window fails. Setup does exactly
+        that sequence whenever the service definition changed, and the failure
+        was not surfaced as unavailable, so setup carried on and died 30s later
+        at readiness verification with a misleading message. Retry until the
+        unload settles, bounded by the same budget as any other service command.
+        """
+        deadline = time.monotonic() + SERVICE_COMMAND_TIMEOUT
+        while True:
+            result = self._run(["launchctl", "bootstrap", domain, str(self.registration_path)])
+            if result.returncode == 0 or time.monotonic() >= deadline:
+                return result
+            time.sleep(0.25)
+
     async def start(self) -> DaemonStatus:
         current = await self.status()
         expected_construction = expected_runtime_construction_fingerprint(
@@ -1341,7 +1369,7 @@ class ManagedServiceManager:
                     return self._service_error(removed)
                 loaded = False
             if not loaded:
-                result = self._run(["launchctl", "bootstrap", domain, str(self.registration_path)])
+                result = self._bootstrap(domain)
             else:
                 build_changed = current.build_id != current_build_identity().build_id
                 if current.available and not build_changed and not construction_changed:
@@ -1405,11 +1433,12 @@ class ManagedServiceManager:
                     result = self._run(["launchctl", "kickstart", "-k", f"{domain}/{self.LABEL}"])
                     if result.returncode != 0:
                         return self._service_error(result)
-                    return await self.status()
+                    # The replacement process still has to bind its socket.
+                    return await self._wait_ready()
             else:
                 result = self._run(["systemctl", "--user", "restart", "spotterd.service"])
                 if result.returncode == 0:
-                    return await self.status()
+                    return await self._wait_ready()
         await self.stop()
         return await self.start()
 
