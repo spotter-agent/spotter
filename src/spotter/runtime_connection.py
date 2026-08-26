@@ -11,7 +11,7 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from spotter.app_server import (
@@ -837,7 +837,18 @@ class AppServerRecoveryLoop:
         }
         capabilities = _available_capabilities(client.capabilities)
         ended_at = time.time()
+        unloaded: list[str] = []
         for external_thread_id in sorted(discovered):
+            if _thread_status(discovered[external_thread_id]) == "notLoaded":
+                # `thread/resume` rejoins a *running* thread, but for one that is
+                # not loaded it reads the thread in from disk instead. Walking
+                # the whole history therefore opened every thread the server knew
+                # about: it ran out of file descriptors, `thread/list` began
+                # failing with EMFILE, and that took the connection down with it.
+                # A thread nobody is running has nothing live to observe. Wait for
+                # its status notification, which is what says it started.
+                unloaded.append(external_thread_id)
+                continue
             subscribed = True
             subscription_error: str | None = None
             try:
@@ -892,6 +903,24 @@ class AppServerRecoveryLoop:
                     occurred_at=ended_at,
                     identity=identity,
                     provenance=TraceProvenance("spotterd", "runtime_reconciled"),
+                    connection_epoch=epoch,
+                )
+            )
+
+        if unloaded:
+            # One record, not one per thread: this is the shape of the store, and
+            # a reader needs the count to know what reconciliation did not cover.
+            self._record(
+                TraceEvent(
+                    "runtime_threads_unloaded",
+                    {
+                        "runtime_attachment_id": attachment_id,
+                        "count": len(unloaded),
+                        "discovered": len(discovered),
+                    },
+                    event_id=f"spotter:unloaded:{attachment_id}:{epoch}",
+                    occurred_at=ended_at,
+                    provenance=TraceProvenance("spotterd", "runtime_threads_unloaded"),
                     connection_epoch=epoch,
                 )
             )
@@ -1521,6 +1550,14 @@ def _active_turn_id(thread: Mapping[str, Any]) -> str | None:
             turn_id = turn.get("id")
             if status in {"active", "inProgress", "running"} and isinstance(turn_id, str):
                 return turn_id
+    return None
+
+
+def _thread_status(summary: Mapping[str, Any]) -> str | None:
+    """The server's own load state for a thread, or None when it does not say."""
+    status = summary.get("status")
+    if isinstance(status, Mapping) and isinstance(status.get("type"), str):
+        return cast(str, status["type"])
     return None
 
 
