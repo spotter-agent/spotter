@@ -6,7 +6,7 @@ import pytest
 
 from spotter.gates import Gate
 from spotter.hook import journal_path, run_hook
-from spotter.redact import PLACEHOLDER, redact, redact_text, scan_text
+from spotter.redact import PLACEHOLDER, redact, redact_text
 from spotter.snapshot import StepJournal
 from spotter.trace import TraceEvent
 
@@ -104,7 +104,20 @@ def test_spotter_directories_are_owner_only(home: Path) -> None:
     assert (journal_path({"session_id": "perm"}).stat().st_mode & 0o077) == 0
 
 
-def test_scan_reports_without_revealing() -> None:
-    names = scan_text("export API_KEY=stillsecret")
-    assert names == ["assignment", "env_export"]  # scan reports every rule that would fire
-    assert "stillsecret" not in " ".join(names)
+def test_a_redacted_record_is_not_reported_as_still_exposed() -> None:
+    """`status`/`doctor` count exposure over parsed payloads, as the writer redacts.
+
+    Counting over the serialized line instead reported records the journal had
+    already redacted, so the warning could never be cleared by any migration.
+    """
+    path = journal_path({"session_id": "s3"})
+    journal = StepJournal(path)
+    journal.record(TraceEvent("tool_proposal", {"command": "export API_KEY=stillsecret"}))
+    record = StepJournal.load(path)[0]
+
+    # `assignment` runs first and takes the value, so `env_export` has nothing left
+    # to match — a scan that reports every rule that *would* fire overcounts here.
+    assert record.event.payload["redacted"] == ["assignment"]
+    assert "stillsecret" not in path.read_text()
+    # What the diagnostic counts: nothing is left for the redactor to remove.
+    assert redact(dict(record.event.payload))[1] == []

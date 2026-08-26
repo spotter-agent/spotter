@@ -103,12 +103,3 @@ def redact(value: object) -> tuple[object, list[str]]:
             fired.extend(hits)
         return out_list, fired
     return value, []
-
-
-def scan_text(text: str) -> list[str]:
-    """Rules that would fire, without producing the redacted text.
-
-    Used to report that an existing journal contains credentials without
-    printing them back to the terminal.
-    """
-    return [name for name, pattern, _ in _PATTERNS if pattern.search(text)]

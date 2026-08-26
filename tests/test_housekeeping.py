@@ -131,7 +131,10 @@ def test_status_warns_about_pre_redaction_credentials(
     }
     journal.write_text(json.dumps(record) + "\n")
     assert main(["status"]) == 1
-    assert "match credential patterns" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "credential-shaped values" in out
+    assert "leaked12345" not in out  # reported, never echoed back
+    assert "legacy" in out  # names the session so the warning can be acted on
 
 
 def test_snapshots_are_pruned_once_after_journals_go(
