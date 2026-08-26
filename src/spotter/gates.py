@@ -11,9 +11,11 @@ patch to this very file) no longer trips the gate. First shadow-mode field
 data showed 6/6 false positives from exactly that raw-string matching.
 """
 
+import os
 import posixpath
 import re
 import shlex
+import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass
 from fnmatch import fnmatch
@@ -63,6 +65,27 @@ _DEPENDENCY_MANIFESTS = frozenset(
         "Gemfile.lock",
     }
 )
+
+
+def _scratch_roots() -> frozenset[str]:
+    """Ephemeral directories an agent legitimately writes outside the workspace.
+
+    Shadow-mode field data over 213 sessions: ``workspace_escape`` produced 218
+    of 230 gate flags, and 131 of those 218 were scratch writes such as
+    ``/tmp/pr-body.md``. Confining an agent to its workspace was never meant to
+    forbid a temp file, and enforcing that rule as written would block ordinary
+    work. The other 87 were writes into sibling repository checkouts, which this
+    allowance deliberately still blocks.
+
+    Both spellings are kept because macOS resolves ``/tmp`` and ``$TMPDIR``
+    through ``/private`` and agents produce either form.
+    """
+    declared = {"/tmp", "/var/tmp", tempfile.gettempdir()}
+    resolved = {os.path.realpath(root) for root in declared}
+    return frozenset(posixpath.normpath(root.replace("\\", "/")) for root in declared | resolved)
+
+
+_SCRATCH_ROOTS = _scratch_roots()
 
 _SHELLS = frozenset({"sh", "bash", "zsh", "dash"})
 _CHAIN_SEPARATORS = frozenset({";", "&", "&&", "||", "(", ")"})
@@ -184,6 +207,10 @@ class Gate:
                     continue
                 if path == root or path.startswith(root + "/"):
                     path = posixpath.relpath(path, root)
+                elif _is_scratch(path):
+                    # Ephemeral scratch, not an escape. The path stays absolute so
+                    # forbidden_paths still applies to it.
+                    pass
                 else:
                     return GateDecision(False, "workspace_escape", f"path leaves workspace: {raw}")
             if path.startswith(".."):
@@ -194,6 +221,11 @@ class Gate:
                 if fnmatch(path, pattern):
                     return GateDecision(False, "forbidden_path", f"{path} matches {pattern}")
         return uncertain or ALLOW
+
+
+def _is_scratch(path: str) -> bool:
+    """True for a normalized absolute path inside an ephemeral scratch root."""
+    return any(path == root or path.startswith(root + "/") for root in _SCRATCH_ROOTS)
 
 
 def _rm_hits_catastrophic_target(rest: list[str]) -> bool:
