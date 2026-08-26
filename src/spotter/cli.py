@@ -119,7 +119,7 @@ from spotter.provenance import (
     summarize_blocks,
     summarize_interventions,
 )
-from spotter.redact import scan_text
+from spotter.redact import redact
 from spotter.replay import (
     ReplayError,
     branch_coverage,
@@ -1918,6 +1918,7 @@ def _status_main() -> int:
     unreadable = 0
     reviewer_errors = 0
     exposed = 0
+    exposed_sessions: list[str] = []
     for journal in journals:
         try:
             records = StepJournal.load(journal)
@@ -1926,9 +1927,14 @@ def _status_main() -> int:
             unreadable += 1
             continue
         reviewer_errors += sum(1 for r in records if r.event.kind == "reviewer_error")
-        exposed += sum(
-            1 for line in journal.read_text(errors="replace").splitlines() if scan_text(line)
-        )
+        # Scan the same domain the redactor writes: parsed payload values. Scanning
+        # the serialized JSONL line instead matched adjacent and structural text the
+        # redactor never sees as one string, so records this journal had already
+        # redacted were still reported and no migration could have cleared them.
+        journal_exposed = sum(1 for record in records if redact(dict(record.event.payload))[1])
+        if journal_exposed:
+            exposed += journal_exposed
+            exposed_sessions.append(journal.stem)
     if reviewer_errors:
         warned = True
         print(f"reviewer errors recorded: {reviewer_errors} (see {home / 'logs'})")
@@ -1944,9 +1950,12 @@ def _status_main() -> int:
             print(f"reviews today: {totals['day']}  |  tokens recorded: {totals['tokens']}")
     if exposed:
         warned = True
+        shown = ", ".join(exposed_sessions[:3])
+        more = f" (+{len(exposed_sessions) - 3} more)" if len(exposed_sessions) > 3 else ""
         print(
-            f"WARNING: {exposed} pre-redaction lines match credential patterns; "
-            "these journals predate redaction"
+            f"WARNING: {exposed} record(s) in {len(exposed_sessions)} session(s) still hold "
+            f"credential-shaped values; these predate redaction and are not rewritten in place: "
+            f"{shown}{more}"
         )
     verdict = worst(runtime_checks)
     if verdict == FAIL or unreadable or ledger_broken:
