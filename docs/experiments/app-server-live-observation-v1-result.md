@@ -151,8 +151,12 @@ all:
 {"userAgent": "spotter/0.149.1 (…)", "codexHome": "…", "platformFamily": "unix", "platformOs": "macos"}
 ```
 
-So `unknown` is the honest state, not a defect. It reads like one, which is worth fixing in the
-message rather than in the logic.
+So `unknown` is the honest state, not a defect. It read like one, so the message now says why:
+
+```text
+[info] live control: steer/interrupt unknown/unknown; the App Server advertises no
+       capabilities, so this resolves the first time a control is used
+```
 
 ### `turn/steer` works, and the steer was adopted
 
@@ -178,8 +182,34 @@ The steer arrives as a user message in the same turn, and the model observably a
 the premise #22/#23/#34 rest on, verified live for the first time.
 
 **What it does not show.** The steer landed *after* the agent had finished counting, so this is
-same-turn delivery and adoption — not mid-generation redirection. A steer racing an in-progress
-response is a different case and was not tested.
+same-turn delivery and adoption — not mid-generation redirection. That case is measured below.
+
+### A steer does not preempt work already in flight
+
+Repeated against a long response, steering as soon as the first streaming event appeared:
+
+```text
+첫 스트리밍 이벤트 관측
+steer 수락 (+0.00s): {'turnId': '01a03cd0-2f1a-7be1-a1c5-774603d23bbe'}
+```
+
+The agent nonetheless finished the whole 4,009-character essay before the steer was answered:
+
+| Item | Length |
+| --- | ---: |
+| `userMessage` — "Write a detailed 600-word explanation…" | 157 |
+| `agentMessage` — the full essay, `phase=final_answer` | 4009 |
+| `userMessage` — "Stop. Ignore the previous request…" | 125 |
+| `agentMessage` — `redirected` | 10 |
+
+**`turn/steer` queues as the next user message in the turn; it does not redirect a response that is
+already generating.** The timing rules out a race: the steer was accepted immediately after
+generation was observably underway, and the response still ran to completion.
+
+This is a material limit on live supervision. A steer can change what happens *after* the current
+response, not the work inside it — so the wasted actions a nudge is meant to prevent still happen.
+Preempting them is what `turn/interrupt` and #26 are for, and the boundary between the two is now
+measured rather than assumed.
 
 Spotter's daemon observed the exchange independently, journaling both prompts and both replies. The
 apparent doubling of each item is `lifecycle: started` and `lifecycle: completed` for the same item,
