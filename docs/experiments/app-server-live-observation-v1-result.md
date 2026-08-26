@@ -215,6 +215,61 @@ Spotter's daemon observed the exchange independently, journaling both prompts an
 apparent doubling of each item is `lifecycle: started` and `lifecycle: completed` for the same item,
 with the completion carrying `observed_start` — timing data, not duplicate records.
 
+## Update — the detection pipeline fires, and the review arrives too late
+
+**Measured:** 2026-08-26, with `reviewer.on_signals = true`. Delivery stayed off, so no advisory was
+sent to anything.
+
+`spotter metrics` had always said *"no active signal candidates recorded"*, because the signal
+families need ThreadState, which needs App Server observation, which was never live. It is live now.
+
+A session was driven that runs five commands guaranteed to fail. On a thread Spotter owned.
+
+### Signals fire, with evidence and escalating severity
+
+```json
+{"signal_type": "failure_streak", "severity_hint": 2, "state_version": 99,
+ "features": {"consecutive_failures": 2}, "evidence_event_ids": ["codex:5b5b0608…", "codex:b3e4bf89…"]}
+{"signal_type": "failure_streak", "severity_hint": 5, "state_version": 255,
+ "evidence_event_ids": ["codex:5b5b0608…", …5 events…]}
+```
+
+Three further candidates were `signal_candidate_suppressed` — the cooldown and merge behaviour
+working, not lost detections. `spotter metrics` now reports `failure_streak: 0/5` and
+`budget_anomaly: 0/1` where it previously had nothing to report at all.
+
+### The reviewer job was created and then discarded
+
+```json
+{"review_job_id": "3c338f1b…", "signal_id": "191a5749…",
+ "reason": "target_not_active", "target_turn_id": "9d745a20…", "target_connection_epoch": 54}
+```
+
+The turn ended before the job could be dispatched. Six jobs were discarded this way.
+
+### Detection delay, measured for the first time
+
+```text
+Supervision lifecycle: signal_delay=avg=1340.87ms max=4205.83ms (6/6) … discarded=6
+```
+
+Previously `unknown (0/0)`. This is the quantity #24 exists to measure.
+
+### What these two results say together
+
+- A signal takes **~1.3s on average** to be raised, up to 4.2s.
+- A short turn finishes inside that window, so the review is never dispatched: `target_not_active`.
+- Even when a review does land, [a steer cannot preempt a response already
+  generating](#a-steer-does-not-preempt-work-already-in-flight) — it queues as the next user message.
+
+So live nudging, as it stands, cannot affect a short turn at all, and cannot affect the work inside
+whatever response is already running in a long one. That is a much narrower envelope than
+"deliver `VERIFY`/`NUDGE` to the active turn" suggests, and it is now measured rather than assumed.
+
+It does not mean the mechanism is worthless — it means the benefit question in #34 has to be asked
+about turns long enough for a review to land, and about what happens *after* the current response.
+Neither this run nor any before it has evidence about that.
+
 ## Required follow-ups
 
 1. run the actual two-TUI validation through `spotter codex`;
