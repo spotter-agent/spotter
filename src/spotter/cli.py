@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 import shlex
+import socket
 import stat
 import subprocess
 import sys
@@ -17,6 +18,7 @@ from fcntl import LOCK_EX, LOCK_NB, LOCK_UN, flock
 from io import StringIO
 from pathlib import Path
 from typing import cast
+from urllib.parse import urlsplit
 
 from spotter.app_server_endpoint import display_app_server_endpoint
 from spotter.budget import (
@@ -47,7 +49,7 @@ from spotter.data_inventory import (
     DataInventoryError,
     DataResourceInspection,
 )
-from spotter.doctor import FAIL, INFO, OK, WARN, check_runtime, worst
+from spotter.doctor import FAIL, INFO, OK, WARN, Check, check_runtime, worst
 from spotter.doctor import run as run_doctor
 from spotter.effects import (
     EffectResolution,
@@ -1766,6 +1768,57 @@ def _endpoint_unreachable(detail: str) -> bool:
     )
 
 
+def _observation_check() -> "Check | None":
+    return next((check for check in check_runtime(deep=True) if check.name == "observation"), None)
+
+
+def _endpoint_listening(endpoint: str) -> bool:
+    """True when something already accepts connections at the endpoint."""
+    parsed = urlsplit(endpoint)
+    host, port = parsed.hostname, parsed.port
+    if host is None or port is None:
+        return True  # not a host/port endpoint; never try to start one
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.settimeout(0.5)
+        return probe.connect_ex((host, port)) == 0
+
+
+def _start_app_server(agent_path: str, endpoint: str, *, timeout: float = 20.0) -> bool:
+    """Start the external App Server, detached, and wait for it to answer.
+
+    Spotter still does not *own* it: it is never stopped, it outlives this
+    process on purpose, and anything else may attach to it. What changes is that
+    a user no longer has to keep a terminal open to have one at all, which was
+    the single largest thing standing between this and ordinary use.
+
+    Returns whether the endpoint became reachable.
+    """
+    parsed = urlsplit(endpoint)
+    host, port = parsed.hostname, parsed.port
+    if host is None or port is None:
+        return False
+    print(f"Starting the external App Server: {agent_path} app-server --listen {endpoint}")
+    try:
+        subprocess.Popen(  # noqa: S603 - the path comes from Spotter's own manifest
+            [agent_path, "app-server", "--listen", endpoint],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,  # survives the exec into the TUI
+        )
+    except OSError as error:
+        print(f"could not start the App Server: {error}", file=sys.stderr)
+        return False
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.settimeout(0.5)
+            if probe.connect_ex((host, port)) == 0:
+                return True
+        time.sleep(0.25)
+    return False
+
+
 def _codex_main(args: Sequence[str]) -> int:
     """Launch Codex through Spotter's verified external App Server."""
     try:
@@ -1785,17 +1838,30 @@ def _codex_main(args: Sequence[str]) -> int:
     if "--remote" in args:
         print("Codex launch unavailable: Spotter supplies --remote", file=sys.stderr)
         return 1
-    if _daemon_main("start") != 0:
+    # Before the daemon is judged, because the daemon reports itself degraded for
+    # exactly this reason: nothing is listening. Checking its health first made
+    # the two deadlock — it could never become healthy, and the server that would
+    # have fixed it was never started. Only ever started, never stopped, so a
+    # server anything else is using is left alone.
+    started_server = False
+    if not _endpoint_listening(manifest.app_server_endpoint):
+        started_server = _start_app_server(manifest.agent_path, manifest.app_server_endpoint)
+    if _daemon_main("start") != 0 and not started_server:
         return 1
-    observation = next(
-        (check for check in check_runtime(deep=True) if check.name == "observation"), None
-    )
+    observation = _observation_check()
+    if started_server and (observation is None or observation.status != OK):
+        # The daemon has its own reconnect backoff, which can already be running
+        # from before the server existed. Give it that window rather than judging
+        # a server we just started by a probe taken microseconds later.
+        deadline = time.monotonic() + 35.0
+        while time.monotonic() < deadline:
+            time.sleep(1.0)
+            observation = _observation_check()
+            if observation is not None and observation.status == OK:
+                break
     if observation is None or observation.status != OK:
         detail = observation.detail if observation is not None else "probe produced no result"
         print(f"Codex launch unavailable: {detail}", file=sys.stderr)
-        # By far the most common cause is that nothing is listening, because
-        # Spotter deliberately does not own the App Server. Saying only what is
-        # broken leaves the user to rediscover the command that fixes it.
         if _endpoint_unreachable(detail):
             print(
                 f"Start the external App Server Spotter is configured against, and leave it "
