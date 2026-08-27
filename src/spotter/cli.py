@@ -1942,9 +1942,16 @@ def _integration_main(
             manifest = integration.setup()
             print(f"Codex integration: {manifest.state} ({integration.manifest_path})")
             if manifest.app_server_endpoint is None:
+                # "pending" reads as "fine for now". It is not: without an
+                # endpoint this install journals through hooks and nothing else,
+                # so say which capabilities are off rather than only how to fix it.
                 print(
-                    "App Server endpoint: pending; start a shared server and rerun setup with "
-                    "--endpoint ws://127.0.0.1:4500"
+                    "App Server endpoint: pending — hook journaling and deterministic "
+                    "gates work, but observation, signal detection, and live control "
+                    "stay off until an endpoint is set.\n"
+                    "  Set one up with:\n"
+                    "    codex app-server --listen ws://127.0.0.1:4500\n"
+                    "    spotter setup codex --endpoint ws://127.0.0.1:4500"
                 )
             else:
                 endpoint = display_app_server_endpoint(manifest.app_server_endpoint)

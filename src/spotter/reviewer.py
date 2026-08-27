@@ -167,10 +167,30 @@ async def _stop_process_group(process: asyncio.subprocess.Process) -> None:
         await process.wait()
 
 
+def _codex_executable() -> str:
+    """The Codex the integration was set up against, not whatever `PATH` says.
+
+    The reviewer runs from the daemon and from hooks, and neither inherits the
+    shell's `PATH`. Resolving by bare name failed every review on a machine whose
+    Codex is not in a system directory — 59 consecutive `[Errno 2] No such file
+    or directory: 'codex'`, silently, because a reviewer error is journaled and
+    not surfaced. The integration manifest already pins the exact path that setup
+    verified; use that, and keep the bare name only as a fallback.
+    """
+    with suppress(Exception):
+        from spotter.integration import IntegrationManifest
+        from spotter.paths import RuntimeLayout
+
+        manifest = IntegrationManifest.load(RuntimeLayout.discover().integration_manifest)
+        if manifest is not None and manifest.agent_path:
+            return manifest.agent_path
+    return "codex"
+
+
 def _codex_command(model: str, scratch: str, schema: Path, answer: Path, prompt: str) -> list[str]:
     model_args = [] if model in ("", "default") else ["-m", model]
     return [
-        "codex",
+        _codex_executable(),
         "exec",
         "-C",
         scratch,
