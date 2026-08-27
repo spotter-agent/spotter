@@ -166,3 +166,31 @@ def test_inflight_lock_skips_duplicate_review(
         assert main(["review", "--session", "busy"]) == 0
     assert called == []  # no duplicate model call
     assert "already in flight" in capsys.readouterr().err
+
+
+def test_reviewer_uses_the_codex_the_integration_was_set_up_against(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Neither the daemon nor a hook inherits the shell's PATH.
+
+    Resolving `codex` by bare name failed every review on a machine whose Codex
+    is not in a system directory — 59 consecutive `[Errno 2]`, journaled and
+    never surfaced. The manifest already pins the path setup verified.
+    """
+    from spotter import reviewer
+
+    monkeypatch.setattr(
+        reviewer, "_codex_executable", lambda: "/opt/homebrew/bin/codex", raising=True
+    )
+    command = reviewer._codex_command("default", str(tmp_path), tmp_path / "s", tmp_path / "a", "p")
+    assert command[0] == "/opt/homebrew/bin/codex"
+    assert command[1] == "exec"
+
+
+def test_reviewer_falls_back_to_the_bare_name_without_a_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from spotter import reviewer
+
+    monkeypatch.setenv("SPOTTER_HOME", str(tmp_path))  # no integration manifest here
+    assert reviewer._codex_executable() == "codex"
