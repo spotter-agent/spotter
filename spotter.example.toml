@@ -20,6 +20,9 @@ model = "default"
 
 [gates]
 forbidden_paths = []
+# Directories whose children are each a workspace. A multi-repo checkout is one
+# job: without this, editing a sibling repository reads as leaving the workspace.
+# workspace_roots = ["~/src"]
 block_dependency_changes = false
 
 # Exact server/tool metadata takes precedence over MCP name heuristics. Unknown

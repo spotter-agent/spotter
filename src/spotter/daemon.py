@@ -413,6 +413,7 @@ class DaemonClient:
                 },
                 "gates": {
                     "forbidden_paths": list(gates.forbidden_paths),
+                    "workspace_roots": list(gates.workspace_roots),
                     "block_dependency_changes": gates.block_dependency_changes,
                 },
                 "root": root,
@@ -979,10 +980,15 @@ def _evaluate_gate(raw: object) -> dict[str, Any]:
     if not isinstance(proposal, dict) or not isinstance(gates, dict):
         raise DaemonProtocolError("gate proposal and config must be objects")
     forbidden_paths = gates.get("forbidden_paths")
+    # Absent on a peer that predates the field: an older client must not fail the
+    # gate, it just has no declared sibling workspaces.
+    workspace_roots = gates.get("workspace_roots", [])
     block_dependencies = gates.get("block_dependency_changes")
     if (
         not isinstance(forbidden_paths, list)
         or not all(isinstance(path, str) for path in forbidden_paths)
+        or not isinstance(workspace_roots, list)
+        or not all(isinstance(path, str) for path in workspace_roots)
         or not isinstance(block_dependencies, bool)
         or (root is not None and not isinstance(root, str))
         or not isinstance(config_generation, str)
@@ -1002,9 +1008,9 @@ def _evaluate_gate(raw: object) -> dict[str, Any]:
         evaluation_ms = 0.0
     else:
         started = time.perf_counter_ns()
-        decision = Gate(tuple(forbidden_paths), block_dependencies, root).check(
-            TraceEvent("tool_proposal", dict(proposal))
-        )
+        decision = Gate(
+            tuple(forbidden_paths), block_dependencies, root, tuple(workspace_roots)
+        ).check(TraceEvent("tool_proposal", dict(proposal)))
         evaluation_ms = (time.perf_counter_ns() - started) / 1_000_000
     return {
         "decision": {

@@ -120,6 +120,13 @@ class Gate:
     forbidden_paths: tuple[str, ...] = ()
     block_dependency_changes: bool = False
     root: str | None = None  # absolute workspace root; enables absolute-path judgment
+    # Directories whose immediate children are each a workspace. Field data:
+    # every remaining `workspace_escape` on a real machine was one repository in
+    # a multi-repo checkout editing another, under prompts that asked for exactly
+    # that — an infra-wide OOM investigation touching twelve service repos, a
+    # cross-region deploy, cross-service feature work. The job was the checkout,
+    # not the directory the shell happened to start in.
+    workspace_roots: tuple[str, ...] = ()
 
     def check(self, event: TraceEvent) -> GateDecision:
         """Gate a pending action event. Non-action events always pass."""
@@ -192,6 +199,20 @@ class Gate:
                 return GateDecision(False, "dd_device", "writing to a raw device")
         return ALLOW
 
+    def _sibling_workspace(self, path: str) -> str | None:
+        """The declared workspace this absolute path belongs to, if any."""
+        for raw_root in self.workspace_roots:
+            parent = posixpath.normpath(
+                posixpath.expanduser(raw_root.replace("\\", "/")) if raw_root else raw_root
+            )
+            if not parent or not posixpath.isabs(parent) or not path.startswith(parent + "/"):
+                continue
+            remainder = path[len(parent) + 1 :]
+            project = remainder.split("/", 1)[0]
+            if project and "/" in remainder:  # a file inside a project, not the project itself
+                return posixpath.join(parent, project)
+        return None
+
     def check_paths(self, paths: Iterable[str]) -> GateDecision:
         uncertain: GateDecision | None = None
         for raw in paths:
@@ -212,8 +233,13 @@ class Gate:
                         True, "unknown_workspace", f"fail-open: cannot judge absolute path: {raw}"
                     )
                     continue
+                sibling = self._sibling_workspace(path)
                 if path == root or path.startswith(root + "/"):
                     path = posixpath.relpath(path, root)
+                elif sibling is not None:
+                    # Relative to that project, not to the shared parent, so a
+                    # `secrets/*` pattern still means the same thing there.
+                    path = posixpath.relpath(path, sibling)
                 elif _is_scratch(path):
                     # Ephemeral scratch, not an escape. The path stays absolute so
                     # forbidden_paths still applies to it.

@@ -257,6 +257,7 @@ def run_hook(
     cwd = payload.get("cwd")
     gate = Gate(
         forbidden_paths=config.gates.forbidden_paths,
+        workspace_roots=config.gates.workspace_roots,
         block_dependency_changes=config.gates.block_dependency_changes,
         root=str(cwd) if isinstance(cwd, str) else None,
     )

@@ -129,3 +129,31 @@ def test_gate_only_inspects_tool_proposals() -> None:
     assert Gate().check(event).allowed  # a message about a command is not an action
     proposal = TraceEvent("tool_proposal", {"command": "rm -rf /"})
     assert not Gate().check(proposal).allowed
+
+
+def test_sibling_repositories_in_a_declared_workspace_are_not_an_escape() -> None:
+    """A multi-repo checkout is one job, not an escape from whichever repo cwd is.
+
+    Field data: 236 of 238 recorded `workspace_escape` flags on a real machine
+    were this, under prompts that asked for exactly it — an infra-wide OOM
+    investigation touching twelve service repos, a cross-region deploy, and
+    cross-service feature work.
+    """
+    gate = Gate(
+        forbidden_paths=("secrets/*",),
+        root="/checkouts/infra",
+        workspace_roots=("/checkouts",),
+    )
+    assert gate.check_paths(["/checkouts/analytics/app/services/run.py"]).allowed
+    assert gate.check_paths(["../analytics/app/services/run.py"]).allowed  # same write
+
+    # `forbidden_paths` is relative to that project, not the shared parent, so it
+    # still means the same thing inside a sibling.
+    assert not gate.check_paths(["/checkouts/analytics/secrets/key"]).allowed
+
+    # Outside the declared roots is still an escape, and so is the parent itself.
+    assert not gate.check_paths(["/somewhere/else/main.py"]).allowed
+    assert not gate.check_paths(["/checkouts/loose-file.txt"]).allowed
+    assert (
+        not Gate(root="/checkouts/infra").check_paths(["/checkouts/analytics/app/run.py"]).allowed
+    )  # undeclared: unchanged behaviour

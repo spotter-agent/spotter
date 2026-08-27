@@ -70,7 +70,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "max_per_session": 20,
         "max_per_day": 100,
     },
-    "gates": {"forbidden_paths": [], "block_dependency_changes": False},
+    "gates": {
+        "forbidden_paths": [],
+        "workspace_roots": [],
+        "block_dependency_changes": False,
+    },
     "mcp_semantics": {},
 }
 
@@ -86,6 +90,7 @@ CONFIG_ACTIVATION_BOUNDARIES: Mapping[str, ActivationBoundary] = MappingProxyTyp
         "reviewer.max_per_session": ActivationBoundary.HOT,
         "reviewer.max_per_day": ActivationBoundary.HOT,
         "gates.forbidden_paths": ActivationBoundary.NEXT_TURN,
+        "gates.workspace_roots": ActivationBoundary.NEXT_TURN,
         "gates.block_dependency_changes": ActivationBoundary.NEXT_TURN,
         "observation_only": ActivationBoundary.NEXT_TURN,
         "snapshot_on_patch": ActivationBoundary.HOT,
@@ -159,6 +164,9 @@ class ReviewerConfig:
 @dataclass(frozen=True)
 class GatesConfig:
     forbidden_paths: tuple[str, ...] = ()
+    # Directories whose children are each a workspace. A multi-repo checkout is
+    # one job, not an escape from whichever repo the shell happens to sit in.
+    workspace_roots: tuple[str, ...] = ()
     block_dependency_changes: bool = False
 
 
@@ -219,6 +227,7 @@ class SpotterConfig:
             ),
             gates=GatesConfig(
                 forbidden_paths=_string_tuple(gates, "forbidden_paths"),
+                workspace_roots=_string_tuple(gates, "workspace_roots"),
                 block_dependency_changes=_bool(gates, "block_dependency_changes", False),
             ),
             mcp_semantics=_mcp_semantics(raw),
@@ -568,7 +577,7 @@ def _merge_repository_layer(effective: dict[str, Any], raw: Mapping[str, Any]) -
         gates = {}
         effective["gates"] = gates
     for key in repository_gates:
-        if key not in {"forbidden_paths", "block_dependency_changes"}:
+        if key not in {"forbidden_paths", "workspace_roots", "block_dependency_changes"}:
             ignored.append(f"gates.{key}")
 
     if "forbidden_paths" in repository_gates:
