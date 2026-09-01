@@ -824,7 +824,20 @@ def test_cached_hook_from_the_installed_old_build_fails_open_before_reconcile(
 def test_missing_packaged_bridge_command_is_bounded_and_fail_open(
     homes: tuple[Path, Path],
 ) -> None:
-    manager, _ = _manager(homes)
+    spotter_home, codex_home = homes
+    # A path guaranteed absent, not the real "/opt/homebrew/bin/spotter" that
+    # _manager() uses: on a contributor machine with Spotter installed via the
+    # supported Homebrew tap, that path *is* executable, so `[ -x ... ]` would
+    # pass and this would shell out to the real installed daemon-less binary
+    # instead of exercising the "packaged bridge missing" fail-open path -
+    # flaking under load once the real process misses the 1s budget below.
+    manager = IntegrationManager(
+        codex_home=codex_home,
+        codex=CodexInstall("/opt/homebrew/bin/codex", "codex 1.0", True, True),
+        service=FakeService(spotter_home / "service/spotterd"),
+        spotter_executable=str(spotter_home / "not-installed/bin/spotter"),
+        verifier=lambda _: True,
+    )
 
     result = subprocess.run(
         ["sh", "-c", manager._hook_command()],  # noqa: SLF001 - generated host contract
