@@ -22,8 +22,8 @@ import re
 import subprocess
 import time
 import uuid
-from collections.abc import Sequence
-from contextlib import suppress
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -211,6 +211,56 @@ def _run_arm(
         timeout=timeout,
         env=env,
     )
+
+
+@contextmanager
+def _locked_worktree(worktree: str) -> Iterator[str | None]:
+    try:
+        locked = subprocess.run(
+            [
+                "git",
+                "-C",
+                worktree,
+                "worktree",
+                "lock",
+                "--reason",
+                "spotter-experiment",
+                worktree,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        yield f"WORKTREE_LOCK_FAILED:{error}"
+        return
+    if locked.returncode != 0:
+        yield f"WORKTREE_LOCK_FAILED:{locked.stderr.strip() or 'git exited nonzero'}"
+        return
+    try:
+        yield None
+    finally:
+        with suppress(OSError, subprocess.SubprocessError):
+            subprocess.run(
+                ["git", "-C", worktree, "worktree", "unlock", worktree],
+                capture_output=True,
+                timeout=10,
+            )
+
+
+def _worktree_error(worktree: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "-C", worktree, "rev-parse", "--is-inside-work-tree"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        return f"WORKTREE_UNAVAILABLE_BEFORE_CHECK:{error}"
+    if result.returncode != 0:
+        return f"WORKTREE_UNAVAILABLE_BEFORE_CHECK:{result.stderr.strip() or 'git exited nonzero'}"
+    return None
 
 
 def _pair_environment_preflight(prepared: list[tuple[str, str, ForkPlan]]) -> str:
@@ -405,6 +455,17 @@ def _execute_arm(
             agent_reported_tokens,
             agent_elapsed_ms,
         )
+    if worktree_error := _worktree_error(plan.worktree):
+        return (
+            agent_exit,
+            None,
+            ArmClassification.INFRA_FAIL,
+            "",
+            "",
+            worktree_error,
+            agent_reported_tokens,
+            agent_elapsed_ms,
+        )
     try:
         completed = subprocess.run(
             check,
@@ -565,17 +626,30 @@ def run_experiment(
                         None,
                     )
                 else:
-                    execution = _execute_arm(
-                        plan,
-                        prompt,
-                        environment_preflight,
-                        check=check,
-                        sandbox=sandbox,
-                        timeout=timeout,
-                        model=model,
-                        reasoning_effort=reasoning_effort,
-                        codex_home=codex_home,
-                    )
+                    with _locked_worktree(plan.worktree) as lock_error:
+                        if lock_error:
+                            execution = (
+                                None,
+                                None,
+                                ArmClassification.INFRA_FAIL,
+                                "",
+                                "",
+                                lock_error,
+                                None,
+                                None,
+                            )
+                        else:
+                            execution = _execute_arm(
+                                plan,
+                                prompt,
+                                environment_preflight,
+                                check=check,
+                                sandbox=sandbox,
+                                timeout=timeout,
+                                model=model,
+                                reasoning_effort=reasoning_effort,
+                                codex_home=codex_home,
+                            )
             else:
                 execution = (None, None, ArmClassification.UNJUDGEABLE, "", "", None, None, None)
             (
