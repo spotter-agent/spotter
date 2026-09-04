@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "measured_at": "2026-09-04",
+  "protocol": "fork-natural-failure-external-v6",
+  "freeze": {
+    "pull_request": 360,
+    "commit": "e2fc9d779f28a8fb2b18359171f2d2a2543c9adb",
+    "spotter_implementation": "703f3e6725c32e54f0b76a8066368c3b26b248cf"
+  },
+  "environment": {
+    "codex_version": "codex-cli 0.153.1",
+    "python": "3.14.7",
+    "docker_version": "29.4.0",
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "low",
+    "sandbox": "workspace-write",
+    "isolated_homes": true,
+    "fresh_spotter_venv": true
+  },
+  "source": {
+    "task_id": "swebench/verified/pydata__xarray-6992",
+    "session_id": "01a06a49-d733-7b43-9d07-e60540da3138",
+    "branch_step": 2,
+    "prefix_id": "2bbdb26e5dfaff2933c1a36b648be2e297f89ff7968648fb39f64f1a84db35af",
+    "snapshot": "328539437225b6153d1ad9ae3dec374abf949262",
+    "snapshot_tree": "c325c914bfff5bd2face1a7e641cfcece6b0a3e1",
+    "environment_fingerprint": "9e7b6c1caa72c01c69286891ba3c3eb48bd5af2f187b7198df3da6714c8ddaf4",
+    "scorer_sha256": "fb3f0bfc21aa5e2e81a65f3a24f7dc93835abfc1e90921d9607d5d6c8f5f50b9",
+    "scorer_bytes": 9778,
+    "forkable_exact": 1,
+    "earliest_forkable_step": 2
+  },
+  "neutral_execution": {
+    "experiment_id": "0906b996-a3eb-4231-bcf5-ce261a4c70ba",
+    "started_at": "2026-09-04T05:20:52.306166+00:00",
+    "finished_at": "2026-09-04T05:33:04.788941+00:00",
+    "pre_run_raw_sha256": "a3fd56189ba50bdef627cf84f3ae81f906c9b8b6c46d3cabf4c57293fae04c2a",
+    "post_run_raw_sha256": "07796e5b7bfbdd9800f54e12dd6ed249045e77bab66e00ada655edfb379fc43a",
+    "raw_bytes": 113087,
+    "planned_pairs": 3,
+    "continuations_started": 6,
+    "agent_exit_zero": 6,
+    "scorers_reached_tests": 6,
+    "judgeable_pairs": 3,
+    "mechanical_disagreements": 0,
+    "environment_mismatches": 0,
+    "scorer_infrastructure_failures": 0,
+    "accepted_task_fail_classifications": 6,
+    "raw_runner_summary_accepted": true,
+    "reported_token_range": [17276, 26638],
+    "agent_elapsed_seconds_range": [45.054, 93.459],
+    "pytest_elapsed_seconds_range": [15.45, 18.14],
+    "pytest_failed_each": 12,
+    "pytest_passed_each": 946
+  },
+  "follow_up_issue": 42,
+  "calibration": {
+    "natural_failure_region_sampled": true,
+    "neutral_noise_measured": true,
+    "measured_region_disagreement": "0/3"
+  },
+  "decision": "NO_GO_REPRESENTATIVE_CAUSAL_USE",
+  "issue_42_complete": false
+}
