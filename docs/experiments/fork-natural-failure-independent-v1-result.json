@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "measured_at": "2026-09-04",
+  "protocol": "fork-natural-failure-independent-v1",
+  "freeze": {
+    "pull_request": 363,
+    "commit": "acc1b71a83942caa2af86b167e329dd5c42888a5",
+    "protocol_sha256": "7010e3095c53817e5fd068ab8d88c1e0bf3e6a6b48536923a8c9e3fbf07be1e2"
+  },
+  "environment": {
+    "codex_version": "codex-cli 0.153.1",
+    "python": "3.12.13",
+    "docker_version": "29.4.0",
+    "platform": "macOS-26.5.1-arm64-arm-64bit",
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "low",
+    "sandbox": "workspace-write",
+    "isolated_homes": true,
+    "fresh_spotter_venv": true
+  },
+  "task_set": {
+    "id": "swebench-verified-independent",
+    "version": 1,
+    "sha256": "d928ac5c4c1e1ca8d970644091799919fbf25d07bbc095127d50503df8abef9b",
+    "task_manifest_sha256": {
+      "swebench/verified/pallets__flask-5014": "47c05af88b2e118fb95571422535b0a840702a43a130b36cbb10ca48f64b1cb5",
+      "swebench/verified/psf__requests-2931": "5dfbc854695f3b97565d8a372f938f928291fb1ad1f308100c64c70bfed7a164",
+      "swebench/verified/pytest-dev__pytest-10356": "835f7d5e681f61077789c7d2ac347c0ad89230c5771406af9313003d3c0faacb",
+      "swebench/verified/pylint-dev__pylint-8898": "1f73be6d1ccea07673d939b93f4526d1a03bca8be9602bcadeefe3530a85d88a",
+      "swebench/verified/sphinx-doc__sphinx-7590": "2d566a8af59b60fb4535f7e6917e350b17535fa93d6c9824cf9cc6edc0d51ff7",
+      "swebench/verified/sympy__sympy-13878": "f767b3dfa53075f8cb5e5c793b8e4fbaecfb09b086d362a7186a9929ea06aac8"
+    }
+  },
+  "task_batch": {
+    "run_id": "506bad35-ea0b-4a49-b555-0d1cf987c8e9",
+    "started_at": "2026-09-04T05:58:38.251859+00:00",
+    "finished_at": "2026-09-04T06:28:14.386988+00:00",
+    "raw_sha256": "e56e490190b92edb57761a58de7e425474212219eabf6ec7b5145583a60035c9",
+    "raw_bytes": 99170,
+    "arms": 12,
+    "agent_exit_zero": 12,
+    "setup_failures": 0,
+    "scorer_failures": 0,
+    "replay_sources_captured": 12,
+    "replay_source_failures": 0,
+    "mechanically_judgeable_pairs": 6,
+    "control": {"PASS": 6},
+    "guidance": {"PASS": 6},
+    "rows": [
+      {"task_id": "swebench/verified/pallets__flask-5014", "arm": "guidance", "classification": "PASS", "replay_source_session_id": "01a06aff-7782-7c23-8e8d-7a55f88391ea"},
+      {"task_id": "swebench/verified/pallets__flask-5014", "arm": "control", "classification": "PASS", "replay_source_session_id": "01a06b00-6545-7f83-9e34-ae0a5c0b3f3f"},
+      {"task_id": "swebench/verified/psf__requests-2931", "arm": "control", "classification": "PASS", "replay_source_session_id": "01a06b01-8034-7640-b465-f7bce58d6182"},
+      {"task_id": "swebench/verified/psf__requests-2931", "arm": "guidance", "classification": "PASS", "replay_source_session_id": "01a06b02-7dc8-7932-a2b6-a3f22a796b8f"},
+      {"task_id": "swebench/verified/pytest-dev__pytest-10356", "arm": "guidance", "classification": "PASS", "replay_source_session_id": "01a06b03-bb48-7442-a42d-28681cf0751d"},
+      {"task_id": "swebench/verified/pytest-dev__pytest-10356", "arm": "control", "classification": "PASS", "replay_source_session_id": "01a06b05-885c-7fd3-bb51-f451b77597ab"},
+      {"task_id": "swebench/verified/pylint-dev__pylint-8898", "arm": "control", "classification": "PASS", "replay_source_session_id": "01a06b08-01be-7f03-8a7a-ca40ba29dd82"},
+      {"task_id": "swebench/verified/pylint-dev__pylint-8898", "arm": "guidance", "classification": "PASS", "replay_source_session_id": "01a06b09-baea-7af2-8c6b-0e63f46d9b54"},
+      {"task_id": "swebench/verified/sphinx-doc__sphinx-7590", "arm": "guidance", "classification": "PASS", "replay_source_session_id": "01a06b0c-acdf-7741-9251-e06d6029c7a2"},
+      {"task_id": "swebench/verified/sphinx-doc__sphinx-7590", "arm": "control", "classification": "PASS", "replay_source_session_id": "01a06b10-0294-78f2-bd2f-3292082781b0"},
+      {"task_id": "swebench/verified/sympy__sympy-13878", "arm": "control", "classification": "PASS", "replay_source_session_id": "01a06b12-c17e-7d92-96de-af5db290ca51"},
+      {"task_id": "swebench/verified/sympy__sympy-13878", "arm": "guidance", "classification": "PASS", "replay_source_session_id": "01a06b16-cc05-7802-aa6d-b0d0b1991c72"}
+    ]
+  },
+  "capture_readiness": {
+    "integration_generation": "67a2a48536a488248a87ecc659a8e7c424d6c1216c7174eb5fcde4bb73752b4c",
+    "hook_command_sha256": "86e5320dfa87d1d04d20dc4cce5115efce9f7432c22dc7da77f069ab8b85c4df"
+  },
+  "admission": {
+    "eligible_control_failures": 0,
+    "excluded_sources": 0,
+    "neutral_pairs_run": 0,
+    "stop_rule": "NO_CONTROL_TASK_FAIL"
+  },
+  "decision": "NO_GO_REPRESENTATIVE_CAUSAL_USE",
+  "issue_42_complete": false,
+  "issue_362_complete": true
+}
