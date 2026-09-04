@@ -1,4 +1,5 @@
 import json
+import shutil
 import subprocess
 import uuid
 from collections.abc import Callable, Iterator
@@ -29,7 +30,7 @@ from spotter.paths import spotter_home
 from spotter.replay import ForkPlan
 from spotter.snapshot import StepJournal
 
-_real_locked_worktree = experiment._locked_worktree
+_real_protected_worktree = experiment._protected_worktree
 
 
 @pytest.fixture(autouse=True)
@@ -41,10 +42,10 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 @pytest.fixture(autouse=True)
 def valid_worktree(monkeypatch: pytest.MonkeyPatch) -> None:
     @contextmanager
-    def locked(worktree: str) -> Iterator[None]:
-        yield None
+    def protected(worktree: str) -> Iterator[tuple[None, Callable[[], None]]]:
+        yield None, lambda: None
 
-    monkeypatch.setattr(experiment, "_locked_worktree", locked)
+    monkeypatch.setattr(experiment, "_protected_worktree", protected)
     monkeypatch.setattr(experiment, "_worktree_error", lambda worktree: None)
 
 
@@ -788,7 +789,7 @@ def test_check_runs_in_each_fork_worktree(monkeypatch: pytest.MonkeyPatch) -> No
     assert all(r.check_stdout == "check output" for r in results)
 
 
-def test_experiment_locks_worktree_until_arm_finishes(tmp_path: Path) -> None:
+def test_experiment_restores_worktree_metadata_before_check(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     worktree = tmp_path / "worktree"
     repo.mkdir()
@@ -800,8 +801,10 @@ def test_experiment_locks_worktree_until_arm_finishes(tmp_path: Path) -> None:
     subprocess.run(["git", "commit", "-qm", "fixture"], cwd=repo, check=True)
     subprocess.run(["git", "worktree", "add", "--detach", str(worktree)], cwd=repo, check=True)
 
-    with _real_locked_worktree(str(worktree)) as lock_error:
-        assert lock_error is None
+    marker = worktree / ".git"
+    git_dir = Path(marker.read_text().removeprefix("gitdir: ").strip())
+    with _real_protected_worktree(str(worktree)) as (protection_error, stabilize):
+        assert protection_error is None
         listing = subprocess.run(
             ["git", "worktree", "list", "--porcelain"],
             cwd=repo,
@@ -810,7 +813,13 @@ def test_experiment_locks_worktree_until_arm_finishes(tmp_path: Path) -> None:
             check=True,
         ).stdout
         assert "locked spotter-experiment" in listing
+        shutil.rmtree(git_dir)
+        assert stabilize() is None
+        assert marker.is_dir()
+        subprocess.run(["git", "status", "--short"], cwd=worktree, check=True)
 
+    assert marker.is_file()
+    assert git_dir.is_dir()
     listing = subprocess.run(
         ["git", "worktree", "list", "--porcelain"],
         cwd=repo,
