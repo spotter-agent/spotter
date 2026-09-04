@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "measured_at": "2026-09-04",
+  "protocol": "fork-natural-failure-external-v4",
+  "freeze": {
+    "pull_request": 354,
+    "commit": "c2b088b9b0044f226eb70e5891f52c8fc8c1d531",
+    "spotter_implementation": "7abbc36d14d2da0c0f803cfca86b80b9df97cbaa"
+  },
+  "environment": {
+    "codex_version": "codex-cli 0.153.1",
+    "python": "3.14.7",
+    "docker_version": "29.4.0",
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "low",
+    "sandbox": "workspace-write",
+    "isolated_homes": true,
+    "fresh_spotter_venv": true
+  },
+  "source": {
+    "task_id": "swebench/verified/pydata__xarray-6992",
+    "session_id": "01a06a49-d733-7b43-9d07-e60540da3138",
+    "branch_step": 2,
+    "prefix_id": "2bbdb26e5dfaff2933c1a36b648be2e297f89ff7968648fb39f64f1a84db35af",
+    "snapshot": "328539437225b6153d1ad9ae3dec374abf949262",
+    "environment_fingerprint": "9e7b6c1caa72c01c69286891ba3c3eb48bd5af2f187b7198df3da6714c8ddaf4",
+    "scorer_sha256": "fb3f0bfc21aa5e2e81a65f3a24f7dc93835abfc1e90921d9607d5d6c8f5f50b9",
+    "scorer_bytes": 9778,
+    "forkable_exact": 1,
+    "earliest_forkable_step": 2
+  },
+  "neutral_execution": {
+    "experiment_id": "2ccf231f-9625-4509-a500-9c4f12c79467",
+    "started_at": "2026-09-04T04:32:38.153588+00:00",
+    "finished_at": "2026-09-04T04:39:28.807683+00:00",
+    "pre_run_raw_sha256": "cc48342e0be66f93f24a475808440c91ec9bf6fb17f1f90986b08a7779f2f0e1",
+    "post_run_raw_sha256": "5158c162d335b0987f6b00cfe0e03372d79064f0bb35ae783f45a3948aa7ff7a",
+    "raw_bytes": 53041,
+    "planned_pairs": 3,
+    "continuations_started": 6,
+    "agent_exit_zero": 6,
+    "scorers_reached_tests": 0,
+    "judgeable_pairs": 0,
+    "mechanical_disagreements": null,
+    "environment_mismatches": 0,
+    "scorer_infrastructure_failures": 6,
+    "raw_runner_task_fail_classifications": 6,
+    "raw_runner_summary_accepted": false,
+    "reported_token_range": [16401, 33010],
+    "agent_elapsed_seconds_range": [48.663, 82.98],
+    "failure_reason": "locked linked-worktree admin metadata removed during Codex process teardown"
+  },
+  "follow_up_issue": 351,
+  "calibration": {
+    "natural_failure_region_sampled": true,
+    "neutral_noise_measured": false
+  },
+  "decision": "NO_GO_REPRESENTATIVE_CAUSAL_USE",
+  "issue_42_complete": false
+}
