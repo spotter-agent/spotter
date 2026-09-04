@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "measured_at": "2026-09-04",
+  "protocol": "fork-natural-failure-high-f2p-v1",
+  "freeze": {
+    "pull_request": 366,
+    "commit": "bec0d7cb6f22838243d9bec75939b92de2018580",
+    "protocol_sha256": "f3d4deae81049d327a3256f3458111aff04993e51d0827f075116aebcdea7b5c"
+  },
+  "environment": {
+    "codex_version": "codex-cli 0.153.1",
+    "python": "3.12.13",
+    "docker_version": "29.4.0",
+    "platform": "macOS-26.5.1-arm64-arm-64bit",
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "low",
+    "sandbox": "workspace-write",
+    "isolated_homes": true,
+    "fresh_spotter_venv": true
+  },
+  "task_set": {
+    "id": "swebench-verified-high-f2p",
+    "version": 1,
+    "sha256": "e261ac23e850e69c36223df70cc35ebd1e6c8557e2bb94788333e453c4439155",
+    "task_manifest_sha256": {
+      "swebench/verified/django__django-14011": "3b0c513f71c88d3cc5d9353836b9b63a83411e3ec36b065009807bbb936e07ec",
+      "swebench/verified/pylint-dev__pylint-4551": "1cefb8fe4ca6b6d45d41da2e8dbc696fb56c308764266361a3a3a6f8e6e0d2ad",
+      "swebench/verified/django__django-16560": "1f7bc3bba68f978930f57295bf09c1a926260bb7d13014cade3cff7ea44f26ed"
+    }
+  },
+  "task_batch": {
+    "run_id": "010ed5dd-f48d-464a-9bc4-724fdd7f724a",
+    "started_at": "2026-09-04T08:21:33.525007+00:00",
+    "finished_at": "2026-09-04T08:43:10.876997+00:00",
+    "elapsed_s": 1297.35199,
+    "raw_sha256": "6a0221cbedc09d40a8710bfec5e289dc85f62a3f1286826f2a41905dff2428b4",
+    "raw_bytes": 60944,
+    "arms": 6,
+    "agent_exit_zero": 6,
+    "setup_failures": 0,
+    "scorer_failures": 0,
+    "replay_sources_captured": 6,
+    "replay_source_failures": 0,
+    "mechanically_judgeable_pairs": 3,
+    "control": {"PASS": 2, "TASK_FAIL": 1},
+    "guidance": {"PASS": 2, "TASK_FAIL": 1},
+    "rows": [
+      {"task_id": "swebench/verified/django__django-14011", "arm": "control", "classification": "TASK_FAIL", "replay_source_session_id": "01a06b83-34e5-79c3-a9c3-6af023a14c88"},
+      {"task_id": "swebench/verified/django__django-14011", "arm": "guidance", "classification": "TASK_FAIL", "replay_source_session_id": "01a06b87-1ce3-75d1-b986-2dc596f60a20"},
+      {"task_id": "swebench/verified/pylint-dev__pylint-4551", "arm": "guidance", "classification": "PASS", "replay_source_session_id": "01a06b88-a786-7ca3-b32f-9db4f276e23c"},
+      {"task_id": "swebench/verified/pylint-dev__pylint-4551", "arm": "control", "classification": "PASS", "replay_source_session_id": "01a06b8a-7e0e-7fe2-93de-71e84c9ea957"},
+      {"task_id": "swebench/verified/django__django-16560", "arm": "control", "classification": "PASS", "replay_source_session_id": "01a06b8e-a083-7380-822f-dca077134600"},
+      {"task_id": "swebench/verified/django__django-16560", "arm": "guidance", "classification": "PASS", "replay_source_session_id": "01a06b93-3839-7790-b703-9efb5ca27471"}
+    ]
+  },
+  "capture_readiness": {
+    "integration_generation": "e266a892b1f0d8eb77a7c6515eb30caf5aadc2f94b06a9fa5158963166c00c9c",
+    "hook_command_sha256": "c99b8682a2503771794763870baabbf33fa51d8946fe4d6c0cc849834d8e046c"
+  },
+  "admission": {
+    "eligible_control_failures": 1,
+    "excluded_sources": 0,
+    "source_session": "01a06b83-34e5-79c3-a9c3-6af023a14c88",
+    "earliest_forkable_step": 2,
+    "pre_mutation_forkable": 1,
+    "coverage_counts": {
+      "FORKABLE_EXACT": 1,
+      "NOT_FORKABLE_STATE": 0,
+      "NOT_FORKABLE_CONTEXT": 0,
+      "UNSAFE_EXTERNAL_EFFECT": 11,
+      "OBSERVATION_GAP": 0
+    }
+  },
+  "neutral_experiment": {
+    "experiment_id": "10ced71e-526b-4543-80bd-5a799ea80c91",
+    "started_at": "2026-09-04T08:44:09.466153+00:00",
+    "finished_at": "2026-09-04T08:54:34.755222+00:00",
+    "elapsed_s": 625.289069,
+    "raw_sha256": "1aaf88b39fc35bf5cfddf39abc46690f5693d988ed24bf0847a46adcf1304479",
+    "raw_bytes": 37040,
+    "scorer_sha256": "c996cceee8b07aa24b5bbcd84b777d1e0c7a6fef3b4b679234ca04917d094b6f",
+    "scorer_bytes": 8500,
+    "source_snapshot": "af4e2f2443e7627f0ebb3b9ada6ade07bca3000e",
+    "snapshot_tree": "797a7ad0b41b7312e7285bf45387a3e21186f434",
+    "rollout_prefix_sha256": "dca822b8f532d2817507e0607850fa9c8c37b8e994e5a593b61f32791e43c16b",
+    "prefix_id": "f71fc19d1c27dc5ec30309c4ea8d63a2fefebb78dd4ceab7c07052ae1d534d6b",
+    "environment_fingerprint": "e0e29adeff86b52736b8b1631fd4ccb83c505eb300a1a02e317f73f04fb49f70",
+    "pairs": 3,
+    "judgeable_pairs": 3,
+    "mechanical_disagreements": 1,
+    "mechanical_disagreement_rate": 0.3333333333333333,
+    "environment_mismatches": 0,
+    "preflight_failures": 0,
+    "infrastructure_failures": 0,
+    "agent_elapsed_s_min": 82.075996459,
+    "agent_elapsed_s_max": 101.232507,
+    "agent_reported_tokens_min": 29553,
+    "agent_reported_tokens_max": 42546,
+    "rows": [
+      {"pair": 0, "arm": "neutral_b", "session_id": "90874c83-257f-4121-9aa0-0f7be9a4977d", "classification": "PASS", "agent_exit": 0, "check_exit": 0, "environment_preflight": "MATCHED"},
+      {"pair": 0, "arm": "neutral_a", "session_id": "11d5690e-26d1-47d1-b93a-53d36aa8b14e", "classification": "PASS", "agent_exit": 0, "check_exit": 0, "environment_preflight": "MATCHED"},
+      {"pair": 1, "arm": "neutral_a", "session_id": "d50c0b1d-585a-4452-b141-9dd1fcc2fe98", "classification": "TASK_FAIL", "agent_exit": 0, "check_exit": 1, "environment_preflight": "MATCHED"},
+      {"pair": 1, "arm": "neutral_b", "session_id": "5ecfed32-4ea2-4268-b411-46d7420dac5d", "classification": "PASS", "agent_exit": 0, "check_exit": 0, "environment_preflight": "MATCHED"},
+      {"pair": 2, "arm": "neutral_b", "session_id": "8875df25-4255-4ebe-9477-0ccdb4739624", "classification": "PASS", "agent_exit": 0, "check_exit": 0, "environment_preflight": "MATCHED"},
+      {"pair": 2, "arm": "neutral_a", "session_id": "143d3489-caba-4c4e-9d1d-ae5c07edd062", "classification": "PASS", "agent_exit": 0, "check_exit": 0, "environment_preflight": "MATCHED"}
+    ]
+  },
+  "decision": "NO_GO_REPRESENTATIVE_CAUSAL_USE",
+  "issue_42_complete": false,
+  "issue_365_complete": true
+}
