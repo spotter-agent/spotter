@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "measured_at": "2026-09-04",
+  "protocol": "fork-natural-failure-external-v5",
+  "freeze": {
+    "pull_request": 357,
+    "commit": "1b5cd697bbf3dac6795b9796844df25634f54a89",
+    "spotter_implementation": "eb891034e986aa69bd98f00a2e070584b2a8f6eb"
+  },
+  "source": {
+    "task_id": "swebench/verified/pydata__xarray-6992",
+    "session_id": "01a06a49-d733-7b43-9d07-e60540da3138",
+    "branch_step": 2,
+    "prefix_id": "2bbdb26e5dfaff2933c1a36b648be2e297f89ff7968648fb39f64f1a84db35af",
+    "snapshot": "328539437225b6153d1ad9ae3dec374abf949262",
+    "environment_fingerprint": "9e7b6c1caa72c01c69286891ba3c3eb48bd5af2f187b7198df3da6714c8ddaf4",
+    "scorer_sha256": "fb3f0bfc21aa5e2e81a65f3a24f7dc93835abfc1e90921d9607d5d6c8f5f50b9"
+  },
+  "neutral_execution": {
+    "experiment_id": "1116fccb-94aa-4741-98be-9366ea7e13d9",
+    "started_at": "2026-09-04T04:55:27.112557+00:00",
+    "finished_at": "2026-09-04T05:03:30.578045+00:00",
+    "pre_run_raw_sha256": "5158c162d335b0987f6b00cfe0e03372d79064f0bb35ae783f45a3948aa7ff7a",
+    "post_run_raw_sha256": "a3fd56189ba50bdef627cf84f3ae81f906c9b8b6c46d3cabf4c57293fae04c2a",
+    "raw_bytes": 70031,
+    "planned_pairs": 3,
+    "agent_exit_zero": 6,
+    "host_git_setup_passed": 6,
+    "containers_started": 6,
+    "scorers_reached_tests": 0,
+    "judgeable_pairs": 0,
+    "mechanical_disagreements": null,
+    "environment_mismatches": 0,
+    "scorer_infrastructure_failures": 6,
+    "raw_runner_task_fail_classifications": 6,
+    "raw_runner_summary_accepted": false,
+    "reported_token_range": [14020, 44241],
+    "agent_elapsed_seconds_range": [43.124, 105.473],
+    "failure_reason": "container could not resolve host absolute .git/commondir path"
+  },
+  "follow_up_issue": 351,
+  "calibration": {
+    "natural_failure_region_sampled": true,
+    "neutral_noise_measured": false
+  },
+  "decision": "NO_GO_REPRESENTATIVE_CAUSAL_USE",
+  "issue_42_complete": false
+}
