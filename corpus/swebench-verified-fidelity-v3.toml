@@ -1,0 +1,20 @@
+task_set_schema = "spotter.task_set"
+task_set_schema_version = 1
+task_set_id = "swebench-verified-fidelity"
+version = 3
+split = "validation"
+
+[[tasks]]
+task_id = "swebench/verified/pydata__xarray-6992"
+manifest = "tasks/swebench-xarray-6992.toml"
+sha256 = "7bb4a141f39fbc9da1b6fecf5dbc4d7ed8861ba9918e36b44a5ff65f6fceadff"
+
+[[tasks]]
+task_id = "swebench/verified/sphinx-doc__sphinx-7590"
+manifest = "tasks/swebench-sphinx-7590.toml"
+sha256 = "2d566a8af59b60fb4535f7e6917e350b17535fa93d6c9824cf9cc6edc0d51ff7"
+
+[[tasks]]
+task_id = "swebench/verified/sympy__sympy-13878"
+manifest = "tasks/swebench-sympy-13878.toml"
+sha256 = "f767b3dfa53075f8cb5e5c793b8e4fbaecfb09b086d362a7186a9929ea06aac8"
