@@ -80,3 +80,39 @@ def test_natural_failure_v4_new_families_still_keep_qualification_no_go() -> Non
     assert artifact["calibration"]["failure_region_sampled"] is False
     assert artifact["decision"] == "NO_GO_REPRESENTATIVE_CAUSAL_USE"
     assert artifact["issue_42_complete"] is False
+
+
+def test_external_v3_samples_failure_but_rejects_invalid_scorer_rows() -> None:
+    artifact = json.loads(
+        Path("docs/experiments/fork-natural-failure-external-v3-result.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert artifact["freeze"]["pull_request"] == 350
+    assert artifact["source_batch"]["arms"]["control"] == {
+        "total": 3,
+        "pass": 2,
+        "task_fail": 1,
+    }
+    assert artifact["source_batch"]["replay_source_capture"] == {
+        "requested": 6,
+        "succeeded": 6,
+        "failed": 0,
+    }
+    assert artifact["admission"]["eligible_control_failures"] == 1
+    assert artifact["admission"]["coverage"]["earliest_forkable_step"] == 2
+    neutral = artifact["neutral_execution"]
+    assert neutral["launched_experiment"]["agent_exit_zero"] == 6
+    assert neutral["launched_experiment"]["scorers_reached_tests"] == 0
+    assert neutral["outcomes"]["judgeable_pairs"] == 0
+    assert neutral["outcomes"]["mechanical_disagreements"] is None
+    assert neutral["outcomes"]["scorer_infrastructure_failures"] == 6
+    assert neutral["raw_runner_summary_accepted"] is False
+    assert neutral["follow_up_issue"] == 351
+    assert artifact["calibration"] == {
+        "natural_failure_region_sampled": True,
+        "neutral_noise_measured": False,
+    }
+    assert artifact["decision"] == "NO_GO_REPRESENTATIVE_CAUSAL_USE"
+    assert artifact["issue_42_complete"] is False
