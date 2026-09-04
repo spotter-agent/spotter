@@ -270,10 +270,55 @@ It does not mean the mechanism is worthless — it means the benefit question in
 about turns long enough for a review to land, and about what happens *after* the current response.
 Neither this run nor any before it has evidence about that.
 
+## Update — managed launch and in-flight daemon recovery
+
+**Measured:** 2026-09-04 with Codex 0.153.1 on macOS/arm64.
+
+### One command from a dead endpoint
+
+With nothing listening on the configured `ws://127.0.0.1:4500` endpoint and `spotterd` visibly
+degraded/backing off, one `spotter codex` command:
+
+1. printed the exact `codex app-server --listen` command it started;
+2. started a detached App Server with the Codex binary recorded by setup;
+3. let the existing daemon reconnect from epoch 61 to 62 without presenting the transient backing
+   off state as a terminal-looking launch result; and
+4. entered a real remote TUI in the requested working directory.
+
+No separate App Server terminal or manual daemon command was needed for the launch. The test later
+terminated the spawned server explicitly as cleanup; Spotter itself did not stop or claim it.
+
+### Daemon killed during an active command
+
+A real `spotter codex` TUI started one 45-second shell command. Six seconds after the App Server had
+journaled `command_started`, the managed daemon was sent `SIGKILL`.
+
+| Boundary | Observation |
+| --- | --- |
+| before kill | PID 89807, runtime `d4c02f49...`, ready at epoch 59; command active |
+| service restart | launchd started PID 7979 with runtime `d46c4139...` |
+| ready again | about 4s after the kill, epoch 60 |
+| reconciliation | same logical thread and turn, `active_turn: true`, subscription successful |
+| command result | epoch 60, exit 0, `SPOTTER_304_INFLIGHT_RECOVERED`, duration 44.871s |
+| turn result | final answer and `turn_completed` both journaled at epoch 60 |
+
+The journal records a durable `observation_gap` with `epoch_before: 59`, `epoch_after: 60`,
+`backfill_status: none`, and `recovery_source: daemon_restart`; it does not invent coverage during
+the outage. The post-restart command result also conservatively says `observed_start: false` because
+the new process did not keep the old process's in-memory start correlation, even though the durable
+journal retains the start with the same operation, thread, and turn identities.
+
+`StepJournal.load(..., strict=True)` read all 108 records, steps 0 through 107, and ended at
+`turn_completed`. Automated reconnect coverage separately asserts that pre-restart control targets
+remain stale and fenced after the epoch rotation.
+
+This closes the remaining runtime acceptance item in #304: managed launch, concurrent real-TUI
+isolation, visible gaps, active-turn reconciliation, and durable journal continuity now all have
+live evidence.
+
 ## Required follow-ups
 
-1. run the actual two-TUI validation through `spotter codex`;
-2. establish denominators before either the gap count or the unknown-event count is quoted;
-3. decide the reconciliation attachment rule;
-4. `spotterd.log` stayed empty across every failure in this run, including the reconnect loop. A
-   daemon that produces no diagnostic for a repeating failure is its own gap.
+1. establish denominators before either the gap count or the unknown-event count is quoted;
+2. `spotterd.log` stayed empty across every failure in this run, including the reconnect loop and
+   the later deliberate daemon kills. A daemon that produces no diagnostic for a repeating failure
+   is its own gap.

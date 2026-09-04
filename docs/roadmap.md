@@ -67,7 +67,11 @@ The concurrent identity registry is consumed by normalized App Server ingestion,
 daemon owns incremental per-thread state plus reconnect/reconciliation. Managed registration and the
 local control foundation also exist. [#301](https://github.com/spotter-agent/spotter/issues/301)
 adds explicit endpoint selection, protocol/capability preflight, daemon-ready verification, and
-transactional endpoint-change rollback without claiming ownership of the shared process.
+transactional endpoint-change rollback without claiming ownership of the shared process. The
+[#304 live validation](experiments/app-server-live-observation-v1-result.md#update--managed-launch-and-in-flight-daemon-recovery)
+then verified one-command launch from an unreachable endpoint, two real concurrent TUI journals,
+and an in-flight daemon restart that rotated the connection epoch, reconciled the active turn, and
+preserved the journal through command and turn completion.
 
 ## Implementation after the gate
 
@@ -84,7 +88,7 @@ The Runtime milestone is now decomposed into concrete boundaries rather than one
 | [#84](https://github.com/spotter-agent/spotter/issues/84) | runtime-aware `status` / `doctor` and degraded capability reporting (implemented) |
 | [#87](https://github.com/spotter-agent/spotter/issues/87) | daemon/App Server reconnect and thread reconciliation |
 | [#301](https://github.com/spotter-agent/spotter/issues/301) | verified explicit App Server endpoint selection during transactional setup (implemented) |
-| [#304](https://github.com/spotter-agent/spotter/issues/304) | ordinary launch contract, concurrent runtime isolation, and explicit degraded behavior |
+| [#304](https://github.com/spotter-agent/spotter/issues/304) | ordinary launch contract, concurrent runtime isolation, and explicit degraded behavior (implemented and live-validated) |
 
 Native GitHub issue dependencies encode the actual order between these issues. The table describes responsibility, not a second dependency system.
 

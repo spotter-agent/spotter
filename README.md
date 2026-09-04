@@ -129,8 +129,8 @@ For a source/development checkout, follow [CONTRIBUTING.md](CONTRIBUTING.md#loca
 
 ## Connect Spotter to Codex
 
-Make sure the `codex` CLI is installed and available on `PATH`. Start one user-managed App Server
-in a separate terminal:
+Make sure the `codex` CLI is installed and available on `PATH`. For setup's endpoint preflight,
+start one user-managed App Server in a separate terminal:
 
 ```bash
 codex app-server --listen ws://127.0.0.1:4500
@@ -148,9 +148,11 @@ spotter codex
 
 Setup is transactional and idempotent. It records the exact Spotter-owned Hooks and service state so
 later repair or teardown does not guess at user-owned configuration. It verifies the server identity
-and observation capabilities before committing the endpoint. Spotter attaches to the shared server
-but never starts or stops it. Setup without `--endpoint` remains available as an explicit degraded
-Hook-only mode; App Server observation and live control are then unavailable.
+and observation capabilities before committing the endpoint. On later `spotter codex` launches,
+Spotter reuses a listener already at that endpoint or starts a detached App Server with the recorded
+Codex binary when the endpoint is unreachable. It never stops that server or claims exclusive
+ownership. Setup without `--endpoint` remains available as an explicit degraded Hook-only mode; App
+Server observation and live control are then unavailable.
 
 ## Everyday commands
 

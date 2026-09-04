@@ -1663,7 +1663,7 @@ def _doctor_main(config_path: Path | None) -> int:
     return 0
 
 
-def _daemon_main(action: str, manager: ServiceManager | None = None) -> int:
+def _daemon_main(action: str, manager: ServiceManager | None = None, *, quiet: bool = False) -> int:
     if action == "reload":
         try:
             result = asyncio.run(DaemonClient().reload_config())
@@ -1753,7 +1753,8 @@ def _daemon_main(action: str, manager: ServiceManager | None = None) -> int:
     if status.detail:
         details.append(status.detail)
     suffix = f" ({', '.join(details)})" if details else ""
-    print(f"spotterd: {status.health.value}{suffix}")
+    if not quiet:
+        print(f"spotterd: {status.health.value}{suffix}")
     if action == "stop":
         return 0 if status.health == RuntimeHealth.UNAVAILABLE else 1
     return 0 if status.health == RuntimeHealth.HEALTHY else 1
@@ -1846,7 +1847,7 @@ def _codex_main(args: Sequence[str]) -> int:
     started_server = False
     if not _endpoint_listening(manifest.app_server_endpoint):
         started_server = _start_app_server(manifest.agent_path, manifest.app_server_endpoint)
-    if _daemon_main("start") != 0 and not started_server:
+    if _daemon_main("start", quiet=started_server) != 0 and not started_server:
         return 1
     observation = _observation_check()
     if started_server and (observation is None or observation.status != OK):
