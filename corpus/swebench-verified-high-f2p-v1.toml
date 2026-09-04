@@ -1,0 +1,20 @@
+task_set_schema = "spotter.task_set"
+task_set_schema_version = 1
+task_set_id = "swebench-verified-high-f2p"
+version = 1
+split = "validation"
+
+[[tasks]]
+task_id = "swebench/verified/django__django-14011"
+manifest = "tasks/swebench-django-14011.toml"
+sha256 = "3b0c513f71c88d3cc5d9353836b9b63a83411e3ec36b065009807bbb936e07ec"
+
+[[tasks]]
+task_id = "swebench/verified/pylint-dev__pylint-4551"
+manifest = "tasks/swebench-pylint-4551.toml"
+sha256 = "1cefb8fe4ca6b6d45d41da2e8dbc696fb56c308764266361a3a3a6f8e6e0d2ad"
+
+[[tasks]]
+task_id = "swebench/verified/django__django-16560"
+manifest = "tasks/swebench-django-16560.toml"
+sha256 = "1f7bc3bba68f978930f57295bf09c1a926260bb7d13014cade3cff7ea44f26ed"
