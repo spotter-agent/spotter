@@ -1,0 +1,35 @@
+task_set_schema = "spotter.task_set"
+task_set_schema_version = 1
+task_set_id = "swebench-verified-independent"
+version = 1
+split = "validation"
+
+[[tasks]]
+task_id = "swebench/verified/pallets__flask-5014"
+manifest = "tasks/swebench-flask-5014.toml"
+sha256 = "47c05af88b2e118fb95571422535b0a840702a43a130b36cbb10ca48f64b1cb5"
+
+[[tasks]]
+task_id = "swebench/verified/psf__requests-2931"
+manifest = "tasks/swebench-requests-2931-v2.toml"
+sha256 = "5dfbc854695f3b97565d8a372f938f928291fb1ad1f308100c64c70bfed7a164"
+
+[[tasks]]
+task_id = "swebench/verified/pytest-dev__pytest-10356"
+manifest = "tasks/swebench-pytest-10356.toml"
+sha256 = "835f7d5e681f61077789c7d2ac347c0ad89230c5771406af9313003d3c0faacb"
+
+[[tasks]]
+task_id = "swebench/verified/pylint-dev__pylint-8898"
+manifest = "tasks/swebench-pylint-8898.toml"
+sha256 = "1f73be6d1ccea07673d939b93f4526d1a03bca8be9602bcadeefe3530a85d88a"
+
+[[tasks]]
+task_id = "swebench/verified/sphinx-doc__sphinx-7590"
+manifest = "tasks/swebench-sphinx-7590.toml"
+sha256 = "2d566a8af59b60fb4535f7e6917e350b17535fa93d6c9824cf9cc6edc0d51ff7"
+
+[[tasks]]
+task_id = "swebench/verified/sympy__sympy-13878"
+manifest = "tasks/swebench-sympy-13878.toml"
+sha256 = "f767b3dfa53075f8cb5e5c793b8e4fbaecfb09b086d362a7186a9929ea06aac8"
