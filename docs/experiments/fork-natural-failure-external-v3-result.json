@@ -1,0 +1,204 @@
+{
+  "schema_version": 1,
+  "measured_at": "2026-09-04",
+  "protocol": "fork-natural-failure-external-v3",
+  "freeze": {
+    "pull_request": 350,
+    "commit": "39d078f0a7c29760f44be3c49ac95cf71c46d186",
+    "task_set": "corpus/swebench-verified-fidelity-v3.toml",
+    "task_set_sha256": "76818ea895e59d366e088455b53f6654ffe8fde22182fbcefaa35a409150c278",
+    "manifest_sha256": {
+      "pydata__xarray-6992": "7bb4a141f39fbc9da1b6fecf5dbc4d7ed8861ba9918e36b44a5ff65f6fceadff",
+      "sphinx-doc__sphinx-7590": "2d566a8af59b60fb4535f7e6917e350b17535fa93d6c9824cf9cc6edc0d51ff7",
+      "sympy__sympy-13878": "f767b3dfa53075f8cb5e5c793b8e4fbaecfb09b086d362a7186a9929ea06aac8"
+    }
+  },
+  "environment": {
+    "spotter_build": "source",
+    "codex_version": "codex-cli 0.153.1",
+    "python": "3.14.7",
+    "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+    "docker_version": "29.4.0",
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "low",
+    "sandbox": "workspace-write",
+    "isolated_homes": true
+  },
+  "preflight": {
+    "ready": 3,
+    "total": 3,
+    "capture_readiness_passed": true,
+    "integration_generation": "a29c25f3b495d3cace396b7bc57a40705741bc44b74dbf0a53c5826260c42373",
+    "config_generation": "cfg-c524e1a91f9d88bcabab",
+    "hook_command_sha256": "70f6c451b992f3e5eedf445f54e7a2de6fc589cf920aae895441c39b6ca04065"
+  },
+  "source_batch": {
+    "run_id": "5dcdbc34-ab7a-49c5-9059-854ae09196d7",
+    "started_at": "2026-09-04T02:37:02.576236+00:00",
+    "finished_at": "2026-09-04T02:56:20.516369+00:00",
+    "raw_sha256": "ba54d6281eba0999840fa18e8604be22d2af2967ed1105e2c18d3b3122ddc0af",
+    "raw_bytes": 60099,
+    "arms": {
+      "total": 6,
+      "pass": 4,
+      "task_fail": 2,
+      "infrastructure_failures": 0,
+      "control": {
+        "total": 3,
+        "pass": 2,
+        "task_fail": 1
+      },
+      "guidance": {
+        "total": 3,
+        "pass": 2,
+        "task_fail": 1
+      }
+    },
+    "replay_source_capture": {
+      "requested": 6,
+      "succeeded": 6,
+      "failed": 0
+    },
+    "task_results": [
+      {
+        "task_id": "swebench/verified/pydata__xarray-6992",
+        "scorer_scope": "whole-file",
+        "control": "TASK_FAIL",
+        "control_session": "01a06a49-d733-7b43-9d07-e60540da3138",
+        "guidance": "TASK_FAIL",
+        "guidance_session": "01a06a47-036c-76f0-8863-7d8321095266",
+        "replay_sources_captured": 2
+      },
+      {
+        "task_id": "swebench/verified/sphinx-doc__sphinx-7590",
+        "scorer_scope": "whole-file",
+        "control": "PASS",
+        "control_session": "01a06a4b-d826-78c0-9664-876767830f54",
+        "guidance": "PASS",
+        "guidance_session": "01a06a4e-c65d-78b3-854f-b8f642a4add5",
+        "replay_sources_captured": 2
+      },
+      {
+        "task_id": "swebench/verified/sympy__sympy-13878",
+        "scorer_scope": "all-graded-node-ids",
+        "control": "PASS",
+        "control_session": "01a06a55-77c5-75b2-8d0d-5c636060a109",
+        "guidance": "PASS",
+        "guidance_session": "01a06a51-8a3b-7eb0-a461-2cef69398c90",
+        "replay_sources_captured": 2
+      }
+    ]
+  },
+  "admission": {
+    "eligible_control_failures": 1,
+    "admitted_sources": 1,
+    "excluded_sources": 0,
+    "source_session": "01a06a49-d733-7b43-9d07-e60540da3138",
+    "branch_step": 2,
+    "source_snapshot": "328539437225b6153d1ad9ae3dec374abf949262",
+    "coverage": {
+      "candidates": 12,
+      "forkable_exact": 1,
+      "not_forkable_state": 0,
+      "not_forkable_context": 0,
+      "unsafe_external_effect": 11,
+      "observation_gap": 0,
+      "pre_mutation_candidates": 6,
+      "pre_mutation_forkable": 1,
+      "earliest_forkable_step": 2
+    },
+    "isolated_codex_home_was_explicit": true,
+    "default_home_cli_result_discarded": true
+  },
+  "neutral_execution": {
+    "raw_sha256": "cc48342e0be66f93f24a475808440c91ec9bf6fb17f1f90986b08a7779f2f0e1",
+    "raw_bytes": 34963,
+    "prefix_id": "2bbdb26e5dfaff2933c1a36b648be2e297f89ff7968648fb39f64f1a84db35af",
+    "environment_fingerprint": "9e7b6c1caa72c01c69286891ba3c3eb48bd5af2f187b7198df3da6714c8ddaf4",
+    "prelaunch_failure": {
+      "experiment_id": "482cbdbf-9fd1-48f5-a9f3-b250aeba1df5",
+      "recorded_arms": 6,
+      "agent_calls_started": 0,
+      "infrastructure_failures": 6,
+      "reason": "codex executable absent from the supplied PATH"
+    },
+    "launched_experiment": {
+      "experiment_id": "4ac93e3b-bd1d-41d3-b346-2d02045fe258",
+      "started_at": "2026-09-04T03:00:39.314234+00:00",
+      "finished_at": "2026-09-04T03:06:43.015129+00:00",
+      "requested_pairs": 3,
+      "continuations_started": 6,
+      "agent_exit_zero": 6,
+      "scorers_reached_tests": 0,
+      "scorer_infrastructure_failures": 6,
+      "raw_runner_task_fail_classifications": 6,
+      "failure_reason": "fork Git worktree metadata missing before scorer setup",
+      "continuations": [
+        {
+          "pair": 0,
+          "arm": "neutral_a",
+          "session_id": "6bf87f52-b04f-415e-97c4-3d5e9aaec075",
+          "agent_elapsed_seconds": 45.071,
+          "reported_tokens": 8753,
+          "check_exit": 128
+        },
+        {
+          "pair": 0,
+          "arm": "neutral_b",
+          "session_id": "6e914f15-401b-49be-9aca-90e0fc0cf132",
+          "agent_elapsed_seconds": 81.828,
+          "reported_tokens": 22694,
+          "check_exit": 128
+        },
+        {
+          "pair": 1,
+          "arm": "neutral_a",
+          "session_id": "14812e6a-e1fd-4d02-9cc4-8779fc8c1f2e",
+          "agent_elapsed_seconds": 57.41,
+          "reported_tokens": 20042,
+          "check_exit": 128
+        },
+        {
+          "pair": 1,
+          "arm": "neutral_b",
+          "session_id": "e1cc9be2-67ae-4340-9e5b-fb69d8bde403",
+          "agent_elapsed_seconds": 62.321,
+          "reported_tokens": 27540,
+          "check_exit": 128
+        },
+        {
+          "pair": 2,
+          "arm": "neutral_a",
+          "session_id": "5aa7758b-4d94-49df-ac56-f82bbb30b8f8",
+          "agent_elapsed_seconds": 64.46,
+          "reported_tokens": 18598,
+          "check_exit": 128
+        },
+        {
+          "pair": 2,
+          "arm": "neutral_b",
+          "session_id": "b2a025b9-f7db-48a2-b050-544aa6e59f67",
+          "agent_elapsed_seconds": 42.674,
+          "reported_tokens": 14021,
+          "check_exit": 128
+        }
+      ]
+    },
+    "outcomes": {
+      "planned_pairs": 3,
+      "judgeable_pairs": 0,
+      "mechanical_disagreements": null,
+      "environment_mismatches": 0,
+      "prelaunch_infrastructure_failures": 6,
+      "scorer_infrastructure_failures": 6
+    },
+    "raw_runner_summary_accepted": false,
+    "follow_up_issue": 351
+  },
+  "calibration": {
+    "natural_failure_region_sampled": true,
+    "neutral_noise_measured": false
+  },
+  "decision": "NO_GO_REPRESENTATIVE_CAUSAL_USE",
+  "issue_42_complete": false
+}
