@@ -235,18 +235,43 @@ def _protected_worktree(
 
     with tempfile.TemporaryDirectory(prefix="spotter-worktree-metadata-") as temporary:
         backup = Path(temporary) / "git"
+        scorer_repo = Path(temporary) / "scorer"
         try:
             shutil.copytree(git_dir, backup)
         except OSError as error:
             diagnostic = f"WORKTREE_METADATA_BACKUP_FAILED:{error}"
             yield diagnostic, lambda: diagnostic
             return
+        try:
+            cloned = subprocess.run(
+                [
+                    "git",
+                    "clone",
+                    "--local",
+                    "--no-checkout",
+                    "--quiet",
+                    str(common_dir),
+                    str(scorer_repo),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            diagnostic = f"SCORER_REPOSITORY_FAILED:{error}"
+            yield diagnostic, lambda: diagnostic
+            return
+        if cloned.returncode != 0:
+            diagnostic = f"SCORER_REPOSITORY_FAILED:{cloned.stderr.strip() or 'git exited nonzero'}"
+            yield diagnostic, lambda: diagnostic
+            return
 
         def stabilize() -> str | None:
             try:
                 marker.unlink()
-                shutil.copytree(backup, marker)
-                (marker / "commondir").write_text(f"{common_dir}\n")
+                shutil.copy2(backup / "HEAD", scorer_repo / ".git" / "HEAD")
+                shutil.copy2(backup / "index", scorer_repo / ".git" / "index")
+                shutil.move(scorer_repo / ".git", marker)
             except OSError as error:
                 return f"WORKTREE_METADATA_RESTORE_FAILED:{error}"
             return _worktree_error(worktree)

@@ -816,7 +816,14 @@ def test_experiment_restores_worktree_metadata_before_check(tmp_path: Path) -> N
         shutil.rmtree(git_dir)
         assert stabilize() is None
         assert marker.is_dir()
-        subprocess.run(["git", "status", "--short"], cwd=worktree, check=True)
+        assert not (marker / "commondir").exists()
+        common_dir = repo / ".git"
+        hidden_common_dir = repo / ".git-hidden"
+        common_dir.rename(hidden_common_dir)
+        try:
+            subprocess.run(["git", "status", "--short"], cwd=worktree, check=True)
+        finally:
+            hidden_common_dir.rename(common_dir)
 
     assert marker.is_file()
     assert git_dir.is_dir()
