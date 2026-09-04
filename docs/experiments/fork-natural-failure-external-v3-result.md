@@ -9,6 +9,10 @@
 **Decision:** **a natural control failure was captured and admitted, but no neutral pair was
 judgeable; #42 remains NO-GO**
 
+> **Successor:** [#351](https://github.com/spotter-agent/spotter/issues/351) was fixed by
+> [#353](https://github.com/spotter-agent/spotter/pull/353). The frozen
+> [v4 protocol](fork-natural-failure-external-v4-protocol.md) reuses this exact source and scorer.
+
 ## Outcome
 
 The fixed six-arm batch completed with no source, image, setup, scorer, or replay-capture failure:
@@ -122,6 +126,5 @@ v3 improves one important fact: a predeclared external cohort produced a natural
 control failure with complete source capture and one exact pre-mutation replay point. It does not
 measure the failure-region noise floor because the required scorers never reached tests.
 
-Therefore #42 remains **NO-GO** for representative causal use. The next step is to resolve #351,
-freeze an infrastructure-only successor protocol, and rerun the three neutral pairs from this
-retained source without treating v3's invalid scorer rows as task outcomes.
+Therefore #42 remains **NO-GO** for representative causal use. The v4 successor reruns the three
+neutral pairs from this retained source without treating v3's invalid scorer rows as task outcomes.
