@@ -588,9 +588,11 @@ re-running setup heals forward, while teardown cannot remove an unrecorded mutat
 # 5. App Server lifecycle
 
 Explicit endpoint selection and verification are implemented without claiming ownership of another
-client's App Server. `spotter codex` starts `spotterd`, verifies that endpoint, and launches the
-recorded Codex binary with explicit remote selection. Plain `codex` remains a visible degraded path.
-[#304](https://github.com/spotter-agent/spotter/issues/304) retains concurrent runtime validation.
+client's App Server. `spotter codex` reuses a reachable configured endpoint or starts a detached App
+Server when the endpoint is unreachable, starts `spotterd`, waits for observation to become ready,
+and launches the recorded Codex binary with explicit remote selection. It never stops or assumes
+exclusive ownership of the shared server. Plain `codex` remains a visible degraded path. Concurrent
+TUI isolation and in-flight daemon recovery are verified in the [live result](experiments/app-server-live-observation-v1-result.md#update--managed-launch-and-in-flight-daemon-recovery).
 
 ## 5.1 Why startup order matters
 
@@ -616,7 +618,7 @@ If Codex has already selected an embedded server, waking Spotter later at the fi
 ### Strategy A — explicit remote TUI (implemented)
 
 ```text
-ensure external Codex App Server
+reuse or start external Codex App Server
       ↓
 `codex --remote <endpoint>` selects it
       ↓
@@ -634,10 +636,10 @@ Risks:
 - preserving the plain-command UX requires a separately validated launcher/alias/wrapper;
 - Spotter must not assume exclusive ownership.
 
-### Strategy B — Spotter-managed App Server process
+### Strategy B — start-on-launch external App Server (implemented for TCP endpoints)
 
 ```text
-Spotter starts external `codex app-server`
+`spotter codex` starts external `codex app-server` when the endpoint is unreachable
       ↓
 TUI attaches to explicit/shared endpoint
       ↓
@@ -646,12 +648,13 @@ Spotter attaches to same endpoint
 
 Advantages:
 
-- lifecycle can be isolated behind `CodexAppServerManager`.
+- ordinary launches need no separately maintained App Server terminal.
 
 Risks:
 
-- preserving plain `codex` UX may require wrapper/config/service work;
-- version mismatch and process ownership become Spotter concerns.
+- plain `codex` still selects its embedded server and remains degraded;
+- the detached server is shared and deliberately survives the launching TUI, so Spotter must never
+  treat it as exclusively owned or stop it during daemon teardown.
 
 ### Strategy C — Embedded/degraded mode
 
@@ -754,7 +757,7 @@ Portable mode must display exactly which guarantees are lost.
 Implemented explicit-endpoint flow:
 
 ```text
-external App Server already reachable
+configured App Server reused or started
         │
 user runs `spotter codex`
         │
@@ -1901,7 +1904,10 @@ The target lifecycle is not complete until all of these work end-to-end:
       ([#304](https://github.com/spotter-agent/spotter/issues/304));
       automated coverage proves separate attachments, ThreadState, reviewer jobs, journals, and
       control targets; two real TUIs connected concurrently on 2026-08-20 without model calls;
-- [ ] daemon crash recovers without corrupting journal/live state
+- [x] daemon crash during an active command rotates the runtime/connection epoch, reconciles the
+      active turn, records the observation gap, and preserves a strict-readable journal through the
+      command result and final answer
+      ([result](experiments/app-server-live-observation-v1-result.md#update--managed-launch-and-in-flight-daemon-recovery))
       ([#304](https://github.com/spotter-agent/spotter/issues/304));
 - [x] Codex upgrade degrades by capability rather than silently breaking;
 - [x] Spotter upgrade handles a running old daemon and schema migration;
