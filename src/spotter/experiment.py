@@ -19,10 +19,12 @@ a crash loses at most one run.
 import json
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 import time
 import uuid
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -214,38 +216,80 @@ def _run_arm(
 
 
 @contextmanager
-def _locked_worktree(worktree: str) -> Iterator[str | None]:
+def _protected_worktree(
+    worktree: str,
+) -> Iterator[tuple[str | None, Callable[[], str | None]]]:
+    marker = Path(worktree) / ".git"
     try:
-        locked = subprocess.run(
-            [
-                "git",
-                "-C",
-                worktree,
-                "worktree",
-                "lock",
-                "--reason",
-                "spotter-experiment",
-                worktree,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (OSError, subprocess.SubprocessError) as error:
-        yield f"WORKTREE_LOCK_FAILED:{error}"
+        marker_text = marker.read_text()
+        if not marker_text.startswith("gitdir: "):
+            raise OSError("fork .git is not a linked-worktree pointer")
+        git_dir = Path(marker_text.removeprefix("gitdir: ").strip())
+        if not git_dir.is_absolute():
+            git_dir = (marker.parent / git_dir).resolve()
+        common_dir = (git_dir / (git_dir / "commondir").read_text().strip()).resolve()
+    except OSError as error:
+        diagnostic = f"WORKTREE_METADATA_BACKUP_FAILED:{error}"
+        yield diagnostic, lambda: diagnostic
         return
-    if locked.returncode != 0:
-        yield f"WORKTREE_LOCK_FAILED:{locked.stderr.strip() or 'git exited nonzero'}"
-        return
-    try:
-        yield None
-    finally:
-        with suppress(OSError, subprocess.SubprocessError):
-            subprocess.run(
-                ["git", "-C", worktree, "worktree", "unlock", worktree],
+
+    with tempfile.TemporaryDirectory(prefix="spotter-worktree-metadata-") as temporary:
+        backup = Path(temporary) / "git"
+        try:
+            shutil.copytree(git_dir, backup)
+        except OSError as error:
+            diagnostic = f"WORKTREE_METADATA_BACKUP_FAILED:{error}"
+            yield diagnostic, lambda: diagnostic
+            return
+
+        def stabilize() -> str | None:
+            try:
+                marker.unlink()
+                shutil.copytree(backup, marker)
+                (marker / "commondir").write_text(f"{common_dir}\n")
+            except OSError as error:
+                return f"WORKTREE_METADATA_RESTORE_FAILED:{error}"
+            return _worktree_error(worktree)
+
+        try:
+            locked = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    worktree,
+                    "worktree",
+                    "lock",
+                    "--reason",
+                    "spotter-experiment",
+                    worktree,
+                ],
                 capture_output=True,
+                text=True,
                 timeout=10,
             )
+        except (OSError, subprocess.SubprocessError) as error:
+            diagnostic = f"WORKTREE_LOCK_FAILED:{error}"
+            yield diagnostic, lambda: diagnostic
+            return
+        if locked.returncode != 0:
+            diagnostic = f"WORKTREE_LOCK_FAILED:{locked.stderr.strip() or 'git exited nonzero'}"
+            yield diagnostic, lambda: diagnostic
+            return
+        try:
+            yield None, stabilize
+        finally:
+            with suppress(OSError):
+                if marker.is_dir():
+                    shutil.rmtree(marker)
+                if not git_dir.exists():
+                    shutil.copytree(backup, git_dir)
+                marker.write_text(marker_text)
+            with suppress(OSError, subprocess.SubprocessError):
+                subprocess.run(
+                    ["git", "-C", worktree, "worktree", "unlock", worktree],
+                    capture_output=True,
+                    timeout=10,
+                )
 
 
 def _worktree_error(worktree: str) -> str | None:
@@ -371,6 +415,7 @@ def _execute_arm(
     model: str | None,
     reasoning_effort: str | None,
     codex_home: Path | None,
+    stabilize_worktree: Callable[[], str | None] | None = None,
 ) -> tuple[
     int | None,
     int | None,
@@ -452,6 +497,17 @@ def _execute_arm(
             "",
             "",
             None,
+            agent_reported_tokens,
+            agent_elapsed_ms,
+        )
+    if stabilize_worktree and (worktree_error := stabilize_worktree()):
+        return (
+            agent_exit,
+            None,
+            ArmClassification.INFRA_FAIL,
+            "",
+            "",
+            worktree_error,
             agent_reported_tokens,
             agent_elapsed_ms,
         )
@@ -626,15 +682,18 @@ def run_experiment(
                         None,
                     )
                 else:
-                    with _locked_worktree(plan.worktree) as lock_error:
-                        if lock_error:
+                    with _protected_worktree(plan.worktree) as (
+                        protection_error,
+                        stabilize_worktree,
+                    ):
+                        if protection_error:
                             execution = (
                                 None,
                                 None,
                                 ArmClassification.INFRA_FAIL,
                                 "",
                                 "",
-                                lock_error,
+                                protection_error,
                                 None,
                                 None,
                             )
@@ -649,6 +708,7 @@ def run_experiment(
                                 model=model,
                                 reasoning_effort=reasoning_effort,
                                 codex_home=codex_home,
+                                stabilize_worktree=stabilize_worktree,
                             )
             else:
                 execution = (None, None, ArmClassification.UNJUDGEABLE, "", "", None, None, None)
