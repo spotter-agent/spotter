@@ -1,8 +1,9 @@
 import json
 import subprocess
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -28,11 +29,23 @@ from spotter.paths import spotter_home
 from spotter.replay import ForkPlan
 from spotter.snapshot import StepJournal
 
+_real_locked_worktree = experiment._locked_worktree
+
 
 @pytest.fixture(autouse=True)
 def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("SPOTTER_HOME", str(tmp_path))
     return tmp_path
+
+
+@pytest.fixture(autouse=True)
+def valid_worktree(monkeypatch: pytest.MonkeyPatch) -> None:
+    @contextmanager
+    def locked(worktree: str) -> Iterator[None]:
+        yield None
+
+    monkeypatch.setattr(experiment, "_locked_worktree", locked)
+    monkeypatch.setattr(experiment, "_worktree_error", lambda worktree: None)
 
 
 def _fake_fork(counter: dict[str, int]) -> Callable[..., ForkPlan]:
@@ -773,6 +786,69 @@ def test_check_runs_in_each_fork_worktree(monkeypatch: pytest.MonkeyPatch) -> No
     assert all(r.check_exit == 0 for r in results)
     assert all(r.classification == ArmClassification.PASS for r in results)
     assert all(r.check_stdout == "check output" for r in results)
+
+
+def test_experiment_locks_worktree_until_arm_finishes(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    worktree = tmp_path / "worktree"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / "tracked").write_text("fixture")
+    subprocess.run(["git", "add", "tracked"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "fixture"], cwd=repo, check=True)
+    subprocess.run(["git", "worktree", "add", "--detach", str(worktree)], cwd=repo, check=True)
+
+    with _real_locked_worktree(str(worktree)) as lock_error:
+        assert lock_error is None
+        listing = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        assert "locked spotter-experiment" in listing
+
+    listing = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "locked spotter-experiment" not in listing
+
+
+def test_missing_worktree_before_check_is_infrastructure_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(experiment, "fork", _fake_fork({}))
+    monkeypatch.setattr(experiment, "_run_arm", lambda *args, **kwargs: _agent_run())
+    monkeypatch.setattr(
+        experiment,
+        "_worktree_error",
+        lambda worktree: "WORKTREE_UNAVAILABLE_BEFORE_CHECK:missing metadata",
+    )
+
+    results = run_experiment(
+        "s1",
+        5,
+        None,
+        run=True,
+        neutral=True,
+        check="pytest -q",
+    )
+
+    assert all(result.check_exit is None for result in results)
+    assert all(result.classification == ArmClassification.INFRA_FAIL for result in results)
+    assert all(
+        result.infra_diagnostic == "WORKTREE_UNAVAILABLE_BEFORE_CHECK:missing metadata"
+        for result in results
+    )
+    assert "noise pairs: n=0/1 judgeable" in summarize(results)
+    assert "infrastructure failures=2/2" in summarize(results)
 
 
 def test_summarize_refuses_to_call_completion_success() -> None:

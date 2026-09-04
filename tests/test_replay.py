@@ -106,6 +106,14 @@ def test_fork_rollout_truncates_and_renames(codex_home: Path) -> None:
     assert rollout.read_text().count("call_B") == 1  # original untouched
 
 
+def test_find_rollout_uses_codex_home_environment(
+    codex_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    assert replay.find_rollout(OLD_ID) == next((codex_home / "sessions").rglob("*.jsonl"))
+
+
 def test_branch_coverage_classifies_state_context_effects_and_gaps(
     repo: Path, codex_home: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

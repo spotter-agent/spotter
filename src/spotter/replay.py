@@ -240,7 +240,7 @@ def prefix_contamination_preflight(plans: Sequence[ForkPlan]) -> str | None:
 
 
 def find_rollout(session_id: str, codex_home: Path | None = None) -> Path:
-    home = codex_home or Path.home() / ".codex"
+    home = codex_home or Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
     matches = sorted(
         path
         for path in (home / "sessions").rglob("rollout-*.jsonl")
