@@ -4,7 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from spotter.app_server import AppServerTransportError, CodexAppServerClient
+from spotter.app_server import (
+    AppServerCapability,
+    AppServerTransportError,
+    CapabilityStatus,
+    CodexAppServerClient,
+    ConnectionState,
+)
 from spotter.budget import charge
 from spotter.build_identity import current_build_identity
 from spotter.cli import main
@@ -469,6 +475,27 @@ def test_doctor_probe_reports_an_unreachable_configured_app_server(
     assert by_name["observation"].status == WARN
     assert "disconnected" in by_name["observation"].detail
     assert by_name["live control"].status == WARN
+
+
+def test_doctor_probe_treats_unknown_controls_as_information(
+    homes: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest = replace(_ready_manifest(homes), app_server_endpoint="ws://127.0.0.1:4321")
+    manifest.save(homes[0] / "integrations/codex.json")
+    _daemon_status(monkeypatch, RuntimeHealth.HEALTHY)
+
+    async def connect(self: CodexAppServerClient) -> None:
+        self.state = ConnectionState.CONNECTED
+        self._capabilities[AppServerCapability.OBSERVATION] = CapabilityStatus.AVAILABLE
+
+    monkeypatch.setattr(CodexAppServerClient, "connect", connect)
+
+    by_name = {check.name: check for check in check_runtime(deep=True)}
+
+    assert by_name["observation"].status == OK
+    assert by_name["live control"].status == INFO
+    assert "unknown/unknown" in by_name["live control"].detail
+    assert "first time a control is used" in by_name["live control"].detail
 
 
 def test_status_redacts_configured_app_server_query_values(

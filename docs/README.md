@@ -25,6 +25,7 @@
 | What happens from install through uninstall/reinstall? | [Lifecycle](lifecycle.md) | command-by-command operational lifecycle |
 | How are release artifacts built and identified? | [Releasing](releasing.md) | tag, artifact, checksum, and build-identity contract |
 | What does the packaged lifecycle smoke prove? | [Homebrew lifecycle smoke](homebrew-lifecycle-smoke.md) | recorded install, live-upgrade, uninstall, retention, and reinstall coverage |
+| How is first-use readiness evaluated? | [Guided onboarding protocol](experiments/guided-onboarding-v1-protocol.md) and [current result](experiments/guided-onboarding-v1-result.md) | frozen human tasks, package matrix, current mechanical evidence, and remaining gaps |
 | What did the App Server proof of concept establish? | [App Server PoC](app-server-poc.md) | exploratory protocol and transport findings |
 | Was shared TUI control validated end to end? | [App Server validation](app-server-validation.md) | historical validation evidence and limitations |
 | How is source/Trace IR/ThreadState coverage measured? | [Observability baseline](observability-baseline.md) | taxonomy, safe audit method, current sample limits |
