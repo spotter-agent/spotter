@@ -99,14 +99,15 @@ context, when the exact thread is not confirmed as observed in the current App S
 
 This is an onboarding implementation, not evidence of general-user readiness. Remaining work:
 
-A clean-room wheel smoke and a Homebrew 0.0.14 mechanical onboarding pilot passed on macOS on
-2026-09-13. The packaged pilot covered local setup with a real Codex App Server, diagnostics, mode
-selection, update guidance, managed launch resolution, teardown, and preservation of unrelated Codex
-state. It exposed and fixed a deep-doctor classification that treated unadvertised control capability
-as a warning even though observation was healthy. The exact matrix and limitations are recorded in
-the [guided onboarding result](experiments/guided-onboarding-v1-result.md); first-time-user evidence,
-an interactive live thread, and the packaged Linux lifecycle remain open under the frozen
-[protocol](experiments/guided-onboarding-v1-protocol.md).
+A clean-room wheel smoke and a Homebrew 0.0.15 mechanical onboarding pilot passed on macOS. The
+packaged pilot covered local setup with a real Codex App Server, diagnostics, mode selection, update
+guidance, managed launch resolution, teardown, and preservation of unrelated Codex state. It verifies
+the fix for a deep-doctor classification that had treated unadvertised control capability as a
+warning even though observation was healthy. Homebrew CI also passes the Formula build and test on
+macOS and Linux plus the full mechanical lifecycle on macOS. The exact matrix and limitations are
+recorded in the [guided onboarding result](experiments/guided-onboarding-v1-result.md);
+first-time-user evidence, an interactive live thread, and the full packaged Linux lifecycle remain
+open under the frozen [protocol](experiments/guided-onboarding-v1-protocol.md).
 
 - [#369](https://github.com/spotter-agent/spotter/issues/369): validate the revised onboarding with
   first-time users and the packaged platform lifecycle matrix;
