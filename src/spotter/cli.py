@@ -3575,7 +3575,13 @@ def _hook_main(
                 )
                 config = SpotterConfig.from_mapping({"main_agent": {"adapter": "codex"}})
                 config_generation = "fallback-unversioned"
-        output = run_hook(payload, config, config_path, config_generation)
+        output = run_hook(
+            payload,
+            config,
+            config_path,
+            config_generation,
+            report_live_status=integration_generation is not None,
+        )
     except Exception as error:  # noqa: BLE001 — deliberate fail-open boundary
         print(f"spotter hook error (failing open): {error}", file=sys.stderr)
         return 0

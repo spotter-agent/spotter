@@ -141,7 +141,8 @@ spotter codex
 **默认仅观察：** 记录违规但不阻止执行，自动 AI 审查和实时建议均关闭。`doctor` 显示配置和
 安全的策略预览，不执行示例命令，也不调用模型。参阅[模式选择](docs/user-guide.zh-CN.md#模式选择)。
 
-后续请使用 `spotter codex`。普通 `codex` 不会连接到同一 App Server 观察路径。
+后续请使用 `spotter codex`。普通 `codex` 不会连接到同一 App Server 观察路径。托管会话启动时，
+Spotter 会检查该线程的守护进程状态；若无法确认实时观察，则显示一条不会加入模型上下文的警告。
 已有外部服务器可继续使用 `setup codex --endpoint <地址>`。首次设置不带 `--local` 或
 `--endpoint` 时仅启用 Hook；重新设置会保留已注册的 endpoint。
 

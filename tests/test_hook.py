@@ -323,6 +323,39 @@ def test_unknown_events_still_journal(spotter_home: Path) -> None:
     assert records[0].event.provenance.source == "codex_hook"
 
 
+@pytest.mark.parametrize("observing", [False, True])
+def test_managed_session_start_warns_unless_live_observation_is_confirmed(
+    spotter_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    observing: bool,
+) -> None:
+    async def request(
+        self: DaemonClient, method: str, params: dict[str, object]
+    ) -> dict[str, object]:
+        assert method == "sessions"
+        assert params == {"session": "live-check"}
+        return {
+            "sessions": {
+                "rows": [{"id": "live-check", "observing": observing}],
+            }
+        }
+
+    monkeypatch.setattr(DaemonClient, "request", request)
+    output = run_hook(
+        {"hook_event_name": "SessionStart", "session_id": "live-check"},
+        _config(observation_only=True),
+        report_live_status=True,
+    )
+
+    if observing:
+        assert output is None
+    else:
+        assert output is not None
+        message = json.loads(output)
+        assert set(message) == {"systemMessage"}
+        assert "spotter codex" in message["systemMessage"]
+
+
 def test_session_start_takes_baseline_snapshot_for_early_forks(
     tmp_path: Path, spotter_home: Path
 ) -> None:
