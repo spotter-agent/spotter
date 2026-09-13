@@ -376,7 +376,7 @@ spotter setup codex --endpoint ws://127.0.0.1:4500
 
 It must be **idempotent** and **transactional**.
 
-The implemented command supports `--endpoint`, `--dry-run`, and `--portable`. Managed mode registers
+The implemented command supports `--local`, `--endpoint`, `--dry-run`, and `--portable`. Managed mode registers
 `spotterd` as a login-scoped user service; portable mode starts it without persistent registration.
 For an explicit endpoint, setup first validates its WebSocket form and preflights the Codex identity
 and observation/thread-query capabilities without changing owned integration state. It then mutates
@@ -385,7 +385,17 @@ and requires the reconciled daemon to report a compatible App Server identity an
 before atomically committing that manifest as `ready`. Generated Hooks invoke the stable packaged
 CLI, not a copied module tree or a persisted Python interpreter path.
 
-Omitting `--endpoint` preserves the backward-compatible Hook-only installation and records
+For first use, `spotter setup codex --local` validates the installation/configuration plan, reuses
+or starts a detached App Server at `ws://127.0.0.1:4500`, and then runs the same endpoint verification
+and integration transaction. A previously registered plain `ws://127.0.0.1:<port>` endpoint is
+retained. Non-local endpoints and credential/path-bearing endpoints are not replaced; use setup
+without `--local` for those integrations. `--local` and `--endpoint` are mutually exclusive.
+A listening port must still pass Codex identity and observation checks before registration.
+`--local --dry-run` performs neither a network probe nor a server start. The server remains shared,
+is never stopped by Spotter, and may survive a later setup failure; integration rollback does not
+imply server teardown. Subsequent sessions use `spotter codex`.
+
+Omitting both `--local` and `--endpoint` preserves the backward-compatible Hook-only installation and records
 `pending-external`; setup and diagnostics report App Server observation/control as unavailable.
 Rerunning setup without the flag retains and re-verifies an endpoint from an existing ready
 manifest. Passing a different endpoint performs a transactional daemon restart and restores the
@@ -1043,9 +1053,10 @@ The implemented command reports manifest/Hook ownership, daemon RPC, observation
 enforcement consequences, storage, reviewer errors, and spend-ledger health. Exit `0` is healthy,
 `1` is degraded/warn, and `2` is broken. Expected unavailable surfaces are informational and do not
 affect the verdict; once a configured surface becomes unavailable it warns or fails according to
-its consequence. App Server ingestion now supplies daemon-owned live identity state, but the status
-command does not yet project active/dormant counts; it reports them as unknown rather than inferring
-them from Hook sessions.
+its consequence. App Server ingestion supplies daemon-owned live identity state. Status reports
+confirmed active and tracked counts plus bounded thread rows; it leaves disconnected state
+unconfirmed rather than inferring liveness from Hook sessions. A complete dormant classification is
+still not projected.
 
 Target output shape (not current CLI output):
 
@@ -1069,8 +1080,37 @@ Threads
 
 Today the command prints the Spotter home and storage size, runtime diagnostic checks, journaled
 session count and last-observation age, fork count when present, reviewer/ledger warnings, and
-review-token totals when available. It does not report package version or active/dormant thread
-counts. The target shape depends on the remaining runtime identity and packaging work.
+review-token totals when available. It reports daemon-confirmed active and tracked thread counts,
+but does not classify every retained thread as dormant or report the package version. The full target
+shape still depends on the remaining packaging work.
+
+`spotter status --session THREAD_ID` queries daemon-owned live state rather than inferring it from
+journal recency. It reports whether the thread is observed in the current connection epoch, active
+turn and control readiness, history gaps, the daemon's adopted policy generation, and session/day
+review calls. It names automatic review as off, available, or paused at a configured call limit.
+Missing daemon state remains unknown even when a Hook journal exists.
+
+Setup, status, and doctor also explain the resolved policy for the current working directory:
+observation records violations without blocking, active mode enables deterministic blocking, and
+automatic review and experimental advisory settings are separate. Configured review model, cadence,
+and call limits are shown when reviews are enabled; zero limits are explicitly unlimited. These
+are configured settings, not a claim that every running turn has adopted the same generation.
+Status retains the existing daily review/token totals; call ceilings are not currency caps.
+
+## 9.1.1 `spotter mode`
+
+`spotter mode [observe|protect|advisory|custom]` owns only
+`<SPOTTER_HOME>/mode.toml`. The overlay is loaded after global, repository, and explicitly selected
+configuration so the operator's activation choice cannot be silently weakened by a repository.
+It changes observation/blocking and automatic-review activation only; model, gate rules, and review
+limits remain in the existing configuration. `custom` removes the overlay. Edited or symlinked mode
+files are refused rather than replaced, writes are locked and atomic, and `--dry-run` does not write.
+
+A running daemon reloads the overlay through the existing config-generation state machine. Hot
+review settings apply to newly submitted jobs, next-turn settings wait until no older turn is active,
+and queued jobs retain their pinned configuration. New Hook processes resolve the overlay on each
+request. Advisory selection prints model-data and call-limit consequences before saving; those
+limits are not token or currency caps.
 
 ## 9.2 `spotter doctor`
 
@@ -1081,6 +1121,11 @@ the integration manifest against the exact owned Hook and legacy plugin state, c
 and probes a configured App Server endpoint. Expected unimplemented capabilities are informational,
 configured-but-unavailable capabilities warn, and broken owned integration, daemon, storage, or
 ledger contracts fail.
+
+Doctor includes a safe policy preview: `git push --force` is evaluated as text only and reported as
+record-only or blocked under the resolved observation mode. It never executes that command or calls
+a model. The existing synthetic Hook round trip remains the separate wiring check. Policy settings
+honor the registered integration config path unless `doctor --config` selects another file.
 
 Checks:
 
@@ -1322,6 +1367,8 @@ Recommended precedence:
 
 ```text
 runtime CLI override
+    > operator mode preset (activation flags only)
+    > explicitly selected config
     > repository config
     > user/global config
     > defaults
@@ -1331,8 +1378,9 @@ Conceptual locations:
 
 ```text
 ~/.spotter/spotter.toml (or $SPOTTER_HOME/spotter.toml)
+~/.spotter/mode.toml (owned by `spotter mode`)
 <repo>/spotter.toml
-CLI/runtime overrides
+explicit config and internal runtime overrides
 ```
 
 The implemented canonical resolver returns an immutable validated snapshot with a stable effective
@@ -1340,6 +1388,10 @@ config hash, a source-aware generation, load time, and non-secret source provena
 doctor's Hook round trip, integration validation, and the Hook fail-open boundary all use this
 resolver; an explicitly named missing or invalid layer refuses activation, while the Hook preserves
 its existing fail-open contract.
+
+The mode overlay accepts only the exact managed presets and refuses edited or symlinked content.
+It owns activation flags only and has precedence over an explicitly selected config. Internal
+runtime overrides remain the final layer for bounded command-specific behavior.
 
 Repository content is supervised input, not operator-trusted policy. Repository layers cannot
 override `observation_only` or `mcp_semantics`; gate paths are unioned and dependency blocking is

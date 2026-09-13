@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
@@ -299,6 +300,27 @@ def secure_dir(path: Path) -> Path:
     with suppress(OSError):
         path.chmod(0o700)
     return path
+
+
+def atomic_write_bytes(path: Path, content: bytes) -> None:
+    """Replace a file durably using an owner-only, unique temporary file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as sink:
+            temporary = Path(sink.name)
+            sink.write(content)
+            sink.flush()
+            os.fsync(sink.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def sanitize_session(session_id: object) -> str:

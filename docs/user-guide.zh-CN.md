@@ -149,53 +149,50 @@ python -m pip install -e '.[dev]'
 
 ## 5. 将 Spotter 连接到 Codex
 
-始终先查看变更计划：
+使用 Codex CLI 稳定版 0.147.0 或更高版本，依次预览、设置、检查和启动：
 
 ```bash
-spotter setup codex --dry-run
-```
-
-然后应用托管集成并进行端到端验证：
-
-```bash
-spotter setup codex
+spotter setup codex --local --dry-run
+spotter setup codex --local
 spotter doctor
+spotter codex
 ```
 
-托管设置具备事务性和幂等性。它只修改 Spotter 所有的 Codex Hook/插件状态，保留带
-fingerprint 的备份，将 `spotterd` 注册为登录用户范围的服务，验证一次合成 Hook 往返，并默认
-在 `~/.spotter/integrations/codex.json` 中提交所有权清单。
+`--local` 检查前提条件，复用或启动本地 App Server，然后执行事务式 endpoint 验证和集成安装。
+默认地址是 `ws://127.0.0.1:4500`，已有本地 endpoint 会被保留。端口上的进程必须通过 Codex
+身份验证；仅能建立 TCP 连接不代表成功。启动或验证失败不会替换集成。服务器为共享进程，
+即使后续设置失败也保持运行；Spotter 不会停止它。`--local --dry-run` 不启动或连接服务器。
 
-如果无法或不希望注册持久用户服务，请使用 portable 模式：
+已有外部服务器可使用 `spotter setup codex --endpoint <地址>`。`--local` 拒绝替换非本地
+endpoint，也不能与 `--endpoint` 同时使用。后续使用 `spotter codex` 复用或按需启动已注册的
+服务器。普通 `codex` 不会选择此观察路径。
 
-```bash
-spotter setup codex --portable
-spotter doctor
-```
+设置会记录所属 Hook 和服务状态、保留备份，并在验证守护进程和合成 Hook 往返后提交清单。
+若不需要登录服务，使用 `spotter setup codex --local --portable`；重启后可通过
+`spotter codex` 再次启动。首次不带 endpoint 选项的设置仅启用 Hook，重新设置会保留已有
+endpoint。观察模式记录违规但不阻止执行。
 
-Portable 模式会启动 `spotterd`，但不会注册登录时自动启动的服务。注销、重启或进程终止后，
-你需要自行再次启动它：
+### 确认首次设置
 
-```bash
-spotter daemon start
-```
+`spotter doctor` 应显示观察连接和 Hook 往返正常。`configured policy` 和
+`configured AI reviews` 显示当前目录的配置与审查调用上限；正在运行的轮次可能保留旧配置。
+`policy preview` 仅把 `git push --force` 当作文本评估，显示 **record only** 或 **block**，
+不会执行命令或调用模型。策略预览和 Hook 连通性是两项独立检查。
 
-完成设置后，照常使用 Codex：
-
-```bash
-codex
-```
+正常任务结束后运行 `spotter status` 和 `spotter interventions`。对已有 ID 使用
+`spotter explain --supervision-id ID` 查看说明。没有干预记录不等于故障；用 `doctor` 检查连接。
 
 ## 6. 配置
 
 配置文件是可选的。Spotter 按以下顺序解析一个有效配置快照，后面的层级覆盖前面的层级：
 
 ```text
-内置默认值 < ~/.spotter/spotter.toml < <仓库>/spotter.toml < 调用时覆盖
+内置默认值 < ~/.spotter/spotter.toml < <仓库>/spotter.toml < --config < 模式预设
 ```
 
 设置 `SPOTTER_HOME` 会同时移动全局配置、数据、集成、运行时和日志根目录。仓库配置从 Git
-工作树根目录发现。也可以在设置和诊断时用 `--config` 额外选择最高优先级的文件。嵌套表按键
+工作树根目录发现。也可以在设置和诊断时用 `--config` 选择额外配置文件。已选择的
+`spotter mode` 预设仅对激活标志拥有最终优先级。嵌套表按键
 合并，标量和列表则替换较低优先级的值。
 仓库文件不被信任为操作者策略：它不能覆盖 `observation_only` 或 `mcp_semantics`，只能向
 `gates.forbidden_paths` 添加路径，并且只能启用（不能禁用）
@@ -234,6 +231,36 @@ spotter setup codex --config /absolute/path/to/spotter.toml
 信号驱动和定期语义审查会消耗模型令牌，并且默认关闭。请有意识地启用它们，保留每会话和每日
 上限。定期审查的决策只会被记录；只有另行启用 `deliver_on_signals` 后，最新的信号驱动
 `VERIFY`/`NUDGE` 决策才会被传递。
+
+### 模式选择
+
+运行 `spotter mode` 查看引导，或直接选择：
+
+```bash
+spotter mode observe
+spotter mode protect
+spotter mode advisory
+spotter mode custom
+```
+
+| 模式 | 行为 |
+| --- | --- |
+| `observe` | 记录违规但不阻止，不启用自动 AI 审查 |
+| `protect` | 阻止确定性规则违规，不启用自动 AI 审查 |
+| `advisory` | protect 模式加实验性信号驱动 AI 建议 |
+| `custom` | 移除预设并使用已有 TOML 设置 |
+
+此命令只管理 `SPOTTER_HOME` 下的 `mode.toml`，保留 `spotter.toml`、自定义模型、门控策略和
+审查调用上限。已编辑或为符号链接的模式文件不会被覆盖。`custom` 只移除托管预设。
+可用 `--dry-run` 预览。运行中的守护进程会重新加载预设；下一轮设置等待安全轮次边界，
+已排队的审查保留其固定设置。
+
+advisory 模式保存前显示模型和上限。审查消耗模型令牌；`max_per_session` 和
+`max_per_day` 限制的是**审查调用次数**，不是令牌或金额，0 表示取消上限。实时建议的收益尚未
+证实。语义审查会向模型提供方发送选定的任务上下文。
+
+`spotter status --session THREAD_ID` 显示该线程是否正在被实时观察、守护进程采用的策略版本，
+以及自动审查是关闭、可用还是因达到调用上限而暂停。它不会根据最近的 Hook 日志推断实时线程。
 
 ## 7. 操作与检查 Spotter
 

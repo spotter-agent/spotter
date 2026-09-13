@@ -153,43 +153,43 @@ python -m pip install -e '.[dev]'
 
 ## 5. Spotter를 Codex에 연결
 
-항상 먼저 변경 계획을 확인합니다.
+Codex CLI 안정 버전 0.147.0 이상에서 계획 확인 → 설정 → 진단 → 실행 순서로 진행합니다.
 
 ```bash
-spotter setup codex --dry-run
-```
-
-그다음 관리형 통합을 적용하고 전체 경로를 검증합니다.
-
-```bash
-spotter setup codex
+spotter setup codex --local --dry-run
+spotter setup codex --local
 spotter doctor
+spotter codex
 ```
 
-관리형 설정은 트랜잭션 방식이며 여러 번 실행해도 같은 결과를 보장합니다. Spotter가 소유한 Codex
-Hook/플러그인 상태만 변경하고, fingerprint가 있는 백업을 보관하며, `spotterd`를 로그인 범위의
-사용자 서비스로 등록합니다. 또한 합성 Hook 왕복을 검증하고 기본적으로
-`~/.spotter/integrations/codex.json`에 소유권 매니페스트를 커밋합니다.
+`--local`은 사전 요구사항을 확인하고 로컬 App Server를 재사용하거나 실행한 뒤, 기존의
+트랜잭션 방식으로 endpoint와 통합을 검증합니다. 기본 주소는 `ws://127.0.0.1:4500`이며,
+등록된 로컬 endpoint가 있으면 유지합니다. 해당 포트를 다른 프로그램이 사용한다면 Codex 서버
+신원 검증에서 실패합니다. 서버 시작이나 검증에 실패하면 통합을 교체하지 않습니다.
+서버는 공유되므로 이후 설정이 실패하더라도 유지되며, Spotter가 중지하지 않습니다.
+`--local --dry-run`은 서버를 실행하거나 접속하지 않습니다.
 
-영구 사용자 서비스 등록을 사용할 수 없거나 원하지 않는다면 portable 모드를 사용합니다.
+기존 외부 서버에는 `spotter setup codex --endpoint <주소>`를 사용하세요. `--local`은 외부
+endpoint를 교체하지 않으며 `--endpoint`와 함께 사용할 수 없습니다. 이후에는 `spotter codex`가
+등록된 서버를 재사용하거나 필요할 때 실행합니다. 일반 `codex`는 이 관찰 경로를 선택하지 않습니다.
 
-```bash
-spotter setup codex --portable
-spotter doctor
-```
+설정은 소유한 Hook과 서비스 상태를 기록하고 백업을 보관하며, 데몬과 합성 Hook 왕복을 검증한 뒤
+매니페스트를 커밋합니다. 로그인 서비스 등록을 원하지 않으면
+`spotter setup codex --local --portable`을 사용하세요. 재부팅 후에는 `spotter codex`로 다시
+시작할 수 있습니다. endpoint 옵션 없이 처음 설정하면 Hook 전용으로 설치되고, 재설정 시에는
+등록된 endpoint를 유지합니다. 관찰 모드는 위반을 기록하지만 차단하지 않습니다.
 
-Portable 모드는 로그인 시 자동으로 시작되는 서비스를 등록하지 않고 `spotterd`를 시작합니다.
-로그아웃, 재부팅 또는 프로세스 종료 후에는 직접 다시 시작해야 합니다.
+### 첫 설정 확인
 
-```bash
-spotter daemon start
-```
+`spotter doctor`에서 관찰 연결과 Hook 왕복 검사가 정상인지 확인하세요. `configured policy`와
+`configured AI reviews`는 현재 디렉터리의 설정과 리뷰 호출 한도를 보여 줍니다. 진행 중인 턴에는
+이전 설정이 유지될 수 있습니다. `policy preview`는 `git push --force`를 텍스트로만 평가하여
+**record only** 또는 **block**을 표시합니다. 명령 실행이나 모델 호출은 하지 않습니다.
+정책 미리보기와 실제 Hook 연결 검사는 별도로 표시됩니다.
 
-설정이 끝나면 평소처럼 Codex를 사용합니다.
-
-```bash
-codex
-```
+일반 작업 후 `spotter status`와 `spotter interventions`를 확인하세요. 기록된 ID는
+`spotter explain --supervision-id ID`로 설명을 볼 수 있습니다. 개입 기록이 없다는 사실만으로
+장애를 의미하지는 않습니다. 연결 상태는 `doctor`에서 확인하세요.
 
 ## 6. 설정
 
@@ -197,12 +197,13 @@ codex
 뒤의 계층이 앞의 계층을 덮어씁니다.
 
 ```text
-기본값 < ~/.spotter/spotter.toml < <저장소>/spotter.toml < 실행 시 재정의
+기본값 < ~/.spotter/spotter.toml < <저장소>/spotter.toml < --config < 모드 프리셋
 ```
 
 `SPOTTER_HOME`을 설정하면 전역 설정, 데이터, 통합, 런타임, 로그 루트가 함께 이동합니다.
 저장소 설정은 Git 워크트리 루트에서 찾습니다. 설정과 진단 시 `--config`로 가장 높은
-우선순위의 파일을 추가로 지정할 수도 있습니다. 중첩 테이블은 키별로 병합되고 스칼라와
+설정 파일을 추가로 지정할 수도 있습니다. 선택된 `spotter mode` 프리셋은 활성화 플래그에만
+최종 우선순위를 가집니다. 중첩 테이블은 키별로 병합되고 스칼라와
 목록은 낮은 우선순위 값을 교체합니다.
 저장소 파일은 운영자 정책으로 신뢰하지 않습니다. `observation_only`와 `mcp_semantics`를
 재정의할 수 없고, `gates.forbidden_paths`는 추가만 가능하며
@@ -241,6 +242,39 @@ spotter setup codex --config /absolute/path/to/spotter.toml
 신호 기반 및 주기적 시맨틱 리뷰는 모델 토큰을 사용하며 기본적으로 비활성화되어 있습니다. 필요한
 경우에만 활성화하고 세션별·일별 한도를 유지하세요. 주기적 결정은 기록만 되며, 최신 신호 기반
 `VERIFY`/`NUDGE` 결정은 별도의 `deliver_on_signals` opt-in을 활성화한 경우에만 전달됩니다.
+
+### 모드 선택
+
+`spotter mode`로 안내를 보거나 모드를 바로 선택하세요.
+
+```bash
+spotter mode observe
+spotter mode protect
+spotter mode advisory
+spotter mode custom
+```
+
+| 모드 | 동작 |
+| --- | --- |
+| `observe` | 위반을 기록하되 차단하지 않음, 자동 AI 리뷰 없음 |
+| `protect` | 결정론적 규칙 위반 차단, 자동 AI 리뷰 없음 |
+| `advisory` | protect 모드와 실험적 신호 기반 AI 조언 |
+| `custom` | 프리셋을 제거하고 기존 TOML 설정 사용 |
+
+이 명령은 `SPOTTER_HOME` 아래 `mode.toml`만 관리하며 `spotter.toml`, 사용자 지정 모델, 게이트
+정책, 리뷰 호출 한도는 보존합니다. 수정되었거나 심볼릭 링크인 모드 파일은 덮어쓰지 않습니다.
+`custom`은 관리되는 프리셋만 제거합니다. `--dry-run`으로 미리 볼 수 있습니다. 실행 중인 데몬은
+프리셋을 reload하고, 다음 턴 설정은 안전한 턴 경계에서 적용됩니다. 대기 중인 리뷰는 고정된 기존
+설정을 유지합니다.
+
+advisory 모드는 저장 전에 모델과 한도를 표시합니다. 리뷰는 모델 토큰을 사용합니다.
+`max_per_session`과 `max_per_day`는 **리뷰 호출 횟수** 제한이며 토큰이나 금액 상한이 아니고,
+0은 제한 해제입니다. 실시간 조언의 이점은 아직 입증되지 않았습니다. 시맨틱 리뷰는 선택된 작업
+맥락을 모델 제공자에게 전달합니다.
+
+`spotter status --session THREAD_ID`는 해당 스레드의 실시간 관찰 여부, 데몬에 적용된 정책 세대,
+자동 리뷰가 꺼짐·사용 가능·한도 도달로 일시 중지 중인지 표시합니다. 최근 Hook 저널만으로
+라이브 스레드라고 추정하지 않습니다.
 
 ## 7. Spotter 운영 및 점검
 

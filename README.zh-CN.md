@@ -125,22 +125,25 @@ spotterd --version
 
 ## 快速开始
 
-确认 `codex` CLI 已安装并可通过 `PATH` 调用，然后预览并应用托管集成：
+确认 Codex CLI 稳定版 0.147.0 或更高版本已安装并可通过 `PATH` 调用，然后运行：
 
 ```bash
-spotter setup codex --dry-run
-spotter setup codex
+spotter setup codex --local --dry-run
+spotter setup codex --local
 spotter doctor
+spotter codex
 ```
 
-设置过程具备事务性和幂等性。它会准确记录 Spotter 所有的 Hook 和服务状态，因此后续修复或
-解除集成时无需猜测用户所有的配置。
+`--local` 自动准备本地 App Server，验证服务器身份和观察能力后注册集成，无需单独维护服务器
+终端或配置地址。它复用已有的本地 endpoint，首次默认使用 `ws://127.0.0.1:4500`。
+服务器为共享进程，TUI 退出后仍会运行；Spotter 不会停止它。`--dry-run` 不启动或连接服务器。
 
-完成后，照常使用 Codex：
+**默认仅观察：** 记录违规但不阻止执行，自动 AI 审查和实时建议均关闭。`doctor` 显示配置和
+安全的策略预览，不执行示例命令，也不调用模型。参阅[模式选择](docs/user-guide.zh-CN.md#模式选择)。
 
-```bash
-codex
-```
+后续请使用 `spotter codex`。普通 `codex` 不会连接到同一 App Server 观察路径。
+已有外部服务器可继续使用 `setup codex --endpoint <地址>`。首次设置不带 `--local` 或
+`--endpoint` 时仅启用 Hook；重新设置会保留已注册的 endpoint。
 
 ## 常用命令
 
@@ -148,6 +151,9 @@ codex
 | --- | --- |
 | `spotter status` | 显示集成、守护进程、能力和存储健康状态 |
 | `spotter doctor` | 运行合成健康检查并输出可执行的诊断建议 |
+| `spotter codex` | 通过观察路径启动 Codex |
+| `spotter mode [observe\|protect\|advisory\|custom]` | 无需编辑 TOML 即可查看或选择监督模式 |
+| `spotter status --session ID` | 显示单个实时线程的观察、策略和审查预算状态 |
 | `spotter daemon status` | 检查软件包安装的 `spotterd` 进程及构建标识 |
 | `spotter metrics` | 汇总已收集的运行时和评估指标 |
 | `spotter observability` | 检查可用的轨迹来源和规范化事件 |
@@ -156,6 +162,14 @@ codex
 配置文件是可选的。如需自定义门控、存储、快照或审查预算，请参考
 [spotter.example.toml](spotter.example.toml)。信号驱动的语义审查会消耗模型令牌，并且默认
 关闭；请仅在确有需要时启用，并保留已有的每会话和每日限额。
+
+运行 `spotter mode` 查看引导，或直接选择模式：
+
+```bash
+spotter mode observe    # 仅记录（默认）
+spotter mode protect    # 阻止确定性规则违规，不启用 AI 审查
+spotter mode advisory   # 实验性 AI 建议，会消耗模型令牌
+```
 
 ## 升级
 

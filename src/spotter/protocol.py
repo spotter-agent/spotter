@@ -9,4 +9,5 @@ CONTROL_CAPABILITIES = (
     "gate",
     "shutdown",
     "status",
+    "live_sessions",
 )

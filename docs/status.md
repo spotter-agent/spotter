@@ -81,6 +81,31 @@ control/gate handshake, and the App Server connection/recovery loop.
 
 ## Current focus
 
+### First-use usability
+
+`spotter setup codex --local` now prepares and verifies a local App Server before committing the
+integration, so the documented first-use path no longer requires a separate server terminal or
+manual endpoint entry. English, Korean, and Chinese guides use `spotter codex` consistently and
+explain that default observation records violations without blocking and disables automatic AI
+reviews. Setup/status/doctor show configured policy and review call limits; doctor adds a text-only
+policy preview alongside the existing synthetic Hook round trip. `spotter mode` now provides guided
+or direct `observe`, `protect`, `advisory`, and `custom` selection in a separate managed overlay,
+without rewriting other configuration. `spotter status --session THREAD_ID` reports daemon-confirmed
+live observation, control readiness, adopted policy generation, and review budget availability.
+
+This is an onboarding implementation, not evidence of general-user readiness. Remaining work:
+
+A clean-room wheel install and non-interactive CLI smoke passed on macOS on 2026-09-13. It covered
+mode selection, local-setup dry-run, and missing live-session diagnostics without using the source
+checkout at runtime; it does not replace first-time user testing or the packaged platform matrix.
+
+- [#369](https://github.com/spotter-agent/spotter/issues/369): validate the revised onboarding with
+  first-time users and the packaged platform lifecycle matrix;
+- measure detection quality and live advisory benefit/harm before changing activation defaults.
+
+The existing evidence gates below remain unchanged; a policy preview does not prove real-session
+blocking, live delivery, or improved task outcomes.
+
 ### Runtime
 
 [#78](https://github.com/spotter-agent/spotter/issues/78) demonstrated same-thread observation and

@@ -6,6 +6,7 @@ import plistlib
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -320,7 +321,7 @@ def test_managed_codex_launch_explains_a_missing_endpoint(
     manager.setup()
 
     assert main(["codex"]) == 1
-    assert "rerun setup with --endpoint" in capsys.readouterr().err
+    assert "spotter setup codex --local" in capsys.readouterr().err
     assert service.starts == 1
 
 
@@ -1771,6 +1772,129 @@ def test_setup_dry_run_makes_no_external_changes(
     assert "dry-run: no changes made" in capsys.readouterr().out
     assert not (codex_home / "hooks.json").exists()
     assert not (spotter_home / "integrations").exists()
+
+
+@pytest.mark.parametrize("listening", [False, True])
+def test_local_setup_prepares_and_verifies_server_before_registering_hooks(
+    homes: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch, listening: bool
+) -> None:
+    spotter_home, codex_home = homes
+    manager, _ = _manager(homes)
+    manager.service = AppServerService(spotter_home / "service/spotterd", manager.manifest_path)
+    started: list[str] = []
+    verified: list[str] = []
+
+    def start(agent: str, endpoint: str) -> bool:
+        assert not manager.hooks_path.exists()
+        started.append(endpoint)
+        return True
+
+    def verify(endpoint: str) -> None:
+        assert not manager.hooks_path.exists()
+        assert listening or started == [endpoint]
+        verified.append(endpoint)
+
+    manager.app_server_verifier = verify
+    monkeypatch.setattr("spotter.cli.IntegrationManager", lambda **_: manager)
+    monkeypatch.setattr("spotter.cli._endpoint_listening", lambda _: listening)
+    monkeypatch.setattr("spotter.cli._start_app_server", start)
+    assert main(["setup", "codex", "--local"]) == 0
+    manifest = IntegrationManifest.load(manager.manifest_path)
+    assert manifest is not None
+    assert manifest.app_server_endpoint == "ws://127.0.0.1:4500"
+    assert verified == [manifest.app_server_endpoint]
+    assert len(started) == (0 if listening else 1)
+    assert (codex_home / "hooks.json").exists()
+
+
+def test_local_setup_dry_run_never_probes_or_starts_server(
+    homes: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager, _ = _manager(homes)
+    monkeypatch.setattr("spotter.cli.IntegrationManager", lambda **_: manager)
+    monkeypatch.setattr("spotter.cli._endpoint_listening", lambda _: pytest.fail("network probe"))
+    monkeypatch.setattr("spotter.cli._start_app_server", lambda *_: pytest.fail("server start"))
+    assert main(["setup", "codex", "--local", "--dry-run"]) == 0
+    assert not manager.hooks_path.exists()
+    assert not manager.manifest_path.parent.exists()
+
+
+@pytest.mark.parametrize("failure", ["startup", "identity"])
+def test_local_setup_failure_leaves_integration_untouched(
+    homes: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    manager, service = _manager(homes)
+
+    def reject(endpoint: str) -> None:
+        raise IntegrationError("not a compatible Codex server")
+
+    manager.app_server_verifier = reject
+    monkeypatch.setattr("spotter.cli.IntegrationManager", lambda **_: manager)
+    monkeypatch.setattr("spotter.cli._endpoint_listening", lambda _: failure == "identity")
+    monkeypatch.setattr("spotter.cli._start_app_server", lambda *_: False)
+    assert main(["setup", "codex", "--local"]) == 1
+    assert not manager.hooks_path.exists()
+    assert not manager.manifest_path.exists()
+    assert service.starts == 0
+
+
+def test_local_setup_preserves_existing_external_endpoint(
+    homes: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager, _ = _manager(homes)
+    manifest = manager.setup()
+    manifest = replace(
+        manifest,
+        app_server_endpoint="wss://example.com:443",
+        app_server_strategy="external-explicit",
+    )
+    manifest.save(manager.manifest_path)
+    before = manager.manifest_path.read_bytes()
+    monkeypatch.setattr("spotter.cli.IntegrationManager", lambda **_: manager)
+    monkeypatch.setattr("spotter.cli._endpoint_listening", lambda _: pytest.fail("network probe"))
+    assert main(["setup", "codex", "--local"]) == 1
+    assert manager.manifest_path.read_bytes() == before
+
+
+def test_local_setup_retains_registered_loopback_port(
+    homes: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager, _ = _manager(homes)
+    manager.service = AppServerService(homes[0] / "service/spotterd", manager.manifest_path)
+    manager.requested_app_server_endpoint = "ws://127.0.0.1:4600"
+    manager.app_server_verifier = lambda _: None
+    first = manager.setup()
+    manager.requested_app_server_endpoint = None
+    probed: list[str] = []
+
+    def listening(endpoint: str) -> bool:
+        probed.append(endpoint)
+        return True
+
+    monkeypatch.setattr("spotter.cli.IntegrationManager", lambda **_: manager)
+    monkeypatch.setattr("spotter.cli._endpoint_listening", listening)
+    assert main(["setup", "codex", "--local"]) == 0
+    assert probed == [first.app_server_endpoint]
+    retained = IntegrationManifest.load(manager.manifest_path)
+    assert retained is not None
+    assert retained.app_server_endpoint == first.app_server_endpoint
+    assert retained.integration_generation == first.integration_generation
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["status", "--local"],
+        ["teardown", "codex", "--local"],
+        ["setup", "codex", "--local", "--endpoint", "ws://127.0.0.1:4500"],
+    ],
+)
+def test_local_option_rejects_unrelated_commands_and_endpoint_override(
+    arguments: list[str],
+) -> None:
+    with pytest.raises(SystemExit) as error:
+        main(arguments)
+    assert error.value.code == 2
 
 
 def test_setup_cli_does_not_print_an_unverified_remote_command(

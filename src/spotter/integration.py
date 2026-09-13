@@ -36,6 +36,7 @@ from spotter.daemon import (
 )
 from spotter.doctor import OK, check_roundtrip
 from spotter.paths import RuntimeLayout, RuntimeLayoutError, secure_dir
+from spotter.paths import atomic_write_bytes as _atomic_write
 
 MANIFEST_SCHEMA_NAME = "spotter.integration_manifest"
 MANIFEST_SCHEMA_VERSION = 4
@@ -73,22 +74,6 @@ def _integration_generation(
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
-
-
-def _atomic_write(path: Path, content: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(descriptor, "wb") as sink:
-        sink.write(content)
-        sink.flush()
-        os.fsync(sink.fileno())
-    os.replace(temporary, path)
-    directory = os.open(path.parent, os.O_RDONLY)
-    try:
-        os.fsync(directory)
-    finally:
-        os.close(directory)
 
 
 def is_spotter_hook(hook: object) -> bool:

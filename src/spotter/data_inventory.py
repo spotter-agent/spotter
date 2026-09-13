@@ -75,6 +75,8 @@ _OTHER_SCOPE_ROOTS = {
     "snapshot-pins.json.lock",
     "snapshot-pins.lock",
     "spotter.toml",
+    "mode.toml",
+    "mode.toml.lock",
 }
 
 

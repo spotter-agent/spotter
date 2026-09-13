@@ -28,12 +28,14 @@ from spotter.app_server_endpoint import display_app_server_endpoint, redact_app_
 from spotter.budget import LedgerCorrupt, spend_totals
 from spotter.build_identity import current_build_identity
 from spotter.codex_host import CodexHostVersionError, validate_codex_host_version
+from spotter.config import ConfigurationError, resolve_config
 from spotter.daemon import (
     DaemonClient,
     DaemonStatus,
     RuntimeCompatibility,
     RuntimeHealth,
 )
+from spotter.gates import Gate
 from spotter.paths import RuntimeLayout, spotter_home
 from spotter.runtime_fingerprint import expected_runtime_construction_fingerprint
 
@@ -609,7 +611,7 @@ def check_runtime(*, deep: bool = False) -> list[Check]:
                     "observation",
                     capability_status,
                     "unavailable: App Server endpoint is not configured; "
-                    "Hook enforcement is independent",
+                    "Hook enforcement is independent; connect with `spotter setup codex --local`",
                 ),
                 Check(
                     "live control",
@@ -706,9 +708,69 @@ def check_runtime(*, deep: bool = False) -> list[Check]:
     return checks
 
 
+def check_policy(config_path: Path | None = None, *, preview: bool = False) -> list[Check]:
+    """Explain resolved settings, without claiming they are live in every thread."""
+    from spotter.integration import IntegrationError, IntegrationManifest
+
+    try:
+        if config_path is None:
+            manifest = IntegrationManifest.load(RuntimeLayout.discover().integration_manifest)
+            if manifest is not None and manifest.config_path:
+                config_path = Path(manifest.config_path)
+        resolved = resolve_config(repository=Path.cwd(), explicit_path=config_path)
+    except (OSError, ValueError, ConfigurationError, IntegrationError) as error:
+        return [Check("configured policy", FAIL, f"cannot read settings: {error}")]
+    config = resolved.config
+    reviewer = config.reviewer
+    mode = "observe: violations are recorded, not blocked"
+    if not config.observation_only:
+        mode = "protect: deterministic rule violations are blocked"
+    if reviewer.deliver_on_signals:
+        mode += "; experimental AI advisories enabled (benefit unproven)"
+    checks = [
+        Check(
+            "configured policy",
+            INFO,
+            f"{mode}; settings for {Path.cwd()} (running turns may retain earlier settings)",
+        )
+    ]
+    for diagnostic in resolved.diagnostics:
+        checks.append(Check("policy configuration", WARN, diagnostic))
+    if reviewer.on_signals or reviewer.every_steps:
+        checks.append(
+            Check(
+                "configured AI reviews",
+                INFO,
+                f"model={reviewer.model}; signal reviews={'on' if reviewer.on_signals else 'off'}; "
+                f"periodic cadence={reviewer.every_steps}; "
+                f"limits={reviewer.max_per_session or 'unlimited'}/session, "
+                f"{reviewer.max_per_day or 'unlimited'}/day reviews "
+                "(call limits, not token or currency caps); consumes model tokens; "
+                f"live advisories={'on' if reviewer.deliver_on_signals else 'off'}",
+            )
+        )
+        if not reviewer.max_per_session or not reviewer.max_per_day:
+            checks.append(Check("review budget", WARN, "a review call limit is disabled (0)"))
+    else:
+        checks.append(Check("configured AI reviews", INFO, "off: no automatic review model calls"))
+    if preview:
+        decision = Gate().check_command("git push --force")
+        outcome = "record only" if config.observation_only else "block"
+        checks.append(
+            Check(
+                "policy preview",
+                INFO,
+                f"git push --force -> {outcome} ({decision.rule}); "
+                "evaluated as text only, never executed; Hook wiring is checked separately",
+            )
+        )
+    return checks
+
+
 def run(config_path: Path | None = None) -> list[Check]:
     checks = [check_interpreter()]
     checks.extend(check_runtime(deep=True))
+    checks.extend(check_policy(config_path, preview=True))
     checks.extend(check_registration())
     checks.extend(check_storage())
     checks.append(check_roundtrip(config_path))

@@ -21,10 +21,10 @@ from spotter.integration import (
     MANIFEST_SCHEMA_VERSION,
     IntegrationError,
     IntegrationManifest,
-    _atomic_write,
     is_spotter_hook,
 )
 from spotter.paths import RuntimeLayout, secure_dir
+from spotter.paths import atomic_write_bytes as _atomic_write
 from spotter.repository_registry import OwnershipConfidence, ResourcePresence
 
 

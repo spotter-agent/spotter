@@ -154,64 +154,58 @@ See [Contributing](../CONTRIBUTING.md#local-setup) before modifying the project.
 
 ## 5. Connect Spotter to Codex
 
-Start one external App Server in a separate terminal. This process is user-managed; Spotter will
-attach to it but will never stop it:
+Use stable Codex CLI 0.147.0 or newer. Preview, set up, verify, then launch:
 
 ```bash
-codex app-server --listen ws://127.0.0.1:4500
-```
-
-Always inspect the endpoint-aware mutation plan first, then apply the managed integration and verify
-it end to end:
-
-```bash
-spotter setup codex --endpoint ws://127.0.0.1:4500 --dry-run
-spotter setup codex --endpoint ws://127.0.0.1:4500
+spotter setup codex --local --dry-run
+spotter setup codex --local
 spotter doctor
+spotter codex
 ```
 
-Managed setup is transactional and idempotent. It updates only Spotter-owned Codex Hook/plugin
-state, keeps fingerprinted backups, registers `spotterd` as a login-scoped user service, verifies the
-App Server identity and observation/thread-query capabilities plus a synthetic Hook round trip, and
-commits an ownership manifest under `~/.spotter/integrations/codex.json` by default. An invalid,
-unreachable, incompatible, or daemon-unusable endpoint leaves the previous working integration in
-place. Endpoint query values are not printed in plans or diagnostics.
+`--local` validates prerequisites, reuses or starts a local App Server, then uses the transactional
+endpoint verification and integration installer. It defaults to `ws://127.0.0.1:4500` and retains an
+existing local endpoint. An occupied port must answer as a compatible Codex server; a TCP listener
+alone does not pass verification. Startup or identity failure does not replace the integration.
+The shared server remains running even if setup fails later; Spotter does not own or stop it.
+`--local --dry-run` neither starts nor contacts the server.
 
-If persistent user-service registration is unavailable or unwanted, use portable mode:
+For an existing external server, keep `spotter setup codex --endpoint <address>`. `--local` refuses
+to replace a non-local endpoint and cannot be combined with `--endpoint`. On later launches,
+`spotter codex` reuses the endpoint or starts the configured server when unreachable.
+Plain `codex` does not select this observation path.
 
-```bash
-spotter setup codex --portable --endpoint ws://127.0.0.1:4500
-spotter doctor
-```
+Setup records owned Hooks and service state, keeps fingerprinted backups, and verifies the daemon
+and a synthetic Hook round trip before committing its manifest. Use
+`spotter setup codex --local --portable` when login service registration is unavailable or unwanted.
+Portable users can start again with `spotter codex` after logout or reboot.
+New setup without either endpoint option stays Hook-only; rerunning setup retains a registered
+endpoint. Observation mode records violations without blocking them.
 
-Portable mode starts `spotterd` without persistent login registration. You are responsible for
-starting it again after logout, reboot, or process termination:
+### Confirm your first setup
 
-```bash
-spotter daemon start
-```
+`spotter doctor` should report healthy observation and Hook wiring. Its `configured policy` and
+`configured AI reviews` lines show settings for the current directory, including review call limits.
+Running turns can retain an earlier generation. `policy preview` evaluates `git push --force` as text
+and reports **record only** or **block**; it never executes the command or calls a model. This preview
+checks policy behavior; the separate synthetic round trip checks Hook wiring.
 
-After setup, make the TUI select the same external server explicitly:
-
-```bash
-codex --remote ws://127.0.0.1:4500
-```
-
-Plain `codex` does not currently discover this endpoint. Running setup without `--endpoint` is
-supported as a degraded Hook-only installation: deterministic Hook enforcement remains available,
-while App Server observation and live control are reported unavailable.
+After a normal session, inspect `spotter status` and `spotter interventions`. For an existing ID,
+run `spotter explain --supervision-id ID`. No recorded action does not by itself prove a fault;
+`doctor` distinguishes healthy silence from disconnected observation.
 
 ## 6. Configuration
 
 Configuration is optional. Spotter resolves one effective snapshot in this order (later layers win):
 
 ```text
-built-in defaults < ~/.spotter/spotter.toml < <repository>/spotter.toml < invocation overrides
+built-in defaults < ~/.spotter/spotter.toml < <repository>/spotter.toml < --config < mode preset
 ```
 
 Setting `SPOTTER_HOME` moves the global configuration, data, integration, runtime, and log root
 together. Repository configuration is discovered from the Git worktree root. You can select an
-additional highest-precedence file explicitly with `--config` during setup and diagnostics.
+additional configuration file explicitly with `--config` during setup and diagnostics. A selected
+`spotter mode` preset has final authority over activation flags only.
 Nested tables merge by key, while scalar values and lists replace lower-precedence values.
 Repository files are not operator-trusted policy: they cannot override `observation_only` or
 `mcp_semantics`, may only add `gates.forbidden_paths`, and may only enable (not disable)
@@ -269,6 +263,39 @@ Signal-driven and periodic semantic reviews spend model tokens and are off by de
 deliberately and preserve per-session and per-day caps. Periodic decisions are recorded only;
 fresh signal-driven `VERIFY`/`NUDGE` decisions steer only when the separate
 `deliver_on_signals` opt-in is enabled.
+
+### Choose a mode
+
+Run `spotter mode` for a guided prompt, or select directly:
+
+```bash
+spotter mode observe
+spotter mode protect
+spotter mode advisory
+spotter mode custom
+```
+
+| Mode | Behavior |
+| --- | --- |
+| `observe` | Record violations without blocking; no automatic AI reviews |
+| `protect` | Block deterministic rule violations; no automatic AI reviews |
+| `advisory` | Protect mode plus experimental signal-driven AI advice |
+| `custom` | Remove the preset and use existing TOML settings |
+
+The command writes only `mode.toml` under `SPOTTER_HOME` and preserves `spotter.toml`, custom model
+choice, gate policy, and review call limits. It refuses an edited or symlinked mode file rather than
+overwriting it. `custom` removes only the managed preset. Use `--dry-run` to preview. A running daemon
+reloads the preset; next-turn settings wait for a safe turn boundary, while queued reviews keep their
+pinned settings.
+
+Advisory mode shows the model and limits before saving. Reviews consume model tokens;
+`max_per_session` and `max_per_day` limit **review calls**, not tokens or money, and zero disables a
+limit. Live advisory benefit is unproven. Semantic review sends selected task context to the model
+provider.
+
+Use `spotter status --session THREAD_ID` to see whether that thread is actively observed, which
+daemon policy generation is active, and whether automatic reviews are off, available, or paused at
+a call limit. It never treats a recent Hook journal as proof of a live thread.
 
 ## 7. Operate and inspect Spotter
 
@@ -570,16 +597,16 @@ problem.
 <details>
 <summary><strong>Doctor reports unavailable observation or live control</strong></summary>
 
-Confirm that the external server is still running and that both setup and the TUI use the same URL:
+For the local setup path, prepare the server again and use the managed launcher:
 
 ```bash
-codex app-server --listen ws://127.0.0.1:4500
-spotter setup codex --endpoint ws://127.0.0.1:4500
-codex --remote ws://127.0.0.1:4500
+spotter setup codex --local
 spotter doctor
+spotter codex
 ```
 
-Changing the endpoint reruns the full protocol and daemon verification. If Hook enforcement is
+For an explicitly configured external server, restore that server and rerun setup without
+`--local`. Changing the endpoint reruns the full protocol and daemon verification. If Hook enforcement is
 reported as available after an App Server failure, deterministic gating still works, but observation
 and live `VERIFY`/`NUDGE` do not until the shared server is reachable again.
 
