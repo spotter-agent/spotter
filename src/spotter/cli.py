@@ -186,9 +186,161 @@ from spotter.task_corpus import (
 )
 from spotter.trace import TraceEvent
 
+_TOP_LEVEL_HELP = """\
+usage: spotter COMMAND [OPTIONS]
+
+Supervise a Codex coding session.
+
+Get started:
+  setup codex --local     Configure and verify Spotter
+  codex                   Start a supervised Codex session
+  mode                    Choose observe, protect, advisory, or custom
+
+Check a session:
+  status                  Show runtime, policy, and stored-session health
+  doctor                  Verify setup end to end without model calls
+  interventions           List recent supervision actions
+  explain                 Explain one supervision action
+
+Maintain Spotter:
+  update                  Show package-manager update instructions
+  teardown codex          Remove the owned Codex integration
+  daemon                  Manage the Spotter runtime manually
+
+Research and advanced commands:
+  analyze, effects, experiment, feedback, fork, fork-coverage, hook, label,
+  label-opportunity, metrics, observability, observe, pins, prune, purge,
+  review, sample-signals, tasks, wrong-nudge
+
+Run `spotter COMMAND --help` for common-command details.
+"""
+
+_COMMON_COMMAND_HELP = {
+    "setup": """\
+usage: spotter setup codex [--local | --endpoint URL] [--portable] [--config PATH] [--dry-run]
+
+Configure Spotter's owned Codex integration transactionally.
+
+  --local          Reuse or start a shared loopback App Server
+  --endpoint URL   Use an existing App Server
+  --portable       Start without registering a login service
+  --config PATH    Use an explicit Spotter TOML file
+  --dry-run        Print the plan without network access or changes
+
+Example:
+  spotter setup codex --local --dry-run
+  spotter setup codex --local
+""",
+    "teardown": """\
+usage: spotter teardown codex
+
+Remove only the Codex integration recorded as owned by Spotter. User data is retained.
+
+Example:
+  spotter teardown codex
+""",
+    "codex": """\
+usage: spotter codex [CODEX_ARGS...]
+
+Start spotterd, verify live observation, and launch Codex against the configured App Server.
+Run `spotter setup codex --local` first.
+
+Example:
+  spotter codex
+  spotter codex -C /path/to/project
+""",
+    "mode": """\
+usage: spotter mode [observe|protect|advisory|custom] [--config PATH] [--dry-run]
+
+Choose supervision behavior without rewriting your main configuration.
+
+  observe    Record deterministic violations; no blocking or automatic AI reviews
+  protect    Block deterministic violations; no automatic AI reviews
+  advisory   Protect plus experimental AI advice that consumes model tokens
+  custom     Remove the managed mode preset and use existing TOML settings
+  --config   Resolve model and review limits from an explicit TOML file
+  --dry-run  Show the selection without changing mode.toml
+
+Example:
+  spotter mode protect
+""",
+    "status": """\
+usage: spotter status [--session THREAD_ID] [--config PATH]
+
+Show stored data, runtime health, configured policy, and daemon-confirmed live observation.
+
+  --session THREAD_ID  Inspect one live thread and its review-call budget
+  --config PATH        Resolve policy from an explicit Spotter TOML file
+
+Example:
+  spotter status
+  spotter status --session THREAD_ID
+""",
+    "doctor": """\
+usage: spotter doctor [--config PATH]
+
+Verify installation, integration ownership, observation, control, Hook wiring, and storage.
+The policy preview does not execute commands or call a model.
+A non-zero exit means degraded or broken.
+
+Example:
+  spotter doctor
+""",
+    "interventions": """\
+usage: spotter interventions [--session THREAD_ID]
+
+List recent BLOCK, VERIFY, NUDGE, and INTERRUPT lifecycle records.
+
+Example:
+  spotter interventions
+""",
+    "explain": """\
+usage: spotter explain --supervision-id ID
+
+Explain one supervision action, including its policy or model basis and delivery outcome.
+
+Example:
+  spotter explain --supervision-id spt-0123456789ab
+""",
+    "update": """\
+usage: spotter update
+
+Show the installed build and package-manager-owned update command. No package files are changed.
+
+Example:
+  spotter update
+""",
+    "daemon": """\
+usage: spotter daemon start|stop|restart|reload|status
+
+Manage or inspect the Spotter runtime manually. Normal sessions start it through `spotter codex`.
+
+Example:
+  spotter daemon status
+""",
+}
+
+
+def _print_scoped_help(args: list[str]) -> bool:
+    """Print concise help before the legacy flat parser or Codex passthrough handles it."""
+    boundary = args.index("--") if "--" in args else len(args)
+    visible = args[:boundary]
+    if visible in (["-h"], ["--help"]):
+        print(_TOP_LEVEL_HELP.rstrip())
+        return True
+    if not visible or not ({"-h", "--help"} & set(visible[1:])):
+        return False
+    help_text = _COMMON_COMMAND_HELP.get(visible[0])
+    if help_text is None:
+        return False
+    print(help_text.rstrip())
+    return True
+
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Observe a coding-agent trajectory")
+    parser = argparse.ArgumentParser(
+        description="Observe a coding-agent trajectory", usage="spotter COMMAND [OPTIONS]"
+    )
     parser.add_argument("--version", action="version", version=version_line("spotter"))
     parser.add_argument(
         "command",
@@ -547,6 +699,8 @@ def _load_config(parser: argparse.ArgumentParser, path: Path | None) -> SpotterC
 
 def main(argv: Sequence[str] | None = None) -> int:
     raw_args = list(sys.argv[1:] if argv is None else argv)
+    if _print_scoped_help(raw_args):
+        return 0
     if raw_args and raw_args[0] == "codex":
         return _codex_main(raw_args[1:])
     parser = build_parser()
