@@ -531,6 +531,7 @@ class DaemonServer:
         journals_dir: Path | None = None,
         layout: RuntimeLayout | None = None,
         reviewer_config: ReviewerConfig | None = None,
+        observation_only: bool = True,
         mcp_semantics: tuple[McpToolSemantics, ...] = (),
         snapshot_on_patch: bool = True,
         config_generation: str = "unversioned",
@@ -548,6 +549,7 @@ class DaemonServer:
         if config_store is not None:
             resolved = config_store.snapshot()
             reviewer_config = resolved.config.reviewer
+            observation_only = resolved.config.observation_only
             mcp_semantics = resolved.config.mcp_semantics
             snapshot_on_patch = resolved.config.snapshot_on_patch
             config_generation = resolved.resolved_config_generation
@@ -565,6 +567,7 @@ class DaemonServer:
         self.recovery: RuntimeRecovery | None = None
         self.review_executor: ReviewExecutor | None = None
         self.reviewer_config = reviewer_config or ReviewerConfig()
+        self.observation_only = observation_only
         self.mcp_semantics = mcp_semantics
         self.snapshot_on_patch = snapshot_on_patch
         self.config_generation = config_generation
@@ -578,7 +581,10 @@ class DaemonServer:
         )
         self._config_watch_interval = config_watch_interval
         self._config_watch_task: asyncio.Task[None] | None = None
-        self._config_watch_paths = {self.layout.user_config_dir / "spotter.toml"}
+        self._config_watch_paths = {
+            self.layout.user_config_dir / "spotter.toml",
+            self.layout.user_config_dir / "mode.toml",
+        }
         if config_store is not None:
             self._config_watch_paths.update(
                 Path(source.path)
@@ -819,6 +825,7 @@ class DaemonServer:
         assert self.config_store is not None
         self._apply_active_config()
         config = self.config_store.snapshot().config
+        self.observation_only = config.observation_only
         self.mcp_semantics = config.mcp_semantics
         update_runtime = getattr(self.recovery, "update_turn_config", None)
         if callable(update_runtime):
@@ -844,7 +851,7 @@ class DaemonServer:
                 )
             _validate_peer(request.get("peer"))
             method = request.get("method")
-            if method not in {"ping", "shutdown", "gate", "reload_config"}:
+            if method not in {"ping", "shutdown", "gate", "reload_config", "sessions"}:
                 raise DaemonProtocolError(f"unknown control method: {method}")
             shutdown = method == "shutdown"
             if method == "reload_config":
@@ -870,6 +877,8 @@ class DaemonServer:
                     response["config_reload_error"] = reload_error
             if reload_result is not None:
                 response["config_reload"] = _config_reload_payload(reload_result)
+            if method == "sessions":
+                response["sessions"] = self._session_status(request.get("params"))
             if method == "gate":
                 params = request.get("params")
                 evaluation = _evaluate_gate(params)
@@ -918,6 +927,56 @@ class DaemonServer:
                 self.set_health(RuntimeHealth.DEGRADED, f"gate observation failed: {error}")
         if shutdown:
             self._shutdown.set()
+
+    def _session_status(self, params: object) -> dict[str, object]:
+        if not isinstance(params, dict):
+            raise DaemonProtocolError("sessions requires an object of parameters")
+        selected = params.get("session")
+        if selected is not None and (
+            not isinstance(selected, str) or not selected or len(selected) > 512
+        ):
+            raise DaemonProtocolError(
+                "session must be a non-empty thread ID of at most 512 characters"
+            )
+        states = self.thread_states.snapshots()
+        metadata = self._app_server_status_metadata()
+        connected = metadata.get("app_server_state") == "ready"
+        epoch = metadata.get("app_server_connection_epoch")
+        rows = []
+        for state in sorted(states, key=lambda item: (item.active_turn_id is None, item.thread_id)):
+            if selected is not None and selected != state.thread_id.value:
+                continue
+            confirmed = connected and state.connection_epoch == epoch
+            rows.append(
+                {
+                    "id": state.thread_id.value,
+                    "turn": state.active_turn_id.value if state.active_turn_id else None,
+                    "observing": confirmed,
+                    "control_ready": confirmed and state.control_ready,
+                    "history": state.coverage.history.value,
+                    "gaps": len(state.coverage.gaps),
+                }
+            )
+            if len(rows) == 50:
+                break
+        reviewer = self.reviewer_config
+        return {
+            "tracked": len(states),
+            "active": sum(
+                connected and state.connection_epoch == epoch and state.active_turn_id is not None
+                for state in states
+            ),
+            "rows": rows,
+            "review_policy": {
+                "generation": self.config_generation,
+                "mode": "observe" if self.observation_only else "protect",
+                "model": reviewer.model,
+                "enabled": reviewer.on_signals,
+                "advisories": reviewer.deliver_on_signals,
+                "max_per_session": reviewer.max_per_session,
+                "max_per_day": reviewer.max_per_day,
+            },
+        }
 
     def _app_server_status_metadata(self) -> dict[str, object]:
         recovery = cast(Any, self.recovery)
@@ -1497,6 +1556,7 @@ def main(argv: list[str] | None = None) -> int:
             DaemonServer(
                 app_server_endpoint=_configured_app_server_endpoint(layout),
                 reviewer_config=config.reviewer,
+                observation_only=config.observation_only,
                 mcp_semantics=config.mcp_semantics,
                 snapshot_on_patch=config.snapshot_on_patch,
                 config_generation=config_generation,

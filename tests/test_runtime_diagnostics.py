@@ -5,10 +5,21 @@ from pathlib import Path
 import pytest
 
 from spotter.app_server import AppServerTransportError, CodexAppServerClient
+from spotter.budget import charge
 from spotter.build_identity import current_build_identity
 from spotter.cli import main
 from spotter.daemon import DaemonClient, DaemonStatus, RuntimeCompatibility, RuntimeHealth
-from spotter.doctor import FAIL, INFO, OK, WARN, Check, check_integration, check_runtime, worst
+from spotter.doctor import (
+    FAIL,
+    INFO,
+    OK,
+    WARN,
+    Check,
+    check_integration,
+    check_policy,
+    check_runtime,
+    worst,
+)
 from spotter.integration import MANIFEST_SCHEMA, IntegrationManifest
 from spotter.paths import RuntimeLayout
 from spotter.runtime_fingerprint import expected_runtime_construction_fingerprint
@@ -110,6 +121,161 @@ def test_running_daemon_without_app_server_is_degraded_but_enforcement_remains(
     assert by_name["runtime state"].status == INFO
     assert by_name["review queue"].status == INFO
     assert worst(checks) == WARN
+
+
+@pytest.mark.parametrize("mode", ["observe", "protect", "advisory"])
+def test_policy_summary_and_safe_preview_use_registered_config(
+    homes: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    manifest = _ready_manifest(homes)
+    config = homes[0] / "selected.toml"
+    config.write_text(
+        f"observation_only = {'true' if mode == 'observe' else 'false'}\n"
+        "[reviewer]\n"
+        f"on_signals = {'true' if mode == 'advisory' else 'false'}\n"
+        f"deliver_on_signals = {'true' if mode == 'advisory' else 'false'}\n"
+        "max_per_session = 3\nmax_per_day = 7\n"
+    )
+    replace(manifest, config_path=str(config)).save(homes[0] / "integrations/codex.json")
+    monkeypatch.chdir(homes[0])
+    monkeypatch.setattr("subprocess.run", lambda *_a, **_k: pytest.fail("executed a command"))
+    checks = {check.name: check for check in check_policy(preview=True)}
+    expected = "record only" if mode == "observe" else "block"
+    assert f"-> {expected} (git_push_force)" in checks["policy preview"].detail
+    assert "never executed" in checks["policy preview"].detail
+    assert "running turns may retain earlier settings" in checks["configured policy"].detail
+    if mode == "advisory":
+        assert "3/session, 7/day" in checks["configured AI reviews"].detail
+        assert "not token or currency caps" in checks["configured AI reviews"].detail
+        assert "benefit unproven" in checks["configured policy"].detail
+    else:
+        assert "no automatic review model calls" in checks["configured AI reviews"].detail
+
+
+def test_policy_summary_reports_invalid_selected_config(homes: tuple[Path, Path]) -> None:
+    manifest = _ready_manifest(homes)
+    replace(manifest, config_path=str(homes[0] / "missing.toml")).save(
+        homes[0] / "integrations/codex.json"
+    )
+    assert worst(check_policy()) == FAIL
+
+
+def test_status_honors_explicit_policy_and_exposes_unlimited_reviews(
+    homes: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    homes[0].mkdir()
+    config = homes[0] / "preview.toml"
+    config.write_text("observation_only = false\n[reviewer]\non_signals = true\nmax_per_day = 0\n")
+    assert main(["status", "--config", str(config)]) == 1
+    output = capsys.readouterr().out
+    assert "protect: deterministic rule violations are blocked" in output
+    assert "unlimited/day" in output
+    assert "a review call limit is disabled" in output
+
+
+def test_selected_live_session_reports_observation_policy_and_budget_pause(
+    homes: tuple[Path, Path], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for _ in range(2):
+        charge("thread-live", tokens=25)
+
+    async def request(
+        self: DaemonClient, method: str, params: dict[str, object]
+    ) -> dict[str, object]:
+        assert method == "sessions"
+        assert params == {"session": "thread-live"}
+        return {
+            "sessions": {
+                "active": 1,
+                "tracked": 1,
+                "rows": [
+                    {
+                        "id": "thread-live",
+                        "turn": "turn-live",
+                        "observing": True,
+                        "control_ready": True,
+                        "history": "complete",
+                        "gaps": 0,
+                    }
+                ],
+                "review_policy": {
+                    "generation": "cfg-live",
+                    "mode": "protect",
+                    "model": "default",
+                    "enabled": True,
+                    "advisories": True,
+                    "max_per_session": 2,
+                    "max_per_day": 10,
+                },
+            }
+        }
+
+    monkeypatch.setattr(DaemonClient, "request", request)
+
+    assert main(["status", "--session", "thread-live"]) == 0
+    output = capsys.readouterr().out
+    assert "thread-live: active" in output
+    assert "mode=protect" in output
+    assert "2/2 session" in output
+    assert "PAUSED — session call limit reached" in output
+
+
+def test_selected_session_refuses_to_infer_live_state_from_missing_thread(
+    homes: tuple[Path, Path], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def request(
+        self: DaemonClient, method: str, params: dict[str, object]
+    ) -> dict[str, object]:
+        return {
+            "sessions": {
+                "active": 0,
+                "tracked": 3,
+                "rows": [],
+                "review_policy": {
+                    "generation": "cfg-live",
+                    "mode": "observe",
+                    "model": "default",
+                    "enabled": False,
+                    "advisories": False,
+                    "max_per_session": 20,
+                    "max_per_day": 100,
+                },
+            }
+        }
+
+    monkeypatch.setattr(DaemonClient, "request", request)
+
+    assert main(["status", "--session", "missing"]) == 1
+    assert "Hook journals alone do not establish live session state" in capsys.readouterr().out
+
+
+def test_live_session_status_rejects_malformed_daemon_projection(
+    homes: tuple[Path, Path], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def request(
+        self: DaemonClient, method: str, params: dict[str, object]
+    ) -> dict[str, object]:
+        return {
+            "sessions": {
+                "active": "one",
+                "tracked": 1,
+                "rows": [],
+                "review_policy": {
+                    "generation": "cfg-live",
+                    "mode": "observe",
+                    "model": "default",
+                    "enabled": False,
+                    "advisories": False,
+                    "max_per_session": 20,
+                    "max_per_day": 100,
+                },
+            }
+        }
+
+    monkeypatch.setattr(DaemonClient, "request", request)
+
+    assert main(["status", "--session", "thread-live"]) == 1
+    assert "invalid live session response" in capsys.readouterr().out
 
 
 def test_configured_integration_with_dead_daemon_is_broken_with_local_fallback(

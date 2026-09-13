@@ -78,6 +78,23 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "mcp_semantics": {},
 }
 
+
+def supervision_mode_settings(mode: str) -> dict[str, Any]:
+    if mode not in {"observe", "protect", "advisory"}:
+        raise ConfigurationError(f"unknown preset: {mode}")
+    return {
+        "config_schema": CONFIG_SCHEMA,
+        "config_schema_version": CONFIG_SCHEMA_VERSION,
+        "observation_only": mode == "observe",
+        "reviewer": {
+            "on_signals": mode == "advisory",
+            "deliver_on_signals": mode == "advisory",
+            "every_steps": 0,
+            "shadow_interrupt": False,
+        },
+    }
+
+
 CONFIG_ACTIVATION_BOUNDARIES: Mapping[str, ActivationBoundary] = MappingProxyType(
     {
         "config_schema_version": ActivationBoundary.SCHEMA_MIGRATION,
@@ -433,6 +450,20 @@ def resolve_config(
             required=True,
         )
 
+    # Operator-selected mode owns only activation flags, without rewriting user TOML.
+    _merge_file_layer(
+        effective,
+        sources,
+        loaded_paths,
+        diagnostics,
+        "mode",
+        runtime_layout.user_config_dir / "mode.toml",
+        required=False,
+        accepted=tuple(
+            supervision_mode_settings(mode) for mode in ("observe", "protect", "advisory")
+        ),
+    )
+
     if overrides:
         override_mapping = _copy_mapping(overrides)
         _validate_layer_schema(override_mapping)
@@ -476,7 +507,10 @@ def _merge_file_layer(
     path: Path,
     *,
     required: bool,
+    accepted: tuple[dict[str, Any], ...] | None = None,
 ) -> None:
+    if accepted is not None and path.is_symlink():
+        raise ConfigurationError(f"refusing symlink mode file: {path}")
     normalized = path.expanduser().resolve()
     if normalized in loaded_paths:
         return
@@ -499,6 +533,8 @@ def _merge_file_layer(
         raise
     if not isinstance(raw, dict):  # pragma: no cover - tomllib currently always returns a dict
         raise ConfigurationError(f"{normalized} must contain a TOML table")
+    if accepted is not None and raw not in accepted:
+        raise ConfigurationError(f"unrecognized or edited mode file preserved: {normalized}")
     try:
         _validate_layer_schema(raw)
         if name == "repository":

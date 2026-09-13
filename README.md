@@ -129,30 +129,28 @@ For a source/development checkout, follow [CONTRIBUTING.md](CONTRIBUTING.md#loca
 
 ## Connect Spotter to Codex
 
-Make sure the `codex` CLI is installed and available on `PATH`. For setup's endpoint preflight,
-start one user-managed App Server in a separate terminal:
+Install Codex CLI (stable 0.147.0 or newer) and make it available on `PATH`, then run:
 
 ```bash
-codex app-server --listen ws://127.0.0.1:4500
-```
-
-Then inspect and apply the managed integration, verify it, and start the TUI against that same
-endpoint:
-
-```bash
-spotter setup codex --endpoint ws://127.0.0.1:4500 --dry-run
-spotter setup codex --endpoint ws://127.0.0.1:4500
+spotter setup codex --local --dry-run
+spotter setup codex --local
 spotter doctor
 spotter codex
 ```
 
-Setup is transactional and idempotent. It records the exact Spotter-owned Hooks and service state so
-later repair or teardown does not guess at user-owned configuration. It verifies the server identity
-and observation capabilities before committing the endpoint. On later `spotter codex` launches,
-Spotter reuses a listener already at that endpoint or starts a detached App Server with the recorded
-Codex binary when the endpoint is unreachable. It never stops that server or claims exclusive
-ownership. Setup without `--endpoint` remains available as an explicit degraded Hook-only mode; App
-Server observation and live control are then unavailable.
+`--local` prepares and verifies a local App Server automatically; no separate server terminal or
+endpoint configuration is needed. Setup verifies server identity and observation capabilities before
+committing the integration. It reuses a configured local endpoint or defaults to
+`ws://127.0.0.1:4500`. The server is shared and remains running after the TUI exits; Spotter never
+stops it. `--dry-run` does not start or contact the server.
+
+**The default is observation only:** violations are recorded, not blocked, and automatic AI reviews
+and live advisories are off. `doctor` shows these settings and a safe policy preview without running
+the example command or calling a model. See [mode selection](docs/user-guide.md#choose-a-mode).
+
+Use `spotter codex` for subsequent sessions. Plain `codex` does not connect to the same observation
+path. Existing external-server users can keep `setup codex --endpoint <address>`; new setup without
+`--local` or `--endpoint` remains Hook-only. Rerunning setup retains a configured endpoint.
 
 ## Everyday commands
 
@@ -161,6 +159,8 @@ Server observation and live control are then unavailable.
 | `spotter status` | Show integration, daemon, capability, and storage health |
 | `spotter doctor` | Run synthetic health checks and print actionable diagnostics |
 | `spotter codex [args...]` | Start `spotterd`, verify the configured endpoint, and launch the remote TUI |
+| `spotter mode [observe\|protect\|advisory\|custom]` | Show or select supervision behavior without editing TOML |
+| `spotter status --session ID` | Show one live thread's observation, policy, and review budget state |
 | `spotter daemon status` | Inspect the packaged `spotterd` process and build identity |
 | `spotter daemon reload` | Atomically apply safe config changes or stage the next generation |
 | `spotter update` | Detect the package owner and print non-mutating update guidance |
@@ -176,6 +176,14 @@ you need to customize gates, storage, snapshots, or reviewer budgets. Signal-dri
 reviews spend model tokens and are disabled by default. Live delivery is a second opt-in that also
 requires active mode; enable either deliberately and keep the provided per-session and per-day
 limits.
+
+Use `spotter mode` for a guided choice, or select directly:
+
+```bash
+spotter mode observe    # record only (default)
+spotter mode protect    # block deterministic rule violations; no AI reviews
+spotter mode advisory   # experimental AI advice; consumes model tokens
+```
 
 ## Upgrade
 

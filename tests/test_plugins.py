@@ -25,13 +25,13 @@ def test_plugin_manifests_and_hooks_are_well_formed() -> None:
 
 
 def test_readme_uses_supported_package_and_setup_commands() -> None:
-    readme = Path("README.md").read_text()
-
-    assert "brew install spotter-agent/spotter/spotter" in readme
-    assert (
-        "spotter setup codex --endpoint ws://127.0.0.1:4500 --dry-run\n"
-        "spotter setup codex --endpoint ws://127.0.0.1:4500\nspotter doctor"
-    ) in readme
+    for name in ("README.md", "README.ko.md", "README.zh-CN.md"):
+        readme = Path(name).read_text()
+        assert "brew install spotter-agent/spotter/spotter" in readme
+        assert (
+            "spotter setup codex --local --dry-run\n"
+            "spotter setup codex --local\nspotter doctor\nspotter codex"
+        ) in readme
 
 
 def test_bundled_hook_runs_without_installing_package(tmp_path: Path) -> None:

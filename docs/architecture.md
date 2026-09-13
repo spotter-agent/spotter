@@ -140,6 +140,20 @@ endpoint, the daemon owns one App Server connection/reconnect loop, routes epoch
 durable journals and `ThreadState`, and reconciles loaded threads before reporting control-ready.
 It never owns or stops the shared App Server process; existing Hook enforcement remains independent.
 
+The CLI's opt-in `setup codex --local` composes the existing detached-server startup with the
+transactional integration installer. It prepares a loopback endpoint only after validating the
+setup plan, then requires server identity and observation verification. This does not add server
+ownership to the daemon or extend the synchronous enforcement path. Dry runs never start or contact
+the App Server. Setup/status/doctor policy summaries describe resolved configuration; they do not
+infer live per-thread configuration adoption.
+
+The operator-owned `mode.toml` overlay selects observation, deterministic protection, or experimental
+advisory activation without rewriting general configuration. It passes through the existing config
+generation and next-turn activation rules. The daemon control API exposes a bounded, read-only live
+session projection (up to 50 rows): a thread counts as observed only when its state epoch matches the
+current ready App Server connection. The CLI joins a selected thread ID to the existing local review
+ledger for explicit off/available/capped reporting; journals are never used to invent liveness.
+
 ## 1.3 Target runtime
 
 The target hot path is daemon-owned:

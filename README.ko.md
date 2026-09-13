@@ -129,24 +129,29 @@ spotterd --version
 
 ## 빠른 시작
 
-`codex` CLI가 설치되어 있고 `PATH`에서 실행 가능한지 확인한 다음, 관리형 통합이 적용할 내용을
-검토하고 설정합니다.
+Codex CLI 안정 버전 0.147.0 이상이 설치되어 있고 `PATH`에서 실행 가능한지 확인한 뒤 실행합니다.
 
 ```bash
-spotter setup codex --dry-run
-spotter setup codex
+spotter setup codex --local --dry-run
+spotter setup codex --local
 spotter doctor
+spotter codex
 ```
 
-설정은 트랜잭션 방식으로 처리되며 여러 번 실행해도 같은 결과를 보장합니다. Spotter가 소유한
-Hook과 서비스 상태를 정확히 기록하므로, 이후 복구나 연결 해제 시 사용자 소유 설정을 추측하지
-않습니다.
+`--local`은 로컬 App Server를 자동으로 준비하고 서버 신원과 관찰 기능을 확인한 뒤 통합을
+등록합니다. 별도 서버 터미널이나 주소 설정은 필요 없습니다. 기존 로컬 endpoint를 재사용하며,
+처음에는 `ws://127.0.0.1:4500`을 사용합니다. 서버는 공유되며 TUI 종료 후에도 유지됩니다.
+Spotter는 이 서버를 중지하지 않습니다. `--dry-run`은 서버 실행이나 접속 없이 계획만 표시합니다.
 
-설정이 끝나면 평소처럼 Codex를 사용합니다.
+**기본값은 관찰 전용입니다.** 규칙 위반을 기록하지만 실제로 차단하지 않으며, 자동 AI 리뷰와
+실시간 조언도 꺼져 있습니다. `doctor`는 현재 설정과 안전한 정책 미리보기를 표시합니다.
+예시 명령 실행이나 모델 호출은 하지 않습니다. [모드 선택](docs/user-guide.ko.md#모드-선택)을
+참고하세요.
 
-```bash
-codex
-```
+이후에도 `spotter codex`로 실행하세요. 일반 `codex`는 같은 App Server 관찰 경로에 연결되지
+않습니다. 기존 외부 서버에는 `setup codex --endpoint <주소>`를 사용할 수 있습니다.
+처음에 `--local`과 `--endpoint` 없이 설정하면 Hook 전용으로 설치되며, 재설정 시에는 이미
+등록된 endpoint가 유지됩니다.
 
 ## 자주 쓰는 명령
 
@@ -154,6 +159,9 @@ codex
 | --- | --- |
 | `spotter status` | 통합, 데몬, 기능, 저장소 상태 표시 |
 | `spotter doctor` | 합성 상태 검사를 실행하고 조치 가능한 진단 출력 |
+| `spotter codex` | 관찰 경로에 연결된 Codex 실행 |
+| `spotter mode [observe\|protect\|advisory\|custom]` | TOML 편집 없이 감독 모드 확인 또는 선택 |
+| `spotter status --session ID` | 한 라이브 스레드의 관찰·정책·리뷰 예산 상태 표시 |
 | `spotter daemon status` | 패키지로 설치된 `spotterd` 프로세스와 빌드 식별자 확인 |
 | `spotter metrics` | 수집된 런타임 및 평가 지표 요약 |
 | `spotter observability` | 사용 가능한 작업 궤적 소스와 정규화 이벤트 확인 |
@@ -163,6 +171,14 @@ codex
 [spotter.example.toml](spotter.example.toml)을 참고하세요. 신호 기반 시맨틱 리뷰는 모델 토큰을
 소비하며 기본적으로 비활성화되어 있습니다. 필요한 경우에만 활성화하고 제공되는 세션별·일별
 한도를 유지하세요.
+
+`spotter mode`로 안내를 보거나 모드를 바로 선택할 수 있습니다.
+
+```bash
+spotter mode observe    # 기록만 함 (기본값)
+spotter mode protect    # 결정론적 규칙 위반 차단, AI 리뷰 없음
+spotter mode advisory   # 실험적 AI 조언, 모델 토큰 사용
+```
 
 ## 업그레이드
 

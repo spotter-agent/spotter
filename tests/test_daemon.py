@@ -127,6 +127,108 @@ def test_control_socket_handles_concurrent_clients_and_health_states(socket_path
     asyncio.run(scenario())
 
 
+def test_control_socket_reports_confirmed_live_sessions_and_adopted_policy(
+    socket_path: Path,
+) -> None:
+    async def scenario() -> None:
+        server = DaemonServer(
+            socket_path,
+            config_generation="cfg-live",
+            observation_only=False,
+        )
+        identity = RuntimeIdentity(
+            ThreadId("thread-live"),
+            TurnId("turn-live"),
+            None,
+            IdentityProvenance("codex", "thread-live", "turn-live"),
+        )
+        server.observe_trace(
+            TraceEvent(
+                "runtime_reconciled",
+                {"active_turn": True, "capabilities": ["steer"]},
+                event_id="reconciled",
+                identity=identity,
+                connection_epoch=4,
+            )
+        )
+        capabilities = SimpleNamespace(
+            **{
+                name: SimpleNamespace(value="supported")
+                for name in (
+                    "observation",
+                    "thread_query",
+                    "steer",
+                    "interrupt",
+                    "atomic_pre_tool_veto",
+                )
+            }
+        )
+        server.recovery = cast(
+            Any,
+            SimpleNamespace(
+                state=SimpleNamespace(value="ready"),
+                connection=SimpleNamespace(
+                    connection_epoch=4,
+                    server_version="1.0.0",
+                    server_changed=False,
+                    capabilities_changed=False,
+                    capabilities=capabilities,
+                ),
+            ),
+        )
+        await server.start()
+        try:
+            response = await DaemonClient(socket_path).request(
+                "sessions", {"session": "thread-live"}
+            )
+            live = response["sessions"]
+            assert live["active"] == live["tracked"] == 1
+            assert live["review_policy"]["generation"] == "cfg-live"
+            assert live["review_policy"]["mode"] == "protect"
+            assert live["rows"] == [
+                {
+                    "id": "thread-live",
+                    "turn": "turn-live",
+                    "observing": True,
+                    "control_ready": True,
+                    "history": "unknown",
+                    "gaps": 0,
+                }
+            ]
+        finally:
+            server.recovery = None
+            await server.close()
+
+    asyncio.run(scenario())
+
+
+def test_live_session_status_does_not_claim_observation_after_disconnect(
+    socket_path: Path,
+) -> None:
+    server = DaemonServer(socket_path)
+    identity = RuntimeIdentity(
+        ThreadId("thread-old"),
+        TurnId("turn-old"),
+        None,
+        IdentityProvenance("codex", "thread-old", "turn-old"),
+    )
+    server.observe_trace(
+        TraceEvent(
+            "turn_started",
+            event_id="old",
+            identity=identity,
+            connection_epoch=2,
+        )
+    )
+
+    live = server._session_status({"session": "thread-old"})
+
+    rows = cast(list[dict[str, object]], live["rows"])
+    assert live["active"] == 0
+    assert rows[0]["observing"] is False
+    assert rows[0]["control_ready"] is False
+
+
 def test_package_boundary_monitor_requires_continuous_absence() -> None:
     monitor = _PackageBoundaryMonitor(missing_grace=2.0)
 

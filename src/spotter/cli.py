@@ -33,7 +33,13 @@ from spotter.budget import (
 )
 from spotter.build_identity import current_build_identity, version_line
 from spotter.codex import CodexAdapter
-from spotter.config import ConfigurationError, ReloadDisposition, SpotterConfig, resolve_config
+from spotter.config import (
+    ConfigurationError,
+    ReloadDisposition,
+    SpotterConfig,
+    resolve_config,
+    supervision_mode_settings,
+)
 from spotter.core import SpotterRuntime
 from spotter.daemon import (
     DaemonClient,
@@ -49,7 +55,7 @@ from spotter.data_inventory import (
     DataInventoryError,
     DataResourceInspection,
 )
-from spotter.doctor import FAIL, INFO, OK, WARN, Check, check_runtime, worst
+from spotter.doctor import FAIL, INFO, OK, WARN, Check, check_policy, check_runtime, worst
 from spotter.doctor import run as run_doctor
 from spotter.effects import (
     EffectResolution,
@@ -93,6 +99,7 @@ from spotter.metrics import (
     tally_signal_silence,
     tally_unflagged_proposals,
 )
+from spotter.modes import MODES, save_mode, selected_mode
 from spotter.observability import (
     SOURCE_AUDIT_RELATIVE_PATH,
     ObservabilityError,
@@ -203,6 +210,7 @@ def build_parser() -> argparse.ArgumentParser:
             "metrics",
             "observability",
             "status",
+            "mode",
             "doctor",
             "codex",
             "interventions",
@@ -236,6 +244,7 @@ def build_parser() -> argparse.ArgumentParser:
             "tasks: validate or preflight a frozen task set without running agents; "
             "wrong-nudge: run paid susceptibility arms or report durable results; "
             "status: what Spotter is storing, and whether it is actually running; "
+            "mode: choose observe, protect, advisory, or custom without editing TOML; "
             "doctor: verify supervision end to end (non-zero exit when broken); "
             "interventions: list recent BLOCK/VERIFY/NUDGE/INTERRUPT lifecycle records; "
             "explain: inspect one intervention with --intervention-id; "
@@ -264,6 +273,10 @@ def build_parser() -> argparse.ArgumentParser:
             "add",
             "remove",
             "report",
+            "observe",
+            "protect",
+            "advisory",
+            "custom",
             "persist",
         ],
         help="daemon lifecycle action, integration target, pin/task action, or experiment action",
@@ -514,6 +527,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="setup: start spotterd without registering a login service",
     )
+    parser.add_argument(
+        "--local",
+        action="store_true",
+        help="setup codex: prepare and verify a local App Server automatically",
+    )
     return parser
 
 
@@ -533,6 +551,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _codex_main(raw_args[1:])
     parser = build_parser()
     args = parser.parse_args(raw_args)
+    if args.local and (args.command != "setup" or args.endpoint):
+        parser.error("--local requires setup codex and cannot be combined with --endpoint")
+
+    if args.command == "mode":
+        if args.target is not None and args.target not in MODES:
+            parser.error("mode requires observe, protect, advisory, or custom")
+        return _mode_main(args.target, dry_run=args.dry_run, config_path=args.config)
 
     if args.command == "hook":
         # Config is loaded inside the hook's own fail-open boundary rather than
@@ -572,6 +597,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             portable=args.portable,
             dry_run=args.dry_run,
             app_server_endpoint=args.endpoint,
+            local=args.local,
         )
     if args.command == "purge":
         if (
@@ -920,7 +946,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             journals=args.journals,
         )
     if args.command == "status":
-        return _status_main()
+        return _status_main(args.config, session=args.session)
     if args.command == "doctor":
         return _doctor_main(args.config)
     if args.command == "experiment":
@@ -1828,11 +1854,12 @@ def _codex_main(args: Sequence[str]) -> int:
         print(f"Codex launch unavailable: {error}", file=sys.stderr)
         return 1
     if manifest is None or manifest.state != "ready":
-        print("Codex launch unavailable: run `spotter setup codex` first", file=sys.stderr)
+        print("Codex launch unavailable: run `spotter setup codex --local` first", file=sys.stderr)
         return 1
     if manifest.app_server_endpoint is None:
         print(
-            "Codex launch unavailable: rerun setup with --endpoint ws://127.0.0.1:4500",
+            "Codex launch unavailable: run `spotter setup codex --local` "
+            "(or setup with --endpoint for an existing external server)",
             file=sys.stderr,
         )
         return 1
@@ -1917,6 +1944,63 @@ def _update_main(provenance: InstallationProvenance | None = None) -> int:
     return 0
 
 
+def _mode_main(mode: str | None, *, dry_run: bool, config_path: Path | None) -> int:
+    try:
+        path = RuntimeLayout.discover().user_config_dir / "mode.toml"
+        current = selected_mode(path)
+        print(f"Selected mode: {current}")
+        print("observe: record only; protect: block rule violations")
+        print("both observe and protect disable automatic AI reviews")
+        print("advisory: experimental AI advice; consumes model tokens; benefit remains unproven")
+        print("custom: use your existing configuration without a mode override")
+        if mode is None:
+            if not sys.stdin.isatty():
+                print("Choose with: spotter mode observe|protect|advisory|custom")
+                return 0
+            default = current if current != "custom" else "observe"
+            mode = input(f"Mode [{default}]: ").strip().lower() or default
+            if mode not in MODES:
+                raise ConfigurationError("choose observe, protect, advisory, or custom")
+        if config_path is None:
+            manifest = IntegrationManifest.load(RuntimeLayout.discover().integration_manifest)
+            if manifest is not None and manifest.config_path:
+                config_path = Path(manifest.config_path)
+        if mode != "custom":
+            candidate = resolve_config(
+                repository=Path.cwd(),
+                explicit_path=config_path,
+                overrides=supervision_mode_settings(mode),
+            )
+            if mode == "advisory":
+                reviewer = candidate.config.reviewer
+                print(
+                    f"Model: {reviewer.model}; review call limits: "
+                    f"{reviewer.max_per_session or 'unlimited'}/session, "
+                    f"{reviewer.max_per_day or 'unlimited'}/day (not money caps). "
+                    "Selected task context is sent to the model provider."
+                )
+        if dry_run:
+            print(f"dry-run: would select {mode}; no changes made")
+            return 0
+        save_mode(mode)
+        print(f"Saved mode: {mode}; other configuration is preserved")
+        status = asyncio.run(DaemonClient().status())
+        if status.health != RuntimeHealth.UNAVAILABLE:
+            result = _daemon_main("reload")
+            print(
+                "New Hook requests read the mode immediately; queued reviews retain their settings."
+            )
+            return result
+        print("Start with: spotter setup codex --local; spotter codex")
+        return 0
+    except (OSError, ValueError, IntegrationError) as error:
+        print(f"Mode unchanged or unavailable: {error}", file=sys.stderr)
+        return 1
+    except (EOFError, KeyboardInterrupt):
+        print("Mode selection cancelled; no changes made", file=sys.stderr)
+        return 1
+
+
 def _integration_main(
     action: str,
     *,
@@ -1924,6 +2008,7 @@ def _integration_main(
     portable: bool,
     dry_run: bool,
     app_server_endpoint: str | None = None,
+    local: bool = False,
     manager: IntegrationManager | None = None,
 ) -> int:
     """Install or remove the owned Codex integration transactionally."""
@@ -1935,11 +2020,41 @@ def _integration_main(
         )
         if action == "setup":
             plan = integration.plan()
+            if local:
+                endpoint = plan.app_server_endpoint or "ws://127.0.0.1:4500"
+                parsed = urlsplit(endpoint)
+                if (
+                    parsed.scheme != "ws"
+                    or parsed.hostname != "127.0.0.1"
+                    or parsed.port is None
+                    or parsed.username is not None
+                    or parsed.password is not None
+                    or parsed.path not in {"", "/"}
+                    or parsed.query
+                    or parsed.fragment
+                ):
+                    raise IntegrationError(
+                        "--local cannot replace the configured external endpoint; "
+                        "rerun setup without --local to retain it"
+                    )
+                integration.requested_app_server_endpoint = endpoint
+                plan = integration.plan()
+                print("Local App Server: reuse or start; shared server remains running after exit")
             for line in plan.lines():
                 print(line)
             if dry_run:
                 print("dry-run: no changes made")
                 return 0
+            if local:
+                assert plan.app_server_endpoint is not None
+                assert integration.codex is not None  # validated by plan()
+                if not _endpoint_listening(plan.app_server_endpoint) and not _start_app_server(
+                    integration.codex.path, plan.app_server_endpoint
+                ):
+                    raise IntegrationError(
+                        "local App Server did not become reachable; check Codex startup "
+                        "and port availability, then rerun spotter setup codex --local"
+                    )
             manifest = integration.setup()
             print(f"Codex integration: {manifest.state} ({integration.manifest_path})")
             if manifest.app_server_endpoint is None:
@@ -1948,16 +2063,20 @@ def _integration_main(
                 # so say which capabilities are off rather than only how to fix it.
                 print(
                     "App Server endpoint: pending — hook journaling and deterministic "
-                    "gates work, but observation, signal detection, and live control "
+                    "gate evaluation work, but App Server observation, signal detection, "
+                    "and live control "
                     "stay off until an endpoint is set.\n"
                     "  Set one up with:\n"
-                    "    codex app-server --listen ws://127.0.0.1:4500\n"
-                    "    spotter setup codex --endpoint ws://127.0.0.1:4500"
+                    "    spotter setup codex --local"
                 )
             else:
                 endpoint = display_app_server_endpoint(manifest.app_server_endpoint)
                 print(f"App Server endpoint: verified ({endpoint})")
                 print("Start the shared Codex TUI: spotter codex")
+            for check in check_policy(integration.config_path):
+                print(f"{check.name}: {check.detail}")
+            print("Check setup safely: spotter doctor (no model calls)")
+            print("Inspect results: spotter interventions; spotter explain --supervision-id ID")
             return 0
         removed = integration.teardown()
         print("Codex integration removed" if removed else "Codex integration not configured")
@@ -1967,12 +2086,106 @@ def _integration_main(
         return 1
 
 
-def _status_main() -> int:
+def _live_status_main(session: str | None) -> int:
+    """Read daemon-owned state; never infer a live turn from journal recency."""
+    try:
+        response = asyncio.run(DaemonClient().request("sessions", {"session": session}))
+        live = response.get("sessions")
+        if not isinstance(live, dict):
+            raise ValueError("invalid live session response")
+        policy = live.get("review_policy")
+        rows = live.get("rows")
+        if not isinstance(policy, dict) or not isinstance(rows, list) or len(rows) > 50:
+            raise ValueError("invalid live session response")
+        if (
+            any(type(live.get(key)) is not int or live[key] < 0 for key in ("active", "tracked"))
+            or live["active"] > live["tracked"]
+            or policy.get("mode") not in {"observe", "protect"}
+            or not isinstance(policy.get("model"), str)
+            or not isinstance(policy.get("generation"), str)
+        ):
+            raise ValueError("invalid live session response")
+        if any(
+            type(policy.get(key)) is not int or policy[key] < 0
+            for key in ("max_per_session", "max_per_day")
+        ) or any(type(policy.get(key)) is not bool for key in ("enabled", "advisories")):
+            raise ValueError("invalid live review policy")
+        print(f"Live sessions: {live['active']} active / {live['tracked']} tracked")
+        print(
+            f"Daemon policy: mode={policy['mode']}, "
+            f"AI reviews={'on' if policy['enabled'] else 'off'}, "
+            f"advisories={'on' if policy['advisories'] else 'off'}, model={policy['model']} "
+            f"({policy['generation']})"
+        )
+        if pending := response.get("pending_config_generation"):
+            print(f"Pending policy: {pending}; applies at the next safe turn boundary")
+        if error := response.get("config_reload_error"):
+            print(f"Policy reload rejected: {error}")
+        verdict = 0
+        for row in rows:
+            if (
+                not isinstance(row, dict)
+                or not isinstance(row.get("id"), str)
+                or (session is not None and row.get("id") != session)
+                or (row.get("turn") is not None and not isinstance(row.get("turn"), str))
+                or type(row.get("observing")) is not bool
+                or type(row.get("control_ready")) is not bool
+                or row.get("history") not in {"complete", "partial", "unknown"}
+                or type(row.get("gaps")) is not int
+                or row["gaps"] < 0
+            ):
+                raise ValueError("invalid live session row")
+            state = "active" if row["turn"] else "idle"
+            if not row["observing"]:
+                state = "unconfirmed (observation disconnected)"
+                verdict = 1
+            print(
+                f"  {row['id']}: {state}; turn={row['turn'] or 'none'}; "
+                f"control={'ready' if row['control_ready'] else 'unavailable'}; "
+                f"history={row['history']}, gaps={row['gaps']}"
+            )
+            if session is not None:
+                spend = read_spend(row["id"])
+                cap_session, cap_day = policy["max_per_session"], policy["max_per_day"]
+                print(
+                    f"Signal-review calls: {spend.session}/{cap_session or 'unlimited'} session, "
+                    f"{spend.day}/{cap_day or 'unlimited'} today; "
+                    f"recorded session tokens={spend.tokens} (not a money cap)"
+                )
+                if not policy["enabled"]:
+                    print("Automatic signal reviews: OFF; enable with spotter mode advisory")
+                elif cap_session and spend.session >= cap_session:
+                    print("Automatic signal reviews: PAUSED — session call limit reached")
+                elif cap_day and spend.day >= cap_day:
+                    print("Automatic signal reviews: PAUSED — daily call limit reached")
+                else:
+                    print("Automatic signal reviews: budget available; a fresh signal is required")
+        if not rows:
+            print(
+                "No matching live thread; Hook journals alone do not establish live session state"
+            )
+            return 1 if session is not None else 0
+        if session is None and len(rows) < live["tracked"]:
+            print("Showing up to 50 threads; select one with spotter status --session ID")
+        if session is not None:
+            print("Queued reviews retain their pinned policy; Hook policy is resolved per request.")
+        return verdict
+    except (DaemonError, KeyError, TypeError, ValueError) as error:
+        print(f"Live sessions unavailable: {error}")
+        return 1
+    except (LedgerCorrupt, OSError) as error:
+        print(f"Review budget unavailable; new reviews refuse to spend: {error}")
+        return 2
+
+
+def _status_main(config_path: Path | None = None, *, session: str | None = None) -> int:
     """What Spotter is storing, and whether it is actually observing.
 
     Silence is Spotter's designed normal state, which is why silence cannot
     also be its failure state (issue #41).
     """
+    if session is not None:
+        return _live_status_main(session)
     home = spotter_home()
     if not home.exists():
         print(f"no spotter home at {home} — nothing has ever been recorded", file=sys.stderr)
@@ -1989,7 +2202,8 @@ def _status_main() -> int:
     after = home.stat().st_mode & 0o777
     note = f" (tightened from {oct(before)})" if before != after else ""
     print(f"home: {home}  ({total_bytes / 1e6:.1f} MB, mode {oct(after)}{note})")
-    runtime_checks = check_runtime()
+    _live_status_main(None)
+    runtime_checks = check_runtime() + check_policy(config_path)
     marks = {OK: "ok", INFO: "info", WARN: "WARN", FAIL: "FAIL"}
     print("runtime:")
     for check in runtime_checks:
