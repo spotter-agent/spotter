@@ -470,10 +470,22 @@ async def _probe_app_server(endpoint: str) -> tuple[Check, Check]:
             f"App Server {client.state.value}; observation {capabilities.observation.value}",
         )
         controls = (capabilities.steer, capabilities.interrupt)
+        if all(item == CapabilityStatus.AVAILABLE for item in controls):
+            control_status = OK
+        elif CapabilityStatus.UNAVAILABLE in controls:
+            control_status = WARN
+        else:
+            control_status = INFO
+        control_detail = "steer/interrupt " + "/".join(item.value for item in controls)
+        if control_status == INFO:
+            control_detail += (
+                "; the App Server advertises no capabilities, so this resolves the first time "
+                "a control is used"
+            )
         control = Check(
             "live control",
-            OK if all(item == CapabilityStatus.AVAILABLE for item in controls) else WARN,
-            "steer/interrupt " + "/".join(item.value for item in controls),
+            control_status,
+            control_detail,
         )
         return observation, control
     except Exception as error:

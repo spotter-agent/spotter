@@ -99,9 +99,14 @@ context, when the exact thread is not confirmed as observed in the current App S
 
 This is an onboarding implementation, not evidence of general-user readiness. Remaining work:
 
-A clean-room wheel install and non-interactive CLI smoke passed on macOS on 2026-09-13. It covered
-mode selection, local-setup dry-run, and missing live-session diagnostics without using the source
-checkout at runtime; it does not replace first-time user testing or the packaged platform matrix.
+A clean-room wheel smoke and a Homebrew 0.0.14 mechanical onboarding pilot passed on macOS on
+2026-09-13. The packaged pilot covered local setup with a real Codex App Server, diagnostics, mode
+selection, update guidance, managed launch resolution, teardown, and preservation of unrelated Codex
+state. It exposed and fixed a deep-doctor classification that treated unadvertised control capability
+as a warning even though observation was healthy. The exact matrix and limitations are recorded in
+the [guided onboarding result](experiments/guided-onboarding-v1-result.md); first-time-user evidence,
+an interactive live thread, and the packaged Linux lifecycle remain open under the frozen
+[protocol](experiments/guided-onboarding-v1-protocol.md).
 
 - [#369](https://github.com/spotter-agent/spotter/issues/369): validate the revised onboarding with
   first-time users and the packaged platform lifecycle matrix;
