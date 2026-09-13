@@ -149,8 +149,10 @@ and live advisories are off. `doctor` shows these settings and a safe policy pre
 the example command or calling a model. See [mode selection](docs/user-guide.md#choose-a-mode).
 
 Use `spotter codex` for subsequent sessions. Plain `codex` does not connect to the same observation
-path. Existing external-server users can keep `setup codex --endpoint <address>`; new setup without
-`--local` or `--endpoint` remains Hook-only. Rerunning setup retains a configured endpoint.
+path. At managed session start, Spotter checks daemon-owned state for the exact thread and displays a
+warning when live observation is not confirmed; the warning is not added to model context. Existing
+external-server users can keep `setup codex --endpoint <address>`; new setup without `--local` or
+`--endpoint` remains Hook-only. Rerunning setup retains a configured endpoint.
 
 ## Everyday commands
 

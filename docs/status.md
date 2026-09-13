@@ -93,7 +93,9 @@ or direct `observe`, `protect`, `advisory`, and `custom` selection in a separate
 without rewriting other configuration. `spotter status --session THREAD_ID` reports daemon-confirmed
 live observation, control readiness, adopted policy generation, and review budget availability.
 Top-level help now separates common operation from research commands, and common commands provide
-scoped syntax, safety effects, and examples instead of the flat parser's entire option inventory.
+scoped syntax, safety effects, and examples instead of the flat parser's entire option inventory. A
+managed session-start Hook performs one bounded local daemon lookup and visibly warns, without model
+context, when the exact thread is not confirmed as observed in the current App Server epoch.
 
 This is an onboarding implementation, not evidence of general-user readiness. Remaining work:
 

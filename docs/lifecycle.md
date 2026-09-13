@@ -662,7 +662,10 @@ Advantages:
 
 Risks:
 
-- plain `codex` still selects its embedded server and remains degraded;
+- plain `codex` still selects its embedded server and remains degraded; the managed `SessionStart`
+  Hook performs one bounded local daemon lookup and emits a visible `systemMessage` warning when the
+  exact thread is not confirmed in the current App Server connection epoch, without adding model
+  context or changing fail-open behavior;
 - the detached server is shared and deliberately survives the launching TUI, so Spotter must never
   treat it as exclusively owned or stop it during daemon teardown.
 

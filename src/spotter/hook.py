@@ -24,6 +24,7 @@ from spotter.daemon import (
     GATE_TIMEOUT,
     PROTOCOL_VERSION,
     DaemonClient,
+    DaemonError,
     DaemonProtocolError,
     DaemonTimeout,
     DaemonUnavailable,
@@ -151,6 +152,41 @@ def journal_path(payload: dict[str, Any]) -> Path:
     return base / f"{sanitize_session(payload.get('session_id'))}.jsonl"
 
 
+def _live_observation_warning(payload: dict[str, Any]) -> str | None:
+    """Warn at managed session start unless the daemon confirms this exact thread."""
+    if os.environ.get("SPOTTER_DISABLE") or os.environ.get("SPOTTER_CAPTURE_ONLY"):
+        return None
+    session_id = payload.get("session_id")
+    if not isinstance(session_id, str) or not session_id:
+        return None
+    rows: object = None
+    try:
+        response = asyncio.run(
+            DaemonClient(timeout=GATE_TIMEOUT, component="hook_bridge").request(
+                "sessions", {"session": session_id}
+            )
+        )
+        sessions = response.get("sessions")
+        if isinstance(sessions, dict):
+            rows = sessions.get("rows")
+    except DaemonError:
+        pass
+    if isinstance(rows, list) and any(
+        isinstance(row, dict) and row.get("id") == session_id and row.get("observing") is True
+        for row in rows[:50]
+    ):
+        return None
+    return json.dumps(
+        {
+            "systemMessage": (
+                "[spotter] Hook supervision is active, but live App Server observation is not "
+                "confirmed for this session. Relaunch with `spotter codex`; run `spotter doctor` "
+                "for details."
+            )
+        }
+    )
+
+
 def _maybe_spawn_shadow_review(
     config: SpotterConfig,
     payload: dict[str, Any],
@@ -245,6 +281,8 @@ def run_hook(
     config: SpotterConfig,
     config_path: Path | None = None,
     config_generation: str = "unversioned",
+    *,
+    report_live_status: bool = False,
 ) -> str | None:
     """Process one hook invocation. Returns stdout JSON, or None to allow."""
     hook_started = time.perf_counter_ns()
@@ -316,6 +354,8 @@ def run_hook(
         gate_telemetry["hook_ms"] = (time.perf_counter_ns() - hook_started) / 1_000_000
         adapter.record(TraceEvent("gate_ipc", gate_telemetry))
     if decision.allowed:
+        if report_live_status and event.kind == "sessionstart":
+            return _live_observation_warning(payload)
         return None  # implicit allow; stay silent on the happy path
     return json.dumps(
         {

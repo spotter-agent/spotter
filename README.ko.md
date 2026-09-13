@@ -149,7 +149,9 @@ Spotter는 이 서버를 중지하지 않습니다. `--dry-run`은 서버 실행
 참고하세요.
 
 이후에도 `spotter codex`로 실행하세요. 일반 `codex`는 같은 App Server 관찰 경로에 연결되지
-않습니다. 기존 외부 서버에는 `setup codex --endpoint <주소>`를 사용할 수 있습니다.
+않습니다. 관리되는 세션이 시작될 때 Spotter는 해당 스레드의 데몬 상태를 확인하고 실시간 관찰이
+확인되지 않으면 모델 컨텍스트에 추가하지 않는 경고를 표시합니다. 기존 외부 서버에는
+`setup codex --endpoint <주소>`를 사용할 수 있습니다.
 처음에 `--local`과 `--endpoint` 없이 설정하면 Hook 전용으로 설치되며, 재설정 시에는 이미
 등록된 endpoint가 유지됩니다.
 
