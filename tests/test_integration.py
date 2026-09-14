@@ -1479,9 +1479,9 @@ def test_managed_service_uses_stable_package_and_user_layout(
     else:
         text = definition.decode()
         assert f'ExecStart="{daemon}"' in text
-        assert f'WorkingDirectory="{spotter_home}"' in text
+        assert f"WorkingDirectory={spotter_home}" in text
         assert f'Environment="SPOTTER_HOME={spotter_home}"' in text
-        assert f'StandardOutput="append:{spotter_home}/logs/spotterd.log"' in text
+        assert f"StandardOutput=append:{spotter_home}/logs/spotterd.log" in text
     assert "Cellar" not in definition.decode()
     [owned_log] = LogRegistry(log_dir=layout.log_dir).load()
     assert owned_log.resource_id == "spotterd"

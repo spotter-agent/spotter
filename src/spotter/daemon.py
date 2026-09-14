@@ -1317,8 +1317,8 @@ class ManagedServiceManager:
         # dedicated systemd escaping helper if arbitrary control characters are supported.
         command = " ".join(json.dumps(part.replace("%", "%%")) for part in self._program())
         environment = json.dumps(f"SPOTTER_HOME={home}".replace("%", "%%"))
-        working_directory = json.dumps(str(home).replace("%", "%%"))
-        output = json.dumps(f"append:{log_path}".replace("%", "%%"))
+        working_directory = str(home).replace("%", "%%")
+        output = f"append:{log_path}".replace("%", "%%")
         return (
             "[Unit]\nDescription=Spotter supervision runtime\n\n"
             "[Service]\nType=simple\n"
