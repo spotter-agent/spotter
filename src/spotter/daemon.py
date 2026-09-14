@@ -70,7 +70,7 @@ SERVICE_COMMAND_TIMEOUT = 10.0
 _MAX_REQUEST_BYTES = 64 * 1024
 _RESOURCE_SAMPLE_EVERY = 64
 _PACKAGE_WATCH_INTERVAL = 0.25
-_PACKAGE_MISSING_GRACE = 10.0
+_PACKAGE_MISSING_GRACE = 15.0
 _CONFIG_WATCH_INTERVAL = 0.5
 
 
@@ -1317,8 +1317,8 @@ class ManagedServiceManager:
         # dedicated systemd escaping helper if arbitrary control characters are supported.
         command = " ".join(json.dumps(part.replace("%", "%%")) for part in self._program())
         environment = json.dumps(f"SPOTTER_HOME={home}".replace("%", "%%"))
-        working_directory = json.dumps(str(home).replace("%", "%%"))
-        output = json.dumps(f"append:{log_path}".replace("%", "%%"))
+        working_directory = str(home).replace("%", "%%")
+        output = f"append:{log_path}".replace("%", "%%")
         return (
             "[Unit]\nDescription=Spotter supervision runtime\n\n"
             "[Service]\nType=simple\n"
