@@ -2,8 +2,8 @@
 
 > **Status:** implemented in the official
 > [`spotter-agent/homebrew-spotter`](https://github.com/spotter-agent/homebrew-spotter) tap and
-> exercised on macOS CI. Fast ownership, path, protocol, and failure fixtures remain in this
-> repository.
+> exercised on macOS and Linux CI, using a real `systemd --user` manager on Linux. Fast ownership,
+> path, protocol, and failure fixtures remain in this repository.
 
 Issue [#108](https://github.com/spotter-agent/spotter/issues/108) varies package and Codex
 integration state independently. The real Homebrew gate builds two immutable local release
@@ -45,7 +45,7 @@ uninstall.
 
 ## Reproduce locally
 
-Clone Spotter and its tap as siblings on a macOS host with Homebrew, then run:
+Clone Spotter and its tap as siblings on a supported macOS or Linux host with Homebrew, then run:
 
 ```bash
 cd homebrew-spotter
