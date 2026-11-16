@@ -172,6 +172,12 @@ stratum, so its rate and eligibility/exclusion denominator describe the same fra
 `fp / (tp + fp)` is named false discovery (`1 - precision`); true false-positive rate remains
 unavailable until #38 has a per-rule true-negative sampling frame.
 
+`fork-coverage` now consumes the timing windows saved by `label-opportunity`, separately from legacy
+verdict labels. It retains independent raters, rejects stale evidence, and reports exact and excluded
+proposal points inside each observable interval without substituting later proposals. This connects
+the #24 labeling packet to #42 coverage measurement; representative human labels and natural drift
+evidence are still required. See [coverage semantics](lifecycle.md#8-resume-fork-and-experiment).
+
 ---
 
 ## Quick capability status
