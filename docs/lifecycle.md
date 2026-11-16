@@ -1019,6 +1019,21 @@ trigger is linked to the first following proposal unless the signal resolves or 
 the report counts trigger follow-ups and the subset that are exactly forkable. Controlled fixture
 bootstrap is not inferred when no bootstrap contract exists.
 
+Timing windows saved by `spotter label-opportunity` are reported separately from legacy verdict
+labels in `opportunity_window_points`. Each row retains the opportunity ID, rater, semantic and
+observable bounds, and every proposal inside the inclusive observable interval with its existing
+coverage classification. A proposal after that interval is not substituted for a missing branch
+point. Corrections replace only the same opportunity/rater's previous window; changed bounds or
+required evidence mark the whole annotation stale and leave its points empty. Unsupported or corrupt
+annotation history fails the command visibly.
+
+`opportunity_window_annotations_current` is the non-stale annotation denominator, including windows
+with no proposal. `opportunity_windows_forkable` counts annotations with at least one exact point
+inside their observable interval, not fully covered intervals or independent opportunities: multiple
+raters may annotate the same opportunity. These counts do not establish label agreement, environment
+parity at execution, or intervention benefit. Existing `labeled_opportunity_*` verdict fields retain
+their previous meaning.
+
 Do not treat experiment machinery as evidence of positive intervention advantage until enough mechanically scored runs exist.
 
 Frozen task-set batches run control/guidance arms from separate clean fixture copies. Each arm row

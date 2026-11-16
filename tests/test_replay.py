@@ -10,6 +10,7 @@ import spotter.replay as replay
 from spotter.hook import journal_path
 from spotter.identity import IdentityProvenance, RuntimeIdentity, ThreadId, TurnId
 from spotter.labels import add_label, labels_path
+from spotter.opportunities import add_opportunity, opportunities_path
 from spotter.replay import (
     FORK_MANIFEST_SCHEMA,
     FORK_MANIFEST_SCHEMA_VERSION,
@@ -392,6 +393,121 @@ def test_branch_coverage_reports_labeled_intervention_opportunities(
     assert report.labeled_opportunity_points[0].scope == "signal:failure_streak"
     rendered = json.loads(branch_coverage_to_json(report))
     assert rendered["labeled_opportunity_points"][1]["status"] == "FORKABLE_EXACT"
+
+
+def test_branch_coverage_reads_timing_windows_without_counting_late_or_stale_points(
+    repo: Path,
+    codex_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from spotter.cli import main
+
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    sha = snapshot_worktree(repo)
+    events = [
+        TraceEvent(
+            kind,
+            {"tool_use_id": call_id, "cwd": str(repo), "reversibility_class": "A"},
+            event_id=f"event-{index}",
+        )
+        for index, (kind, call_id) in enumerate(
+            [
+                ("tool_proposal", "call_A"),
+                ("tool_result", "call_A"),
+                ("tool_proposal", "call_B"),
+                ("observation_gap", ""),
+                ("tool_proposal", "call_C"),
+            ]
+        )
+    ]
+    _journal(OLD_ID, [(event, sha if index == 0 else None) for index, event in enumerate(events)])
+    assert (
+        main(
+            [
+                "label-opportunity",
+                "--session",
+                OLD_ID,
+                "--opportunity-id",
+                "loop",
+                "--rater",
+                "alice",
+                "--semantic-earliest",
+                "0",
+                "--semantic-latest",
+                "2",
+                "--observable-earliest",
+                "0",
+                "--observable-latest",
+                "2",
+                "--required-evidence",
+                "0",
+                "--note",
+                "test window",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    records = StepJournal.load(journal_path({"session_id": OLD_ID}))
+    for identity, rater, earliest, latest in [
+        ("loop", "alice", 1, 2),  # Correction replaces only this rater's window.
+        ("loop", "bob", 0, 0),
+        ("no-proposal", "alice", 1, 1),
+        ("gap", "alice", 3, 4),
+        ("stale", "alice", 0, 2),
+    ]:
+        window = add_opportunity(
+            OLD_ID,
+            identity,
+            records,
+            semantic_earliest=0,
+            semantic_latest=2,
+            observable_earliest=earliest,
+            observable_latest=latest,
+            required_evidence=(0,),
+            note="test window",
+            rater=rater,
+        )
+    # Bounds still match, but changed required evidence invalidates the entire annotation.
+    stale = replace(
+        window, required_evidence=(replace(window.required_evidence[0], fingerprint="stale"),)
+    )
+    with opportunities_path(OLD_ID).open("a", encoding="utf-8") as sink:
+        sink.write(json.dumps(asdict(stale)) + "\n")
+
+    assert main(["fork-coverage", "--session", OLD_ID]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["labeled_opportunities"] == 0  # Legacy verdict counts are unchanged.
+    assert report["opportunity_window_annotations"] == 5
+    assert report["opportunity_window_annotations_current"] == 4
+    assert report["opportunity_windows_forkable"] == 2
+    windows = {
+        (row["opportunity_id"], row["rater"]): row for row in report["opportunity_window_points"]
+    }
+    assert [point["step"] for point in windows["loop", "alice"]["points"]] == [2]
+    assert [point["step"] for point in windows["loop", "bob"]["points"]] == [0]
+    assert windows["no-proposal", "alice"]["points"] == []
+    assert windows["gap", "alice"]["points"][0]["status"] == "OBSERVATION_GAP"
+    assert windows["stale", "alice"]["stale"] is True
+    assert windows["stale", "alice"]["points"] == []
+
+
+@pytest.mark.parametrize("content", ['{"version": 999}', "{broken"])
+def test_fork_coverage_reports_invalid_opportunity_history(
+    content: str,
+    codex_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from spotter.cli import main
+
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    opportunities_path(OLD_ID).write_text(content + "\n")
+    assert main(["fork-coverage", "--session", OLD_ID]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "fork coverage failed:" in captured.err
 
 
 def test_fork_rollout_only_rewrites_session_metadata(codex_home: Path) -> None:

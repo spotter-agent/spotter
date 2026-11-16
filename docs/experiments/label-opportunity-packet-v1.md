@@ -59,3 +59,45 @@ For a summary view, set `SPOTTER_HOME` to the cohort's local `spotter-home` and 
 ```bash
 spotter analyze --session <SESSION_ID>
 ```
+
+After persisting the reviewed windows, use the same cohort's `SPOTTER_HOME` and `CODEX_HOME` to run:
+
+```bash
+spotter fork-coverage --session <SESSION_ID>
+```
+
+Read `opportunity_window_points` for each rater's proposal coverage inside the observable interval.
+Stale annotations have no eligible points; an interval without a proposal stays uncovered even if a
+later proposal is forkable. `opportunity_windows_forkable` counts windows with at least one exact
+point against `opportunity_window_annotations_current`, not independent opportunities or fully
+covered intervals. Keep rater agreement separate. Zero annotations means measurement is pending,
+not zero successful interventions. Legacy `labeled_opportunity_*` fields describe verdict labels and
+are not the timing-window denominator.
+
+## Retained-artifact preflight — 2026-11-16
+
+All ten sources were inspected with the current `fork-coverage` implementation, using temporary
+Spotter homes linked to the retained journals/labels and each cohort's original Codex home. No
+continuations, scorers, annotations, or forks were created. These are current artifact-availability
+counts, not a new outcome experiment or a historical environment-parity measurement.
+
+| Case | Proposals | Exact | Missing context | Unsafe/unknown external state | Timing annotations |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| L01 | 12 | 1 | 0 | 11 | 0 |
+| L02 | 12 | 0 | 1 | 11 | 0 |
+| L03 | 22 | 1 | 0 | 21 | 0 |
+| L04 | 9 | 1 | 0 | 8 | 0 |
+| L05 | 10 | 1 | 0 | 9 | 0 |
+| L06 | 20 | 1 | 0 | 19 | 0 |
+| L07 | 13 | 4 | 0 | 9 | 0 |
+| L08 | 21 | 1 | 0 | 20 | 0 |
+| L09 | 21 | 3 | 0 | 18 | 0 |
+| L10 | 12 | 1 | 0 | 11 | 0 |
+| **Total** | **152** | **14** | **1** | **137** | **0** |
+
+No points were classified as missing repository state or observation gaps. The external-state
+bucket includes unknown effects; it does not prove that 137 external writes occurred. L02 has no
+currently exact branch, so do not run a continuation there without resolving context availability.
+All ten cases still lack timing annotations. The 14/152 proposal coverage is therefore **not**
+coverage of labeled intervention opportunities. The human worksheet and #42 qualification remain
+pending.

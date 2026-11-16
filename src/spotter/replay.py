@@ -40,6 +40,8 @@ from pathlib import Path
 from spotter.effects import external_effects
 from spotter.hook import journal_path
 from spotter.labels import load_all_labels, matches
+from spotter.opportunities import load_opportunities
+from spotter.opportunities import matches as opportunity_matches
 from spotter.paths import secure_dir, spotter_home
 from spotter.redact import redact_text
 from spotter.snapshot import StepJournal, StepRecord, restore_snapshot
@@ -110,6 +112,18 @@ class LabeledBranchCoverage:
 
 
 @dataclass(frozen=True)
+class OpportunityWindowBranchCoverage:
+    opportunity_id: str
+    rater: str
+    semantic_earliest: int
+    semantic_latest: int
+    observable_earliest: int
+    observable_latest: int
+    stale: bool
+    points: tuple[BranchPointCoverage, ...]
+
+
+@dataclass(frozen=True)
 class BranchCoverageReport:
     session_id: str
     candidates: int
@@ -127,6 +141,10 @@ class BranchCoverageReport:
     labeled_opportunity_branch_points: int
     labeled_opportunity_branch_points_forkable: int
     labeled_opportunity_points: tuple[LabeledBranchCoverage, ...]
+    opportunity_window_annotations: int
+    opportunity_window_annotations_current: int
+    opportunity_windows_forkable: int
+    opportunity_window_points: tuple[OpportunityWindowBranchCoverage, ...]
 
 
 @dataclass(frozen=True)
@@ -330,6 +348,7 @@ def branch_coverage(session_id: str, codex_home: Path | None = None) -> BranchCo
     forkable = [point for point in points if point.status == BranchCoverageStatus.FORKABLE_EXACT]
     signal_points = _signal_branch_coverage(records, points)
     labeled_points = _labeled_branch_coverage(session_id, records, points)
+    window_points = _opportunity_window_branch_coverage(session_id, records, points)
     return BranchCoverageReport(
         session_id=session_id,
         candidates=len(points),
@@ -355,7 +374,43 @@ def branch_coverage(session_id: str, codex_home: Path | None = None) -> BranchCo
             point.status == BranchCoverageStatus.FORKABLE_EXACT for point in labeled_points
         ),
         labeled_opportunity_points=labeled_points,
+        opportunity_window_annotations=len(window_points),
+        opportunity_window_annotations_current=sum(not window.stale for window in window_points),
+        opportunity_windows_forkable=sum(
+            any(point.status == BranchCoverageStatus.FORKABLE_EXACT for point in window.points)
+            for window in window_points
+        ),
+        opportunity_window_points=window_points,
     )
+
+
+def _opportunity_window_branch_coverage(
+    session_id: str, records: list[StepRecord], points: list[BranchPointCoverage]
+) -> tuple[OpportunityWindowBranchCoverage, ...]:
+    coverage: list[OpportunityWindowBranchCoverage] = []
+    for _, window in sorted(load_opportunities(session_id).items()):
+        stale = not opportunity_matches(window, records)
+        coverage.append(
+            OpportunityWindowBranchCoverage(
+                opportunity_id=window.opportunity_id,
+                rater=window.rater,
+                semantic_earliest=window.semantic_earliest.step,
+                semantic_latest=window.semantic_latest.step,
+                observable_earliest=window.observable_earliest.step,
+                observable_latest=window.observable_latest.step,
+                stale=stale,
+                # A later proposal does not prove coverage inside the annotated interval.
+                points=tuple(
+                    point
+                    for point in points
+                    if not stale
+                    and window.observable_earliest.step
+                    <= point.step
+                    <= window.observable_latest.step
+                ),
+            )
+        )
+    return tuple(coverage)
 
 
 def _signal_branch_coverage(
