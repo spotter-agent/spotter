@@ -97,6 +97,15 @@ scoped syntax, safety effects, and examples instead of the flat parser's entire 
 managed session-start Hook performs one bounded local daemon lookup and visibly warns, without model
 context, when the exact thread is not confirmed as observed in the current App Server epoch.
 
+Cold-start connection probing and reconciliation now prefer paginated loaded-thread discovery,
+avoiding disk-backed session-history scans. Hosts without that API retain the legacy listing path
+with a separate 60-second RPC deadline. Setup readiness and observation after a managed launch
+starts the server allow 180 seconds. Launch readiness comes from the observing daemon. Control/turn
+RPC and synchronous Hook limits are unchanged; recovery remains bounded and failed setup still
+rolls back. A local read-only check on Codex 0.166.0 connected in 2ms and discovered its one loaded
+thread in under 1ms; the legacy history query had exceeded 60 seconds on the same endpoint. This
+qualifies that discovery path, not general-user readiness or the entire setup lifecycle.
+
 This is an onboarding implementation, not evidence of general-user readiness. Remaining work:
 
 A clean-room wheel smoke and a Homebrew 0.0.15 mechanical onboarding pilot passed on macOS. The

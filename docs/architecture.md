@@ -138,6 +138,15 @@ current snapshot.
 Manual process management implements the `ServiceManager` boundary used by the CLI. For a configured
 endpoint, the daemon owns one App Server connection/reconnect loop, routes epoch-tagged Trace IR into
 durable journals and `ThreadState`, and reconciles loaded threads before reporting control-ready.
+Connection probing and reconciliation prefer the App Server's paginated `thread/loaded/list`,
+avoiding disk-backed history scans. The adapter normalizes loaded IDs to thread summaries and falls
+back to `thread/list` only when the host reports method-not-found; other failures remain visible.
+Newly loaded threads continue to attach through live notifications. Unloaded-history totals are
+available only on the legacy listing path, not inferred from the loaded-only result.
+Cold `thread/list` requests have a separate 60-second default deadline; other App Server RPCs remain
+bounded at 10 seconds. Explicit client deadlines override both, keeping diagnostic probes short.
+Managed launch checks the daemon's observation readiness rather than substituting a separate
+successful App Server probe for completed reconciliation.
 It never owns or stops the shared App Server process; existing Hook enforcement remains independent.
 
 The CLI's opt-in `setup codex --local` composes the existing detached-server startup with the

@@ -819,7 +819,7 @@ class AppServerRecoveryLoop:
         discovered: dict[str, Mapping[str, Any]] = {}
         cursor: str | None = None
         while True:
-            page = await client.list_threads(limit=100, cursor=cursor)
+            page = await client.list_observable_threads(limit=100, cursor=cursor)
             data = page.get("data")
             if not isinstance(data, list):
                 raise AppServerTransportError("thread/list returned no data array")

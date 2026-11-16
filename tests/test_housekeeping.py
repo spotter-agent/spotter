@@ -463,6 +463,58 @@ def test_codex_launch_starts_an_app_server_when_none_is_listening(
     assert daemon_quiet == [True]
 
 
+@pytest.mark.parametrize("ready_after", [80, None])
+def test_cold_launch_waits_for_daemon_observation_but_remains_bounded(
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    ready_after: int | None,
+) -> None:
+    from spotter import cli
+    from spotter.doctor import OK, WARN, Check
+
+    manifest = SimpleNamespace(
+        state="ready",
+        app_server_endpoint="ws://127.0.0.1:4500",
+        agent_path="/usr/bin/codex",
+    )
+    monkeypatch.setattr("spotter.integration.IntegrationManifest.load", lambda _: manifest)
+    monkeypatch.setattr(cli, "_endpoint_listening", lambda _: False)
+    monkeypatch.setattr(cli, "_start_app_server", lambda *_: True)
+    monkeypatch.setattr(cli, "_daemon_main", lambda *_, **__: 1)
+    clock = SimpleNamespace(now=0.0)
+
+    def sleep(_: float) -> None:
+        clock.now += 20
+
+    monkeypatch.setattr(cli, "time", SimpleNamespace(monotonic=lambda: clock.now, sleep=sleep))
+
+    def runtime(*, deep: bool = False) -> list[Check]:
+        assert not deep  # A separate endpoint probe cannot prove the daemon is observing.
+        ready = ready_after is not None and clock.now >= ready_after
+        return [Check("observation", OK if ready else WARN, "ready" if ready else "reconciling")]
+
+    monkeypatch.setattr(cli, "check_runtime", runtime)
+    launched: list[list[str]] = []
+
+    def execv(_: str, args: list[str]) -> None:
+        launched.append(args)
+        raise SystemExit(0)
+
+    monkeypatch.setattr("os.execv", execv)
+
+    if ready_after is not None:
+        with pytest.raises(SystemExit, match="0"):
+            cli._codex_main([])
+        assert clock.now == ready_after
+        assert launched == [[manifest.agent_path, "--remote", manifest.app_server_endpoint]]
+    else:
+        assert cli._codex_main([]) == 1
+        assert clock.now == 180
+        assert launched == []
+        assert "reconciling" in capsys.readouterr().err
+
+
 def test_codex_launch_never_starts_a_server_for_a_reachable_endpoint(
     home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

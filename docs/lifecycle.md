@@ -385,6 +385,16 @@ and requires the reconciled daemon to report a compatible App Server identity an
 before atomically committing that manifest as `ready`. Generated Hooks invoke the stable packaged
 CLI, not a copied module tree or a persisted Python interpreter path.
 
+Setup allows up to 180 seconds for each daemon readiness check, including rollback verification.
+This accommodates service restart, cold thread enumeration, and reconnect backoff without requiring
+users to rerun setup. The bound is for readiness, not the whole installation transaction. An
+unrecovered daemon still fails verification and triggers the existing transactional rollback.
+Connection probing and reconciliation prefer the in-memory `thread/loaded/list` API, with pagination,
+instead of scanning saved session history. Hosts without that method fall back to `thread/list`,
+whose requests have a 60-second default deadline; other RPCs retain their 10-second deadline.
+An explicit client timeout still applies to every RPC, including diagnostics. Malformed responses
+and server errors do not silently fall back to a history scan.
+
 For first use, `spotter setup codex --local` validates the installation/configuration plan, reuses
 or starts a detached App Server at `ws://127.0.0.1:4500`, and then runs the same endpoint verification
 and integration transaction. A previously registered plain `ws://127.0.0.1:<port>` endpoint is
@@ -394,6 +404,10 @@ A listening port must still pass Codex identity and observation checks before re
 `--local --dry-run` performs neither a network probe nor a server start. The server remains shared,
 is never stopped by Spotter, and may survive a later setup failure; integration rollback does not
 imply server teardown. Subsequent sessions use `spotter codex`.
+
+When `spotter codex` starts a missing App Server, it reports its wait and allows the same 180-second
+readiness window. Launch checks daemon-confirmed observation rather than an independent endpoint
+probe, so a server answering requests cannot conceal a daemon still reconciling its threads.
 
 Omitting both `--local` and `--endpoint` preserves the backward-compatible Hook-only installation and records
 `pending-external`; setup and diagnostics report App Server observation/control as unavailable.

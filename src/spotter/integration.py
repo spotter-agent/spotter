@@ -41,6 +41,7 @@ from spotter.paths import atomic_write_bytes as _atomic_write
 MANIFEST_SCHEMA_NAME = "spotter.integration_manifest"
 MANIFEST_SCHEMA_VERSION = 4
 MANIFEST_SCHEMA = MANIFEST_SCHEMA_VERSION
+APP_SERVER_READY_TIMEOUT = 180.0
 
 
 class IntegrationError(RuntimeError):
@@ -353,12 +354,8 @@ class IntegrationManager:
         verifier: Callable[[Path | None], bool] | None = None,
         app_server_endpoint: str | None = None,
         app_server_verifier: Callable[[str], None] | None = None,
-        # A changed service definition needs the full unregister/register cycle,
-        # and launchd's teardown measured over 8s of `Connection refused` before
-        # the socket came back — so a 10s budget lost that race every time and
-        # rolled setup back. This is setup, not a hot path; the budget only has
-        # to be larger than the platform's restart, and stay bounded.
-        app_server_ready_timeout: float = 30.0,
+        # Allow service restart, cold thread enumeration, and reconnect backoff to settle.
+        app_server_ready_timeout: float = APP_SERVER_READY_TIMEOUT,
         app_server_poll_interval: float = 0.1,
     ) -> None:
         self.codex_home = codex_home or Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))

@@ -8,6 +8,7 @@ import sys
 import time
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -410,6 +411,48 @@ def test_setup_waits_for_a_recovering_daemon_app_server_connection(
 
     assert manifest.state == "ready"
     assert service.starts == 1
+
+
+def test_setup_waits_past_the_old_deadline_without_rolling_back(
+    homes: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spotter_home, codex_home = homes
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr("spotter.integration.time", SimpleNamespace(monotonic=lambda: clock.now))
+
+    class SlowService(RecoveringAppServerService):
+        async def status(self) -> DaemonStatus:
+            if self.health == RuntimeHealth.RECOVERING:
+                clock.now += 20
+                if clock.now < 80:
+                    return DaemonStatus(
+                        RuntimeHealth.RECOVERING,
+                        build_id=current_build_identity().build_id,
+                        app_server_state="reconciling",
+                    )
+            return await super().status()
+
+    service = SlowService(
+        spotter_home / "service/spotterd", spotter_home / "integrations/codex.json"
+    )
+    manager = IntegrationManager(
+        codex_home=codex_home,
+        codex=CodexInstall("/bin/codex", "codex-cli 0.147.0", True, True),
+        service=service,
+        spotter_executable="/bin/spotter",
+        verifier=lambda _: True,
+        app_server_endpoint="ws://127.0.0.1:4500",
+        app_server_verifier=lambda _: None,
+        app_server_poll_interval=0,
+    )
+    monkeypatch.setattr("spotter.cli.IntegrationManager", lambda **_: manager)
+
+    assert main(["setup", "codex"]) == 0
+    manifest = IntegrationManifest.load(manager.manifest_path)
+    assert manifest is not None and manifest.state == "ready"
+    assert clock.now == 80
+    assert service.starts == 1
+    assert service.stops == service.uninstalls == 0
 
 
 def test_setup_retains_and_reverifies_the_recorded_endpoint_on_rerun(

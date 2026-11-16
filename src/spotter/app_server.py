@@ -138,13 +138,15 @@ class CodexAppServerClient:
         self,
         endpoint: str,
         *,
-        request_timeout: float = 10,
+        request_timeout: float | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> None:
-        if request_timeout <= 0:
+        if request_timeout is not None and request_timeout <= 0:
             raise ValueError("request_timeout must be positive")
         self.endpoint = endpoint
-        self.request_timeout = request_timeout
+        self.request_timeout = 10.0 if request_timeout is None else request_timeout
+        # Cold thread listings can scan disk; keep turn/control RPCs on the short budget.
+        self.thread_list_timeout = 60.0 if request_timeout is None else request_timeout
         self.headers = headers
         self.state = ConnectionState.DISCONNECTED
         self.server_info: Mapping[str, Any] | None = None
@@ -160,6 +162,7 @@ class CodexAppServerClient:
         # ponytail: #85 owns bounded backpressure once a real ingestion consumer exists.
         self._events: asyncio.Queue[AppServerEvent | AppServerError] = asyncio.Queue()
         self._capabilities = self._initial_capabilities()
+        self._loaded_listing_supported = True
 
     @staticmethod
     def _initial_capabilities() -> dict[AppServerCapability, CapabilityStatus]:
@@ -182,6 +185,7 @@ class CodexAppServerClient:
             raise AppServerTransportError("App Server client is already connected")
         self.state = ConnectionState.CONNECTING
         self._capabilities = self._initial_capabilities()
+        self._loaded_listing_supported = True
         self._closing = False
         self._failure_close = None
         self._closed.clear()
@@ -212,7 +216,7 @@ class CodexAppServerClient:
                 raise AppServerProtocolError(f"incompatible Codex App Server: {error}") from error
             await self._notify("initialized")
             try:
-                await self.list_threads(limit=1)
+                await self.list_observable_threads(limit=1)
             except UnsupportedAppServerCapability:
                 self.state = ConnectionState.DEGRADED
             else:
@@ -289,6 +293,32 @@ class CodexAppServerClient:
         if cursor is not None:
             params["cursor"] = cursor
         return await self._object_request("thread/list", params)
+
+    async def list_observable_threads(
+        self, *, limit: int = 100, cursor: str | None = None
+    ) -> Mapping[str, Any]:
+        """Prefer in-memory loaded threads; older hosts retain their disk-list fallback."""
+        if self._loaded_listing_supported:
+            params: JsonObject = {"limit": limit}
+            if cursor is not None:
+                params["cursor"] = cursor
+            try:
+                page = await self._object_request("thread/loaded/list", params)
+            except AppServerRpcError as error:
+                if error.code != -32601:
+                    raise
+                self._loaded_listing_supported = False
+            else:
+                data, next_cursor = page.get("data"), page.get("nextCursor")
+                if (
+                    not isinstance(data, list)
+                    or any(not isinstance(value, str) or not value for value in data)
+                    or (next_cursor is not None and not isinstance(next_cursor, str))
+                ):
+                    self._raise_protocol_error("thread/loaded/list returned an invalid page")
+                self._capabilities[AppServerCapability.THREAD_QUERY] = CapabilityStatus.AVAILABLE
+                return {"data": [{"id": value} for value in data], "nextCursor": next_cursor}
+        return await self.list_threads(limit=limit, cursor=cursor)
 
     async def read_thread(
         self, thread_id: str, *, include_turns: bool = False
@@ -369,7 +399,8 @@ class CodexAppServerClient:
             await socket.send(
                 json.dumps({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
             )
-            response = await asyncio.wait_for(future, timeout=self.request_timeout)
+            timeout = self.thread_list_timeout if method == "thread/list" else self.request_timeout
+            response = await asyncio.wait_for(future, timeout=timeout)
         except TimeoutError as error:
             self._pending.pop(request_id, None)
             transport_error = AppServerTransportError(f"{method} timed out")

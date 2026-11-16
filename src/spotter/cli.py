@@ -75,7 +75,12 @@ from spotter.experiment import (
 from spotter.feedback import FeedbackError, add_feedback, load_feedback
 from spotter.gates import Gate
 from spotter.hook import journal_path, run_hook
-from spotter.integration import IntegrationError, IntegrationManager, IntegrationManifest
+from spotter.integration import (
+    APP_SERVER_READY_TIMEOUT,
+    IntegrationError,
+    IntegrationManager,
+    IntegrationManifest,
+)
 from spotter.integration_inventory import (
     IntegrationInventory,
     IntegrationInventoryError,
@@ -1950,7 +1955,8 @@ def _endpoint_unreachable(detail: str) -> bool:
 
 
 def _observation_check() -> "Check | None":
-    return next((check for check in check_runtime(deep=True) if check.name == "observation"), None)
+    # The daemon must finish reconciliation; a successful independent probe is not readiness.
+    return next((check for check in check_runtime() if check.name == "observation"), None)
 
 
 def _endpoint_listening(endpoint: str) -> bool:
@@ -2035,7 +2041,12 @@ def _codex_main(args: Sequence[str]) -> int:
         # The daemon has its own reconnect backoff, which can already be running
         # from before the server existed. Give it that window rather than judging
         # a server we just started by a probe taken microseconds later.
-        deadline = time.monotonic() + 35.0
+        print(
+            f"Waiting for Spotter to observe the App Server "
+            f"(up to {APP_SERVER_READY_TIMEOUT:.0f} seconds)...",
+            flush=True,
+        )
+        deadline = time.monotonic() + APP_SERVER_READY_TIMEOUT
         while time.monotonic() < deadline:
             time.sleep(1.0)
             observation = _observation_check()

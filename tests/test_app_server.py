@@ -28,6 +28,14 @@ def _message(raw: str | bytes) -> dict[str, Any]:
 
 async def _receive(connection: ServerConnection, method: str) -> dict[str, Any]:
     message = _message(await connection.recv())
+    if message["method"] == "thread/loaded/list" and method != "thread/loaded/list":
+        # Existing fixtures exercise compatibility with hosts using thread/list.
+        await connection.send(
+            json.dumps(
+                {"id": message["id"], "error": {"code": -32601, "message": "method not found"}}
+            )
+        )
+        message = _message(await connection.recv())
     assert message["method"] == method
     return message
 
@@ -114,6 +122,95 @@ def test_transport_errors_do_not_expose_endpoint_query_values(
 
     assert "transport-secret" not in str(captured.value)
     assert "ws://127.0.0.1:4500?<redacted>" in str(captured.value)
+
+
+def test_cold_thread_lists_outlive_control_deadlines(monkeypatch: pytest.MonkeyPatch) -> None:
+    wait_for = asyncio.wait_for
+
+    async def accelerated_wait(awaitable: Awaitable[Any], timeout: float | None) -> Any:
+        return await wait_for(awaitable, None if timeout is None else timeout / 100)
+
+    monkeypatch.setattr("spotter.app_server.asyncio.wait_for", accelerated_wait)
+
+    async def scenario() -> None:
+        async def handler(connection: ServerConnection) -> None:
+            await _initialize(connection)
+            # Both the capability probe and reconciliation can hit a cold thread store.
+            for _ in range(2):
+                request = await _receive(connection, "thread/list")
+                await asyncio.sleep(0.2)  # Equivalent to 20 seconds with unscaled deadlines.
+                await _reply(connection, request, {"data": [], "nextCursor": None})
+            await _receive(connection, "turn/interrupt")
+            await connection.wait_closed()
+
+        async with _server(handler) as endpoint:
+            client = CodexAppServerClient(endpoint)
+            await client.connect()
+            assert (await client.list_threads())["data"] == []
+            assert client.capabilities.observation == CapabilityStatus.AVAILABLE
+            # The longer listing budget must not extend a mutating control's deadline.
+            async with asyncio.timeout(0.3):
+                with pytest.raises(AppServerTransportError, match="turn/interrupt timed out"):
+                    await client.interrupt("thread-1", "turn-1")
+            assert client.state == ConnectionState.DEGRADED
+            assert isinstance(await client.wait_closed(), AppServerTransportError)
+            await client.disconnect()
+
+    asyncio.run(scenario())
+
+
+def test_explicit_deadline_still_bounds_thread_listing() -> None:
+    async def scenario() -> None:
+        async def handler(connection: ServerConnection) -> None:
+            await _initialize(connection)
+            await _receive(connection, "thread/list")
+            await connection.wait_closed()
+
+        async with _server(handler) as endpoint:
+            client = CodexAppServerClient(endpoint, request_timeout=0.05)
+            with pytest.raises(AppServerTransportError, match="thread/list timed out"):
+                await client.connect()
+            assert client.state == ConnectionState.UNAVAILABLE
+            await client.disconnect()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("data", [None, [123], [""], [{"id": "thread-1"}]])
+def test_loaded_discovery_rejects_malformed_ids(data: Any) -> None:
+    async def scenario() -> None:
+        async def handler(connection: ServerConnection) -> None:
+            await _initialize(connection)
+            request = await _receive(connection, "thread/loaded/list")
+            await _reply(connection, request, {"data": data, "nextCursor": None})
+            await connection.wait_closed()
+
+        async with _server(handler) as endpoint:
+            client = CodexAppServerClient(endpoint)
+            with pytest.raises(AppServerProtocolError, match="invalid page"):
+                await client.connect()
+            await client.disconnect()
+
+    asyncio.run(scenario())
+
+
+def test_loaded_discovery_does_not_hide_server_errors_with_a_history_scan() -> None:
+    async def scenario() -> None:
+        async def handler(connection: ServerConnection) -> None:
+            await _initialize(connection)
+            request = await _receive(connection, "thread/loaded/list")
+            await connection.send(
+                json.dumps({"id": request["id"], "error": {"code": -32000, "message": "busy"}})
+            )
+            await connection.wait_closed()
+
+        async with _server(handler) as endpoint:
+            client = CodexAppServerClient(endpoint)
+            with pytest.raises(AppServerRpcError, match="busy"):
+                await client.connect()
+            await client.disconnect()
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize(

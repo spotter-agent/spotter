@@ -39,6 +39,10 @@ def _message(raw: str | bytes) -> dict[str, Any]:
 
 async def _receive(connection: ServerConnection, method: str) -> dict[str, Any]:
     message = _message(await connection.recv())
+    if message["method"] == "thread/loaded/list" and method != "thread/loaded/list":
+        # Existing fixtures model hosts without the loaded-thread discovery method.
+        await _reply_error(connection, message, -32601, "method not found")
+        message = _message(await connection.recv())
     assert message["method"] == method
     return message
 
@@ -61,7 +65,7 @@ async def _reply_error(
     )
 
 
-async def _initialize(connection: ServerConnection) -> None:
+async def _initialize(connection: ServerConnection, *, loaded: bool = False) -> None:
     request = await _receive(connection, "initialize")
     await _reply(
         connection,
@@ -69,7 +73,7 @@ async def _initialize(connection: ServerConnection) -> None:
         {"userAgent": "codex_cli_rs/0.147.0", "platformFamily": "unix"},
     )
     await _receive(connection, "initialized")
-    probe = await _receive(connection, "thread/list")
+    probe = await _receive(connection, "thread/loaded/list" if loaded else "thread/list")
     await _reply(connection, probe, {"data": [], "nextCursor": None})
 
 
@@ -330,7 +334,9 @@ def test_reconnect_records_server_and_capability_change(tmp_path: Path) -> None:
         async def disconnect(self) -> None:
             self.closed.set()
 
-        async def list_threads(self, *, limit: int, cursor: str | None = None) -> dict[str, object]:
+        async def list_observable_threads(
+            self, *, limit: int, cursor: str | None = None
+        ) -> dict[str, object]:
             return {"data": [{"id": "thread-1"}], "nextCursor": None}
 
         async def resume_thread(self, thread_id: str) -> dict[str, object]:
@@ -1711,6 +1717,36 @@ def test_settled_interrupt_releases_its_target_turn_bookkeeping(tmp_path: Path) 
 
             assert recovery._interrupt_target_turns == set()
             assert recovery._terminal_turn_status == {}
+            await recovery.close()
+
+    asyncio.run(scenario())
+
+
+def test_reconciliation_pages_loaded_threads_without_scanning_history(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        resumed: list[str] = []
+
+        async def handler(connection: ServerConnection) -> None:
+            await _initialize(connection, loaded=True)
+            first = await _receive(connection, "thread/loaded/list")
+            assert first["params"] == {"limit": 100}
+            await _reply(connection, first, {"data": ["live-1"], "nextCursor": "page-2"})
+            second = await _receive(connection, "thread/loaded/list")
+            assert second["params"] == {"limit": 100, "cursor": "page-2"}
+            await _reply(connection, second, {"data": ["idle-1"], "nextCursor": None})
+            for _ in range(2):
+                request = await _receive(connection, "thread/resume")
+                thread_id = request["params"]["threadId"]
+                resumed.append(thread_id)
+                await _reply(connection, request, {"thread": {"id": thread_id}})
+            await connection.wait_closed()
+
+        async with _server(handler) as endpoint:
+            recovery = AppServerRecoveryLoop(endpoint, tmp_path / "sessions", ThreadStateStore())
+            await recovery.start()
+            await _wait_until(lambda: recovery.state == RecoveryState.READY)
+            assert resumed == ["idle-1", "live-1"]
+            assert recovery.metrics.reconnect_failures == 0
             await recovery.close()
 
     asyncio.run(scenario())
